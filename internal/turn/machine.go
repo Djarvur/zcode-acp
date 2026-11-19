@@ -237,6 +237,12 @@ func (m *Machine) Wait(ctx context.Context) (StopReason, error) {
 	}
 }
 
+// Cancel requests cancellation of the current turn (03-08 stub): the
+// bypass-lane session/stop, the cancelling transition, and the exactly-once
+// cancelled resolution land with the GREEN stage — the RED contract tests
+// run against this deliberate no-op.
+func (m *Machine) Cancel() {}
+
 // AckAt returns when the current turn's session/send ack arrived (zero
 // before the ack) — the floor clock's origin for the quiet-window gates.
 func (m *Machine) AckAt() time.Time {
