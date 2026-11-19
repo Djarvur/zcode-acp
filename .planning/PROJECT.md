@@ -71,9 +71,19 @@ ACP-клиент может провести с ZCode полный ход end-to
   `opencode2` (min 2.0.14); детект по имени в PATH + версия.
 - Локальная копия исходников ZCode: `ZCode source tree (github.com/zai-org/ZCode; local clone)` (3.17.x).
 
+**Референсная имплементация:** github.com/william0wang/zcode-acp (TypeScript,
+Apache-2.0 → портирование на Go допустимо с атрибуцией) — в ней уже реализованы
+и покрыты тестами самые тяжёлые куски: расшифровка keyring (`enc:v2:os:`),
+`requestCredentialCipher`, снапшот с точной ревизией, PAT-флоу. Детали и файлы
+для портирования: `.planning/research/REFERENCE-ADAPTERS.md`. Ограничение из их
+TROUBLESHOOTING: Start Plan headless не работает (нужен браузер) — документируем.
+Конкурирующие адаптеры (Rust/Python) coding-plan цепочку не делают.
+
 **Открытые вопросы для фазы исследования:**
 - Под какого из предустановленных агентов Orca пишем рецепт запуска
-  (omp vs opencode vs opencode2) — решается вычитыванием
+  (omp vs opencode vs opencode2) — есть сильная V-RPT-подсказка (omp, ≥17.0.5,
+  model-selectors с 18.1.9, `--version`-проба с таймаутом 5 с) в
+  REFERENCE-ADAPTERS.md; требуется перепроверка по
   `agent-session-attachment-store-registry-*.js`
 - Какие именно вызовы Orca делает при старте карточки (load-bearing set)
 - Механизм обнаружения установки ZCode desktop (AppImage/deb/распакованная)

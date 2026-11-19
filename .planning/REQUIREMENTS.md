@@ -10,10 +10,10 @@ Requirements for the initial release. Each maps to roadmap phases.
 ### Discovery & Documentation (user-mandated first phase)
 
 - [ ] **DISC-01**: ZCode app-server 3.18.2 event surface documented from source (incl. `session/subscribe`/event-stream availability and turn-completion terminal signals), with V-SRC / V-EXP provenance labels per claim
-- [ ] **DISC-02**: Orca ACP dialect documented: the load-bearing method set at card startup and per turn, the full range of ACP methods Orca's client actually uses, and the chosen preset-agent identity (omp vs opencode vs opencode2) with version floor and env quirks — from `app.asar.unpacked` chunks
+- [ ] **DISC-02**: Orca ACP dialect documented: the load-bearing method set at card startup and per turn, the full range of ACP methods Orca's client actually uses, and the chosen preset-agent identity (omp vs opencode vs opencode2) with version floor and env quirks — from `app.asar.unpacked` chunks. Re-verify the V-RPT leads in REFERENCE-ADAPTERS.md (`--version` probe, 5 s timeout, semver from stdout/stderr; omp floor ≥ 17.0.5; model-selectors from ≥ 18.1.9; launch `omp acp [--plugin-dir] [--model]` with `PI_NO_PTY=1` and `--session-dir`; `/model` slash-command string contracts)
 - [ ] **DISC-03**: ZCode desktop discovery matrix documented (AppImage / deb / unpacked layouts, auto-update effects on the builtin revision string)
 - [ ] **DISC-04**: `workspaceKey` derivation semantics documented (source + experiment)
-- [ ] **DISC-05**: Reference implementation studied and compared: github.com/william0wang/zcode-acp (TypeScript, 91★, active 2026-11) — what it covers (elicitation/create preference, slash commands, resume/fork, attachments staging), what to adopt, what to avoid; findings written into `docs/research/`
+- [ ] **DISC-05**: Reference implementation studied and compared: github.com/william0wang/zcode-acp (TypeScript, Apache-2.0 → Go porting allowed with attribution, ~0.88.x, active) — it already implements and tests our hardest chain (keyring `enc:v2:os:` decryption via Secret Service, `requestCredentialCipher` in both paths, exact-revision snapshot, PAT flow): key files `src/backend/credential-store.ts`, `src/config/account-provider.ts`, `src/config/project-token.ts`, `src/handlers/server-requests.ts`, `src/backend/client.ts` + their tests as golden references. Also compare the weaker Rust/Python adapters (REFERENCE-ADAPTERS.md); findings written into `docs/research/`
 
 ### Scaffold (goswitch-style)
 
@@ -70,7 +70,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 
 - [ ] **DOCS-01**: README: what it is (honest ACP server for any ACP client), install, configuration, both auth paths, troubleshooting
 - [ ] **DOCS-02**: README launch recipe for ACP hosts that only accept preset agents (binary naming, version floor, env, PATH shim) — the documented method of connecting to Orca's chat UI
-- [ ] **DOCS-03**: `docs/`: protocol notes from DISC-01…04, provenance statement (no patching, no attestation forgery, PAT signed by the official binary), known limitations (no quota counter over OAuth)
+- [ ] **DOCS-03**: `docs/`: protocol notes from DISC-01…04, provenance statement (no patching, no attestation forgery, PAT signed by the official binary; Apache-2.0 attribution for ported reference-adapter code), known limitations (no quota counter over OAuth; Start Plan does not work headless — browser/captcha required)
 
 ## v2 Requirements
 
