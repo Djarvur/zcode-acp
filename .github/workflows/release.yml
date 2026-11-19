@@ -40,6 +40,7 @@ jobs:
   release:
     name: goreleaser release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # Full history and tags are needed by goreleaser: the changelog is built
       # from commits; main.commit/main.date are stamped from git state.
