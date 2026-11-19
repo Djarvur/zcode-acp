@@ -70,7 +70,7 @@ func TestCallReplyEchoesIDVerbatim(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	drainCallErrors(t, concurrentCalls(t, conn, ctx, 5))
+	drainCallErrors(t, concurrentCalls(ctx, t, conn, 5))
 
 	select {
 	case err := <-echoErrs:
@@ -95,7 +95,7 @@ func TestCallCtxCancellationCleanup(t *testing.T) {
 	peerLines := drainPeer(t, peerEnd)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	outcomes := issueCalls(t, conn, ctx, 1)
+	outcomes := issueCalls(ctx, t, conn, 1)
 	waitLines(t, peerLines, 1, testTimeout) // registered + on the wire
 
 	cancel()
@@ -117,7 +117,7 @@ func TestCallCtxCancellationCleanup(t *testing.T) {
 	freshCtx, freshCancel := context.WithTimeout(context.Background(), testTimeout)
 	defer freshCancel()
 
-	fresh := issueCalls(t, conn, freshCtx, 1)
+	fresh := issueCalls(freshCtx, t, conn, 1)
 
 	lines := waitLines(t, peerLines, 1, testTimeout)
 	env := decodeWireLine(t, lines[len(lines)-1])
