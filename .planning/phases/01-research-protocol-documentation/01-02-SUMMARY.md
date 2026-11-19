@@ -198,3 +198,10 @@ None - all experiments ran against the already-present desktop bundle and accoun
 ---
 *Phase: 01-research-protocol-documentation*
 *Completed: 2026-11-19*
+
+## Self-Check: PASSED
+
+- All 3 plan artifacts verified present on disk (2 captures + this SUMMARY)
+- All commits verified as ancestors of HEAD: 2edf70c (Task 1), b95a7d9 (Task 2), 7b52d01 (plan metadata); measured from ledger da35cdb = 2 production commits
+- Gates re-verified green post-commit: check-docs.sh exit 0, scan-secrets.sh exit 0, node --test 12/12
+- Scrub fixed-point re-verified on both captures (cmp-identical); zero credential shapes in committed files
