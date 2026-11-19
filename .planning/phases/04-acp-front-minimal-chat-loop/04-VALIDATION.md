@@ -71,7 +71,7 @@ created: "2026-11-20"
 
 ## Validation Sign-Off
 
-- [x] All tasks have `<automated>` verify or Wave 0 dependencies (every task in plans 04-01..04-05 carries automated + fails_when)
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies (every task in plans 04-01..04-06 carries automated + fails_when)
 - [x] Sampling continuity: no 3 consecutive tasks without automated verify
 - [x] Wave 0 covers all MISSING references (mapped to plans 04-01/04-02/04-04/04-06 above)
 - [x] No watch-mode flags
