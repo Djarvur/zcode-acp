@@ -14,7 +14,9 @@ package turn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -89,7 +91,7 @@ const (
 // signal table). They are not codec method-map entries, so they stay local
 // to the classifier instead of growing the shared codec surface.
 const (
-	MethodV4Telemetry         = "v4/telemetry/event"
+	MethodV4Telemetry          = "v4/telemetry/event"
 	MethodComputerUseOperation = "computer-use/operation-event"
 )
 
@@ -143,43 +145,125 @@ type Machine struct {
 // envelope funnels into the machine's one observe path. Assign happens
 // before any frame flows (the Conn hook contract).
 func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machine {
-	return &Machine{
+	m := &Machine{
 		conn:       conn,
 		sessID:     sessionID,
 		watcher:    watcher,
 		state:      stateIdle,
 		resolvedCh: make(chan struct{}),
 	}
+
+	if conn != nil {
+		conn.OnNotification = m.ObserveEnvelope
+	}
+
+	return m
 }
 
 // Run lifts one fire-and-forget session/send into a synchronous turn: it
 // returns a StopReason exactly once, after the backend emitted a completion
-// signal — never before, never twice (PITFALL 8). A second concurrent Run
-// on the same session is rejected ErrTurnActive (the -32010 guard,
-// wrapper-side). RED stub: the contract surface is declared; the body
-// lands with the GREEN commit (03-05 Task 2).
+// signal — never before, never twice (PITFALL 8). The send's fast ack
+// ({accepted, sessionId, stateRevision} — EXP-TURN-01.jsonl:36) starts the
+// quiet-window floor clock; the watcher runs for the session until the turn
+// resolves and is joined before Run returns. A second concurrent Run is
+// rejected ErrTurnActive (the -32010 guard, wrapper-side). A transport
+// failure or ctx cancellation returns an error — never a synthesized
+// StopReason (the machine never resolves on absence of evidence).
 func (m *Machine) Run(ctx context.Context, content string) (StopReason, error) {
+	m.mu.Lock()
+
 	if err := m.guardTurnLocked(); err != nil {
+		m.mu.Unlock()
+
 		return "", err
 	}
 
-	_, _ = ctx, content
+	m.beginTurnLocked()
+	m.mu.Unlock()
 
-	return "", errNotImplemented
+	if _, err := m.conn.Call(ctx, zcode.MethodSessionSend, map[string]any{
+		"sessionId": m.sessID,
+		"content":   content,
+	}); err != nil {
+		m.finishTurn()
+
+		return "", fmt.Errorf("turn: session/send: %w", err)
+	}
+
+	m.mu.Lock()
+	m.ackAt = time.Now()
+	m.mu.Unlock()
+
+	stop, err := m.watcher.Watch(ctx, m.sessID, m.onWatcherObservation)
+	if err != nil {
+		m.finishTurn()
+
+		return "", fmt.Errorf("turn: start watcher: %w", err)
+	}
+
+	defer stop()
+
+	reason, waitErr := m.Wait(ctx)
+	m.finishTurn()
+
+	if waitErr != nil {
+		return "", waitErr
+	}
+
+	return reason, nil
 }
 
 // Wait returns the current turn's StopReason, blocking until the turn
 // resolves; a second wait returns the SAME StopReason without re-resolving.
-// RED stub: returns errNotImplemented.
+// Cancellation returns an error — never a synthesized StopReason.
 func (m *Machine) Wait(ctx context.Context) (StopReason, error) {
-	_ = ctx
+	m.mu.Lock()
+	resolvedCh := m.resolvedCh
+	m.mu.Unlock()
 
-	return "", errNotImplemented
+	select {
+	case <-ctx.Done():
+		return "", fmt.Errorf("turn: wait: %w", ctx.Err())
+	case <-resolvedCh:
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		return m.resolution.Reason, nil
+	}
+}
+
+// AckAt returns when the current turn's session/send ack arrived (zero
+// before the ack) — the floor clock's origin for the quiet-window gates.
+func (m *Machine) AckAt() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.ackAt
+}
+
+// ObserveEnvelope is the ONE classification path for every inbound envelope
+// (the T-3-06 mitigation). It is conn.OnNotification's receiver — the hook
+// runs on the read goroutine and must not block (classification is bounded:
+// small params only), and it is safe to call before Run (pre-turn envelopes
+// are observation only).
+func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state != stateRunning && m.state != stateCancelling {
+		return
+	}
+
+	reason, terminal := m.classifyTerminalLocked(env)
+	if !terminal {
+		return
+	}
+
+	m.resolveLocked(Resolution{Reason: reason, Signal: SignalTerminalEvent, At: time.Now()})
 }
 
 // guardTurnLocked rejects a concurrent second send (D-02: the -32010
 // concurrency guard is enforced wrapper-side, never silently queued).
-// Declared with the RED stub; the GREEN Run reuses it.
 func (m *Machine) guardTurnLocked() error {
 	switch m.state {
 	case stateRunning, stateCancelling:
@@ -189,4 +273,140 @@ func (m *Machine) guardTurnLocked() error {
 	}
 
 	return nil
+}
+
+// beginTurnLocked starts a fresh turn: the per-turn signal state (the
+// learned turnId, the running-patch latch, the resolution record) resets;
+// the lifetime resolution counter does not — it is the exactly-once proof.
+func (m *Machine) beginTurnLocked() {
+	m.state = stateRunning
+	m.turnID = ""
+	m.runningSeen = false
+	m.resolved = false
+	m.resolution = Resolution{}
+	m.ackAt = time.Time{}
+	m.resolvedCh = make(chan struct{})
+}
+
+// finishTurn marks the turn lifecycle done — the machine's resting state
+// between turns; the next Run starts a fresh turn (Phase 4 calls Run per
+// session/prompt).
+func (m *Machine) finishTurn() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.state = stateDone
+}
+
+// onWatcherObservation funnels watcher deliveries into the one observe
+// path. The quiet-window settlement is consumed by the completion-variant
+// classification (03-05 Task 3 extends this path); after Task 2's GREEN the
+// turnId-matched terminal path is the only resolver.
+func (m *Machine) onWatcherObservation(obs Observation) {
+	if obs.Env != nil {
+		m.ObserveEnvelope(*obs.Env)
+	}
+}
+
+// classifyTerminalLocked reports the terminal StopReason when env is a
+// turnId-matched terminal signal across the known carriers (RESEARCH Open
+// Question 1 resolution — carrier-tolerant by design, since terminal-event
+// wrapping is V-SRC-only on the real wire). Turn-start kinds record the
+// turn's id; a terminal whose turnId does not match the turn's id is NOT a
+// completion signal (a foreign turn's envelope must never resolve this
+// turn).
+func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) {
+	field, ok := carrierKindField(env.Method)
+	if !ok {
+		return "", false
+	}
+
+	kind := paramsString(env.Params, field)
+	turnID := paramsString(env.Params, "turnId")
+
+	switch kind {
+	case KindTurnStarted, KindTurnStartedCU:
+		if m.turnID == "" {
+			m.turnID = turnID
+		}
+
+		return "", false
+	case KindTurnCompleted, KindTurnCompletedCU:
+		if !m.turnIDMatchesLocked(turnID) {
+			return "", false
+		}
+
+		return StopCompleted, true
+	case KindTurnFailed, KindTurnFailedCU:
+		if !m.turnIDMatchesLocked(turnID) {
+			return "", false
+		}
+
+		return StopFailed, true
+	}
+
+	return "", false
+}
+
+// carrierKindField maps a carrier method to the params field that carries
+// its kind literal (dialect §5 signal tables): session/event uses "type",
+// the v4 telemetry and computer-use operation families use "kind".
+func carrierKindField(method string) (string, bool) {
+	switch method {
+	case zcode.MethodSessionEvent:
+		return "type", true
+	case MethodV4Telemetry, MethodComputerUseOperation:
+		return "kind", true
+	}
+
+	return "", false
+}
+
+// turnIDMatchesLocked reports whether a turn-scoped signal belongs to the
+// active turn. Record-on-first-sight: exactly one turn runs per session at
+// a time (the -32010 guard), so the first turn-scoped signal defines the
+// turn's id; later signals must match it.
+func (m *Machine) turnIDMatchesLocked(turnID string) bool {
+	if m.turnID == "" {
+		m.turnID = turnID
+
+		return true
+	}
+
+	return turnID == m.turnID
+}
+
+// resolveLocked resolves the turn exactly once (sync.Once semantics: the
+// per-turn resolved flag under the machine mutex), closes the wait channel,
+// and fires the OnResolve hook — the observable face of exactly-once. The
+// first supporting signal wins; later signals are observations only.
+func (m *Machine) resolveLocked(res Resolution) {
+	if m.resolved {
+		return
+	}
+
+	m.resolved = true
+	m.resolution = res
+	close(m.resolvedCh)
+
+	if m.OnResolve != nil {
+		m.OnResolve(res)
+	}
+}
+
+// paramsString digs one top-level string value out of an envelope params
+// payload; undecodable params classify as absent.
+func paramsString(raw json.RawMessage, key string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+
+	s, _ := obj[key].(string)
+
+	return s
 }
