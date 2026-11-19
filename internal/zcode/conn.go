@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,6 +80,13 @@ type Conn struct {
 
 	// cancelBase cancels the conn's base request context (NewConn-owned).
 	cancelBase context.CancelFunc
+
+	// obsMu guards the ordered observer list. Deliveries iterate the list
+	// under the lock: registration happens before traffic per the hook
+	// contract, so the lock never contends with an in-flight delivery on
+	// the real path.
+	obsMu     sync.Mutex
+	observers []*observerEntry
 
 	// OnNotification, when non-nil, receives every notification/event
 	// envelope (method, no id) in wire order. Deliveries happen on the read
@@ -238,6 +246,44 @@ func (c *Conn) demux(env Envelope) {
 // also exclude method-bearing frames).
 func isReply(env Envelope) bool {
 	return env.ID != nil && env.Method == "" && (env.Result != nil || env.Error != nil)
+}
+
+// AddObserver registers fn as a notification observer and returns its
+// remove func. Every notification/event envelope (method, no id) is
+// delivered to ALL registered observers — synchronously, in registration
+// order, on the read goroutine (wire order preserved). The hook contract
+// from the single slot carries over: deliveries run on the read goroutine,
+// so an observer must not block, and observers must be registered before
+// any frame flows — registering (or removing) while traffic is in flight is
+// a data race. An empty observer list is a silent drop, like the nil slot
+// it replaces (RESEARCH Pattern 4 — the fan-out replaces the single
+// OnNotification slot a second machine could silently steal, PITFALL 3).
+func (c *Conn) AddObserver(fn func(Envelope)) (remove func()) {
+	entry := &observerEntry{fn: fn}
+
+	c.obsMu.Lock()
+	c.observers = append(c.observers, entry)
+	c.obsMu.Unlock()
+
+	return func() {
+		c.obsMu.Lock()
+		defer c.obsMu.Unlock()
+
+		for i, obs := range c.observers {
+			if obs == entry {
+				c.observers = slices.Delete(c.observers, i, i+1)
+
+				return
+			}
+		}
+	}
+}
+
+// observerEntry pins one registered observer's identity: the remove func
+// matches by entry pointer, so double-removes and index shifts stay safe
+// (function values are not comparable in Go).
+type observerEntry struct {
+	fn func(Envelope)
 }
 
 // deliverNotification hands a notification to the OnNotification hook on the

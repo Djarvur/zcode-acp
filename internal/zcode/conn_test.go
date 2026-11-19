@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Djarvur/zcode-acp/internal/turn"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
@@ -848,5 +849,323 @@ func drainCallErrors(t *testing.T, errs <-chan error) {
 
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// fanoutTurnWindow bounds one interleaved machine turn in the fan-out
+// two-machines subtest: the GREEN run resolves in milliseconds; a RED
+// slot-theft hang fails the subtest on this bound.
+const fanoutTurnWindow = 2 * time.Second
+
+// The observer fan-out contract (Phase 4, RESEARCH Pattern 4): notifications
+// fan out to ALL registered observers — synchronously, in registration
+// order, on the read goroutine (wire order preserved) — with a remove func
+// that deregisters, and with two machines on one conn each resolving their
+// own interleaved turns exactly once (the single OnNotification slot let a
+// second machine silently steal the hook, PITFALL 3: the first session's
+// turns hang).
+func TestObserverFanOut(t *testing.T) {
+	t.Run("ordering", func(t *testing.T) {
+		connEnd, peerEnd := connPipes()
+		t.Cleanup(func() { _ = peerEnd.Close() })
+
+		conn := zcode.NewConn(connEnd)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		var (
+			mu    sync.Mutex
+			trace []string
+			sigs  = make(chan struct{}, 8)
+		)
+
+		record := func(tag string) func(zcode.Envelope) {
+			return func(env zcode.Envelope) {
+				mu.Lock()
+				trace = append(trace, tag+":"+env.Method)
+				mu.Unlock()
+
+				sigs <- struct{}{}
+			}
+		}
+
+		// The first observer parks inside its delivery until released: a
+		// parked observer pins the read goroutine, which is the
+		// synchronous-delivery proof below.
+		release := make(chan struct{})
+		conn.AddObserver(func(env zcode.Envelope) {
+			<-release
+			record("a")(env)
+		})
+		conn.AddObserver(record("b"))
+
+		// Envelope 1 parks the first observer inside the delivery.
+		injectLine(t, peerEnd, `{"method":"state.updated","params":{"patch":{"status":"running"}}}`)
+
+		// While the first observer is parked, a second envelope cannot be
+		// consumed: delivery is synchronous on the read goroutine, so the
+		// read loop is inside the observer — not reading ahead (the grace
+		// window bounds the observation; an early write completion fails
+		// the subtest).
+		secondWritten := make(chan error, 1)
+		go func() {
+			_, err := peerEnd.Write([]byte(`{"method":"session/event","params":{"type":"turn.completed","seq":1,"turnId":"t1"}}` + "\n"))
+			secondWritten <- err
+		}()
+
+		select {
+		case err := <-secondWritten:
+			t.Fatalf("second envelope consumed while the first observer was still parked (err=%v) — delivery is not synchronous on the read goroutine", err)
+		case <-time.After(graceWindow):
+		}
+
+		close(release)
+
+		// Four deliveries: two observers x two envelopes, registration
+		// order per envelope, wire order across envelopes.
+		for range 4 {
+			select {
+			case <-sigs:
+			case <-time.After(testTimeout):
+				t.Fatalf("only %d deliveries arrived within %v", len(trace), testTimeout)
+			}
+		}
+
+		mu.Lock()
+		got := slices.Clone(trace)
+		mu.Unlock()
+
+		want := []string{
+			"a:" + zcode.MethodStateUpdated, // registration order: first-registered first
+			"b:" + zcode.MethodStateUpdated,
+			"a:" + zcode.MethodSessionEvent, // wire order across envelopes preserved
+			"b:" + zcode.MethodSessionEvent,
+		}
+
+		if !slices.Equal(got, want) {
+			t.Fatalf("delivery trace = %v, want %v", got, want)
+		}
+
+		if err := <-secondWritten; err != nil {
+			t.Fatalf("second envelope write failed: %v", err)
+		}
+	})
+
+	t.Run("remove", func(t *testing.T) {
+		connEnd, peerEnd := connPipes()
+		t.Cleanup(func() { _ = peerEnd.Close() })
+
+		conn := zcode.NewConn(connEnd)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		removed := newHookRecorder()
+		kept := newHookRecorder()
+
+		removeRemoved := conn.AddObserver(removed.record)
+		conn.AddObserver(kept.record)
+
+		// Deregister the first observer (a repeated call is a no-op — the
+		// remove func is idempotent).
+		removeRemoved()
+		removeRemoved()
+
+		injectLine(t, peerEnd, `{"method":"state.updated","params":{"patch":{"status":"running"}}}`)
+
+		n := lastEnvelope(t, kept.waitDelivery(t, "kept observer"))
+
+		if n.Method != zcode.MethodStateUpdated {
+			t.Fatalf("kept observer method = %q, want %q", n.Method, zcode.MethodStateUpdated)
+		}
+
+		assertCount(t, removed, 0, "removed observer")
+	})
+
+	t.Run("two-machines", func(t *testing.T) {
+		connEnd, peerEnd := connPipes()
+		t.Cleanup(func() { _ = peerEnd.Close() })
+
+		conn := zcode.NewConn(connEnd)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		// Both machines register BEFORE any frame flows (the Conn hook
+		// contract). The second construction must not steal the first's
+		// notifications (PITFALL 3).
+		spyA := newFanoutResolutionSpy()
+		machineA := turn.NewMachine(conn, "sess_a", turn.NewPollWatcher(conn, turn.PollConfig{
+			QuietMs:        40,
+			FloorMultiple:  2,
+			PollIntervalMs: 10,
+		}))
+		machineA.OnResolve = spyA.record
+
+		spyB := newFanoutResolutionSpy()
+		machineB := turn.NewMachine(conn, "sess_b", turn.NewPollWatcher(conn, turn.PollConfig{
+			QuietMs:        40,
+			FloorMultiple:  2,
+			PollIntervalMs: 10,
+		}))
+		machineB.OnResolve = spyB.record
+
+		// The peer auto-answers every request the turns generate:
+		// session/send acks and the poll watchers' session/messages pages.
+		// The id echoes verbatim (the codec's type-tagged id rule).
+		sends := make(chan string, 8)
+		go autoAnswerPeer(peerEnd, sends)
+
+		runTurn := func(machine *turn.Machine, spy *fanoutResolutionSpy, sessionID, turnID string) {
+			t.Helper()
+
+			type runResult struct {
+				reason turn.StopReason
+				err    error
+			}
+
+			done := make(chan runResult, 1)
+
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), fanoutTurnWindow)
+				defer cancel()
+
+				reason, err := machine.Run(ctx, "Reply with exactly: OK")
+				done <- runResult{reason: reason, err: err}
+			}()
+
+			// The send in flight proves the machine is running; the
+			// terminal signals below may then reach it.
+			select {
+			case got := <-sends:
+				if got != sessionID {
+					t.Fatalf("send session = %q, want %q", got, sessionID)
+				}
+			case <-time.After(fanoutTurnWindow):
+				t.Fatalf("%s send never reached the peer", sessionID)
+			}
+
+			injectLine(t, peerEnd, fmt.Sprintf(`{"method":"session/event","params":{"type":"turn.started","seq":1,"turnId":%q}}`, turnID))
+			injectLine(t, peerEnd, fmt.Sprintf(`{"method":"session/event","params":{"type":"turn.completed","seq":2,"turnId":%q}}`, turnID))
+
+			select {
+			case res := <-done:
+				if res.err != nil {
+					t.Fatalf("%s machine run: %v", sessionID, res.err)
+				}
+
+				if res.reason != turn.StopCompleted {
+					t.Fatalf("%s machine reason = %q, want %q", sessionID, res.reason, turn.StopCompleted)
+				}
+			case <-time.After(testTimeout):
+				t.Fatalf("%s machine never resolved its turn", sessionID)
+			}
+
+			// The resolving signal must be the turnId-matched terminal
+			// EVENT: the poll watcher is machine-owned and never stolen, so
+			// a stolen notification hook still resolves the turn — via the
+			// watcher's quiet window instead of the delivered terminal
+			// event. The wrong signal is the theft's fingerprint (RESEARCH
+			// Pattern 4).
+			got := spy.snapshot()
+
+			if len(got) != 1 || got[0].Signal != turn.SignalTerminalEvent {
+				t.Fatalf("%s resolved %d times, last signal %q — want exactly once via %q (a stolen hook resolves via the watcher's quiet window instead)",
+					sessionID, len(got), got[len(got)-1].Signal, turn.SignalTerminalEvent)
+			}
+		}
+
+		// Interleaved (sequential) turns on the shared conn: each machine
+		// resolves its own turn exactly once — the first session's turns
+		// still complete after the second machine registered (no hook
+		// theft), and neither machine observes the other's resolution.
+		runTurn(machineA, spyA, "sess_a", "turn_a")
+		assertFanoutResolution(t, spyB, 0, "machine B before its turn")
+
+		runTurn(machineB, spyB, "sess_b", "turn_b")
+		assertFanoutResolution(t, spyA, 1, "machine A after B's turn")
+		assertFanoutResolution(t, spyB, 1, "machine B")
+	})
+}
+
+// autoAnswerPeer answers every request the conn writes to the peer end:
+// session/send acks and session/messages pages (the machine never inspects
+// the result bodies). Runs until the peer stream closes; the test's own
+// injectLine calls share the writer safely (io.Pipe serializes writes).
+func autoAnswerPeer(peer *pipeEnd, sends chan<- string) {
+	sc := bufio.NewScanner(peer.r)
+
+	for sc.Scan() {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				SessionID string `json:"sessionId"`
+			} `json:"params"`
+		}
+
+		if err := json.Unmarshal(sc.Bytes(), &req); err != nil || req.ID == nil {
+			continue
+		}
+
+		if req.Method == zcode.MethodSessionSend {
+			sends <- req.Params.SessionID
+		}
+
+		result := `{"accepted":true}`
+		if req.Method == zcode.MethodSessionMessages {
+			result = `{"messages":[]}`
+		}
+
+		if _, err := peer.Write([]byte(fmt.Sprintf(`{"id":%s,"result":%s}`, req.ID, result) + "\n")); err != nil {
+			close(sends)
+
+			return
+		}
+	}
+
+	close(sends)
+}
+
+// fanoutResolutionSpy is the exactly-once observation hook for the
+// two-machines subtest: a synchronized record of every OnResolve delivery
+// (the hook runs on the read goroutine; the test reads it under the same
+// lock).
+type fanoutResolutionSpy struct {
+	mu  sync.Mutex
+	got []turn.Resolution
+}
+
+// newFanoutResolutionSpy returns an empty spy.
+func newFanoutResolutionSpy() *fanoutResolutionSpy {
+	return &fanoutResolutionSpy{}
+}
+
+// record implements the OnResolve hook signature.
+func (s *fanoutResolutionSpy) record(res turn.Resolution) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.got = append(s.got, res)
+}
+
+// count snapshots the resolution count.
+func (s *fanoutResolutionSpy) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.got)
+}
+
+// snapshot returns the recorded resolutions.
+func (s *fanoutResolutionSpy) snapshot() []turn.Resolution {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return slices.Clone(s.got)
+}
+
+// assertFanoutResolution fails the test unless the spy holds exactly n
+// resolutions.
+func assertFanoutResolution(t *testing.T, spy *fanoutResolutionSpy, n int, what string) {
+	t.Helper()
+
+	if got := spy.count(); got != n {
+		t.Fatalf("%s resolutions = %d, want %d", what, got, n)
 	}
 }
