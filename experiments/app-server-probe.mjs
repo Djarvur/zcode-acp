@@ -91,6 +91,18 @@ const SEQ_WATCH_KEYS = ['seq', 'sequence', 'eventSeq', 'sequenceNumber', 'revisi
 
 function observeReply(wire) {
   if (wire == null || typeof wire !== 'object') return;
+  // IN-04 (verdict-falsification guard): a frame carrying `method` is a
+  // server->host REQUEST (method + id) or a notification (method, no id) — never
+  // a reply; replies are {"id","result"|"error"} without a method
+  // (docs/protocol/app-server-dialect.md §1, envelope grammar). Recorded wire
+  // truth shows reverse requests arrive with string ids ("server-1", …) that
+  // cannot collide with the numeric probe ids — but the id scheme is
+  // server-owned, not a contract, so the shape check is the real guard: storing
+  // a request in state.replies could shadow the real reply for a colliding id
+  // (classifyReply would report "accepted" for a call the server never answered)
+  // or anchor sendReplyTs early and open the quiet-window latency floor
+  // prematurely. Only method-less frames are candidate replies.
+  if (typeof wire.method === 'string') return;
   if (wire.id != null) state.replies[wire.id] = wire;
   if (PROBED_METHODS[wire.id] === 'session/send' && state.sendReplyTs == null) {
     state.sendReplyTs = Date.now();
@@ -530,10 +542,11 @@ child.stdout.on('data', (chunk) => {
     if (quietArmed) resetQuietTimer(); // quiet-window end mode: every line postpones the end
     // Answer server->host REQUESTS (method + id); notifications (no id) need no
     // reply. Every reply is recorded in the capture as a hostSent line.
+    // IN-04: a request is never fed to observeReply (see the guard inside it) —
+    // only method-less frames are candidate replies.
     try {
       const wire = JSON.parse(line);
       if (wire && typeof wire.method === 'string' && wire.id != null) {
-        observeReply(wire);
         const reply = { id: wire.id, ...hostReplyFor(wire.method) };
         send(reply);
         appendFileSync(rawOut, JSON.stringify({ ts: new Date().toISOString(), hostSent: reply }) + '\n');
