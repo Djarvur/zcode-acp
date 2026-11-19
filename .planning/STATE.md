@@ -60,7 +60,8 @@ Recent decisions affecting current work:
 - Session lifecycle split: SESS-01 (resume/close) in Phase 5 chat cycle; SESS-02/03 (compat no-ops, full dialect coverage) in Phase 7 hardening
 - QA-01 full scripted scenario acceptance lands in Phase 7; its build-up starts in Phase 3 (fake app-server golden transcripts)
 - Hidden-goal rule respected: phase names/goals are neutral ACP-server work; client names (Orca) appear only where requirement text uses them
-- Reference-adapter intelligence folded in post-roadmap (2026-11-19): william0wang/zcode-acp (Apache-2.0, TS) already implements+tests the v2-keyring/credentialCipher/snapshot/PAT chain — Phase 6 ports with attribution; Orca persona leads (omp ≥17.0.5, model-selectors ≥18.1.9, `--version` probe 5 s) are V-RPT until Phase 1 re-verifies. Details: `.planning/research/REFERENCE-ADAPTERS.md`
+- Reference-adapter intelligence folded in post-roadmap (2026-11-19): william0wang/zcode-acp (Apache-2.0, TS) already implements+tests the v2-keyring/credentialCipher/snapshot/PAT chain — Phase 6 ports with attribution. Details: `.planning/research/REFERENCE-ADAPTERS.md`
+- Orca integration resolved (2026-11-19, parallel source session, V-SRC(parallel)): preset-agent identity = **omp card**; wrapper binary `zcode-acp-omp` wired via the official `agentCmdOverrides` setting (no `omp` binary needed in PATH); `--version` prints ≥ 18.1.9 (model-selectors); `--model <id>` at launch is honored (`launchesWithModel:true`); `/model` slash + exact Hb string contracts are IN scope via SESS-03 — generic slash commands stay v2 (EXT-01); client fs/terminal stay uncalled; elicitation {form} and compaction supported
 
 ### Pending Todos
 
@@ -68,8 +69,8 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 1 must resolve the open wire-truth items before Phase 3/4 planning: 3.18.2 event-stream surface, turn-completion terminal events, Orca persona + load-bearing call set, install discovery matrix, workspaceKey semantics (all DISC-01..04 deliverables). Persona/detection items have strong V-RPT leads in REFERENCE-ADAPTERS.md — verify, don't rediscover
-- Decide during SESS-03/MODEL planning whether persona dialect's `/model` slash command (omp string contracts, V-RPT) must be honored for full card coverage even though generic slash commands are v2 (EXT-01)
+- Phase 1 must resolve the open wire-truth items before Phase 3/4 planning: 3.18.2 event-stream surface, turn-completion terminal events, load-bearing Orca call set, install discovery matrix, workspaceKey semantics (all DISC-01..04 deliverables). Persona/detection/contract items are compiled in REFERENCE-ADAPTERS.md (V-SRC(parallel)) — verify, don't rediscover
+- Orca open items for Phase 1/live integration: `--session-dir` session-file format (can Go write omp-compatible history for resume/import?) and omp modelDiscovery kind `session` behavior; also locate the real settings store for `agentCmdOverrides` (not in `~/.config/orca/*.json` — Electron storage/orcad)
 - CI must never call api.z.ai or spawn the real desktop (quota burn / PAT minting creates API keys) — three test tiers only
 
 ## Deferred Items

@@ -10,7 +10,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 ### Discovery & Documentation (user-mandated first phase)
 
 - [ ] **DISC-01**: ZCode app-server 3.18.2 event surface documented from source (incl. `session/subscribe`/event-stream availability and turn-completion terminal signals), with V-SRC / V-EXP provenance labels per claim
-- [ ] **DISC-02**: Orca ACP dialect documented: the load-bearing method set at card startup and per turn, the full range of ACP methods Orca's client actually uses, and the chosen preset-agent identity (omp vs opencode vs opencode2) with version floor and env quirks — from `app.asar.unpacked` chunks. Re-verify the V-RPT leads in REFERENCE-ADAPTERS.md (`--version` probe, 5 s timeout, semver from stdout/stderr; omp floor ≥ 17.0.5; model-selectors from ≥ 18.1.9; launch `omp acp [--plugin-dir] [--model]` with `PI_NO_PTY=1` and `--session-dir`; `/model` slash-command string contracts)
+- [ ] **DISC-02**: Orca ACP dialect documented: the load-bearing method set at card startup and per turn, the full range of ACP methods Orca's client actually uses, and the preset-agent identity — **resolved: omp** (alternatives ruled out; compiled contract table in REFERENCE-ADAPTERS.md: floor 17.0.5, `--version` prints 18.1.9+, `agentCmdOverrides` wiring, Hb string contracts). Spot-check the table at first integration and answer the two remaining items: the `--session-dir` session-file format (can our Go agent write omp-compatible history files?) and omp modelDiscovery kind `session` behavior
 - [ ] **DISC-03**: ZCode desktop discovery matrix documented (AppImage / deb / unpacked layouts, auto-update effects on the builtin revision string)
 - [ ] **DISC-04**: `workspaceKey` derivation semantics documented (source + experiment)
 - [ ] **DISC-05**: Reference implementation studied and compared: github.com/william0wang/zcode-acp (TypeScript, Apache-2.0 → Go porting allowed with attribution, ~0.88.x, active) — it already implements and tests our hardest chain (keyring `enc:v2:os:` decryption via Secret Service, `requestCredentialCipher` in both paths, exact-revision snapshot, PAT flow): key files `src/backend/credential-store.ts`, `src/config/account-provider.ts`, `src/config/project-token.ts`, `src/handlers/server-requests.ts`, `src/backend/client.ts` + their tests as golden references. Also compare the weaker Rust/Python adapters (REFERENCE-ADAPTERS.md); findings written into `docs/research/`
@@ -53,7 +53,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 
 - [ ] **SESS-01**: `session/resume` (no replay) and `session/close` (with child-side cleanup) supported
 - [ ] **SESS-02**: `session/delete` answered as a graceful no-op and `session/fork` handled gracefully (never a crash path) — clients that call them keep working
-- [ ] **SESS-03**: Full Orca ACP dialect coverage: every method Orca's client calls at card startup and during a turn (per DISC-02) is implemented or gracefully handled, so a card works end-to-end
+- [ ] **SESS-03**: Full Orca ACP dialect coverage: every method Orca's client calls at card startup and during a turn (per DISC-02) is implemented or gracefully handled, so a card works end-to-end — including the persona CLI contract: `--model <id>` honored at launch (`launchesWithModel:true`) and the `/model <name>` slash prompt with the exact Hb string contracts (`Unknown ACP model: …`, `No model selected.`)
 
 ### Model & Thought-Level Picker
 

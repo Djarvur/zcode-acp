@@ -80,11 +80,13 @@ TROUBLESHOOTING: Start Plan headless не работает (нужен брау�
 Конкурирующие адаптеры (Rust/Python) coding-plan цепочку не делают.
 
 **Открытые вопросы для фазы исследования:**
-- Под какого из предустановленных агентов Orca пишем рецепт запуска
-  (omp vs opencode vs opencode2) — есть сильная V-RPT-подсказка (omp, ≥17.0.5,
-  model-selectors с 18.1.9, `--version`-проба с таймаутом 5 с) в
-  REFERENCE-ADAPTERS.md; требуется перепроверка по
-  `agent-session-attachment-store-registry-*.js`
+- Рецепт запуска для Orca: persona выбрана — карточка **omp** (альтернативы
+  отпали, контракт собран в REFERENCE-ADAPTERS.md: floor 17.0.5,
+  `--version` печатает 18.1.9+, вайринг через официальную настройку
+  `agentCmdOverrides`, строковые контракты диалекта Hb). Осталось выяснить:
+  формат файлов сессий в `--session-dir` (сможем ли писать совместимую историю
+  из Go) и поведение modelDiscovery kind `session` — оба уточняются при
+  живой интеграции
 - Какие именно вызовы Orca делает при старте карточки (load-bearing set)
 - Механизм обнаружения установки ZCode desktop (AppImage/deb/распакованная)
 - Как замапить выбор модели ACP-клиента на `session/setModel` + reasoningLevel

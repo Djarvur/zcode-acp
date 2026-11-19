@@ -1,11 +1,13 @@
 # Reference Adapters & Host Detection Intel
 
-**Compiled:** 2026-11-19
+**Compiled:** 2026-11-19 (updated same day with resolved Orca integration decisions)
 **Provenance:** Reported by a parallel source-reading research session (reads of
-github.com/william0wang/zcode-acp sources and an unpacked Orca.AppImage). These
-claims carry a **V-RPT** label — reported-and-plausible, not yet independently
-re-verified in this repo. Phase 1 (DISC-01/02/05) must re-verify each before
-relying on it; until then treat as strong leads, not wire truth.
+github.com/william0wang/zcode-acp sources and an unpacked Orca.AppImage).
+Reference-adapter claims carry a **V-RPT** label — reported-and-plausible, not
+yet independently re-verified in this repo. The Orca integration section below
+is upgraded to **V-SRC(parallel)** — read in Orca source chunks, not yet
+exercised live. Phase 1 (DISC-01/02/05) re-verifies both before relying on them
+for implementation; until then treat as strong leads, not wire truth.
 
 ## william0wang/zcode-acp — primary reference implementation
 
@@ -38,33 +40,87 @@ supports it, falls back to `session/request_permission`.
 Confirms the differentiator claim in FEATURES.md: nobody else does the
 v2-keyring + coding-plan chain. (Exact repo owner slugs V-RPT.)
 
-## Orca preset-agent detection mechanics (chunk `agent-session-attachment-store-registry`)
+## Orca integration decisions (resolved 2026-11-19)
 
-All V-RPT, from reading an unpacked Orca.AppImage:
+Source-verified on an unpacked Orca.AppImage by a parallel research session —
+chunks `agent-session-attachment-store-registry` and
+`structured-agent-session-host-assembly`. Upgraded from V-RPT leads to
+**V-SRC(parallel)**: read in source, not yet exercised live; spot-check during
+Phase 1 / first integration.
 
-- **Version probe:** Orca runs `<command> --version`, parses semver from
-  stdout/stderr, **5 s timeout**. The wrapper binary must answer `--version`
-  quickly with a parseable semver ≥ the card's floor.
-- **`omp` card:** requires **≥ 17.0.5**; **model-selectors** resolve from
-  **≥ 18.1.9** (i.e. `--version` should report ≥ 18.1.9 if we want native model
-  pickers in the card).
-- **Launch line:** `omp acp [--plugin-dir] [--model]` with env `PI_NO_PTY=1`;
-  sessions pass `--session-dir`.
-- **omp dialect over ACP v1** includes a `/model <name>` **slash command** with
-  string contracts (exact strings like `Unknown ACP model: `, `No model
-  selected.`). Relevant to SESS-03 (full dialect coverage) and MODEL-01/02: the
-  chosen persona may need `available_commands_update` + `/model` handling even
-  though generic slash commands are EXT-01/v2.
+### Chosen preset-agent identity: the `omp` card
 
-## Impact on plan (absorbed 2026-11-19)
+Reasons: the omp dialect ("Hb") is built entirely on string contracts — trivial
+to implement in Go; the card's launch command is replaceable; the `--version`
+probe is simple. Alternatives ruled out: **antigravity** (only card with
+`ignoreAgentCommandSetting:true` — command cannot be replaced), **copilot**
+(modelDiscovery `unavailable` — dead model picker), **grok** (heavy `x.ai/*`
+dialect), **opencode/opencode2** (occupied by real opencode + vendored
+child-session extensions), **kimi** (session-discovery; possible conflict).
+Full ACP-card list in this build: omp, opencode, opencode2, kimi,
+cursor (cursor-agent), grok, copilot, antigravity.
 
-- Phase 1 scope shifts from *discover* to *verify + document* for: persona
-  (omp), version floor, launch line, env, version-probe mechanics (DISC-02).
+### Wiring: official `agentCmdOverrides` setting
+
+Per-agent setting in Orca's settings store (`record<string,string>`; siblings:
+`agentDefaultArgs` / `agentDefaultEnv` / `agentPermissionOverrides`). Replaces
+the launch program (extra prefix args allowed; card arguments are always
+appended by Orca). An override also satisfies the "agent installed" detection —
+**no binary named `omp` is needed in PATH**. Example:
+`agentCmdOverrides: { "omp": "~/.local/bin/zcode-acp-omp" }` (string parsed with
+shell-quoting, `~/` expanded, shell metacharacters rejected). Set via Settings
+UI (per-agent Command setting); the key was **not** found in
+`~/.config/orca/*.json` — the store is Electron storage/orcad; verify at first
+integration.
+
+### Launch contract for `zcode-acp-omp`
+
+Orca runs: `zcode-acp-omp acp --plugin-dir <vis> --model <picked> --session-dir <dir>`
+with env `PI_NO_PTY=1` (ignore) and agent home `$PI_CODING_AGENT_DIR/.omp/agent`.
+
+- `--version` → semver on stdout (5 s probe); card floor **17.0.5**, but print
+  **18.1.9+** — model-selectors resolve from that version
+- argv: `acp` positional (ignore), `--plugin-dir <vis>` (visualsSkill — ignore
+  or read), **`--model <id>` — USE**: `launchesWithModel:true`; it is the model
+  picked in Orca's UI, applied at session start
+- Hb dialect string contracts: model switching via `/model <name>` slash prompt;
+  exact errors `Unknown ACP model: …` and `No model selected.`; sessionLost =
+  `ACP cancel cleanup timed out` / `Unsupported ACP session: <id>`;
+  `authenticationRequired` = `No API key found for …` (not applicable to us —
+  auth lives in `~/.zcode`); Orca sets `retryBusyPrompts` for omp
+- capabilities: client advertises `fs.readTextFile/writeTextFile: false`,
+  `terminal: false` (never call client fs/terminal); offers `elicitation:
+  {form}` — form-based questions available; support compaction +
+  compactionInstructions
+- no TUI needed: the ACP host spawns the subprocess with stdio pipes; Orca
+  renders the whole UI
+
+### Open questions → Phase 1 research
+
+- **`--session-dir` format:** Orca pre-creates `<orcaData>/acp-command-sessions/omp`
+  and passes it; the omp card has `sessionHistory` (WS) and `transcriptImport`
+  (ZS, fork:'tip') — Orca scans that directory for history/resume. Determine the
+  omp/pi session-file format and whether our Go agent can write compatible
+  files (study stablyai/orca: `session-scanner-omp-subagent-transcripts`,
+  `transcriptImport` in `structured-agent-session-host-assembly`; plus a real
+  omp session directory).
+- **modelDiscovery** for omp is kind `session`,
+  `listingNamesConfiguredModel:false` — models are listed inside the session
+  via the `/model` mechanics; clarify in a live test.
+
+## Impact on plan (updated 2026-11-19)
+
+- Phase 1 scope shifts from *discover* to *verify + document*: persona is
+  chosen (omp), launch line, env, `agentCmdOverrides` wiring, version-probe
+  mechanics and Hb string contracts are compiled (DISC-02); the two open
+  questions above are the remaining discovery items.
 - Phase 6 gets a porting source: credential-store / account-provider /
   project-token / server-requests under Apache-2.0 with attribution (AUTH-02),
   plus its tests as golden references.
-- MODEL-01/02: aim the reported `--version` value at ≥ 18.1.9 for
-  model-selectors; decide `/model` handling during SESS-03.
+- MODEL-01/02: `--version` reports ≥ 18.1.9 (model-selectors); `--model <id>`
+  at launch and the `/model` slash contract are IN scope via SESS-03; generic
+  slash commands remain v2 (EXT-01).
+- DOCS-02: the README recipe now names `agentCmdOverrides` wiring explicitly.
 - DOCS-03: document the Start-Plan-headless limitation.
 
 ---
