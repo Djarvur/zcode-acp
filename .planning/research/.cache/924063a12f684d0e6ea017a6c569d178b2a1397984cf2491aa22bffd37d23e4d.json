@@ -1,0 +1,1 @@
+{"content":"Current stable Go toolchain: go1.27.4 (Nov 10 2026), supported branches 1.27 and 1.26 (1.26.11 latest patch). Six-month cadence; only two branches supported at a time. Verified on go.dev/dl and go.dev/doc/devel/release.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-11-19T01:38:07.414Z","ttl":86400000,"kind":"docs"}
