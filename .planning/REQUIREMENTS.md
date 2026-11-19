@@ -13,7 +13,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 - [x] **DISC-02**: Orca ACP dialect documented: the load-bearing method set at card startup and per turn, the full range of ACP methods Orca's client actually uses, and the preset-agent identity — **resolved: omp** (alternatives ruled out; compiled contract table in REFERENCE-ADAPTERS.md: floor 17.0.5, `--version` prints 18.1.9+, `agentCmdOverrides` wiring, Hb string contracts). Spot-check the table at first integration and answer the two remaining items: the `--session-dir` session-file format (can our Go agent write omp-compatible history files?) and omp modelDiscovery kind `session` behavior
 - [x] **DISC-03**: ZCode desktop discovery matrix documented (AppImage / deb / unpacked layouts, auto-update effects on the builtin revision string)
 - [x] **DISC-04**: `workspaceKey` derivation semantics documented (source + experiment)
-- [ ] **DISC-05**: Reference implementation studied and compared: github.com/william0wang/zcode-acp (TypeScript, Apache-2.0 → Go porting allowed with attribution, ~0.88.x, active) — it already implements and tests our hardest chain (keyring `enc:v2:os:` decryption via Secret Service, `requestCredentialCipher` in both paths, exact-revision snapshot, PAT flow): key files `src/backend/credential-store.ts`, `src/config/account-provider.ts`, `src/config/project-token.ts`, `src/handlers/server-requests.ts`, `src/backend/client.ts` + their tests as golden references. Also compare the weaker Rust/Python adapters (REFERENCE-ADAPTERS.md); findings written into `docs/research/`
+- [x] **DISC-05**: Reference implementation studied and compared: github.com/william0wang/zcode-acp (TypeScript, Apache-2.0 → Go porting allowed with attribution, ~0.88.x, active) — it already implements and tests our hardest chain (keyring `enc:v2:os:` decryption via Secret Service, `requestCredentialCipher` in both paths, exact-revision snapshot, PAT flow): key files `src/backend/credential-store.ts`, `src/config/account-provider.ts`, `src/config/project-token.ts`, `src/handlers/server-requests.ts`, `src/backend/client.ts` + their tests as golden references. Also compare the weaker Rust/Python adapters (REFERENCE-ADAPTERS.md); findings written into `docs/research/`
 
 ### Scaffold (goswitch-style)
 
@@ -113,7 +113,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISC-02 | Phase 1 | Complete |
 | DISC-03 | Phase 1 | Complete |
 | DISC-04 | Phase 1 | Complete |
-| DISC-05 | Phase 1 | Pending |
+| DISC-05 | Phase 1 | Complete |
 | SCAFF-01 | Phase 2 | Pending |
 | SCAFF-02 | Phase 2 | Pending |
 | SCAFF-03 | Phase 2 | Pending |

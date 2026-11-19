@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Research & Protocol Documentation
 status: executing
-stopped_at: Completed 01-05-PLAN.md
-last_updated: "2026-11-19T07:34:34.835Z"
+stopped_at: Completed 01-06-PLAN.md
+last_updated: "2026-11-19T07:54:53.479Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 1 execution started
-state_head: c766ede996f16c0727145896b107ef8d46a822d4
+state_head: f53284d71ef0ba5b785cc860dca46f209aeb1111
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
   percent: 0
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 1 (Research & Protocol Documentation) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 1 execution started
 
@@ -73,6 +73,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P01-02 | 31min | 2 tasks | 6 files |
 | Phase 01 P01-04 | 27min | 2 tasks | 2 files |
 | Phase 01 P01-05 | 20min | 2 tasks | 2 files |
+| Phase 01 P01-06 | 13min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -93,6 +94,7 @@ Recent decisions affecting current work:
 - [Phase 01]: A2 upgraded by fresh evidence: client --version probe under prefixed agentCmdOverrides = <program> <prefixArgs> --version (no card args), source-verified; live half stays Phase 7
 - [Phase 01]: No native zcode chat card in current client build (operations-side id only) — omp remains the only viable preset-agent identity; ACP card registry unchanged at 8
 - [Phase 01]: E5 verdict: Go agent CAN write omp-compatible history files (slug --<sanitized-cwd>-- + <ts>_<uuid>.jsonl, Claude-style JSONL); v1 without loadSession cannot resume them (client -32601) — Phase 7 nicety, not a v1 gate
+- [Phase 01]: Reference study (01-06): william0wang/zcode-acp verified live at tag v0.89.0 — adopt/avoid verdicts + Apache-2.0 attribution settled for Phase 6; drift recorded: the reference never mints keys headless (read-only posture), Phase 6 must fail with project_token_key_missing + user cue instead of POST api_keys; weaker adapters live-confirmed (differentiator claim now verified)
 
 ### Pending Todos
 
@@ -114,6 +116,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T07:34:34.781Z
-Stopped at: Completed 01-05-PLAN.md
+Last session: 2026-11-19T07:54:52.897Z
+Stopped at: Completed 01-06-PLAN.md
 Resume file: None
