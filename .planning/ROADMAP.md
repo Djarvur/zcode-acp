@@ -22,7 +22,7 @@ agents (Phase 7).
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
-- [ ] **Phase 1: Research & Protocol Documentation** - Document the ZCode app-server dialect, the client ACP dialect, install discovery, and workspaceKey semantics from source, with provenance labels
+- [x] **Phase 1: Research & Protocol Documentation** - Document the ZCode app-server dialect, the client ACP dialect, install discovery, and workspaceKey semantics from source, with provenance labels (completed 2026-11-19)
 - [ ] **Phase 2: Scaffold & CI Bootstrap** - goswitch-style repo scaffold: strict pinned linter, GitHub Actions, protected master
 - [ ] **Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor** - JSONL codec, scriptable fake app-server with golden transcripts in CI, desktop discovery + process supervisor, turn state machine
 - [ ] **Phase 4: ACP Front — Minimal Chat Loop** - initialize, session/new (+ setModel workaround), streamed prompt turns with thoughts and cancel
@@ -43,7 +43,7 @@ agents (Phase 7).
   3. A discovery matrix documents how to locate a ZCode desktop install across AppImage / deb / unpacked layouts, including what auto-update does to the builtin revision string
   4. `workspaceKey` derivation semantics are documented with both a source citation and a recorded experiment
   5. A reference-implementation comparison under `docs/research/` records what the TypeScript zcode-acp project covers (elicitation, slash commands, resume/fork, attachments), what to adopt, and what to avoid
-**Plans**: 6/6 plans executed
+**Plans**: 6/6 plans complete
 
 Plans:
 **Wave 1**
@@ -67,7 +67,19 @@ Plans:
   1. A fresh checkout passes the strict pinned golangci-lint config (goswitch-style `default: all` v2 config, exact version pinned via mise); any violation fails the lint target
   2. A PR to the repository triggers GitHub Actions running lint, test, build, and govulncheck, with toolchain versions driven by mise
   3. `master` is protected: direct pushes are rejected, merges require the configured checks, and the protection setup is documented in the repo
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+**Wave 1**
+- [ ] 02-01-PLAN.md — Tracer: module skeleton (go.mod, cmd/zcode-acp --version) + mise pins + goswitch strict lint config; `mise run lint` green end-to-end + planted-violation red-proof (SCAFF-01, D-02, D-03, D-06)
+- [ ] 02-02-PLAN.md — TDD scrubber hardening: WR-03 boundary-aware home rewrite + IN-04 capture-header guard, RED→GREEN node:test (D-05)
+- [ ] 02-03-PLAN.md — Sibling review fixes: scan-secrets WR-01/IN-03, check-docs IN-03, probe WR-04, dialect-doc recipes WR-02/IN-01/IN-02 (D-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 02-04-PLAN.md — Four goswitch workflow shapes (pr-sanity / release / e2e-matrix / security-scheduled) + README CI/protection section + push + observed green pr-sanity run (SCAFF-02, D-04, D-05, D-06)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 02-05-PLAN.md — Branch protection applied LAST via gh api + GET verify + GH006 negative push test + branching_strategy flip to `phase` (SCAFF-03, D-01)
 
 ### Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor
 **Goal**: The wrapper speaks the app-server's JSONL dialect and manages its process lifecycle, proven in CI by a scripted fake app-server round-trip — so every later phase is testable without the real desktop bundle.
@@ -140,8 +152,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Research & Protocol Documentation | 6/6 | In Progress | - |
-| 2. Scaffold & CI Bootstrap | 0/TBD | Not started | - |
+| 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
+| 2. Scaffold & CI Bootstrap | 0/5 | Not started | - |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 0/TBD | Not started | - |
 | 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |

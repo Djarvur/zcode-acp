@@ -39,12 +39,13 @@ created: "2026-11-19"
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| (seeded by planner) | 02-01 | 1 | SCAFF-01 | — | strict gate enforced | gate (machine check) | `mise run lint` (exit 0 on skeleton; planted violation → ≠0) | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 02-01 | 1 | SCAFF-01 | — | exact pin reproduces | version check | `golangci-lint version` → `2.15.0` | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 02-02 | 1 | D-05 (CONTEXT) | — | scrubber boundary fix behaves | unit (node:test RED→GREEN) | `node --test experiments/` | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 02-02 | 1 | D-05 (CONTEXT) | — | widened secret patterns stay green | gate | `bash experiments/scan-secrets.sh` | ✅ | ⬜ pending |
-| (seeded by planner) | 02-03 | 2 | SCAFF-02 | — | workflows trigger + govulncheck job | CI observation | `gh run list --workflow=pr-sanity.yml`; check-runs on the PR sha | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 02-04 | 2 | SCAFF-03 | — | protection configured; direct pushes rejected | API check + negative test | `gh api .../branches/master/protection`; push rejection (GH006) | ❌ W0 | ⬜ pending |
+| 02-01 T1 (tracer) | 02-01 | 1 | SCAFF-01 | T-2-SC | strict gate enforced on skeleton | gate (machine check) | `mise run lint` (exit 0 on skeleton; planted violation → ≠0, 02-01 T2) | ❌ W0 | ⬜ pending |
+| 02-01 T2 (red-proof) | 02-01 | 1 | SCAFF-01 | — | exact pin reproduces; violations fail | version check + negative gate | `mise exec -- golangci-lint --version` → `2.15.0`; planted 130-char line → lint ≠0 | ❌ W0 | ⬜ pending |
+| 02-02 T1+T2 (RED→GREEN) | 02-02 | 1 | D-05 (CONTEXT) | T-2-01 | scrubber boundary fix + header guard behave | unit (node:test RED→GREEN) | `node --test experiments/` | ❌ W0 | ⬜ pending |
+| 02-03 T1 (gate scripts) | 02-03 | 1 | D-05 (CONTEXT) | T-2-01 | widened secret patterns stay green; toplevel pin | gate | `bash experiments/scan-secrets.sh` (also from a subdirectory) | ✅ | ⬜ pending |
+| 02-03 T2 (doc recipes + probe) | 02-03 | 1 | D-05 (CONTEXT) | — | leading-dash-safe recipe, digit-inclusive class, singletons (9), probe --desktop-version | grep gates + `node --check` | greps per 02-03 T2 verify; `node --check experiments/app-server-probe.mjs` | ✅ | ⬜ pending |
+| 02-04 T1-T3 (workflows) | 02-04 | 2 | SCAFF-02 | T-2-04, T-2-05, T-2-SC | workflows trigger + three named jobs green | CI observation | `gh run list --workflow=pr-sanity.yml`; `gh api repos/Djarvur/zcode-acp/commits/master/check-runs` | ❌ W0 | ⬜ pending |
+| 02-05 T2 (protection) | 02-05 | 3 | SCAFF-03 | T-2-02, T-2-03 | protection configured; direct pushes rejected | API check + negative test | `gh api .../branches/master/protection`; push rejection (GH006) | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
