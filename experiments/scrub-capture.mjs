@@ -68,6 +68,14 @@ function replaceUserInfos(line) {
   let out = '';
   let rest = line;
   for (;;) {
+    // CR-01: USER_INFO_RX is module-level with the /g flag — its lastIndex
+    // persists across calls and is in the PREVIOUS string's coordinates, so a
+    // stale value skips every user_info after the first on a line (the second
+    // leaks verbatim) and breaks the fixed-point contract. Search the current
+    // suffix from its start every iteration; rest begins right after the
+    // previously consumed object, so a match can never overlap what is already
+    // redacted.
+    USER_INFO_RX.lastIndex = 0;
     const m = USER_INFO_RX.exec(rest);
     if (!m) return out + rest;
     const objStart = m.index + m[0].length - 1; // index of the opening '{'
