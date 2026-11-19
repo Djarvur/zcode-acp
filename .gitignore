@@ -32,3 +32,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Phase 1: raw experiment captures never enter the repo (D-02)
+experiments/raw/
