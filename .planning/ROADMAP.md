@@ -122,11 +122,11 @@ Plans:
   3. `session/prompt` streams `agent_message_chunk` deltas live while the turn runs and returns `stopReason` only after all pending updates have flushed
   4. When the backend emits reasoning events the client receives `agent_thought_chunk` updates; none are synthesized when it does not
   5. `session/cancel` during a turn stops it and the prompt call is answered exactly once with `stopReason: "cancelled"`
-**Plans**: 6 plans
+**Plans**: 1/6 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 04-01-PLAN.md — SDK dep lands (D-01 audit PASS, exact v0.20.0 pin + tidy-diff gate expectation) + subscribe/setModel method constants + conn notification observer fan-out (TDD)
+- [x] 04-01-PLAN.md — SDK dep lands (D-01 audit PASS, exact v0.20.0 pin + tidy-diff gate expectation) + subscribe/setModel method constants + conn notification observer fan-out (TDD)
 
 **Wave 2** *(blocked on Wave 1)*
 - [ ] 04-02-PLAN.md — Enablement (TDD): acpport seam package (SDK imports confined, D-02-honest initialize assembly, -32601 unadvertised defaults) + internal/core session registry + setmodel-followup corpus row + front-tier test harness + seam boundary test
@@ -190,7 +190,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
-| 4. ACP Front — Minimal Chat Loop | 0/5 | Planned | - |
+| 4. ACP Front — Minimal Chat Loop | 1/6 | In Progress | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
