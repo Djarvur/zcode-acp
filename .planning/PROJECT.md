@@ -47,9 +47,9 @@ ACP-клиент может провести с ZCode полный ход end-to
 
 ## Context
 
-**Отправная точка исследования:** `FINDINGS.md (private research notes, outside this repo)` —
-итоги разбора ZCode 3.18.2 и Orca (установка, протоколы, OAuth-путь, грабли).
-Проверенные факты оттуда:
+**Отправная точка исследования:** локальные заметки FINDINGS.md (частные
+исследовательские записи, вне этого репозитория) — итоги разбора ZCode 3.18.2
+и Orca (установка, протоколы, OAuth-путь, грабли). Проверенные факты оттуда:
 
 - **app-server** (`ELECTRON_RUN_AS_NODE=1 zcode.cjs app-server --stdio`):
   JSONL по stdio, **не** JSON-RPC; методы `session/create|send|messages|setModel`,
@@ -69,7 +69,7 @@ ACP-клиент может провести с ZCode полный ход end-to
   `resources/app.asar.unpacked/out/main/chunks/`; ACP-агенты захардкожены:
   `omp` (`omp acp`, min 17.0.5, env `PI_NO_PTY=1`), `opencode` (min 2.0.0),
   `opencode2` (min 2.0.14); детект по имени в PATH + версия.
-- Локальная копия исходников ZCode: `ZCode source tree (github.com/zai-org/ZCode; local clone)` (3.17.x).
+- Исходники ZCode: локальный клон публичного дерева (github.com/zai-org/ZCode), 3.17.x.
 
 **Референсная имплементация:** github.com/william0wang/zcode-acp (TypeScript,
 Apache-2.0 → портирование на Go допустимо с атрибуцией) — в ней уже реализованы
