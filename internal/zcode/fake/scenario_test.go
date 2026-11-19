@@ -115,7 +115,8 @@ func TestLoadScenarioRejectsInvalidSideEffectBothKinds(t *testing.T) {
 	    "reply": {"result": {}},
 	    "side_effects": [{
 	      "emit": {"method": "state.updated", "params": {"patch": {"status": "running"}}},
-	      "reverse": {"method": "session/requestRuntimePreferences", "params": {"sessionId": "sess_fix1"}, "timeout_ms": 100}
+	      "reverse": {"method": "session/requestRuntimePreferences",
+	                  "params": {"sessionId": "sess_fix1"}, "timeout_ms": 100}
 	    }]
 	  }],
 	  "eof_drain_ms": 100
