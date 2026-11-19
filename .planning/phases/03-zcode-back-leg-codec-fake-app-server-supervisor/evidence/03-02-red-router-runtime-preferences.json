@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run TestRouter ./internal/zcode/",
+  "exitCode": 1,
+  "output": "2026/11/19 21:22:43 WARN zcode: read loop ended err=\"io: read/write on closed pipe\"\n--- FAIL: TestRouterCredentialCipherNeverAnsweredExpiryRecorded (0.21s)\n    conn_test.go:618: credential-cipher request drew a reply — D-05 violation: {\"id\":\"server-1\",\"error\":{\"code\":-32601,\"message\":\"unsupported host request: interaction/requestCredentialCipher\"}}\n2026/11/19 21:22:53 WARN zcode: read loop ended err=\"io: read/write on closed pipe\"\n--- FAIL: TestRouterRuntimePreferencesDeadline (10.01s)\n    conn_test.go:674: router never recorded a answered event\n2026/11/19 21:22:53 WARN zcode: read loop ended err=\"io: read/write on closed pipe\"\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/zcode\t10.234s\nFAIL\n",
+  "targetTest": "TestRouterRuntimePreferencesDeadline",
+  "targetFile": "internal/zcode/conn_test.go",
+  "expected": "TestRouterRuntimePreferencesDeadline fails on its own planned assertion: the router answers the static runtime-preference defaults but records no RouterAnswered event carrying the injectable per-method deadline, so waitEvent times out",
+  "actual": "--- FAIL: TestRouterRuntimePreferencesDeadline\\n    conn_test.go:674: router never recorded a answered event\\nFAIL\\nFAIL\\tgithub.com/Djarvur/zcode-acp/internal/zcode\\t10.234s\\nFAIL",
+  "semanticAssessment": "The target test compiled, ran, and failed on its own planned assertion (the OnRouterEvent hook never fired — the declaration-surface-only conn.go has no event emission yet; the test observed the static answer arrive on the wire and then timed out waiting for the recorded deadline observation) — not on a build failure, zero-test discovery, panic, or fixture fault. The RouterDefaultDeadline constant check (15 s, D-05 value) passed at the top of the test; the missing behavior is the deadline-recorded observation the GREEN stage implements. Same run as the sibling record: TestRouterCredentialCipherNeverAnsweredExpiryRecorded failed on its own assertion, existing suite green."
+}

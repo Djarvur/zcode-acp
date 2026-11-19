@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Read-loop line buffer sizing (T-3-02 mitigation): raised but capped per
@@ -17,6 +18,39 @@ const (
 	readBufInitial = 1 << 20
 	readBufMax     = 16 << 20
 )
+
+// Router policy surface (D-05): the reverse-request router answers the
+// session-establishment obligations inside per-method deadlines and records
+// what it did — answered under its deadline, or a tracked-no-answer method's
+// deadline expiring with no reply written.
+
+// RouterDefaultDeadline is the D-05 per-method answer deadline: the
+// session/requestRuntimePreferences obligation is answered within 15 s
+// (live precedent: unanswered creates fail -32603 — dialect §3).
+const RouterDefaultDeadline = 15 * time.Second
+
+// RouterEventKind classifies one router policy observation.
+type RouterEventKind string
+
+const (
+	// RouterAnswered marks a policy-table method the router answered inside
+	// its deadline.
+	RouterAnswered RouterEventKind = "answered"
+
+	// RouterDeadlineExpired marks a tracked-no-answer method whose deadline
+	// elapsed without any reply written (record-honesty: the expiry is
+	// observed, never swallowed — D-05).
+	RouterDeadlineExpired RouterEventKind = "deadline-expired"
+)
+
+// RouterEvent is one reverse-request router policy observation.
+type RouterEvent struct {
+	Kind     RouterEventKind // answered, or deadline-expired with no reply
+	Method   string          // the server→host request method
+	IDKey    string          // canonical type-tagged id key of the request
+	Deadline time.Duration   // the per-method deadline that governed it
+	Err      error           // expiry cause (context.DeadlineExceeded); nil when answered
+}
 
 // Conn drives one app-server JSONL stream over rw: a read loop that demuxes
 // reply / reverse-request / notification frames, a single writer goroutine
@@ -50,6 +84,18 @@ type Conn struct {
 	// router's defaults (D-05 minimum: the runtime-preferences answer and
 	// -32601 for everything else). Invoked on a per-request goroutine.
 	OnRequest func(ctx context.Context, env Envelope) (result any, werr *WireError, handled bool)
+
+	// RouterDeadline, when non-nil, overrides the per-method policy deadline
+	// for reverse-request routing (default RouterDefaultDeadline). Tests
+	// inject millisecond deadlines; assign before any frame flows, like the
+	// hooks.
+	RouterDeadline func(method string) time.Duration
+
+	// OnRouterEvent, when non-nil, receives one RouterEvent per router
+	// policy decision (answered / deadline-expired) as it happens — the
+	// observable face of the D-05 record-honesty contract. Invoked on the
+	// request or tracker goroutine; must not block.
+	OnRouterEvent func(ev RouterEvent)
 }
 
 // NewConn returns a Conn over rw and starts its writer and read-loop
