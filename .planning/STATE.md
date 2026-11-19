@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: ZCode Back Leg
 status: executing
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-11-19T18:49:37.053Z"
+stopped_at: Completed 03-03-PLAN.md
+last_updated: "2026-11-19T19:00:57.136Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 3 execution started
-state_head: 2ddade263d0cfc8c9cd6360e04fabe37ae016988
+state_head: bd44ae834decd5421c452a26dab87139117dcb42
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 20
-  completed_plans: 14
+  completed_plans: 15
   percent: 29
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 3 (ZCode Back Leg) — EXECUTING
-Plan: 4 of 9
+Plan: 5 of 9
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 3 execution started
 
@@ -84,6 +84,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 03 P03-01 | 30min | 3 tasks | 12 files |
 | Phase 03 P03-04 | 31min | 2 tasks | 3 files |
 | Phase 03 P03-02 | 23min | 3 tasks | 8 files |
+| Phase 03 P03-03 | 17min | 2 tasks | 25 files |
 
 ## Accumulated Context
 
@@ -129,8 +130,11 @@ Recent decisions affecting current work:
 - [Phase 03]: Discovery adjacency resolved: all probes run to completion on every Discover call, rows recorded hit-or-miss, first-match-wins picks the earliest spawnable install in the documented order — probes never merge and diagnostics stay complete on the success path
 - [Phase 03]: Empty-result discovery contract: ErrNoInstall exported sentinel carrying one diagnostics line per probe row (install-discovery.md :34); DpkgQuery seam contract is the dpkg -L file list only, rc-remnant answers as empty list and falls through to opt-path
 - [Phase 03]: BuiltinRevision implements the sharpened V-SRC formula: sha256 over the EvalSymlinks+Abs-resolved PATH STRING, never file contents; runtime-provider tree picks the newest version dir numerically (0.0.0-dev < 3.17.1 < 3.18.2); defaultOverride production seam is a documented no-op until 03-07 wires the wrapper config surface
-- [Phase 03]: [Phase 03]: Codec contract locks landed (03-02): WR-02 demux, id type-safety, single-writer ordering + bypass precedence locked by named tests at the public Conn surface over io.Pipe; conn.Stop = fire-and-forget request-shaped session/stop on the bypass lane (D-02 cancel primitive)
-- [Phase 03]: [Phase 03]: D-05 router policy complete (03-02): runtime-preferences answered under its injectable deadline (default 15s, recorded on the RouterAnswered event); credential-cipher tracked-no-answer — zero reply bytes, exactly one recorded expiry, tracker bound to the conn's base context; unknown methods -32601 naming the method
+- [Phase 03]: Codec contract locks landed (03-02): WR-02 demux, id type-safety, single-writer ordering + bypass precedence locked by named tests at the public Conn surface over io.Pipe; conn.Stop = fire-and-forget request-shaped session/stop on the bypass lane (D-02 cancel primitive)
+- [Phase 03]: D-05 router policy complete (03-02): runtime-preferences answered under its injectable deadline (default 15s, recorded on the RouterAnswered event); credential-cipher tracked-no-answer — zero reply bytes, exactly one recorded expiry, tracker bound to the conn's base context; unknown methods -32601 naming the method
+- [Phase 03]: Golden corpus (03-03): fail-loud scenario loader — strict decode rejects unknown schema keys naming the field, exactly-one emit/reverse, dialect code required on error replies, eof_drain_ms required when on_request is empty
+- [Phase 03]: Corpus replay (03-03): table-driven TestGolden drives every scenario through a real Conn over io.Pipe with per-scenario drivers (driver-less entries fail loud); TestEOFSignature — zero recorded frames is a reported failure, never an empty success
+- [Phase 03]: Fake scripting extensions (03-03): RequestRule.Times match budget — a spent rule falls through to the next same-method rule (declarative -32010); closed-stream writes record honest unanswered notes on a clean run per dialect §1 EOF facts
 
 ### Pending Todos
 
@@ -154,6 +158,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T18:29:14.089Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-11-19T19:00:31.428Z
+Stopped at: Completed 03-03-PLAN.md
 Resume file: None
