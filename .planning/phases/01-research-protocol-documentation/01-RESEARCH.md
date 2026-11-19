@@ -407,10 +407,13 @@ All five load-bearing strings confirmed present in the two named chunks of the c
 
 ### pi/omp session-file format sample (E5 input, verified this session)
 ```
-<sessions-dir>/<path-slug-with-dashes>/<ISO-8601-local-ts>_<uuid v4>.jsonl
-e.g. sessions/--home-nil-DiskD-W-<proj>--/2026-11-18T17-06-04-918Z_01a1ef9f-6bf4-76f8-88b0-971a4f588536.jsonl
+<sessions-dir>/<path-slug>/<ISO-8601-local-ts>_<uuid-v4>.jsonl
+e.g. sessions/--<a-b-c>--/2026-11-18T17-06-04-918Z_0123abcd-....jsonl
 ```
-(User-specific fragments above are elided with `<proj>`; the committed doc records the *pattern*, and the experiment records the JSONL record shape read from the scanner chunk.)
+where `<path-slug>` is the session's working directory rendered as one token
+(slashes become dashes; read the exact slug algorithm from the scanner chunk at
+execution time and record it there). The committed doc records the *pattern*
+only; the experiment records the JSONL record shape read from the scanner chunk.
 
 ### Deb layout inspection without installing (E4)
 ```bash
