@@ -59,7 +59,7 @@ Plans:
 - [x] 01-03-PLAN.md — docs/protocol/app-server-dialect.md: event surface, subscribe verdict, terminal signals, drift baseline (DISC-01)
 
 ### Phase 2: Scaffold & CI Bootstrap
-**Goal**: The repository enforces strict quality gates — lint, CI, protected branch — modeled on Djarvur/goswitch, from the very first code commit onward.
+**Goal**: As a later-phase implementer on this repo, I want to have strict quality gates — strict pinned lint, CI, and a protected `master` modeled on Djarvur/goswitch — enforced from the very first code commit onward, so that all feature code lands under the same gates and later phases merge only through green PRs.
 **Mode:** mvp
 **Depends on**: Nothing (no technical dependency on Phase 1; sequenced second by project mandate so all code lands under strict gates)
 **Requirements**: SCAFF-01, SCAFF-02, SCAFF-03
