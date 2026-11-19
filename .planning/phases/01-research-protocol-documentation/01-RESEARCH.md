@@ -459,17 +459,16 @@ done; exit $rc
 | A6 | `startup/storageState` notifications require no host reply (app-server proceeded to answer requests with no reply sent) | DISC-01 | E1/E2 captures will show whether any error/blocked state ever references them |
 | A7 | `session/create` accepts `workspace{workspacePath,workspaceKey}` plus `mode`/`persistence`/`titleGenerationEnabled` per 3.17.x schema; exact 3.18.2 param surface re-read before E1/E3 runs | Experiment Catalog | E-probes reveal any rejection immediately (a rejection is itself recorded wire truth) |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Is there a native `zcode` preset card in the current Orca build, and is it ACP?**
-   - What we know: a ~22-id preset list includes `zcode` (and `pi`, `jcode`, `dsh`); the documented ACP set from the earlier build was 8 cards without `zcode`.
-   - What's unclear: whether `zcode` is an ACP card, a line-dialect adapter, or an operations-only preset.
-   - Recommendation: E5's chunk pass answers it and records the delta; the omp identity decision (D-02, locked) is not re-litigated either way.
-2. **Exact turn-completion terminal set on 3.18.2** — E2 answers (or records the honest degradation).
-3. **Does `session/subscribe` work on 3.18.2, and with which delivery kinds** — E1 answers; a refusal is a valid, publishable verdict.
-4. **`interaction/requestUserInput` semantics** — present in the 3.18.2 method map but absent from all prior research docs; read its bundle/source context during DISC-01 writing; E2 shows whether a plain turn triggers it (expected no).
-5. **Orca settings-store location for `agentCmdOverrides`** — unresolved (A4); document as known-unknown; Phase 7 live test resolves it.
-6. **Deb/rpm artifact URLs for E4** — the official install page lists formats; the exact current download URLs are fetched at execution time (do not hardcode).
+All six open questions are resolved — each routed to the plan task that retires it, or closed as a decided known-unknown. None remain open.
+
+1. **Is there a native `zcode` preset card in the current Orca build, and is it ACP?** — RESOLVED by plan 01-04 Task 1 (registry re-enumeration from the current build's registry chunk; delta vs the 8-card list recorded). The omp identity decision stays locked and is not re-litigated either way.
+2. **Exact turn-completion terminal set on 3.18.2** — RESOLVED by plan 01-02 Task 2 (E2 answers, or records the honest degradation per D-05).
+3. **Does `session/subscribe` work on 3.18.2, and with which delivery kinds** — RESOLVED by plan 01-02 Task 1 (E1 answers; a refusal is a valid, publishable verdict).
+4. **`interaction/requestUserInput` semantics** — RESOLVED by plan 01-03 Task 1 (read from its bundle/source context during DISC-01 writing, section 3); plan 01-02 Task 2 (E2) additionally records whether a plain turn triggers it (expected no).
+5. **Orca settings-store location for `agentCmdOverrides`** — RESOLVED as a decided known-unknown (assumption A4): documented as [V-RPT] in plan 01-04 Task 2 (`Open items` section); Phase 7 live test resolves it.
+6. **Deb/rpm artifact URLs for E4** — RESOLVED by procedure in plan 01-05 Task 1 (exact current download URLs fetched at execution time, never hardcoded).
 
 ## Environment Availability
 
@@ -522,10 +521,10 @@ Notes: this phase has no executable unit tests (nothing is coded) — Nyquist sa
 ### Sampling Rate
 - **Per task commit:** `bash experiments/check-docs.sh && bash experiments/scan-secrets.sh`
 - **Per wave merge:** both + a human skim of the changed doc sections (provenance tags are judgment-bearing)
-- **Phase gate:** all five docs green, every V-EXP id resolves, secret-scan clean, success-criteria 1–5 each demonstrably satisfied before `/gsd:verify-work`
+- **Phase gate:** all six docs green, every V-EXP id resolves, secret-scan clean, success-criteria 1–5 each demonstrably satisfied before `/gsd:verify-work`
 
 ### Wave 0 Gaps
-- [ ] `experiments/check-docs.sh` — structure + provenance-tag conformance for all five docs
+- [ ] `experiments/check-docs.sh` — structure + provenance-tag conformance for all six docs
 - [ ] `experiments/scan-secrets.sh` — secret-shape gate (regex set above; Phase 2 CI reuses it)
 - [ ] `experiments/scrub-capture.mjs` — canonical scrubber (must exist BEFORE the first capture is written)
 - [ ] `experiments/README.md` — how to run E1–E5; scrub-first rules; "never in CI" warning

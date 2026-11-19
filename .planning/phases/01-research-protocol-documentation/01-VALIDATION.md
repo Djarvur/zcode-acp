@@ -31,7 +31,7 @@ created: "2026-11-19"
 
 - **After every task commit:** Run `bash experiments/check-docs.sh && bash experiments/scan-secrets.sh`
 - **After every plan wave:** Run full suite + human skim of changed doc sections (provenance tags are judgment-bearing)
-- **Before `/gsd:verify-work`:** Full suite must be green; all five docs pass; every V-EXP id resolves; secret-scan clean
+- **Before `/gsd:verify-work`:** Full suite must be green; all six docs pass; every V-EXP id resolves; secret-scan clean
 - **Max feedback latency:** 30 seconds
 
 ---
@@ -62,7 +62,7 @@ created: "2026-11-19"
 
 ## Wave 0 Requirements
 
-- [ ] `experiments/check-docs.sh` — structure + provenance-tag conformance for all five docs
+- [ ] `experiments/check-docs.sh` — structure + provenance-tag conformance for all six docs
 - [ ] `experiments/scan-secrets.sh` — secret-shape gate (JWT / `enc:v2:` / PAT regexes; Phase 2 CI reuses it)
 - [ ] `experiments/scrub-capture.mjs` — canonical scrubber (must exist BEFORE the first capture is written)
 - [ ] `experiments/README.md` — how to run E1–E5; scrub-first rules; "never in CI" warning
