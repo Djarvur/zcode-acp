@@ -45,6 +45,7 @@ created: "2026-11-19"
 | 02-03 T1 (gate scripts) | 02-03 | 1 | D-05 (CONTEXT) | T-2-01 | widened secret patterns stay green; toplevel pin | gate | `bash experiments/scan-secrets.sh` (also from a subdirectory) | ✅ | ⬜ pending |
 | 02-03 T2 (doc recipes + probe) | 02-03 | 1 | D-05 (CONTEXT) | — | leading-dash-safe recipe, digit-inclusive class, singletons (9), probe --desktop-version | grep gates + `node --check` | greps per 02-03 T2 verify; `node --check experiments/app-server-probe.mjs` | ✅ | ⬜ pending |
 | 02-04 T1-T3 (workflows) | 02-04 | 2 | SCAFF-02 | T-2-04, T-2-05, T-2-SC | workflows trigger + three named jobs green | CI observation | `gh run list --workflow=pr-sanity.yml`; `gh api repos/Djarvur/zcode-acp/commits/master/check-runs` | ❌ W0 | ⬜ pending |
+| 02-05 T1 (protection body) | 02-05 | 3 | SCAFF-03 | T-2-SC | body contexts = pr-sanity job names; valid JSON; pushed pre-apply | jq + cross-grep + push gate | `jq -e '.required_status_checks.checks \|.map(.context)' .planning/phases/02-scaffold-ci-bootstrap/protection-body.json`; name/context loop per 02-05 T1 verify; `git fetch origin master && git rev-list --count origin/master..HEAD` → 0 | ❌ W0 | ⬜ pending |
 | 02-05 T2 (protection) | 02-05 | 3 | SCAFF-03 | T-2-02, T-2-03 | protection configured; direct pushes rejected | API check + negative test | `gh api .../branches/master/protection`; push rejection (GH006) | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
