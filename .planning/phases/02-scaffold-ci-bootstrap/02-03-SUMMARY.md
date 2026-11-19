@@ -22,7 +22,9 @@ affects: [02-04 (CI promotion adopts the corrected gate), 02-05 (protection cont
 actuals:
   tokens: 3221        # 12884 diff chars / 4 over the 4 changed files
   tasks: 2
-  commits: 2
+  commits: 2          # MEASURED: git rev-list --count 40efc075..527e683 (production commits)
+plan_head_before: 40efc075e10f709278dfc340701b8515e36fd4bf
+plan_head_after: 527e683eba5da45428ff73a767613f17073ed675
 
 # Tech tracking
 tech-stack:
@@ -142,6 +144,14 @@ None - no external service configuration required.
 - `scan-secrets.sh` and `check-docs.sh` are promotion-ready for plan 02-04's CI `secret-scan` job (corrected gate, CWD-independent — CI runners can invoke from any directory)
 - D-05 review-fix set is complete once paired with 02-02's WR-03/IN-04 TDD fixes (already landed: `b886a32`/`52f660a`)
 - Plan 02-05's protection contexts can rely on the check names as documented; no rename of gate scripts occurred
+
+## Self-Check: PASSED
+
+- SUMMARY.md exists on disk at `.planning/phases/02-scaffold-ci-bootstrap/02-03-SUMMARY.md`
+- Task commits verified as ancestors of HEAD: `8959c9d` (Task 1), `527e683` (Task 2)
+- Metadata commits verified: `e28ed40` (SUMMARY), `20f6611` (tracking)
+- STATE.md advanced to Plan 4 of 5; ROADMAP.md shows 02-03 complete (3/5 summaries)
+- No stubs, no auth gates, no deviations; SCAFF-02 correctly left unmarked (workflows land in 02-04)
 
 ---
 *Phase: 02-scaffold-ci-bootstrap*
