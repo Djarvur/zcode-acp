@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -560,5 +561,144 @@ func TestDoubleSendRejectedServerSide(t *testing.T) {
 
 	if sends := inLineCount(tr, `"method":"session/send"`); sends != 2 {
 		t.Fatalf("session/send frames on the wire = %d, want 2 (both machines sent)", sends)
+	}
+}
+
+// corpusScenarioPath builds the path to a fake-corpus scenario fixture: the
+// turn tier replays the SAME JSON corpus the golden tests record — the
+// corpus is the shared protocol fixture, not a copy.
+func corpusScenarioPath(name string) string {
+	return filepath.Join("..", "zcode", "fake", "testdata", "scenarios", name+".json")
+}
+
+// loadCorpusScenario loads and validates a corpus scenario (fail-loud).
+func loadCorpusScenario(t *testing.T, name string) *fake.Scenario {
+	t.Helper()
+
+	sc, err := fake.LoadScenario(corpusScenarioPath(name))
+	if err != nil {
+		t.Fatalf("load corpus scenario %s: %v", name, err)
+	}
+
+	return sc
+}
+
+// The corpus completion contract (BRIDGE-04 at the corpus tier — the
+// JSON-corpus variants of the 03-05 unit proofs, now exercising the full
+// codec path): completion-idle-patch and completion-quiet-window replay
+// through a real zcode.Conn + the machine over io.Pipe and each resolves
+// the turn exactly once with the expected StopReason and resolving-signal
+// record.
+func TestCompletionCorpus(t *testing.T) {
+	t.Run("idle-patch", func(t *testing.T) {
+		ex := startTurnExchange(t, loadCorpusScenario(t, "completion-idle-patch"))
+
+		ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
+		defer cancel()
+
+		reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		if reason != turn.StopCompleted {
+			t.Fatalf("Run reason = %q, want %q", reason, turn.StopCompleted)
+		}
+
+		assertResolution(t, ex.spy, turn.StopCompleted, turn.SignalIdlePatch)
+
+		ex.finish(t)
+	})
+
+	t.Run("quiet-window", func(t *testing.T) {
+		ex := startTurnExchange(t, loadCorpusScenario(t, "completion-quiet-window"))
+
+		ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
+		defer cancel()
+
+		reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		if reason != turn.StopCompleted {
+			t.Fatalf("Run reason = %q, want %q", reason, turn.StopCompleted)
+		}
+
+		assertResolution(t, ex.spy, turn.StopCompleted, turn.SignalQuietWindow)
+		assertQuietAfterFloor(t, ex)
+
+		ex.finish(t)
+	})
+}
+
+// The D-05 honesty contract at the turn tier (T-3-12): replaying the
+// scripted mid-turn credential-cipher exchange (corpus scenario 10) through
+// the real codec path, the host router's tracked-no-answer fires (03-02),
+// the expiry observation is surfaced to the machine, and the turn ends in
+// the honest degraded state — StopError/SignalDegraded carrying the
+// recorded expiry, resolved exactly once, NEVER completed/failed (the
+// BRIDGE-04 prohibition: no resolution without a supporting completion
+// signal). No reply bytes exist for the cipher request anywhere on the wire.
+func TestCredentialCipherExpiryRecorded(t *testing.T) {
+	ex := startTurnExchange(t, loadCorpusScenario(t, "credential-cipher-scripted"))
+
+	// Fast-forward the D-05 tracked-no-answer deadline (the injectable
+	// per-method override from 03-02) so the expiry deterministically beats
+	// the quiet window's earliest fire — the degraded resolution must be
+	// the first supporting signal.
+	cipherDeadline := 40 * time.Millisecond
+	ex.conn.RouterDeadline = func(string) time.Duration { return cipherDeadline }
+
+	ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
+	defer cancel()
+
+	reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if reason != turn.StopError {
+		t.Fatalf("Run reason = %q, want %q (the honest degraded state)", reason, turn.StopError)
+	}
+
+	assertResolution(t, ex.spy, turn.StopError, turn.SignalDegraded)
+
+	got := ex.spy.snapshot()
+
+	if got[0].Err == nil {
+		t.Fatal("the degraded resolution carries no recorded expiry")
+	}
+
+	if !strings.Contains(got[0].Err.Error(), zcode.MethodRequestCredentialCipher) ||
+		!strings.Contains(got[0].Err.Error(), cipherDeadline.String()) {
+		t.Fatalf("recorded expiry %v must name the cipher method and its deadline", got[0].Err)
+	}
+
+	tr := finishWithTranscript(t, ex)
+
+	// Zero reply bytes for the cipher request: the fake's reverse id
+	// (fake-N) never receives a host reply frame — the tracked-no-answer
+	// path wrote nothing (D-05/T-3-12: no fabricated or forwarded
+	// credential material exists).
+	for _, l := range tr.Lines {
+		if l.Dir == fake.DirIn && strings.Contains(l.JSON, `"id":"fake-`) {
+			t.Fatalf("host reply bytes found for the cipher request: %s", l.JSON)
+		}
+	}
+
+	// The expiry is honestly recorded on the fake side too: the reverse
+	// request times out into a transcript note, never a fabricated answer.
+	noted := false
+
+	for _, l := range tr.Lines {
+		if l.Dir == fake.DirNote && strings.Contains(l.JSON, zcode.MethodRequestCredentialCipher) &&
+			strings.Contains(l.JSON, "unanswered") {
+			noted = true
+		}
+	}
+
+	if !noted {
+		t.Fatal("the fake never recorded the cipher request as honestly unanswered")
 	}
 }

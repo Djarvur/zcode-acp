@@ -65,14 +65,26 @@ const (
 	// patch, or the quiet settle while cancelling) while the machine is in
 	// the cancelling state.
 	SignalCancel SignalKind = "cancel"
+
+	// SignalDegraded — the turn resolved from a recorded host-obligation
+	// failure rather than a completion signal (D-05 record-honesty): a
+	// tracked-no-answer reverse-request deadline expired mid-turn, the
+	// expiry is carried on Resolution.Err, and the resolution is the honest
+	// degraded state — never completed/failed (the BRIDGE-04 prohibition:
+	// no resolution without a supporting completion signal).
+	SignalDegraded SignalKind = "degraded"
 )
 
 // Resolution is the exactly-once completion record: the StopReason, the
-// resolving signal, and when the resolution fired.
+// resolving signal, and when the resolution fired. Err carries the recorded
+// degradation cause for a degraded resolution (SignalDegraded — D-05
+// record-honesty: the expiry is observable, never swallowed) and is nil for
+// clean completions.
 type Resolution struct {
 	Reason StopReason
 	Signal SignalKind
 	At     time.Time
+	Err    error
 }
 
 // Terminal and turn-start kind literals across the known carriers (dialect
@@ -124,6 +136,13 @@ const (
 // contract).
 var ErrTurnActive = errors.New("turn: a prompt is already running for this session")
 
+// errObligationExpired is the static degradation sentinel wrapped into a
+// degraded Resolution.Err (D-05 record-honesty): a tracked-no-answer
+// reverse-request deadline elapsed mid-turn with no reply written — the
+// expiry is recorded, never swallowed.
+var errObligationExpired = errors.New(
+	"turn: host obligation deadline expired without an answer (recorded, never answered)")
+
 // Machine lifts fire-and-forget session/send turns into synchronous
 // completions for ONE app-server sessionId on ONE shared Conn (D-04: one
 // app-server child per wrapper process; the machine binds one session; ACP
@@ -152,8 +171,9 @@ type Machine struct {
 }
 
 // NewMachine returns a machine bound to sessionID on conn with the given
-// watcher, and takes over conn's single OnNotification hook — every inbound
-// envelope funnels into the machine's one observe path. Assign happens
+// watcher, and takes over conn's single OnNotification and OnRouterEvent
+// hooks — every inbound envelope and every reverse-request router policy
+// event funnels into the machine's one observation surface. Assign happens
 // before any frame flows (the Conn hook contract).
 func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machine {
 	m := &Machine{
@@ -166,6 +186,7 @@ func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machin
 
 	if conn != nil {
 		conn.OnNotification = m.ObserveEnvelope
+		conn.OnRouterEvent = m.observeRouterEvent
 	}
 
 	return m
@@ -395,6 +416,36 @@ func (m *Machine) onWatcherObservation(obs Observation) {
 	if obs.Env != nil {
 		m.ObserveEnvelope(*obs.Env)
 	}
+}
+
+// observeRouterEvent is the machine's face on the conn's reverse-request
+// router policy events (D-05 record-honesty): a tracked-no-answer deadline
+// expiring mid-turn — on the real path the scripted credential-cipher
+// obligation the wrapper must NOT answer in Phase 3 (T-3-12) — is surfaced,
+// never swallowed. The turn resolves the honest degraded state (StopError /
+// SignalDegraded) exactly once, with the expiry recorded on Resolution.Err,
+// and NEVER completed/failed from it: an obligation expiry is evidence the
+// turn cannot complete, not a completion signal (the BRIDGE-04 prohibition).
+// It is conn.OnRouterEvent's receiver — runs on the request/tracker
+// goroutine and must not block.
+func (m *Machine) observeRouterEvent(ev zcode.RouterEvent) {
+	if ev.Kind != zcode.RouterDeadlineExpired {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.state != stateRunning && m.state != stateCancelling {
+		return
+	}
+
+	m.resolveLocked(Resolution{
+		Reason: StopError,
+		Signal: SignalDegraded,
+		At:     time.Now(),
+		Err:    fmt.Errorf("turn: %s: %w after %s", ev.Method, errObligationExpired, ev.Deadline),
+	})
 }
 
 // classifyIdlePatchLocked reports whether env is the idle patch: a
