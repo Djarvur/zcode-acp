@@ -86,6 +86,7 @@ Deferred to future releases. Tracked but not in current roadmap.
 - **EXT-01**: Slash commands (`available_commands_update`) — pending a decision on which ZCode commands surface
 - **EXT-02**: Non-Ubuntu environments (KDE, macOS, Windows keyring paths) — PR-driven
 - **EXT-03**: zcode CLI as an alternative backend — PR-driven
+- **EXT-04**: Additional persona subcommands for other preset-agent cards (opencode, opencode2, kimi, cursor, grok, copilot — see the card list in REFERENCE-ADAPTERS.md) — each card = a new cobra subcommand + a dialect-contract profile over the same bridge; the codec/supervisor/turn-machine stay untouched; PR-driven
 
 ## Out of Scope
 
