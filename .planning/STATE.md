@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: ZCode Back Leg
 status: executing
-stopped_at: Phase 3 context gathered
-last_updated: "2026-11-19T16:30:57.607Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-11-19T17:25:13.040Z"
 last_activity: 2026-11-19
-last_activity_desc: Phase 2 complete, transitioned to Phase 3
-state_head: 2ff94be76fc6df85800bbbea61da86a3367241b3
+last_activity_desc: Phase 3 execution started
+state_head: 28c498d79e4e973842fdbc372b6bdafd6285e997
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 20
-  completed_plans: 11
+  completed_plans: 12
   percent: 29
 ---
 
@@ -40,10 +40,10 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 
 ## Current Position
 
-Phase: 3 (ZCode Back Leg) — READY TO EXECUTE
-Plan: Not started
+Phase: 3 (ZCode Back Leg) — EXECUTING
+Plan: 2 of 9
 Status: Ready to execute
-Last activity: 2026-11-19 — Phase 2 complete, transitioned to Phase 3
+Last activity: 2026-11-19 — Phase 3 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -81,6 +81,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P02-03 | 5min | 2 tasks | 4 files |
 | Phase 02 P02-04 | 13min | 3 tasks | 5 files |
 | Phase 02 P02-05 | 5min | 2 tasks | 2 files |
+| Phase 03 P03-01 | 30min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -119,6 +120,10 @@ Recent decisions affecting current work:
 - [Phase 02]: Remote master had been re-initialized with a byte-identical-but-unrelated scaffold root (f444edf); reconciled via one unrelated-histories merge 57d48a2 (not rebase/force-push) preserving all 81 local hashes — push fast-forwarded, CI green on merged head
 - [Phase 02]: Branch protection applied to master via one documented gh api PUT (protection-body.json on origin master), GET-verified 9/9 fields, GH006 negative push test proved PR-only enforcement — A2 assumption discharged empirically, nothing refused
 - [Phase 02]: branching_strategy flipped none -> phase strictly AFTER protection verification; flip commit e777ba6 is LOCAL-ONLY — its landing path is the first Phase-3 gsd/phase-* PR (direct pushes to master now rejected)
+- [Phase 03]: Fake rule ordering: side effects run in order BEFORE the rule's reply — behavior-block-mandated for create (reverse exchange precedes the create reply), matches EXP-TURN-01 wire order for send, and makes notification delivery race-free
+- [Phase 03]: Reverse-request per-method deadline value + expiry recording deferred to plan 03-02 per plan text; 03-01 shipped the request-context plumbing (base context closure-captured in NewConn per containedctx, per-request derivation, cancelled on Close)
+- [Phase 03]: Fake expect_answer validated semantically (decoded-JSON deep compare — codec marshals maps sorted, captures author payloads in wire order); mismatch fails the run
+- [Phase 03]: Transcript Line.JSON records the wire line WITHOUT the newline terminator in both directions; golden format <dir>\t<line>\n
 
 ### Pending Todos
 
@@ -142,6 +147,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T15:21:16.234Z
-Stopped at: Phase 3 context gathered
-Resume file: .planning/phases/03-zcode-back-leg-codec-fake-app-server-supervisor/03-CONTEXT.md
+Last session: 2026-11-19T17:25:00.123Z
+Stopped at: Completed 03-01-PLAN.md
+Resume file: None
