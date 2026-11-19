@@ -146,6 +146,8 @@ const (
 	MethodStateUpdated              = "state.updated"
 	MethodSessionEvent              = "session/event"
 	MethodSessionLifecycleChanged   = "session/lifecycle/changed"
+	MethodSessionSubscribe          = "session/subscribe"
+	MethodSessionSetModel           = "session/setModel"
 )
 
 // Error-code constants carry the dialect §6 numeric values verbatim.
