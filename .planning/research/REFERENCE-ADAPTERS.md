@@ -64,19 +64,28 @@ cursor (cursor-agent), grok, copilot, antigravity.
 
 Per-agent setting in Orca's settings store (`record<string,string>`; siblings:
 `agentDefaultArgs` / `agentDefaultEnv` / `agentPermissionOverrides`). Replaces
-the launch program (extra prefix args allowed; card arguments are always
-appended by Orca). An override also satisfies the "agent installed" detection —
-**no binary named `omp` is needed in PATH**. Example:
-`agentCmdOverrides: { "omp": "~/.local/bin/zcode-acp-omp" }` (string parsed with
-shell-quoting, `~/` expanded, shell metacharacters rejected). Set via Settings
-UI (per-agent Command setting); the key was **not** found in
+the launch program (**prefix args allowed**; card arguments are always appended
+by Orca). An override also satisfies the "agent installed" detection —
+**no binary named `omp` is needed in PATH**. Decision (2026-11-19): single
+binary `zcode-acp` with an `omp` subcommand, wired as
+`agentCmdOverrides: { "omp": "zcode-acp omp" }` (string parsed with
+shell-quoting, `~/` expanded, shell metacharacters rejected). CLI parsing:
+**spf13/cobra v1.10.2** — `FParseErrWhitelist` (proxied into pflag's
+`ParseErrorsAllowlist`) gives the required liberal unknown-flag handling.
+Set via Settings UI (per-agent Command setting); the key was **not** found in
 `~/.config/orca/*.json` — the store is Electron storage/orcad; verify at first
 integration.
 
-### Launch contract for `zcode-acp-omp`
+### Launch contract: `zcode-acp omp`
 
-Orca runs: `zcode-acp-omp acp --plugin-dir <vis> --model <picked> --session-dir <dir>`
+Orca runs: `zcode-acp omp acp --plugin-dir <vis> --model <picked> --session-dir <dir>`
 with env `PI_NO_PTY=1` (ignore) and agent home `$PI_CODING_AGENT_DIR/.omp/agent`.
+
+CLI implementation (cobra): `omp` subcommand accepts the card argv contract
+(`acp` positional ignored, `--plugin-dir`, `--model`, `--session-dir` captured),
+unknown flags tolerated via `FParseErrWhitelist`; `--version` answers at root
+AND under any subcommand, any position — the probe shape under prefixed
+overrides is unverified, so be liberal.
 
 - `--version` → semver on stdout (5 s probe); card floor **17.0.5**, but print
   **18.1.9+** — model-selectors resolve from that version

@@ -49,6 +49,7 @@ Go-обёртка (один статический бинарь), которая
 | github.com/godbus/dbus/v5 | v5.2.2 | Secret Service (gnome-keyring) access for the OAuth path | The OAuth coding-plan path must fetch the credential-encryption key from Secret Service (FINDINGS.md: `secret-tool lookup service "ZCode Credential Encryption"`), then AES-256-GCM-decrypt `~/.zcode/v2/credentials.json`. godbus is pure Go (static binary preserved), battle-tested, and the exact library goswitch already uses (confidence: HIGH — FINDINGS + local goswitch go.mod) |
 | stdlib crypto/aes + cipher.NewGCM | — | Credential decryption (`enc:v2:os:...` blobs) | AES-256-GCM is in the standard library; no dependency warranted (confidence: HIGH — FINDINGS.md) |
 | stdlib net/http + encoding/json | — | z.ai OAuth/PAT minting (getCustomerInfo → api_keys → access_tokens) | Three plain HTTPS calls with exact shapes documented in FINDINGS.md; an SDK would guess wrong. Configure `http.Client` explicitly (IPv6-first and dead-HTTPS_PROXY are FINDINGS landmines) (confidence: HIGH — FINDINGS.md) |
+| github.com/spf13/cobra | v1.10.2 | CLI: single binary `zcode-acp`, subcommand `omp` (+ root ACP mode), `--version` | User decision (2026-11-19): `agentCmdOverrides` prefix args → card contract lives in an `omp` subcommand; `FParseErrWhitelist` (pflag `ParseErrorsAllowlist`) = liberal unknown-flag handling; `--version` at root and under any subcommand (confidence: HIGH — cobra command.go + pflag flag.go) |
 
 ### Supporting Libraries
 

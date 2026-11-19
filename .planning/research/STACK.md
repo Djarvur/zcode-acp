@@ -35,7 +35,7 @@ No database — the process is a stateless protocol bridge; session state lives 
 | agentclientprotocol/acp-tck | pinned tag, via `uvx` (Python) | Official external conformance harness: spawns the agent as a stdio subprocess, checks initialize negotiation, session lifecycle, prompt turns, cancellation, error codes, transport hygiene, permissions, capability negatives; MANDATORY/CAPABILITY/ADVISORY tiers → `VERDICT: CONFORMANT`, `--report-json` | Separate **non-blocking** CI job + pre-release manual gate. Upstream self-declares experimental ("may change without notice") — pin the tag, treat verdicts as signal, not a release gate (confidence: MEDIUM-HIGH — official repo, 2026-11-19) |
 | github.com/sourcegraph/jsonrpc2 | v0.2.3 | JSON-RPC 2.0 over stdio (client+server, any io.ReadWriteCloser, AsyncHandler) | **Only as fallback** if acp-go-sdk proves unusable — then hand-roll ACP types on top of it. Do NOT pull it alongside the SDK (confidence: MEDIUM — pkg.go.dev) |
 | golang.org/x/vuln (govulncheck) | @latest | CI vulnerability gate | Always, in its own pr-sanity job (goswitch pattern) |
-| stdlib `flag` | — | CLI surface (`acp` subcommand, `--version`, `--session-dir`) | Manual subcommand dispatch; the CLI must eventually mimic the masked agent's flags exactly (`omp acp --session-dir`) — that surface is tiny, keep it dependency-free (confidence: MEDIUM; exact flags are Phase-1 research) |
+| github.com/spf13/cobra | v1.10.2 (2025-12-04) | CLI surface: single binary `zcode-acp`, subcommand `omp` (+ root ACP mode), `--version` | User decision (2026-11-19): `agentCmdOverrides` accepts prefix args, so the card contract lives in an `omp` **subcommand** instead of a mirror binary name. cobra's `FParseErrWhitelist` (proxied into pflag's `ParseErrorsAllowlist`, ex-`ParseErrorsWhitelist`) gives the required liberal unknown-flag handling — Orca's flag set may grow; `--version` handled at root AND under any subcommand (probe shape under overrides unverified) (confidence: HIGH — cobra `command.go` `FParseErrWhitelist` + pflag `flag.go`, checked 2026-11-19) |
 
 ### Development Tools
 
@@ -54,9 +54,10 @@ No database — the process is a stateless protocol bridge; session state lives 
 # Project bootstrap
 go mod init github.com/Djarvur/zcode-acp
 
-# Runtime dependencies (coder SDK is the only must; godbus for the OAuth keyring path)
+# Runtime dependencies (coder SDK is the only must; godbus for the OAuth keyring path; cobra for the CLI)
 go get github.com/coder/acp-go-sdk@v0.20.0
 go get github.com/godbus/dbus/v5@v5.2.2
+go get github.com/spf13/cobra@v1.10.2
 
 # Test-time (optional)
 go get github.com/sebdah/goldie/v2   # or hand-rolled -update golden helper
@@ -90,7 +91,7 @@ Style: goswitch house style is **stdlib-only** `testing` (hand-rolled `assertX` 
 | coder/acp-go-sdk | BrokkAi/acp-go (schema v1.29.1, 2 stars), eino-contrib/acp, spachava753/acp-sdk, Tangerg/acp, caelis-labs/acp-go-sdk | Never as first choice — fewer users, thinner maintenance; eino-contrib/acp is the only one worth re-evaluating if coder's stalls (confidence: MEDIUM — community page) |
 | godbus/dbus/v5 direct | github.com/zalando/go-keyring | Only if Secret Service lookups grow beyond the single credential-key query — go-keyring is a thin godbus wrapper; direct godbus matches goswitch house style and exposes the exact service/username lookup we need |
 | mise.toml single-source CI | actions/setup-go + golangci/golangci-lint-action (ecosystem default) | If the repo ever drops mise — goswitch rejected the action on purpose: its `version:` input would pin the linter a second time and drift from mise.toml (PROJECT.md mandates the goswitch scaffold, so mise wins) |
-| stdlib `flag` subcommands | spf13/cobra | Only if the CLI surface (agent-mimicry flags) grows past ~5 subcommands — cobra's weight is unjustified for a bridge binary |
+| spf13/cobra v1.10.2 (chosen 2026-11-19) | stdlib `flag` + hand-rolled dispatch | stdlib is the zero-dep alternative, but pflag's unknown-flag allowlist (`FParseErrWhitelist`) is exactly the liberal parsing the card contract demands; revisit only if deps must shrink |
 | goldie/v2 golden files | hand-rolled `-update` helper | goswitch-strict stdlib purism; goldie only saves ~30 lines |
 
 ## What NOT to Use
@@ -121,7 +122,7 @@ Style: goswitch house style is **stdlib-only** `testing` (hand-rolled `assertX` 
 - OAuth snapshot revision is the exact string `zcode-builtin:<rev>:<sha256(builtin path)>` — never a bare number; PAT minting per FINDINGS 3.3.
 - Process discovery/spawn: `ELECTRON_RUN_AS_NODE=1 <app> resources/glm/zcode.cjs app-server --stdio`.
 
-**Orca mimicry surface (Phase 1 research):** the stack choice is unaffected — mimicking `omp`/`opencode2` means executable name, `--version` output, and startup flags, all served by the same binary's CLI layer. Keep that layer thin (stdlib flag) so exact-flag fidelity is easy.
+**Orca persona surface (decided 2026-11-19):** the stack choice is unaffected — the card contract is served by the same binary's CLI layer: `zcode-acp omp …` subcommand (cobra), unknown flags allowed via `FParseErrWhitelist`, `--version` answered at root and under any subcommand. Keep that layer thin so exact-flag fidelity is easy.
 
 ## Version Compatibility
 

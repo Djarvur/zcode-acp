@@ -93,7 +93,9 @@ TROUBLESHOOTING: Start Plan headless не работает (нужен брау�
 
 ## Constraints
 
-- **Tech stack**: Go; единственный бэкенд — desktop app-server ZCode
+- **Tech stack**: Go; единственный бэкенд — desktop app-server ZCode; CLI —
+  единый бинарь `zcode-acp` на cobra (сабкоманды; `omp` реализует контракт
+  карточек, требующих preset-агента)
 - **Research policy**: всё про ZCode — сначала исходники
   (https://github.com/zai-org/ZCode), потом эксперименты; всё про Orca —
   сначала исходники (https://github.com/stablyai/orca)
@@ -111,6 +113,7 @@ TROUBLESHOOTING: Start Plan headless не работает (нужен брау�
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Честный ACP-сервер как публичная архитектура; подключение к клиентам, требующим предустановленный агент, — рецепт в README, не архитектурное ограничение | Универсальность (годится для любого ACP-клиента) и честная публичная история | — Pending |
+| Единый бинарь `zcode-acp` (cobra) с сабкомандами; `omp`-сабкоманда реализует контракт карточки; в Orca — `agentCmdOverrides: {omp: "zcode-acp omp"}` | Префикс-аргументы в override разрешены — зеркало-имя бинаря не нужно; pflag-allowlist даёт либеральный разбор неизвестных флагов | — Pending |
 | Оба пути авторизации в v1 (api-key + OAuth coding plan) | OAuth — реальный сценарий пользователя; api-key — простой fallback; shim v2 доказал оба пути | — Pending |
 | Полный чат-цикл в v1 (стриминг, tool_call, permission, cancel) | Карточка в chat UI без инструментов не имеет смысла | — Pending |
 | Первая фаза — исследование и документирование, код после | Всё про ZCode/Orca изучается по исходникам до экспериментов | — Pending |
