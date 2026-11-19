@@ -3,6 +3,7 @@ package zcode
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -69,6 +70,13 @@ type Conn struct {
 	// is closure-captured in NewConn, never stored on the struct.
 	serveRequest func(env Envelope)
 
+	// trackRequest registers a tracked-no-answer request against the conn's
+	// base context (closure-captured in NewConn): the tracker must outlive
+	// the per-request handler goroutine — serveRequest cancels the request
+	// context when its handler returns, which would cut the tracker's
+	// deadline short before it could elapse.
+	trackRequest func(env Envelope)
+
 	// cancelBase cancels the conn's base request context (NewConn-owned).
 	cancelBase context.CancelFunc
 
@@ -117,6 +125,10 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 		defer cancelReq()
 
 		c.handleRequest(ctx, env)
+	}
+
+	c.trackRequest = func(env Envelope) {
+		c.trackUnanswered(baseCtx, env)
 	}
 
 	go c.readLoop()
@@ -224,26 +236,128 @@ func (c *Conn) handleRequest(ctx context.Context, env Envelope) {
 		}
 	}
 
-	c.routeRequest(env)
+	c.routeRequest(ctx, env)
 }
 
-// routeRequest is the built-in reverse-request router minimum (RESEARCH
-// Pattern 3, D-05): the runtime-preferences static answer and -32601 for
-// every other method (probe precedent — dialect §3). Per-method deadlines
-// and their expiry recording are the plan-03-02 hardening seam.
-func (c *Conn) routeRequest(env Envelope) {
+// routeRequest is the built-in reverse-request router (RESEARCH Pattern 3,
+// D-05): the runtime-preferences static answer inside the method's deadline,
+// the mid-turn credential-cipher request tracked-but-never-answered (its
+// Phase 6 keyring scope), and -32601 naming the method for everything else
+// (probe precedent — dialect §3/§6: numeric codes are the stable contract,
+// message text is not).
+func (c *Conn) routeRequest(ctx context.Context, env Envelope) {
 	switch env.Method {
 	case MethodRequestRuntimePreferences:
-		c.replyRequest(env.ID, map[string]any{
-			"nativeSearchEnhancementsEnabled": false,
-			"memoryEnabled":                   false,
-		}, nil)
+		c.answerRuntimePreferences(ctx, env)
+
+	case MethodRequestCredentialCipher:
+		c.trackRequest(env)
 
 	default:
 		c.replyRequest(env.ID, nil, &WireError{
 			Code:    CodeMethodNotFound,
 			Message: "unsupported host request: " + env.Method,
 		})
+	}
+}
+
+// answerRuntimePreferences replies with the static runtime-preference
+// defaults (EXP-WORKSPACEKEY-01.jsonl:9 shape, proven live) inside the
+// method's D-05 deadline; the governing deadline is recorded on the router
+// event so the policy is observable. Phase 5 replaces the static defaults
+// with real preference computation under the same bound.
+func (c *Conn) answerRuntimePreferences(ctx context.Context, env Envelope) {
+	deadline := c.deadlineFor(env.Method)
+
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
+	select {
+	case <-ctx.Done():
+		// The parent died (conn closing) or the deadline elapsed first: a
+		// genuine deadline expiry is recorded honestly; conn shutdown owes
+		// nothing on the wire.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			c.recordDeadlineExpired(env, deadline, ctx.Err())
+		}
+
+		return
+	default:
+	}
+
+	c.replyRequest(env.ID, map[string]any{
+		"nativeSearchEnhancementsEnabled": false,
+		"memoryEnabled":                   false,
+	}, nil)
+
+	c.recordRouterEvent(RouterEvent{
+		Kind:     RouterAnswered,
+		Method:   env.Method,
+		IDKey:    env.ID.Key(),
+		Deadline: deadline,
+	})
+}
+
+// trackUnanswered registers the known-but-NOT-answered credential-cipher
+// request (D-05: answering it needs the Phase 6 keyring vault) against the
+// conn's base context and records its deadline expiry when it fires — never
+// a reply, never a fabricated -32601: replying at all would claim an answer
+// the wrapper cannot give, and the server holds the turn on it. The tracker
+// goroutine is the registered entry; it dies with the conn (base-context
+// cancellation) without recording — nothing is owed on a closed stream.
+func (c *Conn) trackUnanswered(ctx context.Context, env Envelope) {
+	deadline := c.deadlineFor(env.Method)
+
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+
+	go func() {
+		defer cancel()
+
+		<-ctx.Done()
+
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			c.recordDeadlineExpired(env, deadline, ctx.Err())
+		}
+	}()
+}
+
+// deadlineFor resolves the per-method policy deadline: the injectable
+// override wins when it returns a positive duration, else the D-05 default.
+func (c *Conn) deadlineFor(method string) time.Duration {
+	if c.RouterDeadline != nil {
+		if d := c.RouterDeadline(method); d > 0 {
+			return d
+		}
+	}
+
+	return RouterDefaultDeadline
+}
+
+// recordDeadlineExpired records a tracked-no-answer expiry observably — the
+// OnRouterEvent hook when installed, plus a structural slog warning to
+// stderr (record-honesty: D-05 forbids swallowing the expiry). Method names,
+// canonical id keys and durations only — never params.
+func (c *Conn) recordDeadlineExpired(env Envelope, deadline time.Duration, err error) {
+	c.recordRouterEvent(RouterEvent{
+		Kind:     RouterDeadlineExpired,
+		Method:   env.Method,
+		IDKey:    env.ID.Key(),
+		Deadline: deadline,
+		Err:      err,
+	})
+
+	slog.Warn("zcode: reverse-request deadline expired without an answer",
+		"method", env.Method,
+		"id", env.ID.Key(),
+		"deadline", deadline.String(),
+	)
+}
+
+// recordRouterEvent delivers one policy observation to the OnRouterEvent
+// hook when installed.
+func (c *Conn) recordRouterEvent(ev RouterEvent) {
+	if c.OnRouterEvent != nil {
+		c.OnRouterEvent(ev)
 	}
 }
 
