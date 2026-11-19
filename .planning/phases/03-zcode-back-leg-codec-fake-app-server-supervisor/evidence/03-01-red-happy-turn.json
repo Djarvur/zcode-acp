@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run TestHappyTurnRoundTrip ./internal/zcode/fake/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestHappyTurnRoundTrip (0.01s)\n    roundtrip_test.go:51: session/create: skeleton: not implemented\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/zcode/fake\t0.030s\nFAIL\n",
+  "targetTest": "TestHappyTurnRoundTrip",
+  "targetFile": "internal/zcode/fake/roundtrip_test.go",
+  "expected": "TestHappyTurnRoundTrip fails on its own planned assertion: the session/create Call returns the skeleton error because the codec pending-call path and the fake scripting core are not implemented yet (RED stage of the tracer plan)",
+  "actual": "--- FAIL: TestHappyTurnRoundTrip\\n    roundtrip_test.go:51: session/create: skeleton: not implemented\\nFAIL\\nFAIL\\tgithub.com/Djarvur/zcode-acp/internal/zcode/fake\\t0.030s",
+  "semanticAssessment": "The target test compiled, ran, and failed on its own assertion (t.Fatalf inside the create-call helper after conn.Call returned the planned skeleton error) \u2014 not on a build failure, zero-test discovery, panic, or fixture fault. The failure stage is the planned one: the codec leaf layer (pending-call table) and the fake scripting core (Serve) are skeleton stubs, so the end-to-end round-trip cannot pass. Full go-test console output captured unmodified from the final Task-1 code state (after lint-driven refactors), including the package summary line. An earlier RED attempt exposed an unrelated executor bug (writer.run skeleton never called stopWG.Done, deadlocking cleanup) \u2014 fixed under deviation Rule 1 before this capture."
+}
