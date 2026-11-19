@@ -23,6 +23,7 @@ ACP-клиент может провести с ZCode полный ход end-to
 
 ### Active
 
+✓ Back leg (Phase 3): JSONL-кодек диалекта, scriptable fake + golden-корпус (10 сценариев в CI), discovery-матрица + супервизор (Setpgid/group-kill/3-60s), машина ходов (exactly-once, cancel, -32010) — internal/{zcode,zcode/fake,supervisor,turn}, ноль зависимостей
 - [ ] Полный чат-цикл ACP v1: initialize, session/new, prompt со стримингом
       (agent_message_chunk + agent_thought_chunk), tool_call события,
       session/request_permission, session/cancel
@@ -127,6 +128,7 @@ TROUBLESHOOTING: Start Plan headless не работает (нужен брау�
 | Три семантические поправки для Фаз 4–6 (Phase 1 source cross-verification): chat-запуск БЕЗ `--session-dir` (он у discovery-процессов — wrapper accept-and-ignore + терпит второй процесс); fullAccess=false только у discovery-сессий; modelDiscovery — модели доступны до сессии через probe-сессию (`models` в ответе session/new, расширение клиента) | Влияют на CLI-контракт (Фаза 2), честность capabilities (Фаза 4), выбор моделей (Фаза 6) | ✓ Done (Phase 1) |
 | Защита master + PR-флоу (Phase 2): branch protection ЖИВАЯ (require PR, 3 required checks, enforce_admins, linear history — GET-верифицировано; GH006-тест), branching_strategy none→phase — Фазы 3+ работают через gsd/phase-* PR; CI (pr-sanity: lint/test/build + govulncheck + secret-scan) наблюде́н зелёным на push и PR | Все коммиты проходят строгие ворота с первого кода; прямые push в master невозможны (проверено эмпирически) | ✓ Done (Phase 2) |
 | Скраббер CR-01 (Phase 2 code review): USER_INFO_RX lastIndex утекал второй user_info в строке — воспроизведено, исправлено TDD (регрессии multi-object + fixed-point), реестр T-2-01 пере-закрыт | Секрет-конвейер честен; регрессионные тесты защищают контракт навсегда | ✓ Done (Phase 2) |
+| Zero-dependency back leg (Phase 3): stdlib-only внутренние пакеты (zcode codec, fake, supervisor, turn); TDD RED→GREEN на всех behaviors; E2E-цепочка supervisor+fake+Conn+machine на реальных exec-пайпах; реальный desktop spawn верифицирован (realdesktop guarded, ноль сирот, ESRCH) | Фазы 4–6 тестируются полностью в CI без desktop-бандла | ✓ Done (Phase 3) |
 | Экспериментальный конвейер (Phase 1): scrub-first (сырые записи вне репо, scrub-capture.mjs — единственный путь в experiments/captures/), scan-secrets.sh гейтит каждый коммит, check-docs.sh — структурно-provenance гейт; эксперименты никогда не идут из CI | Секреты не попадают в публичный репо; конвейер переиспользуется Фазой 2 для CI | ✓ Done (Phase 1) |
 
 ## Evolution
@@ -147,4 +149,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-19 after Phase 2*
+*Last updated: 2026-11-20 after Phase 3*
