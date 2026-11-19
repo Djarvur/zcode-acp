@@ -85,8 +85,13 @@ type Child struct {
 	// group leader, so -PgID addresses the whole tree incl. grandchildren.
 	PgID int
 	// Exited delivers exactly one ExitInfo when the monitor has reaped the
-	// child (buffered, so the monitor never blocks).
+	// child (buffered, so the monitor never blocks). Receive it only after
+	// Done closes — the delivery is a single send, Done is the multi-observer
+	// completion signal.
 	Exited <-chan ExitInfo
+	// Done closes when the monitor has reaped the child — observable by any
+	// number of watchers (close is not consumed, unlike the Exited delivery).
+	Done <-chan struct{}
 	// StderrDone closes when the capped stderr pump has finished — the
 	// Wait-ordering guard of PITFALL 3 (never reap before pumps finish).
 	StderrDone <-chan struct{}
@@ -173,6 +178,7 @@ func SpawnChild(ctx context.Context, argv, env []string, opts SpawnOpts) (*Child
 
 	exited := make(chan ExitInfo, 1)
 	stderrDone := make(chan struct{})
+	done := make(chan struct{})
 
 	child := &Child{
 		Cmd:        cmd,
@@ -180,11 +186,12 @@ func SpawnChild(ctx context.Context, argv, env []string, opts SpawnOpts) (*Child
 		Stdout:     pipes.stdout,
 		PgID:       cmd.Process.Pid,
 		Exited:     exited,
+		Done:       done,
 		StderrDone: stderrDone,
 	}
 
 	go drainChildStderr(pipes.stderr, opts.StderrCap, stderrDone)
-	go monitorChild(cmd, stderrDone, exited)
+	go monitorChild(cmd, stderrDone, exited, done)
 
 	slog.Debug("supervisor: child spawned", "pid", child.PgID, "binary", argv[0])
 
@@ -250,10 +257,14 @@ func newSpawnCommand(ctx context.Context, argv, env []string, opts SpawnOpts) (*
 
 // monitorChild reaps the child exactly once: it waits for the stderr pump to
 // finish (PITFALL 3 — never Wait before the pumps finish), then Wait, then
-// delivers ExitInfo on the buffered channel.
-func monitorChild(cmd *exec.Cmd, stderrDone <-chan struct{}, exited chan<- ExitInfo) {
+// delivers ExitInfo on the buffered channel and closes Done (the multi-
+// observer reap signal — close, unlike the delivery, is never consumed).
+func monitorChild(cmd *exec.Cmd, stderrDone <-chan struct{}, exited chan<- ExitInfo, done chan struct{}) {
 	<-stderrDone
-	exited <- ExitInfo{Err: cmd.Wait()}
+
+	err := cmd.Wait()
+	exited <- ExitInfo{Err: err}
+	close(done)
 }
 
 // drainChildStderr forwards the child's stderr to the wrapper's stderr,
