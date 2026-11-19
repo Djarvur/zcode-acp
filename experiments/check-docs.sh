@@ -24,7 +24,15 @@
 #       ones specified by each doc-writing task in plans 01-01..01-06;
 #   (e) path-shape scan over docs/ + experiments/ (captures included): any absolute
 #       path resolving under a user home directory is a violation (neutral-phrasing
-#       rule; the regex lives in this script only, never in committed prose).
+#       rule; the regex lives in this script only, never in committed prose);
+#   (f) capture-header continuity — extends check (b) (T-1-07 stale-evidence
+#       guard, nyquist audit 2026-11-19): every V-EXP id that resolves must point
+#       at capture file(s) whose FIRST line still carries {"capture":"<id>"} —
+#       a re-scrub or edit that strips the header fails the gate instead of
+#       silently weakening provenance;
+#   (g) no key-minting endpoint (T-1-03, nyquist audit 2026-11-19): the string
+#       api_keys must not appear in any experiments/ script (*.mjs, *.sh) —
+#       previously a point-in-time gate from plan 01-02 only; now continuous.
 
 set -u
 MODE=conformance
@@ -89,6 +97,13 @@ while IFS= read -r tag; do
   esac
   if ! ls experiments/captures/"$id"* >/dev/null 2>&1; then
     fail "V-EXP id does not resolve: $tag -> expected experiments/captures/$id*"
+  else
+    for cap in experiments/captures/"$id"*; do
+      [ -f "$cap" ] || continue
+      if ! head -n 1 "$cap" | grep -q "\"capture\":\"$id\""; then
+        fail "capture header missing or stale: $cap first line must contain \"capture\":\"$id\" (T-1-07)"
+      fi
+    done
   fi
 done < <(grep -rhoE '\[V-EXP [^]]+\]' --include='*.md' docs/ 2>/dev/null | sort -u)
 
@@ -118,6 +133,15 @@ path_hits=$(grep -rnE "$path_rx" docs/ experiments/ 2>/dev/null || true)
 if [ -n "$path_hits" ]; then
   printf '%s\n' "$path_hits" | head -5
   fail "absolute path under a user home directory committed (neutral-phrasing rule; use tilde or <placeholder> forms)"
+fi
+
+# --- (g) no key-minting endpoint in experiments/ scripts (T-1-03) -------------
+# This script is excluded from its own scan: it necessarily names the pattern it
+# enforces. Every other experiments/ script (*.mjs, *.sh) is scanned verbatim.
+mint_hits=$(grep -rniE 'api_keys' experiments/ --include='*.mjs' --include='*.sh' --exclude=check-docs.sh 2>/dev/null || true)
+if [ -n "$mint_hits" ]; then
+  printf '%s\n' "$mint_hits" | head -5
+  fail "key-minting endpoint reference (api_keys) in experiments/ scripts (T-1-03: no flow may mint credentials)"
 fi
 
 exit $rc
