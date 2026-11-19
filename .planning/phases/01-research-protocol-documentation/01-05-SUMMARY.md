@@ -183,3 +183,13 @@ None - no external service configuration required.
 ---
 *Phase: 01-research-protocol-documentation*
 *Completed: 2026-11-19*
+
+## Self-Check: PASSED
+
+- All plan artifacts verified present on disk: docs/protocol/install-discovery.md, experiments/captures/EXP-DISCOVERY-01.jsonl, this SUMMARY
+- All commits verified as ancestors of HEAD: 4bcdf75 (Task 1), c766ede (Task 2), 81619b9 (plan metadata); measured from ledger 3f6323f = 2 production commits at SUMMARY-write time (matches actuals.commits; 3 total including the metadata commit)
+- Gates re-verified green post-commit: check-docs.sh exit 0 (no CHECK FAIL), scan-secrets.sh exit 0 (no SECRET SHAPE)
+- Phase-gate PENDING count for docs/protocol/install-discovery.md = 0 (order-independent per plan revision; remaining PENDING lines are the other wave-2 plans' docs: app-server-dialect.md, reference-adapters.md)
+- TDD gate: task.is-behavior-adding = false (documentation plan — no tdd tasks, no behavior blocks); no RED/GREEN cycle applicable
+- ROADMAP progress updated via roadmap.update-plan-progress (4/6 summaries, In Progress — no missing_phase_details decline); STATE.md at Plan 5 of 6, Stopped at Completed 01-05-PLAN.md; DISC-03 marked complete in REQUIREMENTS.md (ready-ids resolved it as ready)
+- Execution-mode note: commits landed on master per the orchestrator's sequential-execution dispatch on the main working tree (project config branching_strategy "none"; the established pattern of plans 01-01/01-02/01-04)
