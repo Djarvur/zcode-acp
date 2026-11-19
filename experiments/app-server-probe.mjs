@@ -70,8 +70,91 @@ function hostReplyFor(method) {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime state shared with the flow steps. Steps may be static
+// ({ atMs, msg }) or dynamic ({ atMs, make(state) }) — the latter are
+// evaluated at fire time so a probe can reference values learned from
+// earlier replies (e.g. the sessionId out of a session/create result).
+// ---------------------------------------------------------------------------
+const state = {
+  replies: {}, // id -> parsed reply wire object (result OR error)
+  sessionId: null, // first result.session.sessionId observed
+  notifications: [], // { method, keys } per server->host notification line
+  seqKeyHits: {}, // sequence-ish top-level key -> times seen in notifications
+};
+const SEQ_WATCH_KEYS = ['seq', 'sequence', 'eventSeq', 'sequenceNumber', 'revision', 'afterSeq'];
+
+function observeReply(wire) {
+  if (wire == null || typeof wire !== 'object') return;
+  if (wire.id != null) state.replies[wire.id] = wire;
+  const sess = wire && wire.result && wire.result.session;
+  if (sess && typeof sess.sessionId === 'string' && !state.sessionId) {
+    state.sessionId = sess.sessionId;
+  }
+}
+
+function observeNotification(wire) {
+  if (wire == null || typeof wire !== 'object' || typeof wire.method !== 'string') return;
+  const keys = wire.params && typeof wire.params === 'object' ? Object.keys(wire.params) : [];
+  state.notifications.push({ method: wire.method, keys });
+  for (const k of keys) {
+    if (SEQ_WATCH_KEYS.includes(k)) state.seqKeyHits[k] = (state.seqKeyHits[k] || 0) + 1;
+  }
+}
+
+// Verdict line for one probed request id: an accepted result, a refused error
+// (code + message — a refusal IS the verdict), or no reply within the window.
+function classifyReply(id, method) {
+  const wire = state.replies[id];
+  if (!wire) return { method, probeId: id, verdict: 'no-reply' };
+  if (wire.error) {
+    return {
+      method,
+      probeId: id,
+      verdict: 'refused',
+      errorCode: wire.error.code,
+      errorMessage: String(wire.error.message || '').slice(0, 300),
+    };
+  }
+  const keys = wire.result && typeof wire.result === 'object' ? Object.keys(wire.result) : [];
+  return { method, probeId: id, verdict: 'accepted', resultKeys: keys };
+}
+
+function appendVerdicts(rawOut) {
+  const ts = new Date().toISOString();
+  appendFileSync(
+    rawOut,
+    JSON.stringify({
+      ts,
+      verdict: {
+        kind: 'per-method',
+        probed: Object.entries(PROBED_METHODS).map(([id, method]) => classifyReply(Number(id), method)),
+      },
+    }) + '\n',
+  );
+  const notifCounts = {};
+  for (const n of state.notifications) notifCounts[n.method] = (notifCounts[n.method] || 0) + 1;
+  appendFileSync(
+    rawOut,
+    JSON.stringify({
+      ts,
+      verdict: {
+        kind: 'surface-summary',
+        sessionCreateAccepted: state.sessionId != null,
+        envelopeMethodsObserved: notifCounts,
+        sequenceKeyPresence: state.seqKeyHits,
+      },
+    }) + '\n',
+  );
+}
+
+// Probed request ids -> method names. Flows that probe specific methods list
+// them here so the per-method verdict lines are emitted even if the flow's
+// dynamic step never fired (recorded honestly as no-reply).
+const PROBED_METHODS = {};
+
+// ---------------------------------------------------------------------------
 // Flow registry — the dispatch seam. Plans 01-02 add `subscribe` and `turn`
-// here; each flow returns a list of { atMs, msg } steps to send.
+// here; each flow returns a list of { atMs, msg } or { atMs, make } steps.
 // ---------------------------------------------------------------------------
 const FLOWS = {
   probe(ctx) {
@@ -96,6 +179,55 @@ const FLOWS = {
           method: 'session/create',
           params: { workspace: { workspacePath: ws, workspaceKey: 'probe-arbitrary-host-key-01' } },
         },
+      },
+    ];
+  },
+
+  // E1 (DISC-01): session/subscribe / v4/conversation/subscribe / session/events
+  // surface probe. Registry-level only — NO session/send anywhere in this flow
+  // (an idle window after subscribe is the point: whatever event envelopes the
+  // server pushes on its own are the evidence). Create params follow the
+  // 3.17.x zcodeSessionCreateParamsSchema (workspace required; mode/persistence
+  // optional) re-read before this run; subscribe params follow
+  // zcodeSessionSubscribeParamsSchema {sessionId, deliveryKind, afterSeq?,
+  // includeSnapshot?}. The sessionId comes from the create reply at fire time.
+  // A refusal is itself the verdict — the error reply is recorded with its code.
+  'subscribe'(ctx) {
+    const ws = ctx.workspaceDir;
+    PROBED_METHODS[3] = 'session/subscribe';
+    PROBED_METHODS[4] = 'v4/conversation/subscribe';
+    PROBED_METHODS[5] = 'session/events';
+    return [
+      { atMs: 1500, msg: { id: 1, method: 'provider/refreshRegistry', params: { reason: 'probe' } } },
+      {
+        atMs: 5000,
+        msg: {
+          id: 2,
+          method: 'session/create',
+          params: {
+            workspace: { workspacePath: ws, workspaceKey: ws },
+            mode: 'build',
+            persistence: 'immediate',
+          },
+        },
+      },
+      {
+        atMs: 8500,
+        make: (st) =>
+          st.sessionId
+            ? { id: 3, method: 'session/subscribe', params: { sessionId: st.sessionId, deliveryKind: 'desktop-continuous' } }
+            : null,
+      },
+      {
+        atMs: 11000,
+        make: (st) =>
+          st.sessionId
+            ? { id: 4, method: 'v4/conversation/subscribe', params: { sessionId: st.sessionId, deliveryKind: 'desktop-continuous' } }
+            : null,
+      },
+      {
+        atMs: 13000,
+        make: (st) => (st.sessionId ? { id: 5, method: 'session/events', params: { sessionId: st.sessionId } } : null),
       },
     ];
   },
@@ -170,7 +302,7 @@ function usage() {
   process.stderr.write(
     'usage: node experiments/app-server-probe.mjs --electron <bundle-root>/zcode \\\n' +
       '  --cjs <bundle-root>/resources/glm/zcode.cjs --builtin <builtin-config-file> \\\n' +
-      '  --flow <probe|workspacekey> --raw-out <scratch-path-outside-repo> \\\n' +
+      '  --flow <probe|workspacekey|subscribe> --raw-out <scratch-path-outside-repo> \\\n' +
       '  --window-ms 12000 [--quiet-ms 2500] [--workspace-dir <dir>]\n',
   );
 }
@@ -251,9 +383,13 @@ child.stdout.on('data', (chunk) => {
     try {
       const wire = JSON.parse(line);
       if (wire && typeof wire.method === 'string' && wire.id != null) {
+        observeReply(wire);
         const reply = { id: wire.id, ...hostReplyFor(wire.method) };
         send(reply);
         appendFileSync(rawOut, JSON.stringify({ ts: new Date().toISOString(), hostSent: reply }) + '\n');
+      } else {
+        observeReply(wire);
+        observeNotification(wire);
       }
     } catch {
       // non-JSON stdout line — keep it in the capture, no reply possible
@@ -293,7 +429,15 @@ const steps = FLOWS[flags.flow]({
   windowMs: flags.windowMs,
   quietMs: flags.quietMs,
 });
-const timers = steps.map((s) => setTimeout(() => send(s.msg), s.atMs));
+const timers = steps.map((s) =>
+  setTimeout(() => {
+    // Dynamic steps are evaluated at fire time against the accumulated state;
+    // a step whose prerequisite never arrived (e.g. no session id) sends
+    // nothing and its probe id is recorded as no-reply in the verdicts.
+    const msg = s.msg !== undefined ? s.msg : s.make ? s.make(state) : null;
+    if (msg) send(msg);
+  }, s.atMs),
+);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let exitInfo = await Promise.race([exited, sleep(flags.windowMs).then(() => null)]);
@@ -301,6 +445,7 @@ let exitInfo = await Promise.race([exited, sleep(flags.windowMs).then(() => null
 let killed = false;
 if (!exitInfo) {
   // collection window over: clean shutdown first, SIGKILL group as backstop
+  appendVerdicts(rawOut);
   child.stdin.end();
   exitInfo = await Promise.race([exited, sleep(GRACE_MS).then(() => null)]);
   if (!exitInfo) {
@@ -309,6 +454,7 @@ if (!exitInfo) {
     exitInfo = await exited;
   }
 } else {
+  appendVerdicts(rawOut);
   child.stdin.end();
 }
 for (const t of timers) clearTimeout(t);

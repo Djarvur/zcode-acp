@@ -109,6 +109,37 @@ Invocation shape for every experiment: resolve the bundle root and builtin
 config at run time; write the raw capture outside the repo; scrub into
 `experiments/captures/<experiment-id>.jsonl`; run both gates.
 
+## Run notes
+
+### EXP-SUBSCRIBE-01 (E1, plan 01-02) — 2026-11-19
+
+- Command shape: `node experiments/app-server-probe.mjs --electron <bundle-root>/zcode
+  --cjs <bundle-root>/resources/glm/zcode.cjs --builtin <active zcode-builtin.json>
+  --flow subscribe --raw-out <scratch-outside-repo>/raw-exp-subscribe-01.jsonl
+  --window-ms 15000 --workspace-dir <scratch>/ws` — bundle root, entrypoint, and
+  builtin config resolved at run time (real paths are supplied in the agent prompt,
+  never committed); raw capture born outside the repo; scrubbed into
+  `experiments/captures/EXP-SUBSCRIBE-01.jsonl` with `--redact-path` for the scratch
+  prefix.
+- Window: 15000 ms (research assumption A3 — wait longer than the 12 s probe).
+- **Verdict (one line):** on shipped 3.18.2, `session/subscribe` **ACCEPTED**
+  (result `{sessionId, eventSeq, events}`; eventSeq 0 with an empty event list for
+  an idle no-send session), `session/events` **ACCEPTED** (poll-style, result
+  `{events}`), `v4/conversation/subscribe` **REFUSED** (-32603) — its real params
+  surface is `{topic: string, connectionId: string, clientMode:
+  "desktop-continuous" | "web-remote-replayable"}` (the validation error lists
+  `sessionId`/`deliveryKind` as unrecognized keys). No `state.updated` arrived
+  within the window (A3 recorded honestly as not-observed here);
+  `session/lifecycle/changed` envelopes carry `revision`,
+  `startup/storageState` envelopes carry `sequence`. **No quota spent** — the flow
+  contains no `session/send`.
+- Bundle string context (occurrence counts via `grep -o … | wc -l`, Pitfall 8):
+  `session/subscribe` x1, `v4/conversation/subscribe` x1, `session/events` x1,
+  `deliveryKind` x61, `desktop-continuous` x15, `web-remote-replayable` x11,
+  `session/delete` x0 (absent). The delivery-kind enum
+  `["desktop-continuous","web-remote-replayable"]` appears in multiple minified
+  schemas in the bundle — matching the 3.17.x `zcodeDeliveryKindSchema`.
+
 ## Quota ledger
 
 - **Real turns spent: 0** — plan 01-02 updates this line; every experiment in
