@@ -168,3 +168,11 @@ None - no external service configuration required.
 ---
 *Phase: 01-research-protocol-documentation*
 *Completed: 2026-11-19*
+
+## Self-Check: PASSED
+
+- All plan artifacts verified present on disk: docs/protocol/acp-client-dialect.md, experiments/captures/EXP-SESSIONDIR-01.jsonl, this SUMMARY
+- All commits verified as ancestors of HEAD: c8f42a5 (Task 1), 6937f8a (Task 2), dbbd505 (plan metadata); measured from ledger ec7b421 = 2 production commits (matches actuals.commits)
+- Gates re-verified green post-commit: check-docs.sh exit 0 (no CHECK FAIL), scan-secrets.sh exit 0 (no SECRET SHAPE)
+- Phase-gate PENDING count for docs/protocol/acp-client-dialect.md = 0 (order-independent per plan revision; remaining PENDING lines are the other wave-2 plans' docs)
+- TDD gate: task.is-behavior-adding = false (documentation plan — no tdd tasks, no behavior blocks); no RED/GREEN cycle applicable
