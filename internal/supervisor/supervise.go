@@ -131,6 +131,13 @@ func (s *Supervisor) Start(ctx context.Context) error {
 			crashes++
 
 			if crashes > policy.CrashLimit {
+				// Staged shutdown ALWAYS — the fail-loud exit included
+				// (review CR-01): returning before the shutdown would strand
+				// the crashed child's whole group — Electron grandchildren
+				// included (PITFALL 6) — exactly the leak the supervisor
+				// exists to contain.
+				s.shutdown(child, policy)
+
 				return fmt.Errorf("zcode: supervisor: app-server crash loop: %d crashes within %v: %w",
 					crashes, policy.CrashWindow, info.Err)
 			}
