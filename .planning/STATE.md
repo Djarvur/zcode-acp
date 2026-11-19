@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: ZCode Back Leg
 status: executing
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-11-19T19:00:57.136Z"
+stopped_at: Completed 03-05-PLAN.md
+last_updated: "2026-11-19T19:34:00.945Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 3 execution started
-state_head: bd44ae834decd5421c452a26dab87139117dcb42
+state_head: 60c8217db00421bef916973c2f91da11fb5f0f38
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 20
-  completed_plans: 15
+  completed_plans: 16
   percent: 29
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 3 (ZCode Back Leg) — EXECUTING
-Plan: 5 of 9
+Plan: 6 of 9
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 3 execution started
 
@@ -85,6 +85,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 03 P03-04 | 31min | 2 tasks | 3 files |
 | Phase 03 P03-02 | 23min | 3 tasks | 8 files |
 | Phase 03 P03-03 | 17min | 2 tasks | 25 files |
+| Phase 03 P03-05 | 26min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -135,6 +136,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Golden corpus (03-03): fail-loud scenario loader — strict decode rejects unknown schema keys naming the field, exactly-one emit/reverse, dialect code required on error replies, eof_drain_ms required when on_request is empty
 - [Phase 03]: Corpus replay (03-03): table-driven TestGolden drives every scenario through a real Conn over io.Pipe with per-scenario drivers (driver-less entries fail loud); TestEOFSignature — zero recorded frames is a reported failure, never an empty success
 - [Phase 03]: Fake scripting extensions (03-03): RequestRule.Times match budget — a spent rule falls through to the next same-method rule (declarative -32010); closed-stream writes record honest unanswered notes on a clean run per dialect §1 EOF facts
+- [Phase 03]: Turn machine (03-05): exactly-once completion via per-turn resolved flag under the machine mutex + OnResolve hook (sync.Once semantics; sync.Once cannot reset between turns); one observe path (ObserveEnvelope = conn.OnNotification receiver) classifies terminal/idle; watcher deliveries funnel into the same path
+- [Phase 03]: Turn machine (03-05): PollWatcher polls session/messages opaquely (one observation envelope per poll, activity = raw payload change — presence/time only, OQ2) with the probe-ported quiet-window gates (floor = 3x quiet from the send ack, then settle); subscribe-based watcher reserved, not implemented
+- [Phase 03]: Turn machine (03-05): 03-05 shipped terminal-only classification in Task 2 GREEN so Task 3's variant RED failed genuinely — idle-patch/quiet-window/carrier-resolution landed with Task 3 GREEN; carrier kinds map session/event->type, v4/telemetry + computer-use->kind, record-on-first-sight turnId, foreign-turnId never resolves
 
 ### Pending Todos
 
@@ -158,6 +162,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T19:00:31.428Z
-Stopped at: Completed 03-03-PLAN.md
+Last session: 2026-11-19T19:33:34.747Z
+Stopped at: Completed 03-05-PLAN.md
 Resume file: None
