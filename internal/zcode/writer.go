@@ -95,8 +95,9 @@ func (w *writer) writeFrame(env *Envelope) {
 }
 
 // recordErr keeps the first write error; the writer keeps draining so one
-// failed write does not wedge callers — in-flight calls surface failure via
-// their own ctx timeout and Close ends the loop.
+// failed write does not wedge callers — the read-loop drain surfaces
+// firstErr to in-flight calls as the stream's actual cause (WR-01) and
+// Close ends the loop.
 func (w *writer) recordErr(err error) {
 	w.errMu.Lock()
 	defer w.errMu.Unlock()
@@ -104,6 +105,17 @@ func (w *writer) recordErr(err error) {
 	if w.firstErr == nil {
 		w.firstErr = err
 	}
+}
+
+// firstError returns the first write error the writer recorded, or nil —
+// the conn's read-loop drain wraps it as the cause of the in-flight-call
+// failure so callers see the stream's actual last error (review WR-01:
+// firstErr was write-only).
+func (w *writer) firstError() error {
+	w.errMu.Lock()
+	defer w.errMu.Unlock()
+
+	return w.firstErr
 }
 
 // enqueue sends env on the ordered queue lane (ordinary calls and
