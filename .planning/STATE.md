@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: ZCode Back Leg
 status: executing
-stopped_at: Completed 03-06-PLAN.md
-last_updated: "2026-11-19T19:58:25.860Z"
+stopped_at: Completed 03-07-PLAN.md
+last_updated: "2026-11-19T20:33:13.959Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 3 execution started
-state_head: 00469263d0eabf3abac48de0adae99d8eeac1625
+state_head: 67643e460d4717b13448155e6c3cb53ce9b3b332
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 20
-  completed_plans: 17
+  completed_plans: 18
   percent: 29
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 3 (ZCode Back Leg) — EXECUTING
-Plan: 7 of 9
+Plan: 8 of 9
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 3 execution started
 
@@ -87,6 +87,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 03 P03-03 | 17min | 2 tasks | 25 files |
 | Phase 03 P03-05 | 26min | 3 tasks | 5 files |
 | Phase 03 P03-06 | 7min | 2 tasks | 3 files |
+| Phase 03 P03-07 | 26min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -143,6 +144,10 @@ Recent decisions affecting current work:
 - [Phase 03]: Fake binary (03-06): one scripting core, two hosting modes — cmd/fake-app-server is a thin main over an exported fake.Main stdio entry in the fake package (named exit codes ExitUsage=2/ExitServeFailed=1), so the standalone binary and the reexec helper execute the identical call path by construction
 - [Phase 03]: Reexec tier (03-06): exec-tier zero-lines proof named TestEOFSignatureChild (TestEOFSignature taken by 03-03 in-package) but reuses the SAME errZeroFrameExchange classifier — exactly one verdict function; parent drives RAW zcode envelopes (not zcode.Conn) to keep the tier's subject the plumbing
 - [Phase 03]: Reexec tier (03-06): drain observability asserted by elapsed-time floor (>= 90 ms from parent stdin close to child exit; eof_drain_ms=100 makes instant exit impossible) and the happy exchange pins exact frame counts both directions (parent 3, child 8); reexec idiom stable under -race x5 — A2 built-binary fallback not needed
+- [Phase 03]: Supervisor spawn (03-07): ChildEnv is a pure allowlist builder over an explicit parentEnv input (not os.Environ) — the observed-env test contract forces injectable input; proxy vars scrubbed by construction; TestSpawnEnv's reexec helper is keyed on ELECTRON_RUN_AS_NODE itself so the child reports ChildEnv output verbatim (exact key-set assertion, no test-only escape hatch)
+- [Phase 03]: Supervisor lifecycle (03-07): Child.Exited = single buffered delivery, Child.Done = close-based multi-observer reap signal (no double-receive races); staged shutdown = stdin close -> wait within grace (4s probe default) -> UNCONDITIONAL group SIGKILL (ESRCH-tolerated) -> bounded reap wait; stdin-EOF never trusted (PITFALL 6)
+- [Phase 03]: Crash window (03-07): crashes > CrashLimit (fail loud naming count + window), BaseBackoff << (crashes-1), sliding reset when run lifetime > window at crash time — pinned by spawn-count arithmetic (plain trip at 4 spawns, post-reset at 5 vs 4 without reset); grace default 4s (probe GRACE_MS), all knobs Policy-injectable
+- [Phase 03]: Real-desktop positive path (03-07): //go:build realdesktop + ZCODE_ACP_REAL_E2E=1 double guard, manual-only — tagged run without the env var skips in 2ms, default suite unaffected; canonical command in the file header; end-of-phase human check (coverage D5 human_judgment, unrun-verify windows entry)
 
 ### Pending Todos
 
@@ -166,6 +171,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T19:57:57.859Z
-Stopped at: Completed 03-06-PLAN.md
+Last session: 2026-11-19T20:32:42.315Z
+Stopped at: Completed 03-07-PLAN.md
 Resume file: None
