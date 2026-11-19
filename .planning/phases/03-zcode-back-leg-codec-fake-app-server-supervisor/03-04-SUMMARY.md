@@ -197,7 +197,12 @@ None - no external service configuration required.
 
 ## Self-Check: PASSED
 
-_(appended after close-out verification)_
+- 03-04-SUMMARY.md exists on disk
+- internal/supervisor/discover.go, discover_test.go and the RED evidence record exist (3 files created, 0 modified)
+- All claimed commits are ancestors of HEAD: 942004d (Task 1 RED), 351fd82 (Task 2 GREEN), 56618ea (SUMMARY), 762b758 (tracking)
+- Ledger-measured plan commit count: 5 (2 task commits + 1 concurrent non-plan docs commit f3c35d1 landed mid-plan + 2 docs commits)
+- Final post-close-out run: go test -race -count=1 ./... — all green (supervisor 1.0s, zcode, zcode/fake); mise run lint — 0 issues; tidy-diff clean
+- TDD gate: RED evidence RED_EVIDENCE_OK captured from the final Task-1 state before the feat commit (gate sequence test → feat intact)
 
 ---
 *Phase: 03-zcode-back-leg-codec-fake-app-server-supervisor*
