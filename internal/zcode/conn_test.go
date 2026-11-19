@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -39,6 +40,11 @@ const (
 	// testSessionID is the fixed session id for stop-frame shape assertions.
 	testSessionID = "sess_x"
 )
+
+// errCorrelationBroken marks a cross-resolved call reply — a reply landing
+// on the wrong pending call (the call-layer face of the WR-02 failure
+// family).
+var errCorrelationBroken = errors.New("id correlation broken")
 
 // pipeEnd joins one io.Pipe half-pair into an io.ReadWriteCloser stream end.
 type pipeEnd struct {
@@ -83,7 +89,7 @@ type callOutcome struct {
 // issueCalls starts n concurrent Calls that the peer is expected NOT to
 // answer; each outcome (result or error) is pushed to the returned channel
 // when the call settles, so tests can assert pending stays pending.
-func issueCalls(t *testing.T, conn *zcode.Conn, ctx context.Context, n int) <-chan callOutcome {
+func issueCalls(ctx context.Context, t *testing.T, conn *zcode.Conn, n int) <-chan callOutcome {
 	t.Helper()
 
 	outcomes := make(chan callOutcome, n)
@@ -327,7 +333,7 @@ func TestDemuxReverseRequestNeverResolvesPendingCall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	outcomes := issueCalls(t, conn, ctx, pendingCalls)
+	outcomes := issueCalls(ctx, t, conn, pendingCalls)
 
 	// All request frames on the wire ⇒ all pending entries registered
 	// (registration precedes enqueue in Call).
@@ -379,7 +385,7 @@ func TestDemuxIdTypeNonConflation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	outcomes := issueCalls(t, conn, ctx, 1)
+	outcomes := issueCalls(ctx, t, conn, 1)
 	waitLines(t, peerLines, 1, testTimeout) // pending entry registered (int id 1)
 
 	// Foreign TYPE: the string id "1" never resolves the integer-id call.
@@ -436,7 +442,7 @@ func TestDemuxClassification(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	outcomes := issueCalls(t, conn, ctx, 1)
+	outcomes := issueCalls(ctx, t, conn, 1)
 	waitLines(t, peerLines, 1, testTimeout)
 
 	// Notification: OnNotification only.
@@ -505,7 +511,7 @@ func TestLineBufferLargeLineIntact(t *testing.T) {
 	notices := collectNotifications(conn)
 
 	blob := strings.Repeat("a", bigLineBytes)
-	injectLine(t, peerEnd, fmt.Sprintf(`{"method":"state.updated","params":{"blob":"%s"}}`, blob))
+	injectLine(t, peerEnd, fmt.Sprintf(`{"method":"state.updated","params":{"blob":%q}}`, blob))
 
 	select {
 	case env := <-notices:
@@ -578,10 +584,214 @@ func noticeSeq(t *testing.T, env zcode.Envelope) int {
 	return params.Seq
 }
 
+// D-05 router policy — RED target: the mid-turn credential-cipher obligation
+// is known-but-NOT-answered in this phase (needs the Phase 6 keyring vault).
+// The router must write ZERO reply bytes (a -32601 would violate D-05 —
+// replying at all would claim an answer the wrapper cannot give) and record
+// the deadline expiry observably, exactly once per tracked request.
+func TestRouterCredentialCipherNeverAnsweredExpiryRecorded(t *testing.T) {
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
+
+	conn := zcode.NewConn(connEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	const cipherDeadline = 60 * time.Millisecond
+
+	conn.RouterDeadline = func(string) time.Duration { return cipherDeadline }
+
+	events := collectRouterEvents(conn)
+	peerLines := drainPeer(t, peerEnd)
+
+	// EXP-TURN-01.jsonl:50 params shape: requestId, operation "decrypt",
+	// value (a 3.18-only surface — dialect §3/§9 drift baseline).
+	injectLine(t, peerEnd,
+		`{"id":"server-1","method":"interaction/requestCredentialCipher",`+
+			`"params":{"requestId":"req-1","operation":"decrypt","value":"enc:v2:os:c2VjcmV0"}}`)
+
+	// The tracked-no-answer deadline elapses; a quiet window beyond it must
+	// hold no reply bytes at all.
+	time.Sleep(cipherDeadline + graceWindow)
+
+	select {
+	case line := <-peerLines:
+		t.Fatalf("credential-cipher request drew a reply — D-05 violation: %s", line)
+	default:
+	}
+
+	// Exactly one recorded expiry observation per deadline, naming the
+	// tracked request and the governing deadline.
+	ev := waitEvent(t, events, zcode.RouterDeadlineExpired)
+
+	if ev.Method != zcode.MethodRequestCredentialCipher {
+		t.Fatalf("expiry event method = %q, want %q", ev.Method, zcode.MethodRequestCredentialCipher)
+	}
+
+	if ev.IDKey != "s:server-1" {
+		t.Fatalf("expiry event id key = %q, want s:server-1", ev.IDKey)
+	}
+
+	if ev.Deadline != cipherDeadline {
+		t.Fatalf("expiry event deadline = %v, want the injected %v", ev.Deadline, cipherDeadline)
+	}
+
+	if !errors.Is(ev.Err, context.DeadlineExceeded) {
+		t.Fatalf("expiry event err = %v, want context.DeadlineExceeded", ev.Err)
+	}
+
+	assertNoEvents(t, events, "expiry")
+}
+
+// D-05 router policy — RED target: the runtime-preferences handler runs
+// under its own context deadline (default 15 s, injectable) and answers with
+// the static defaults (EXP-WORKSPACEKEY-01.jsonl:9 shape); the governing
+// deadline is recorded on the router event.
+func TestRouterRuntimePreferencesDeadline(t *testing.T) {
+	if zcode.RouterDefaultDeadline != 15*time.Second {
+		t.Fatalf("RouterDefaultDeadline = %v, want the D-05 15 s value", zcode.RouterDefaultDeadline)
+	}
+
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
+
+	conn := zcode.NewConn(connEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	const injected = 40 * time.Millisecond
+
+	conn.RouterDeadline = func(string) time.Duration { return injected }
+
+	events := collectRouterEvents(conn)
+	peerLines := drainPeer(t, peerEnd)
+
+	injectLine(t, peerEnd,
+		`{"id":"server-1","method":"session/requestRuntimePreferences",`+
+			`"params":{"sessionId":"sess_x","scope":"runtime-materialization"}}`)
+
+	env := decodeWireLine(t, waitLines(t, peerLines, 1, testTimeout)[0])
+	assertRuntimePreferencesReply(t, env, "server-1")
+
+	ev := waitEvent(t, events, zcode.RouterAnswered)
+
+	if ev.Method != zcode.MethodRequestRuntimePreferences {
+		t.Fatalf("answered event method = %q, want %q", ev.Method, zcode.MethodRequestRuntimePreferences)
+	}
+
+	if ev.IDKey != "s:server-1" {
+		t.Fatalf("answered event id key = %q, want s:server-1", ev.IDKey)
+	}
+
+	if ev.Deadline != injected {
+		t.Fatalf("answered event deadline = %v, want the injected %v", ev.Deadline, injected)
+	}
+}
+
+// Unknown server→host methods are still answered -32601 naming the method
+// (probe precedent — dialect §3; the tracer default, locked here).
+func TestRouterUnknownMethodAnswered32601(t *testing.T) {
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
+
+	conn := zcode.NewConn(connEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	peerLines := drainPeer(t, peerEnd)
+
+	injectLine(t, peerEnd,
+		`{"id":"server-9","method":"interaction/requestPermission","params":{"sessionId":"sess_x"}}`)
+
+	env := decodeWireLine(t, waitLines(t, peerLines, 1, testTimeout)[0])
+
+	if env.Error == nil || env.Error.Code != zcode.CodeMethodNotFound {
+		t.Fatalf("unknown method answered %+v, want -32601", env.Error)
+	}
+
+	if env.Result != nil {
+		t.Fatalf("unknown method answered with a result: %s", env.Result)
+	}
+
+	if !strings.Contains(env.Error.Message, "interaction/requestPermission") {
+		t.Fatalf("-32601 message %q does not name the method", env.Error.Message)
+	}
+}
+
+// collectRouterEvents hooks Conn.OnRouterEvent to deliver router policy
+// observations on the returned channel (buffered; the hook runs on the
+// request or tracker goroutine).
+func collectRouterEvents(conn *zcode.Conn) <-chan zcode.RouterEvent {
+	ch := make(chan zcode.RouterEvent, 16)
+
+	conn.OnRouterEvent = func(ev zcode.RouterEvent) {
+		ch <- ev
+	}
+
+	return ch
+}
+
+// waitEvent waits for the next router event of the given kind, skipping
+// other observations, failing the test on timeout.
+func waitEvent(t *testing.T, ch <-chan zcode.RouterEvent, kind zcode.RouterEventKind) zcode.RouterEvent {
+	t.Helper()
+
+	timer := time.NewTimer(testTimeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Kind == kind {
+				return ev
+			}
+		case <-timer.C:
+			t.Fatalf("router never recorded a %s event", kind)
+
+			return zcode.RouterEvent{}
+		}
+	}
+}
+
+// assertNoEvents fails the test if any further router events arrive after a
+// quiet window — the exactly-one-observation half of the honesty contract.
+func assertNoEvents(t *testing.T, ch <-chan zcode.RouterEvent, what string) {
+	t.Helper()
+
+	time.Sleep(graceWindow)
+
+	if got := len(ch); got != 0 {
+		t.Fatalf("unexpected extra %s observations: %d", what, got)
+	}
+}
+
+// assertRuntimePreferencesReply checks a reply envelope for the verbatim
+// static runtime-preference defaults (EXP-WORKSPACEKEY-01.jsonl:9) echoed to
+// the string id wantID — decoded as a map so extra keys fail.
+func assertRuntimePreferencesReply(t *testing.T, env zcode.Envelope, wantID string) {
+	t.Helper()
+
+	if env.ID == nil || env.ID.IsInt || env.ID.Str != wantID {
+		t.Fatalf("reply id = %+v, want string %s", env.ID, wantID)
+	}
+
+	var got map[string]any
+
+	if err := json.Unmarshal(env.Result, &got); err != nil {
+		t.Fatalf("decode runtime-preferences result: %v", err)
+	}
+
+	want := map[string]any{
+		"nativeSearchEnhancementsEnabled": false,
+		"memoryEnabled":                   false,
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("runtime-preferences result = %v, want exactly %v", got, want)
+	}
+}
+
 // concurrentCalls fans out n concurrent calls, each verified to receive its
 // OWN reply (the echoed params carry the caller's marker) — per-call
 // correlation made visible. Failures are collected on the returned channel.
-func concurrentCalls(t *testing.T, conn *zcode.Conn, ctx context.Context, n int) <-chan error {
+func concurrentCalls(ctx context.Context, t *testing.T, conn *zcode.Conn, n int) <-chan error {
 	t.Helper()
 
 	errs := make(chan error, n)
@@ -612,7 +822,7 @@ func concurrentCalls(t *testing.T, conn *zcode.Conn, ctx context.Context, n int)
 			}
 
 			if echo.Marker != marker {
-				errs <- fmt.Errorf("call %d received call %d's reply — id correlation broken", marker, echo.Marker)
+				errs <- fmt.Errorf("call %d received call %d's reply: %w", marker, echo.Marker, errCorrelationBroken)
 			}
 		}(i)
 	}

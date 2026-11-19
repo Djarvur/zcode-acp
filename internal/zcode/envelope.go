@@ -142,6 +142,7 @@ const (
 	MethodSessionStop               = "session/stop"
 	MethodSessionMessages           = "session/messages"
 	MethodRequestRuntimePreferences = "session/requestRuntimePreferences"
+	MethodRequestCredentialCipher   = "interaction/requestCredentialCipher"
 	MethodStateUpdated              = "state.updated"
 	MethodSessionEvent              = "session/event"
 	MethodSessionLifecycleChanged   = "session/lifecycle/changed"
