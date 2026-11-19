@@ -115,15 +115,15 @@ func issueCalls(ctx context.Context, t *testing.T, conn *zcode.Conn, n int) <-ch
 	return outcomes
 }
 
-// collectNotifications hooks Conn.OnNotification to deliver notification
-// envelopes on the returned channel (buffered; deliveries happen on the read
-// goroutine in wire order).
+// collectNotifications registers a conn notification observer that delivers
+// notification envelopes on the returned channel (buffered; deliveries
+// happen on the read goroutine in wire order).
 func collectNotifications(conn *zcode.Conn) <-chan zcode.Envelope {
 	ch := make(chan zcode.Envelope, 64)
 
-	conn.OnNotification = func(env zcode.Envelope) {
+	conn.AddObserver(func(env zcode.Envelope) {
 		ch <- env
-	}
+	})
 
 	return ch
 }
@@ -426,8 +426,8 @@ func TestDemuxIdTypeNonConflation(t *testing.T) {
 
 // Each inbound frame class lands on exactly one demux path: a reply resolves
 // the pending table, a reverse request (id AND method) fires OnRequest, a
-// notification (method, no id) fires OnNotification — and none crosses into
-// another path.
+// notification (method, no id) reaches the notification observers — and none
+// crosses into another path.
 func TestDemuxClassification(t *testing.T) {
 	connEnd, peerEnd := connPipes()
 	t.Cleanup(func() { _ = peerEnd.Close() })
@@ -436,7 +436,7 @@ func TestDemuxClassification(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 
 	notices := newHookRecorder()
-	conn.OnNotification = notices.record
+	conn.AddObserver(notices.record)
 
 	requests := newHookRecorder()
 	conn.OnRequest = func(_ context.Context, env zcode.Envelope) (any, *zcode.WireError, bool) {
@@ -453,7 +453,7 @@ func TestDemuxClassification(t *testing.T) {
 	outcomes := issueCalls(ctx, t, conn, 1)
 	waitLines(t, peerLines, 1, testTimeout)
 
-	// Notification: OnNotification only.
+	// Notification: the notification observers only.
 	injectLine(t, peerEnd, `{"method":"state.updated","params":{"patch":{"status":"running"}}}`)
 
 	n := lastEnvelope(t, notices.waitDelivery(t, "notification"))
@@ -861,226 +861,271 @@ const fanoutTurnWindow = 2 * time.Second
 // fan out to ALL registered observers — synchronously, in registration
 // order, on the read goroutine (wire order preserved) — with a remove func
 // that deregisters, and with two machines on one conn each resolving their
-// own interleaved turns exactly once (the single OnNotification slot let a
+// own interleaved turns exactly once (the single slot this replaces let a
 // second machine silently steal the hook, PITFALL 3: the first session's
 // turns hang).
 func TestObserverFanOut(t *testing.T) {
-	t.Run("ordering", func(t *testing.T) {
-		connEnd, peerEnd := connPipes()
-		t.Cleanup(func() { _ = peerEnd.Close() })
+	t.Run("ordering", testObserverFanOutOrdering)
+	t.Run("remove", testObserverFanOutRemove)
+	t.Run("two-machines", testObserverFanOutTwoMachines)
+}
 
-		conn := zcode.NewConn(connEnd)
-		t.Cleanup(func() { _ = conn.Close() })
+// testObserverFanOutOrdering locks the delivery contract: registration
+// order per envelope, synchronous on the read goroutine (a parked observer
+// pins the read loop — nothing reads ahead), and wire order across
+// envelopes.
+func testObserverFanOutOrdering(t *testing.T) {
+	t.Helper()
 
-		var (
-			mu    sync.Mutex
-			trace []string
-			sigs  = make(chan struct{}, 8)
-		)
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
 
-		record := func(tag string) func(zcode.Envelope) {
-			return func(env zcode.Envelope) {
-				mu.Lock()
-				trace = append(trace, tag+":"+env.Method)
-				mu.Unlock()
+	conn := zcode.NewConn(connEnd)
+	t.Cleanup(func() { _ = conn.Close() })
 
-				sigs <- struct{}{}
-			}
+	var (
+		mu    sync.Mutex
+		trace []string
+		sigs  = make(chan struct{}, 8)
+	)
+
+	record := func(tag string) func(zcode.Envelope) {
+		return func(env zcode.Envelope) {
+			mu.Lock()
+			trace = append(trace, tag+":"+env.Method)
+			mu.Unlock()
+
+			sigs <- struct{}{}
 		}
+	}
 
-		// The first observer parks inside its delivery until released: a
-		// parked observer pins the read goroutine, which is the
-		// synchronous-delivery proof below.
-		release := make(chan struct{})
-		conn.AddObserver(func(env zcode.Envelope) {
-			<-release
-			record("a")(env)
-		})
-		conn.AddObserver(record("b"))
+	// The first observer parks inside its delivery until released.
+	release := make(chan struct{})
+	conn.AddObserver(func(env zcode.Envelope) {
+		<-release
+		record("a")(env)
+	})
+	conn.AddObserver(record("b"))
 
-		// Envelope 1 parks the first observer inside the delivery.
-		injectLine(t, peerEnd, `{"method":"state.updated","params":{"patch":{"status":"running"}}}`)
+	// Envelope 1 parks the first observer inside the delivery.
+	injectLine(t, peerEnd, `{"method":"state.updated","params":{"patch":{"status":"running"}}}`)
 
-		// While the first observer is parked, a second envelope cannot be
-		// consumed: delivery is synchronous on the read goroutine, so the
-		// read loop is inside the observer — not reading ahead (the grace
-		// window bounds the observation; an early write completion fails
-		// the subtest).
-		secondWritten := make(chan error, 1)
-		go func() {
-			_, err := peerEnd.Write([]byte(`{"method":"session/event","params":{"type":"turn.completed","seq":1,"turnId":"t1"}}` + "\n"))
-			secondWritten <- err
-		}()
+	// While the first observer is parked, a second envelope cannot be
+	// consumed: delivery is synchronous on the read goroutine, so the read
+	// loop is inside the observer — not reading ahead (the grace window
+	// bounds the observation; an early write completion fails the subtest).
+	secondLine := `{"method":"session/event","params":{"type":"turn.completed","seq":1,"turnId":"t1"}}`
 
+	secondWritten := make(chan error, 1)
+	go func() {
+		_, err := peerEnd.Write([]byte(secondLine + "\n"))
+		secondWritten <- err
+	}()
+
+	select {
+	case err := <-secondWritten:
+		t.Fatalf("second envelope consumed while the first observer was still parked (err=%v) — "+
+			"delivery is not synchronous on the read goroutine", err)
+	case <-time.After(graceWindow):
+	}
+
+	close(release)
+
+	// Four deliveries: two observers x two envelopes, registration order
+	// per envelope, wire order across envelopes.
+	want := []string{
+		"a:" + zcode.MethodStateUpdated, // registration order: first-registered first
+		"b:" + zcode.MethodStateUpdated,
+		"a:" + zcode.MethodSessionEvent, // wire order across envelopes preserved
+		"b:" + zcode.MethodSessionEvent,
+	}
+
+	waitFanoutTrace(t, &mu, &trace, sigs, want)
+
+	if err := <-secondWritten; err != nil {
+		t.Fatalf("second envelope write failed: %v", err)
+	}
+}
+
+// waitFanoutTrace waits for one delivery signal per expected entry and
+// asserts the recorded trace equals want (order-sensitive).
+func waitFanoutTrace(t *testing.T, mu *sync.Mutex, trace *[]string, sigs <-chan struct{}, want []string) {
+	t.Helper()
+
+	for range want {
 		select {
-		case err := <-secondWritten:
-			t.Fatalf("second envelope consumed while the first observer was still parked (err=%v) — delivery is not synchronous on the read goroutine", err)
-		case <-time.After(graceWindow):
+		case <-sigs:
+		case <-time.After(testTimeout):
+			mu.Lock()
+			got := len(*trace)
+			mu.Unlock()
+
+			t.Fatalf("only %d deliveries arrived within %v", got, testTimeout)
+		}
+	}
+
+	mu.Lock()
+	got := slices.Clone(*trace)
+	mu.Unlock()
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("delivery trace = %v, want %v", got, want)
+	}
+}
+
+// testObserverFanOutRemove locks the deregistration contract: the remove
+// func is idempotent, the removed observer receives nothing from a later
+// envelope, and the remaining observers are unaffected.
+func testObserverFanOutRemove(t *testing.T) {
+	t.Helper()
+
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
+
+	conn := zcode.NewConn(connEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	removed := newHookRecorder()
+	kept := newHookRecorder()
+
+	removeRemoved := conn.AddObserver(removed.record)
+	conn.AddObserver(kept.record)
+
+	// Deregister the first observer (a repeated call is a no-op — the
+	// remove func is idempotent).
+	removeRemoved()
+	removeRemoved()
+
+	injectLine(t, peerEnd, `{"method":"state.updated","params":{"patch":{"status":"running"}}}`)
+
+	n := lastEnvelope(t, kept.waitDelivery(t, "kept observer"))
+
+	if n.Method != zcode.MethodStateUpdated {
+		t.Fatalf("kept observer method = %q, want %q", n.Method, zcode.MethodStateUpdated)
+	}
+
+	assertCount(t, removed, 0, "removed observer")
+}
+
+// testObserverFanOutTwoMachines locks the multi-session contract: two
+// machines on one conn run interleaved (sequential) turns, each resolving
+// exactly once via its own terminal event.
+func testObserverFanOutTwoMachines(t *testing.T) {
+	t.Helper()
+
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
+
+	conn := zcode.NewConn(connEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// Both machines register BEFORE any frame flows (the Conn hook
+	// contract). The second construction must not steal the first's
+	// notifications (PITFALL 3).
+	spyA := newFanoutResolutionSpy()
+	machineA := turn.NewMachine(conn, "sess_a", turn.NewPollWatcher(conn, turn.PollConfig{
+		QuietMs:        40,
+		FloorMultiple:  2,
+		PollIntervalMs: 10,
+	}))
+	machineA.OnResolve = spyA.record
+
+	spyB := newFanoutResolutionSpy()
+	machineB := turn.NewMachine(conn, "sess_b", turn.NewPollWatcher(conn, turn.PollConfig{
+		QuietMs:        40,
+		FloorMultiple:  2,
+		PollIntervalMs: 10,
+	}))
+	machineB.OnResolve = spyB.record
+
+	// The peer auto-answers every request the turns generate:
+	// session/send acks and the poll watchers' session/messages pages. The
+	// id echoes verbatim (the codec's type-tagged id rule).
+	sends := make(chan string, 8)
+	go autoAnswerPeer(peerEnd, sends)
+
+	// Interleaved (sequential) turns on the shared conn: each machine
+	// resolves its own turn exactly once — the first session's turns still
+	// complete after the second machine registered (no hook theft), and
+	// neither machine observes the other's resolution.
+	runFanoutTurn(t, peerEnd, sends, machineA, spyA, "sess_a", "turn_a")
+	assertFanoutResolution(t, spyB, 0, "machine B before its turn")
+
+	runFanoutTurn(t, peerEnd, sends, machineB, spyB, "sess_b", "turn_b")
+	assertFanoutResolution(t, spyA, 1, "machine A after B's turn")
+	assertFanoutResolution(t, spyB, 1, "machine B")
+}
+
+// runFanoutTurn drives one machine turn against the hand-scripted peer: it
+// starts Run, waits for the send to reach the peer (proof the machine is
+// running), injects the turnId-matched started/completed signals, and
+// asserts the run resolved exactly once via the terminal EVENT — the poll
+// watcher is machine-owned and never stolen, so a stolen notification hook
+// still resolves the turn via the watcher's quiet window instead; the wrong
+// signal is the theft's fingerprint (RESEARCH Pattern 4).
+func runFanoutTurn(
+	t *testing.T,
+	peer *pipeEnd,
+	sends <-chan string,
+	machine *turn.Machine,
+	spy *fanoutResolutionSpy,
+	sessionID, turnID string,
+) {
+	t.Helper()
+
+	type runResult struct {
+		reason turn.StopReason
+		err    error
+	}
+
+	done := make(chan runResult, 1)
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), fanoutTurnWindow)
+		defer cancel()
+
+		reason, err := machine.Run(ctx, "Reply with exactly: OK")
+		done <- runResult{reason: reason, err: err}
+	}()
+
+	select {
+	case got := <-sends:
+		if got != sessionID {
+			t.Fatalf("send session = %q, want %q", got, sessionID)
+		}
+	case <-time.After(fanoutTurnWindow):
+		t.Fatalf("%s send never reached the peer", sessionID)
+	}
+
+	injectLine(t, peer, sessionEventLine(turn.KindTurnStarted, 1, turnID))
+	injectLine(t, peer, sessionEventLine(turn.KindTurnCompleted, 2, turnID))
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("%s machine run: %v", sessionID, res.err)
 		}
 
-		close(release)
-
-		// Four deliveries: two observers x two envelopes, registration
-		// order per envelope, wire order across envelopes.
-		for range 4 {
-			select {
-			case <-sigs:
-			case <-time.After(testTimeout):
-				t.Fatalf("only %d deliveries arrived within %v", len(trace), testTimeout)
-			}
+		if res.reason != turn.StopCompleted {
+			t.Fatalf("%s machine reason = %q, want %q", sessionID, res.reason, turn.StopCompleted)
 		}
+	case <-time.After(testTimeout):
+		t.Fatalf("%s machine never resolved its turn", sessionID)
+	}
 
-		mu.Lock()
-		got := slices.Clone(trace)
-		mu.Unlock()
+	got := spy.snapshot()
 
-		want := []string{
-			"a:" + zcode.MethodStateUpdated, // registration order: first-registered first
-			"b:" + zcode.MethodStateUpdated,
-			"a:" + zcode.MethodSessionEvent, // wire order across envelopes preserved
-			"b:" + zcode.MethodSessionEvent,
-		}
+	if len(got) != 1 || got[0].Signal != turn.SignalTerminalEvent {
+		t.Fatalf("%s resolved %d times, last signal %q — want exactly once via %q "+
+			"(a stolen hook resolves via the watcher's quiet window instead)",
+			sessionID, len(got), got[len(got)-1].Signal, turn.SignalTerminalEvent)
+	}
+}
 
-		if !slices.Equal(got, want) {
-			t.Fatalf("delivery trace = %v, want %v", got, want)
-		}
-
-		if err := <-secondWritten; err != nil {
-			t.Fatalf("second envelope write failed: %v", err)
-		}
-	})
-
-	t.Run("remove", func(t *testing.T) {
-		connEnd, peerEnd := connPipes()
-		t.Cleanup(func() { _ = peerEnd.Close() })
-
-		conn := zcode.NewConn(connEnd)
-		t.Cleanup(func() { _ = conn.Close() })
-
-		removed := newHookRecorder()
-		kept := newHookRecorder()
-
-		removeRemoved := conn.AddObserver(removed.record)
-		conn.AddObserver(kept.record)
-
-		// Deregister the first observer (a repeated call is a no-op — the
-		// remove func is idempotent).
-		removeRemoved()
-		removeRemoved()
-
-		injectLine(t, peerEnd, `{"method":"state.updated","params":{"patch":{"status":"running"}}}`)
-
-		n := lastEnvelope(t, kept.waitDelivery(t, "kept observer"))
-
-		if n.Method != zcode.MethodStateUpdated {
-			t.Fatalf("kept observer method = %q, want %q", n.Method, zcode.MethodStateUpdated)
-		}
-
-		assertCount(t, removed, 0, "removed observer")
-	})
-
-	t.Run("two-machines", func(t *testing.T) {
-		connEnd, peerEnd := connPipes()
-		t.Cleanup(func() { _ = peerEnd.Close() })
-
-		conn := zcode.NewConn(connEnd)
-		t.Cleanup(func() { _ = conn.Close() })
-
-		// Both machines register BEFORE any frame flows (the Conn hook
-		// contract). The second construction must not steal the first's
-		// notifications (PITFALL 3).
-		spyA := newFanoutResolutionSpy()
-		machineA := turn.NewMachine(conn, "sess_a", turn.NewPollWatcher(conn, turn.PollConfig{
-			QuietMs:        40,
-			FloorMultiple:  2,
-			PollIntervalMs: 10,
-		}))
-		machineA.OnResolve = spyA.record
-
-		spyB := newFanoutResolutionSpy()
-		machineB := turn.NewMachine(conn, "sess_b", turn.NewPollWatcher(conn, turn.PollConfig{
-			QuietMs:        40,
-			FloorMultiple:  2,
-			PollIntervalMs: 10,
-		}))
-		machineB.OnResolve = spyB.record
-
-		// The peer auto-answers every request the turns generate:
-		// session/send acks and the poll watchers' session/messages pages.
-		// The id echoes verbatim (the codec's type-tagged id rule).
-		sends := make(chan string, 8)
-		go autoAnswerPeer(peerEnd, sends)
-
-		runTurn := func(machine *turn.Machine, spy *fanoutResolutionSpy, sessionID, turnID string) {
-			t.Helper()
-
-			type runResult struct {
-				reason turn.StopReason
-				err    error
-			}
-
-			done := make(chan runResult, 1)
-
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), fanoutTurnWindow)
-				defer cancel()
-
-				reason, err := machine.Run(ctx, "Reply with exactly: OK")
-				done <- runResult{reason: reason, err: err}
-			}()
-
-			// The send in flight proves the machine is running; the
-			// terminal signals below may then reach it.
-			select {
-			case got := <-sends:
-				if got != sessionID {
-					t.Fatalf("send session = %q, want %q", got, sessionID)
-				}
-			case <-time.After(fanoutTurnWindow):
-				t.Fatalf("%s send never reached the peer", sessionID)
-			}
-
-			injectLine(t, peerEnd, fmt.Sprintf(`{"method":"session/event","params":{"type":"turn.started","seq":1,"turnId":%q}}`, turnID))
-			injectLine(t, peerEnd, fmt.Sprintf(`{"method":"session/event","params":{"type":"turn.completed","seq":2,"turnId":%q}}`, turnID))
-
-			select {
-			case res := <-done:
-				if res.err != nil {
-					t.Fatalf("%s machine run: %v", sessionID, res.err)
-				}
-
-				if res.reason != turn.StopCompleted {
-					t.Fatalf("%s machine reason = %q, want %q", sessionID, res.reason, turn.StopCompleted)
-				}
-			case <-time.After(testTimeout):
-				t.Fatalf("%s machine never resolved its turn", sessionID)
-			}
-
-			// The resolving signal must be the turnId-matched terminal
-			// EVENT: the poll watcher is machine-owned and never stolen, so
-			// a stolen notification hook still resolves the turn — via the
-			// watcher's quiet window instead of the delivered terminal
-			// event. The wrong signal is the theft's fingerprint (RESEARCH
-			// Pattern 4).
-			got := spy.snapshot()
-
-			if len(got) != 1 || got[0].Signal != turn.SignalTerminalEvent {
-				t.Fatalf("%s resolved %d times, last signal %q — want exactly once via %q (a stolen hook resolves via the watcher's quiet window instead)",
-					sessionID, len(got), got[len(got)-1].Signal, turn.SignalTerminalEvent)
-			}
-		}
-
-		// Interleaved (sequential) turns on the shared conn: each machine
-		// resolves its own turn exactly once — the first session's turns
-		// still complete after the second machine registered (no hook
-		// theft), and neither machine observes the other's resolution.
-		runTurn(machineA, spyA, "sess_a", "turn_a")
-		assertFanoutResolution(t, spyB, 0, "machine B before its turn")
-
-		runTurn(machineB, spyB, "sess_b", "turn_b")
-		assertFanoutResolution(t, spyA, 1, "machine A after B's turn")
-		assertFanoutResolution(t, spyB, 1, "machine B")
-	})
+// sessionEventLine renders one session/event carrier line for the
+// turn-scoped signals the two-machines subtest injects.
+func sessionEventLine(kind string, seq int, turnID string) string {
+	return fmt.Sprintf(`{"method":"session/event","params":{"type":%q,"seq":%d,"turnId":%q}}`, kind, seq, turnID)
 }
 
 // autoAnswerPeer answers every request the conn writes to the peer end:
@@ -1094,9 +1139,7 @@ func autoAnswerPeer(peer *pipeEnd, sends chan<- string) {
 		var req struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
-			Params struct {
-				SessionID string `json:"sessionId"`
-			} `json:"params"`
+			Params map[string]any  `json:"params"`
 		}
 
 		if err := json.Unmarshal(sc.Bytes(), &req); err != nil || req.ID == nil {
@@ -1104,7 +1147,12 @@ func autoAnswerPeer(peer *pipeEnd, sends chan<- string) {
 		}
 
 		if req.Method == zcode.MethodSessionSend {
-			sends <- req.Params.SessionID
+			// Wire payloads keep the dialect's camelCase keys verbatim (the
+			// tagliatelle contract), so the session id digs out of the
+			// params map (the machine.go classifyIdlePatch precedent).
+			if sessionID, _ := req.Params["sessionId"].(string); sessionID != "" {
+				sends <- sessionID
+			}
 		}
 
 		result := `{"accepted":true}`

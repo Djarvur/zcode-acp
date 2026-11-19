@@ -171,10 +171,14 @@ type Machine struct {
 }
 
 // NewMachine returns a machine bound to sessionID on conn with the given
-// watcher, and takes over conn's single OnNotification and OnRouterEvent
-// hooks — every inbound envelope and every reverse-request router policy
-// event funnels into the machine's one observation surface. Assign happens
-// before any frame flows (the Conn hook contract).
+// watcher, and wires the machine's one observation surface: every inbound
+// notification envelope funnels into it via conn.AddObserver (the ordered
+// observer fan-out — a second machine no longer steals the first's
+// notifications), and the machine takes over conn's OnRouterEvent hook for
+// reverse-request router policy events. OnRouterEvent stays a single slot
+// by design in Phase 4 — one active turn per front; Phase 5 (CORE-06)
+// revisits. Registration happens before any frame flows (the Conn hook
+// contract).
 func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machine {
 	m := &Machine{
 		conn:       conn,
@@ -185,7 +189,7 @@ func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machin
 	}
 
 	if conn != nil {
-		conn.OnNotification = m.ObserveEnvelope
+		conn.AddObserver(m.ObserveEnvelope)
 		conn.OnRouterEvent = m.observeRouterEvent
 	}
 
@@ -319,10 +323,10 @@ func (m *Machine) AckAt() time.Time {
 // ObserveEnvelope is the ONE classification path for every inbound envelope
 // (the T-3-06 mitigation): the ordered D-02 signal union — terminal kinds
 // with turnId match across the known carriers first, then the idle patch
-// (state.updated leaving running). It is conn.OnNotification's receiver —
-// the hook runs on the read goroutine and must not block (classification is
-// bounded: small params only), and it is safe to call before Run (pre-turn
-// envelopes are observation only).
+// (state.updated leaving running). It is registered on the conn's
+// notification observer list — delivery runs on the read goroutine and must
+// not block (classification is bounded: small params only), and it is safe
+// to call before Run (pre-turn envelopes are observation only).
 func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

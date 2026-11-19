@@ -142,10 +142,10 @@ func e2eRunHappyTurn(t *testing.T, fakeBinary string) {
 	child, conn, supCancel, startDone := e2eStartCycle(ctx, t, fakeBinary, e2eHappyScenario)
 
 	// The machine is constructed BEFORE any frame flows — the Conn hook
-	// contract (NewMachine assigns the conn's OnNotification/OnRouterEvent
-	// hooks, which must be in place before the demux and the router can
-	// read them). The binding is the corpus fixture id; the create reply is
-	// asserted against it below.
+	// contract (NewMachine registers the conn's notification observer and
+	// takes over OnRouterEvent, which must be in place before the demux and
+	// the router can read them). The binding is the corpus fixture id; the
+	// create reply is asserted against it below.
 	spy := &e2eResolutionSpy{}
 	machine := e2eNewMachine(conn, e2eSessionID, spy)
 

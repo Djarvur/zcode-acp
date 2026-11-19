@@ -79,9 +79,9 @@ type exchangeDriver struct {
 	notices chan zcode.Envelope
 }
 
-// newExchangeDriver wires the conn's OnNotification hook to a buffered
-// channel — assigned immediately after NewConn, before any frame flows (the
-// Conn hook contract).
+// newExchangeDriver registers a conn notification observer wired to a
+// buffered channel — registered immediately after NewConn, before any frame
+// flows (the Conn hook contract).
 func newExchangeDriver(t *testing.T, conn *zcode.Conn, host *pipeEnd) *exchangeDriver {
 	t.Helper()
 
@@ -92,9 +92,9 @@ func newExchangeDriver(t *testing.T, conn *zcode.Conn, host *pipeEnd) *exchangeD
 		notices: make(chan zcode.Envelope, 64),
 	}
 
-	conn.OnNotification = func(env zcode.Envelope) {
+	conn.AddObserver(func(env zcode.Envelope) {
 		d.notices <- env
-	}
+	})
 
 	return d
 }

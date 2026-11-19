@@ -190,20 +190,20 @@ func startFake(fakeEnd *pipeEnd, sc *fake.Scenario) <-chan serveResult {
 	return serveDone
 }
 
-// recordNotices hooks Conn.OnNotification to collect envelopes in wire
-// order; the returned func snapshots the collected slice.
+// recordNotices registers a conn notification observer that collects
+// envelopes in wire order; the returned func snapshots the collected slice.
 func recordNotices(conn *zcode.Conn) func() []zcode.Envelope {
 	var (
 		mu      sync.Mutex
 		notices []zcode.Envelope
 	)
 
-	conn.OnNotification = func(env zcode.Envelope) {
+	conn.AddObserver(func(env zcode.Envelope) {
 		mu.Lock()
 		defer mu.Unlock()
 
 		notices = append(notices, env)
-	}
+	})
 
 	return func() []zcode.Envelope {
 		mu.Lock()
