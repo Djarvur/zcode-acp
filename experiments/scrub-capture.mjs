@@ -4,16 +4,20 @@
 // and enter the tree only through this script. Tested by scrub-capture.test.mjs.
 //
 // Usage:
-//   node experiments/scrub-capture.mjs <raw-capture> [output] [--redact-path <prefix>]...
+//   node experiments/scrub-capture.mjs <raw-capture> [output] [--redact-path <prefix>]... [--no-header]
 //
 //   <raw-capture>          path to the raw capture (never inside the repo)
 //   [output]               output path (default: stdout); this is where a scrubbed
 //                          experiments/captures/<experiment-id>.jsonl lands
 //   --redact-path <prefix> repeatable; every occurrence of <prefix> (a private
 //                          location supplied at run time, never committed) becomes <path>
+//   --no-header            treat line 1 as a data line (for legitimately header-less
+//                          raw captures); without it, line 1 must be a JSON object
+//                          with a "capture" key or the scrubber fails loudly
 //
 // Canonical rules (defined once here; every rule has a unit test):
-//   line 1 (the capture header) passes through BYTE-IDENTICAL
+//   line 1 (the capture header) passes through BYTE-IDENTICAL (and is validated to
+//     be a JSON object with a "capture" key unless --no-header is passed)
 //   JWT-shaped values (three base64url segments)                      -> [REDACTED-JWT]
 //   credential blobs: enc:v2:os: / legacy enc:v1: + long base64ish body -> [REDACTED-CREDENTIAL]
 //   long token values under access_token / apiKey / api-key / token   -> [REDACTED-TOKEN]
@@ -95,6 +99,11 @@ function replaceUserInfos(line) {
   }
 }
 
+// Escape regex metacharacters so a literal path can be used inside a RegExp.
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function scrubLine(line, redactPaths, home) {
   line = replaceUserInfos(line);
   line = line.replace(TOKEN_RX, '$1' + REDACT.token + '$2');
@@ -105,8 +114,14 @@ function scrubLine(line, redactPaths, home) {
     line = line.split(p).join(REDACT.path);
   }
   if (home && home !== '/') {
+    // Step 1 (WR-03): home + '/' + rest -> '~/ + rest' stays unconditional.
     line = line.split(home + '/').join('~/');
-    line = line.split(home).join('~');
+    // Step 2 (WR-03, boundary-aware): replace a BARE home occurrence only when it
+    // is NOT followed by an optional '/' plus a name character. A path that merely
+    // shares the home prefix (home followed directly by a name character — a
+    // sibling directory) must pass through verbatim, never be falsified into a
+    // tilde path.
+    line = line.replace(new RegExp(escapeRegExp(home) + '(?!/?[A-Za-z0-9._-])', 'g'), '~');
   }
   return line;
 }
@@ -121,6 +136,7 @@ function usage() {
 const argv = process.argv.slice(2);
 const positional = [];
 const redactPathArgs = [];
+let noHeader = false;
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--redact-path') {
     if (i + 1 >= argv.length) {
@@ -128,6 +144,8 @@ for (let i = 0; i < argv.length; i++) {
       process.exit(1);
     }
     redactPathArgs.push(argv[++i]);
+  } else if (argv[i] === '--no-header') {
+    noHeader = true;
   } else {
     positional.push(argv[i]);
   }
@@ -160,7 +178,31 @@ if (raw.length === 0) {
 
 const home = os.homedir();
 const lines = raw.split('\n');
-const scrubbed = lines.map((line, i) => (i === 0 ? line : scrubLine(line, redactPaths, home)));
+
+// IN-04: line 1 of a capture is the header — validate it before trusting the rest,
+// so a malformed or misaligned capture fails loudly instead of passing an
+// unvalidated first line through. --no-header is the escape hatch for legitimately
+// header-less raw captures (line 1 is then scrubbed like any data line).
+if (!noHeader) {
+  let header = null;
+  try {
+    header = JSON.parse(lines[0]);
+  } catch {
+    header = null;
+  }
+  if (
+    header === null ||
+    typeof header !== 'object' ||
+    !Object.prototype.hasOwnProperty.call(header, 'capture')
+  ) {
+    process.stderr.write(
+      `scrub-capture: ${inFile}: line 1 is not a capture header (expected a JSON object with a "capture" key); pass --no-header for header-less raw captures\n`,
+    );
+    process.exit(1);
+  }
+}
+
+const scrubbed = lines.map((line, i) => (i === 0 && !noHeader ? line : scrubLine(line, redactPaths, home)));
 const output = scrubbed.join('\n');
 
 if (outFile) {

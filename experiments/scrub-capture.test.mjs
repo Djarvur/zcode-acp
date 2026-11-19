@@ -251,7 +251,7 @@ test('IN-04: a first line that is not JSON fails loudly (non-zero exit, message 
   const { res, out } = runScrub(input);
   assert.notEqual(res.status, 0, 'header-less non-JSON input must not exit 0');
   assert.match(res.stderr ?? '', /capture/, 'stderr must name the failed capture-header contract');
-  assert.equal(out, '', 'no scrubbed output is written for invalid input');
+  assert.ok(out === null || out === '', 'no scrubbed output is written for invalid input');
 });
 
 test('IN-04: a JSON first line without a capture key fails loudly', () => {
@@ -263,7 +263,7 @@ test('IN-04: a JSON first line without a capture key fails loudly', () => {
   const { res, out } = runScrub(input);
   assert.notEqual(res.status, 0, 'JSON line 1 without a capture key must not exit 0');
   assert.match(res.stderr ?? '', /capture/, 'stderr must name the missing capture-key contract');
-  assert.equal(out, '', 'no scrubbed output is written for invalid input');
+  assert.ok(out === null || out === '', 'no scrubbed output is written for invalid input');
 });
 
 test('IN-04: --no-header scrubs line 1 like a data line and exits 0', () => {
