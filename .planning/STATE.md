@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: ZCode Back Leg
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-11-19T17:25:13.040Z"
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-11-19T17:59:34.120Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 3 execution started
-state_head: 28c498d79e4e973842fdbc372b6bdafd6285e997
+state_head: 56618eaa33fe27e890291ba7975746377be73d4c
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 20
-  completed_plans: 12
+  completed_plans: 13
   percent: 29
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 3 (ZCode Back Leg) — EXECUTING
-Plan: 2 of 9
+Plan: 3 of 9
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 3 execution started
 
@@ -82,6 +82,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P02-04 | 13min | 3 tasks | 5 files |
 | Phase 02 P02-05 | 5min | 2 tasks | 2 files |
 | Phase 03 P03-01 | 30min | 3 tasks | 12 files |
+| Phase 03 P03-04 | 31min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -124,6 +125,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Reverse-request per-method deadline value + expiry recording deferred to plan 03-02 per plan text; 03-01 shipped the request-context plumbing (base context closure-captured in NewConn per containedctx, per-request derivation, cancelled on Close)
 - [Phase 03]: Fake expect_answer validated semantically (decoded-JSON deep compare — codec marshals maps sorted, captures author payloads in wire order); mismatch fails the run
 - [Phase 03]: Transcript Line.JSON records the wire line WITHOUT the newline terminator in both directions; golden format <dir>\t<line>\n
+- [Phase 03]: Discovery adjacency resolved: all probes run to completion on every Discover call, rows recorded hit-or-miss, first-match-wins picks the earliest spawnable install in the documented order — probes never merge and diagnostics stay complete on the success path
+- [Phase 03]: Empty-result discovery contract: ErrNoInstall exported sentinel carrying one diagnostics line per probe row (install-discovery.md :34); DpkgQuery seam contract is the dpkg -L file list only, rc-remnant answers as empty list and falls through to opt-path
+- [Phase 03]: BuiltinRevision implements the sharpened V-SRC formula: sha256 over the EvalSymlinks+Abs-resolved PATH STRING, never file contents; runtime-provider tree picks the newest version dir numerically (0.0.0-dev < 3.17.1 < 3.18.2); defaultOverride production seam is a documented no-op until 03-07 wires the wrapper config surface
 
 ### Pending Todos
 
@@ -147,6 +151,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T17:25:00.123Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-11-19T17:59:18.003Z
+Stopped at: Completed 03-04-PLAN.md
 Resume file: None
