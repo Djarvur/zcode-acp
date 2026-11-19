@@ -6,18 +6,27 @@
 #   (a) three-part JWT token: 10+ char base64url segment before the first dot,
 #       then two more base64url segments;
 #   (b) credential-blob value: enc:v1: / enc:v2:os: prefix followed by a 20+ char
-#       base64ish body (legacy enc:v1: form included; a bare prefix mention in
-#       prose never matches — the payload body is required);
-#   (c) long (20+ char) token value keyed by access_token / apiKey / api-key / token.
+#       separator-inclusive base64ish body [A-Za-z0-9+/=_:.-] — byte-identical to
+#       the scrubber's CRED_RX class in experiments/scrub-capture.mjs (one
+#       definition of a credential shape; legacy enc:v1: form included; a bare
+#       prefix mention in prose never matches — the payload body is required);
+#   (c) long (20+ char) token value keyed by access_token / apiKey / api-key /
+#       token, matched quote-free (scan side): the closing quote is not required,
+#       mirroring the scrubber's TOKEN_RX family, so a line-final token value is
+#       scanned, not just scrubbed.
 #
 # Shapes match VALUES, not documentation prose — legitimate doc text must stay green.
 # .planning/ is excluded (planning artifacts are not shipped material).
 # Phase 2 CI reuses this script verbatim as the per-commit secret gate.
 
+# Pin to the repo toplevel so the `git grep` pathspec below is CWD-independent
+# (IN-03): the gate runs green from any working directory inside the repo.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
 patterns=(
   'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
-  'enc:v[12]:(os:)?[A-Za-z0-9+/=_-]{20,}'
-  '"(access_token|apiKey|api-key|token)"\s*:\s*"[A-Za-z0-9_-]{20,}"'
+  'enc:v[12]:(os:)?[A-Za-z0-9+/=_:.-]{20,}'
+  '"(access_token|apiKey|api-key|token)"\s*:\s*"[A-Za-z0-9_-]{20,}'
 )
 
 rc=0

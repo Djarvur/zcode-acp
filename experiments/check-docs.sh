@@ -35,6 +35,10 @@
 #       previously a point-in-time gate from plan 01-02 only; now continuous.
 
 set -u
+# Pin to the repo toplevel so the docs/experiments pathspec below is
+# CWD-independent (IN-03 symmetry with scan-secrets.sh): the gate runs green
+# from any working directory inside the repo.
+cd "$(git rev-parse --show-toplevel)" || exit 1
 MODE=conformance
 [ "${1:-}" = "--phase-gate" ] && MODE=phase-gate
 rc=0
