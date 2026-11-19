@@ -95,6 +95,11 @@ const (
 	MethodComputerUseOperation = "computer-use/operation-event"
 )
 
+// stateRunningPatch is the state.updated patch.status value the idle-patch
+// latch consumes (dialect §5: only "running" was ever observed live — the
+// recorded A4 assumption; "leaving running" implies running was seen).
+const statusRunningPatch = "running"
+
 // machineState is the turn lifecycle (RESEARCH Pattern 6): idle → running →
 // cancelling → done. The cancelling transitions land with 03-08's cancel;
 // the state is declared now per the plan.
@@ -242,10 +247,12 @@ func (m *Machine) AckAt() time.Time {
 }
 
 // ObserveEnvelope is the ONE classification path for every inbound envelope
-// (the T-3-06 mitigation). It is conn.OnNotification's receiver — the hook
-// runs on the read goroutine and must not block (classification is bounded:
-// small params only), and it is safe to call before Run (pre-turn envelopes
-// are observation only).
+// (the T-3-06 mitigation): the ordered D-02 signal union — terminal kinds
+// with turnId match across the known carriers first, then the idle patch
+// (state.updated leaving running). It is conn.OnNotification's receiver —
+// the hook runs on the read goroutine and must not block (classification is
+// bounded: small params only), and it is safe to call before Run (pre-turn
+// envelopes are observation only).
 func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -255,11 +262,15 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	}
 
 	reason, terminal := m.classifyTerminalLocked(env)
-	if !terminal {
+	if terminal {
+		m.resolveLocked(Resolution{Reason: reason, Signal: SignalTerminalEvent, At: time.Now()})
+
 		return
 	}
 
-	m.resolveLocked(Resolution{Reason: reason, Signal: SignalTerminalEvent, At: time.Now()})
+	if m.classifyIdlePatchLocked(env) {
+		m.resolveLocked(Resolution{Reason: StopCompleted, Signal: SignalIdlePatch, At: time.Now()})
+	}
 }
 
 // guardTurnLocked rejects a concurrent second send (D-02: the -32010
@@ -299,13 +310,67 @@ func (m *Machine) finishTurn() {
 }
 
 // onWatcherObservation funnels watcher deliveries into the one observe
-// path. The quiet-window settlement is consumed by the completion-variant
-// classification (03-05 Task 3 extends this path); after Task 2's GREEN the
-// turnId-matched terminal path is the only resolver.
+// path. The quiet-window settlement resolves completed — the settle gate
+// (after the send-latency floor, both owned by the watcher) IS the
+// end-of-turn verdict of the only path proven end-to-end (dialect §5 :141;
+// the probe harness's quiet-window end mode).
 func (m *Machine) onWatcherObservation(obs Observation) {
+	if obs.Quiet {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		m.resolveLocked(Resolution{Reason: StopCompleted, Signal: SignalQuietWindow, At: time.Now()})
+
+		return
+	}
+
 	if obs.Env != nil {
 		m.ObserveEnvelope(*obs.Env)
 	}
+}
+
+// classifyIdlePatchLocked reports whether env is the idle patch: a
+// state.updated whose patch.status leaves "running" for this session — the
+// D-02 secondary signal (dialect §5 reliability column: "do not rely on it
+// alone"). The running patch itself never resolves: the latch requires a
+// running patch to have been observed first, and any later non-running
+// status counts as leaving running.
+func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
+	if env.Method != zcode.MethodStateUpdated {
+		return false
+	}
+
+	// Wire payloads keep the dialect's camelCase keys verbatim (the
+	// tagliatelle contract), so the session id digs out of the params map
+	// and only the snake-safe inner patch shape is struct-decoded.
+	sessID := paramsString(env.Params, "sessionId")
+	if sessID != "" && sessID != m.sessID {
+		return false
+	}
+
+	var params struct {
+		Patch json.RawMessage `json:"patch"`
+	}
+
+	if err := json.Unmarshal(env.Params, &params); err != nil || len(params.Patch) == 0 {
+		return false
+	}
+
+	var patch struct {
+		Status string `json:"status"`
+	}
+
+	if err := json.Unmarshal(params.Patch, &patch); err != nil {
+		return false
+	}
+
+	if patch.Status == statusRunningPatch {
+		m.runningSeen = true
+
+		return false
+	}
+
+	return m.runningSeen && patch.Status != ""
 }
 
 // classifyTerminalLocked reports the terminal StopReason when env is a
