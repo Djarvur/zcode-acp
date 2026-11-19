@@ -103,6 +103,36 @@ type WireError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+// Encode marshals env to one newline-terminated wire line. The typed struct
+// cannot emit a JSON-RPC framing key — there is no such field, the
+// structural defense against the child's -32600 unrecognized_keys rejection
+// (dialect §1).
+func Encode(env *Envelope) ([]byte, error) {
+	frame, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("zcode: encode envelope: %w", err)
+	}
+
+	line := make([]byte, 0, len(frame)+1)
+	line = append(line, frame...)
+	line = append(line, '\n')
+
+	return line, nil
+}
+
+// Decode parses one wire line into an envelope. Undecodable JSON returns an
+// error — the caller logs and skips the line, and the stream continues (the
+// host-side analog of the child's -32700 parse-error path, dialect §1).
+// Params and result stay byte-exact as json.RawMessage.
+func Decode(line []byte) (Envelope, error) {
+	var env Envelope
+	if err := json.Unmarshal(line, &env); err != nil {
+		return Envelope{}, fmt.Errorf("zcode: decode envelope: %w", err)
+	}
+
+	return env, nil
+}
+
 // Method constants: verbatim strings from the dialect §2 method map, named
 // after the dialect method strings (PascalCase) per D-06. The map names
 // survive minification in the shipped bundle; 3.18.2 is the truth source.

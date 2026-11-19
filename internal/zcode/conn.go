@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 )
 
 // Conn drives one app-server JSONL stream over rw: a read loop that demuxes
@@ -14,6 +15,8 @@ import (
 type Conn struct {
 	rw        io.ReadWriteCloser
 	out       *writer
+	pending   *pendingTable
+	nextID    atomic.Int64
 	closeOnce sync.Once
 
 	// OnNotification, when non-nil, receives every notification/event
@@ -32,24 +35,27 @@ type Conn struct {
 // loop starts with the conn stage (plan Task 3).
 func NewConn(rw io.ReadWriteCloser) *Conn {
 	c := &Conn{
-		rw:  rw,
-		out: newWriter(rw),
+		rw:      rw,
+		out:     newWriter(rw),
+		pending: newPendingTable(),
 	}
 
 	return c
 }
 
-// Close stops the writer and closes rw — the peer sees EOF and runs its
-// drain window before exiting (dialect §1 EOF facts). Idempotent.
+// Close stops the stream and the writer, in that order: the peer sees EOF
+// and runs its drain window (dialect §1 EOF facts), and closing rw first
+// unblocks any writeFrame parked on the stream so the writer goroutine can
+// exit. Idempotent.
 func (c *Conn) Close() error {
 	var closeErr error
 
 	c.closeOnce.Do(func() {
-		c.out.stop()
-
 		if err := c.rw.Close(); err != nil {
 			closeErr = fmt.Errorf("zcode: close conn stream: %w", err)
 		}
+
+		c.out.stop()
 	})
 
 	return closeErr
