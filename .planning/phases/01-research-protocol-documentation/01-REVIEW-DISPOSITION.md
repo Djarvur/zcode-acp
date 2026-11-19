@@ -33,11 +33,11 @@ findings:
     title: "`observeReply` conflates server→host requests with replies (latent verdict falsification path)"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
   - id: WR-04
     severity: warning
-    disposition: open
-open: 2
+    disposition: fixed
+open: 0
 total: 9
 recorded: 2026-11-19T18:25:05.809Z
 ---
@@ -53,8 +53,8 @@ recorded: 2026-11-19T18:25:05.809Z
 | IN-02 | info | fixed | 01-REVIEW-FIX.md |
 | IN-03 | info | fixed | 01-REVIEW-FIX.md |
 | IN-04 | info | fixed | 01-REVIEW-FIX.md |
-| WR-03 | warning | open | scrub-capture.mjs bare-home rewrite lacks boundary check — needs TDD fix + unit test; batch with Phase 2 gate hardening (not in the current review) |
-| WR-04 | warning | open | probe harness hardcodes desktopVersion:'3.18.2' — read at capture time like builtinRevision; batch with Phase 3 harness work (not in the current review) |
+| WR-03 | warning | fixed | 01-REVIEW.md re-review: verified fixed empirically (boundary rewrite + WR-03 suite tests green) (not in the current review) |
+| WR-04 | warning | fixed | 01-REVIEW.md re-review: verified fixed empirically (desktopVersion read at capture time) (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
