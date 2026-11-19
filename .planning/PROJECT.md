@@ -79,17 +79,20 @@ Apache-2.0 → портирование на Go допустимо с атриб
 TROUBLESHOOTING: Start Plan headless не работает (нужен браузер) — документируем.
 Конкурирующие адаптеры (Rust/Python) coding-plan цепочку не делают.
 
-**Открытые вопросы для фазы исследования:**
-- Рецепт запуска для Orca: persona выбрана — карточка **omp** (альтернативы
-  отпали, контракт собран в REFERENCE-ADAPTERS.md: floor 17.0.5,
-  `--version` печатает 18.1.9+, вайринг через официальную настройку
-  `agentCmdOverrides`, строковые контракты диалекта Hb). Осталось выяснить:
-  формат файлов сессий в `--session-dir` (сможем ли писать совместимую историю
-  из Go) и поведение modelDiscovery kind `session` — оба уточняются при
-  живой интеграции
-- Какие именно вызовы Orca делает при старте карточки (load-bearing set)
-- Механизм обнаружения установки ZCode desktop (AppImage/deb/распакованная)
-- Как замапить выбор модели ACP-клиента на `session/setModel` + reasoningLevel
+**Открытые вопросы для фазы исследования:** ✅ RESOLVED Phase 1 (2026-11-19) —
+все пять DISC-deliverables доставлены и верифицированы (`docs/protocol/*`,
+`docs/research/reference-adapters.md`, эксперименты в `experiments/`):
+- Рецепт запуска Orca: omp-карточка, контракт подтверждён дважды (чанки
+  установленной сборки + исходники репо @v1.4.262); `--session-dir` пишется
+  Go-агентом (E5: slug-файлы Claude-style JSONL) — v1 без loadSession не
+  резюмится (клиент -32601), nicety для Фазы 7
+- Load-bearing набор вызовов при старте карточки: задокументирован
+  (acp-client-dialect.md, 19 методов, +session/close и elicitation/complete)
+- Обнаружение установки: матрица AppImage/deb/unpacked + формула revision
+  `zcode-builtin:<rev>:<sha256(path.resolve(activeFilePath))>` (install-discovery.md)
+- Маппинг выбора модели: `session/setModel` + reasoningLevel обязателен после
+  `session/create` (create теряет reasoningLevel — V-EXP); modelDiscovery
+  через `models` в ответе session/new (поправка из source cross-verification)
 
 ## Constraints
 
@@ -120,6 +123,10 @@ TROUBLESHOOTING: Start Plan headless не работает (нужен брау�
 | Бэкенд — только desktop app-server | Явное решение; CLI не поддерживаем в v1 | — Pending |
 | done v1 = CI-тесты протокола (мок app-server) + тесты на виртуалке + ручная E2E в Orca | Три уровня проверки: протокол, среда, реальный сценарий | — Pending |
 | Документация на английском | Шире аудитория для PR | — Pending |
+| Ground-truth hierarchy (Phase 1): installed 3.18.2 bundle = V-SRC первоисточник; GitHub-дерево 3.17.x — подтверждающие цитаты с версией; каждая нагрузочная претензия помечена V-SRC/V-EXP/V-RPT; 3.17↔3.18.2 drift-базлайн — первоклассный раздел | Документы Фаз 3–7 строятся на проверенной правде провода, а не на интерпретациях | ✓ Done (Phase 1) |
+| Клиент-программа дважды проверяема (Phase 1, correction): stablyai/orca ПУБЛИЧНЫЙ (MIT) — ранний «404» был временным сетевым сбоем; якоря на чанки установленной сборки остаются истиной для shipped-версии, исходники репо (@v1.4.262) — второй путь | Читатель может сверить по репо; minified-интерпретации заменены чтением исходников | ✓ Done (Phase 1) |
+| Три семантические поправки для Фаз 4–6 (Phase 1 source cross-verification): chat-запуск БЕЗ `--session-dir` (он у discovery-процессов — wrapper accept-and-ignore + терпит второй процесс); fullAccess=false только у discovery-сессий; modelDiscovery — модели доступны до сессии через probe-сессию (`models` в ответе session/new, расширение клиента) | Влияют на CLI-контракт (Фаза 2), честность capabilities (Фаза 4), выбор моделей (Фаза 6) | ✓ Done (Phase 1) |
+| Экспериментальный конвейер (Phase 1): scrub-first (сырые записи вне репо, scrub-capture.mjs — единственный путь в experiments/captures/), scan-secrets.sh гейтит каждый коммит, check-docs.sh — структурно-provenance гейт; эксперименты никогда не идут из CI | Секреты не попадают в публичный репо; конвейер переиспользуется Фазой 2 для CI | ✓ Done (Phase 1) |
 
 ## Evolution
 
@@ -139,4 +146,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-19 after initialization*
+*Last updated: 2026-11-19 after Phase 1*
