@@ -1,21 +1,14 @@
 ---
-status: testing
+status: complete
 phase: 01-Research & Protocol Documentation
 source: [01-VERIFICATION.md]
 started: 2026-11-19T09:10:00Z
-updated: 2026-11-19T11:40:00Z
+updated: 2026-11-19T11:34:57.453Z
 ---
 
 ## Current Test
 
-number: 1
-name: MVP goal format — ROADMAP Phase 1 goal into canonical User Story form
-expected: |
-  ROADMAP.md declares `mode: mvp` but the Phase 1 goal line is not in user-story
-  format (`user-story.validate` → valid: false). Run /gsd:mvp-phase 1 (or manually
-  reformat the goal) so the goal validates; plan 01-01's reframe (valid: true) is
-  the shape to match.
-awaiting: user response
+[testing complete]
 
 ## Tests
 
