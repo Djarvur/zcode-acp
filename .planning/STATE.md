@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: ZCode Back Leg
 status: executing
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-11-19T17:59:34.120Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-11-19T18:29:36.276Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 3 execution started
-state_head: 56618eaa33fe27e890291ba7975746377be73d4c
+state_head: 4d95361a69dd86f04a4c8f51572b609f53bb106d
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 20
-  completed_plans: 13
+  completed_plans: 14
   percent: 29
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 3 (ZCode Back Leg) — EXECUTING
-Plan: 3 of 9
+Plan: 4 of 9
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 3 execution started
 
@@ -83,6 +83,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P02-05 | 5min | 2 tasks | 2 files |
 | Phase 03 P03-01 | 30min | 3 tasks | 12 files |
 | Phase 03 P03-04 | 31min | 2 tasks | 3 files |
+| Phase 03 P03-02 | 23min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -128,6 +129,8 @@ Recent decisions affecting current work:
 - [Phase 03]: Discovery adjacency resolved: all probes run to completion on every Discover call, rows recorded hit-or-miss, first-match-wins picks the earliest spawnable install in the documented order — probes never merge and diagnostics stay complete on the success path
 - [Phase 03]: Empty-result discovery contract: ErrNoInstall exported sentinel carrying one diagnostics line per probe row (install-discovery.md :34); DpkgQuery seam contract is the dpkg -L file list only, rc-remnant answers as empty list and falls through to opt-path
 - [Phase 03]: BuiltinRevision implements the sharpened V-SRC formula: sha256 over the EvalSymlinks+Abs-resolved PATH STRING, never file contents; runtime-provider tree picks the newest version dir numerically (0.0.0-dev < 3.17.1 < 3.18.2); defaultOverride production seam is a documented no-op until 03-07 wires the wrapper config surface
+- [Phase 03]: [Phase 03]: Codec contract locks landed (03-02): WR-02 demux, id type-safety, single-writer ordering + bypass precedence locked by named tests at the public Conn surface over io.Pipe; conn.Stop = fire-and-forget request-shaped session/stop on the bypass lane (D-02 cancel primitive)
+- [Phase 03]: [Phase 03]: D-05 router policy complete (03-02): runtime-preferences answered under its injectable deadline (default 15s, recorded on the RouterAnswered event); credential-cipher tracked-no-answer — zero reply bytes, exactly one recorded expiry, tracker bound to the conn's base context; unknown methods -32601 naming the method
 
 ### Pending Todos
 
@@ -151,6 +154,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T17:59:18.003Z
-Stopped at: Completed 03-04-PLAN.md
+Last session: 2026-11-19T18:29:14.089Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
