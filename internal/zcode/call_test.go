@@ -141,3 +141,86 @@ func TestCallCtxCancellationCleanup(t *testing.T) {
 		t.Fatal("fresh call never settled after a cancellation cleanup")
 	}
 }
+
+// Stream-death contract (review WR-01): when the child dies mid-call — the
+// stream EOFs — in-flight calls resolve with an error PROMPTLY. The caller
+// ctx here lives far longer than the resolution bound: only a prompt
+// stream-death resolution can pass, so the unfixed conn (nothing fails
+// pending calls on read-loop exit) wedges until the bound fires while the
+// ctx is still fresh — and the pending entry leaks until the ctx deadline.
+func TestCallResolvesOnStreamDeath(t *testing.T) {
+	connEnd, peerEnd := connPipes()
+
+	conn := zcode.NewConn(connEnd)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	outcomes := issueCalls(ctx, t, conn, 1)
+	peerLines := drainPeer(t, peerEnd)
+
+	waitLines(t, peerLines, 1, testTimeout) // registered + on the wire
+
+	_ = peerEnd.Close() // the child dies mid-call: its pipe ends close
+
+	select {
+	case oc := <-outcomes:
+		if oc.err == nil {
+			t.Fatal("a call against a dead stream must fail, not return a result")
+		}
+
+		if errors.Is(oc.err, context.DeadlineExceeded) {
+			t.Fatalf("stream-death error %v must not be the caller ctx expiry", oc.err)
+		}
+	case <-time.After(deadStreamBound):
+		t.Fatalf("in-flight call still wedged %v after stream death — it hangs until the caller ctx (%v) expires",
+			deadStreamBound, testTimeout)
+	}
+}
+
+// Close contract (review WR-01): a call pending across Conn.Close resolves
+// with an error promptly — Close cancels only the conn's base context,
+// which pending calls (per-call caller ctxs) never observe, so only an
+// explicit drain of the pending table can settle them.
+func TestCallResolvesOnClose(t *testing.T) {
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
+
+	conn := zcode.NewConn(connEnd)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	outcomes := issueCalls(ctx, t, conn, 1)
+	peerLines := drainPeer(t, peerEnd)
+
+	waitLines(t, peerLines, 1, testTimeout) // registered + on the wire
+
+	closeDone := make(chan error, 1)
+
+	go func() {
+		closeDone <- conn.Close()
+	}()
+
+	select {
+	case oc := <-outcomes:
+		if oc.err == nil {
+			t.Fatal("a call pending across Close must fail, not return a result")
+		}
+
+		if errors.Is(oc.err, context.DeadlineExceeded) {
+			t.Fatalf("Close error %v must not be the caller ctx expiry", oc.err)
+		}
+	case <-time.After(deadStreamBound):
+		t.Fatalf("in-flight call still wedged %v after Close — Close must fail pending calls", deadStreamBound)
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close reported %v", err)
+		}
+	case <-time.After(deadStreamBound):
+		t.Fatal("Close never returned")
+	}
+}

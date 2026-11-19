@@ -27,6 +27,13 @@ const (
 	testTimeout = 10 * time.Second
 	graceWindow = 150 * time.Millisecond
 
+	// deadStreamBound bounds the PROMPT-resolution assertions of the
+	// stream-death and Close drain tests (review WR-01): a resolved call
+	// must beat this bound by orders of magnitude, while the wedged RED
+	// call — hung until its caller ctx — proves the hang with a bound far
+	// below that ctx (testTimeout).
+	deadStreamBound = 2 * time.Second
+
 	// bigLineBytes drives the raised-buffer test: a 128 KiB line sits far
 	// above the 64 KiB bufio.Scanner default (RESEARCH Pitfall 1) and well
 	// below the conn's 16 MiB cap (T-3-02).
