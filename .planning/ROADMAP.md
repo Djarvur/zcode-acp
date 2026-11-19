@@ -33,7 +33,7 @@ agents (Phase 7).
 ## Phase Details
 
 ### Phase 1: Research & Protocol Documentation
-**Goal**: The ZCode app-server dialect, the chat-UI client's ACP behavior, desktop install layouts, and workspaceKey semantics are documented from source and experiments, so every later phase builds on verified wire truth instead of assumptions.
+**Goal**: As a later-phase implementer on this repo, I want to the app-server dialect, the chat-UI client's ACP behavior, desktop install layouts, and workspaceKey semantics documented from source and experiments, so that every later phase builds on verified wire truth instead of assumptions.
 **Mode:** mvp
 **Depends on**: Nothing (first phase)
 **Requirements**: DISC-01, DISC-02, DISC-03, DISC-04, DISC-05
