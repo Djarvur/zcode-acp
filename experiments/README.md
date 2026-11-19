@@ -49,7 +49,13 @@ mentions.
       --builtin <builtin-config-file> \
       --flow <flow-name> \
       --raw-out <scratch-path-outside-repo> \
-      --window-ms 12000 [--quiet-ms 2500]
+      --window-ms 30000 [--quiet-ms 2500]
+
+`--window-ms` must exceed the chosen flow's last scheduled step (the probe
+validates this and refuses to start otherwise): the subscribe flow's final
+probe fires at 13000 ms and the turn flow's at 13500 ms, so the example is
+30000 — a shorter window lets the backstop win the race and the final probe
+is never delivered (the run would still complete exit 0).
 
 Spawns the app-server over stdio (`ELECTRON_RUN_AS_NODE=1`, builtin config
 pointed at `<builtin-config-file>`), HOLDS STDIN OPEN for the whole collection

@@ -247,6 +247,48 @@ test('CR-01: scrubbing a multi-user_info line is a fixed point (re-scrub is byte
   assert.equal(second.out, first.out, 'second scrub pass must be a fixed point');
 });
 
+// --- CR-01 (re-review): the WRAPPED/ESCAPED wire-line form -----------------------
+// app-server-probe.mjs stores every wire line as JSON.stringify({ ts, line }) —
+// the wire JSON then reaches the scrubber as an ESCAPED string inside an envelope
+// and the key looks like \"user_info\":{, which the bare-quote regex never
+// matched (the wholesale-redaction rule was dead for the pipeline's primary raw
+// format). These tests feed the probe's ACTUAL envelope form.
+
+test('CR-01 wrapped: a user_info payload inside the probe envelope form is redacted wholesale', () => {
+  const wire = JSON.stringify({
+    method: 'state.updated',
+    params: {
+      user_info: { email: 'leak' + '@' + 'example.test', marker: 'WRAPPED_MARKER_XYZ' },
+      sequence: 3,
+    },
+  });
+  const input = HEADER + '\n' + JSON.stringify({ ts: '2026-11-19T00:00:00Z', line: wire }) + '\n';
+  const { out } = runScrub(input);
+  assert.ok(out !== null && out.length > 0, 'scrubber must produce output');
+  assert.ok(!(out ?? '').includes('leak' + '@' + 'example.test'), 'the email must not survive the wrapped form');
+  assert.ok(!(out ?? '').includes('WRAPPED_MARKER_XYZ'), 'no field of the payload may survive the wrapped form');
+  const envelope = dataLine(out);
+  assert.ok(envelope !== null, 'the envelope line must stay parseable JSON');
+  const inner = dataLine((envelope?.line ?? '') + '\n', 0);
+  assert.equal(
+    inner?.params?.user_info,
+    '[REDACTED-USERINFO]',
+    'the whole user_info object inside the wrapped wire line must be replaced',
+  );
+});
+
+test('CR-01 wrapped: scrubbing wrapped-form output is a fixed point (re-scrub is byte-identical)', () => {
+  const wire = JSON.stringify({
+    method: 'state.updated',
+    params: { user_info: { email: 'leak' + '@' + 'example.test' } },
+  });
+  const input = HEADER + '\n' + JSON.stringify({ ts: '2026-11-19T00:00:00Z', line: wire }) + '\n';
+  const first = runScrub(input);
+  assert.ok(first.out !== null && first.out.length > 0, 'first pass must produce output');
+  const second = runScrub(first.out);
+  assert.equal(second.out, first.out, 'second scrub pass must be a fixed point');
+});
+
 test('path prefixes passed via --redact-path become the <path> placeholder', () => {
   const input =
     HEADER + '\n' + JSON.stringify({ id: 9, result: { note: '/tmp' + '/scrub-private' + '/notes/f.md' } }) + '\n';

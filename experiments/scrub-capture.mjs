@@ -25,7 +25,8 @@
 //     (the nth distinct value becomes the deterministic nth placeholder; the same
 //      value always maps to the same placeholder — referential integrity for the
 //      Phase 3 golden fixtures seeded from these captures)
-//   "user_info" payload objects -> [REDACTED-USERINFO] (redacted wholesale)
+//   "user_info" payload objects -> [REDACTED-USERINFO] (redacted wholesale,
+//     in both the bare form and the probe's wrapped/escaped envelope form)
 //   absolute paths under the user's home directory -> tilde-relative form
 //   prefixes passed via --redact-path -> <path>
 //
@@ -52,7 +53,12 @@ const JWT_RX = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 const CRED_RX = /enc:v[12]:(os:)?[A-Za-z0-9+/=_:.-]{20,}/g;
 const TOKEN_RX = /("(?:access_token|apiKey|api-key|token)"\s*:\s*")[A-Za-z0-9_-]{20,}(")/g;
 const UUID_RX = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
-const USER_INFO_RX = /"user_info"\s*:\s*\{/g;
+// CR-01 (re-review): match both the bare form ("user_info":{) and the escaped
+// envelope form the probe writes (\"user_info\":{ — every wire line is stored
+// as JSON.stringify({ ts, line }), so the wire JSON arrives as an escaped
+// string and the key's quotes carry backslashes). The capture groups carry the
+// backslashes (if any) so the replacement can mirror the escaping.
+const USER_INFO_RX = /(\\?)"user_info(\\?)"\s*:\s*\{/g;
 
 // --- UUID placeholder map (per run = per file: stable, deterministic) ---------
 const uuidMap = new Map();
@@ -62,8 +68,10 @@ function uuidPlaceholder(matched) {
 }
 
 // --- user_info wholesale redaction (string-level, string-aware brace matching;
-// --- works regardless of whether the line is bare JSON or a wrapped/timestamped
-// --- capture line, and keeps the line parseable) --------------------------------
+// --- works regardless of whether the line is bare JSON or the wrapped/
+// --- timestamped capture line the probe writes — JSON.stringify({ ts, line }) —
+// --- where the wire JSON arrives as an ESCAPED envelope string and the key
+// --- looks like \"user_info\":{; keeps the line parseable in both forms) --------
 function replaceUserInfos(line) {
   let out = '';
   let rest = line;
@@ -78,13 +86,48 @@ function replaceUserInfos(line) {
     USER_INFO_RX.lastIndex = 0;
     const m = USER_INFO_RX.exec(rest);
     if (!m) return out + rest;
+    // CR-01 (re-review): m[1] non-empty means the match sits inside the probe's
+    // envelope form (\"user_info\":{). The replacement must mirror that
+    // escaping, or the bare quotes it inserts would terminate the envelope
+    // string early and corrupt the line.
+    const escaped = m[1] === '\\';
     const objStart = m.index + m[0].length - 1; // index of the opening '{'
-    let depth = 0;
-    let inStr = false;
-    let esc = false;
-    let end = -1;
-    for (let i = objStart; i < rest.length; i++) {
-      const ch = rest[i];
+    const end = findObjectEnd(rest, objStart, escaped);
+    if (end === -1) return out + rest; // truncated line: leave untouched
+    out +=
+      rest.slice(0, m.index) +
+      (m[1] || '') +
+      '"user_info' +
+      (m[2] || '') +
+      '":' +
+      (m[2] || '') +
+      '"' +
+      REDACT.userinfo +
+      (m[2] || '') +
+      '"';
+    rest = rest.slice(end + 1);
+  }
+}
+
+// String-aware closing-brace search for the "user_info" object opened at
+// rest[objStart]. escaped=false scans bare JSON (quotes toggle strings; a
+// backslash inside a string escapes the next character). escaped=true scans
+// the probe's envelope form, where every quote of the inner wire JSON arrives
+// as an escaped pair (\") — CR-01: a bare-quote toggle there would read the
+// whole inner JSON as one giant string and never find the closing brace (an
+// escaped quote is never a string boundary), so the pairs are decoded level by
+// level: an envelope-level \\ / \" pair yields the wire character it
+// represents, and that wire character then feeds the ordinary string/brace
+// logic (a decoded wire backslash escapes the NEXT decoded wire character; a
+// decoded wire quote opens/closes a wire string).
+function findObjectEnd(rest, objStart, escaped) {
+  let depth = 0;
+  let inStr = false; // inside a JSON string at the level being scanned
+  let esc = false; // bare mode: the previous character was a backslash
+  let wireEsc = false; // escaped mode: the previously decoded wire character was a backslash
+  for (let i = objStart; i < rest.length; i++) {
+    const ch = rest[i];
+    if (!escaped) {
       if (inStr) {
         if (esc) esc = false;
         else if (ch === '\\') esc = true;
@@ -95,16 +138,38 @@ function replaceUserInfos(line) {
         depth++;
       } else if (ch === '}') {
         depth--;
-        if (depth === 0) {
-          end = i;
-          break;
-        }
+        if (depth === 0) return i;
       }
+      continue;
     }
-    if (end === -1) return out + rest; // truncated line: leave untouched
-    out += rest.slice(0, m.index) + '"user_info":"' + REDACT.userinfo + '"';
-    rest = rest.slice(end + 1);
+    if (inStr) {
+      if (ch === '"') return -1; // bare quote inside the envelope string: envelope ended mid-object — leave untouched
+      if (ch === '\\') {
+        // envelope-level escape pair: \\ or \" decodes to the wire character it represents
+        const wire = rest[i + 1] === '\\' ? '\\' : rest[i + 1] === '"' ? '"' : null;
+        if (wire === null) return -1; // not an envelope-level escape pair: malformed — leave untouched
+        if (wireEsc) wireEsc = false; // escaped wire character: content
+        else if (wire === '\\') wireEsc = true; // wire-level escape begins: the next wire character is content
+        else inStr = false; // decoded wire quote closes the wire string
+        i++; // consume both bytes of the pair (the loop adds the second step)
+        continue;
+      }
+      continue; // any other byte is wire content
+    }
+    if (ch === '\\' && rest[i + 1] === '"') {
+      inStr = true; // envelope-level \" opens a wire string
+      wireEsc = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') return -1; // same anomaly, outside a wire string
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
   }
+  return -1; // truncated line: leave untouched
 }
 
 // Escape regex metacharacters so a literal path can be used inside a RegExp.

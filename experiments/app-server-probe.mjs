@@ -14,7 +14,7 @@
 //     --builtin <builtin-config-file> \
 //     --flow <flow-name> \
 //     --raw-out <scratch-path-outside-repo> \
-//     --window-ms 12000 [--quiet-ms 2500] [--workspace-dir <dir>]
+//     --window-ms 30000 [--quiet-ms 2500] [--workspace-dir <dir>]
 //
 // Behavior:
 //   - spawns `<electron> <cjs> app-server --stdio` with ELECTRON_RUN_AS_NODE=1 and
@@ -91,6 +91,18 @@ const SEQ_WATCH_KEYS = ['seq', 'sequence', 'eventSeq', 'sequenceNumber', 'revisi
 
 function observeReply(wire) {
   if (wire == null || typeof wire !== 'object') return;
+  // IN-04 (verdict-falsification guard): a frame carrying `method` is a
+  // server->host REQUEST (method + id) or a notification (method, no id) — never
+  // a reply; replies are {"id","result"|"error"} without a method
+  // (docs/protocol/app-server-dialect.md §1, envelope grammar). Recorded wire
+  // truth shows reverse requests arrive with string ids ("server-1", …) that
+  // cannot collide with the numeric probe ids — but the id scheme is
+  // server-owned, not a contract, so the shape check is the real guard: storing
+  // a request in state.replies could shadow the real reply for a colliding id
+  // (classifyReply would report "accepted" for a call the server never answered)
+  // or anchor sendReplyTs early and open the quiet-window latency floor
+  // prematurely. Only method-less frames are candidate replies.
+  if (typeof wire.method === 'string') return;
   if (wire.id != null) state.replies[wire.id] = wire;
   if (PROBED_METHODS[wire.id] === 'session/send' && state.sendReplyTs == null) {
     state.sendReplyTs = Date.now();
@@ -430,7 +442,7 @@ function usage() {
     'usage: node experiments/app-server-probe.mjs --electron <bundle-root>/zcode \\\n' +
       '  --cjs <bundle-root>/resources/glm/zcode.cjs --builtin <builtin-config-file> \\\n' +
       '  --flow <probe|workspacekey|subscribe|turn> --raw-out <scratch-path-outside-repo> \\\n' +
-      '  --window-ms 12000 [--quiet-ms 2500] [--end-mode fixed|quiet-window] [--workspace-dir <dir>] \\\n' +
+      '  --window-ms 30000 [--quiet-ms 2500] [--end-mode fixed|quiet-window] [--workspace-dir <dir>] \\\n' +
       '  [--desktop-version <value>]\n',
   );
 }
@@ -457,6 +469,27 @@ if (!Object.hasOwn(FLOWS, flags.flow)) {
   process.stderr.write(
     `app-server-probe: unknown flow "${flags.flow}" (known: ${Object.keys(FLOWS).join(', ')}` +
       `${pending.length ? `; not implemented yet: ${pending.join(', ')}` : ''})\n`,
+  );
+  process.exit(1);
+}
+
+// --- WR-02: the probe knows its own steps — never accept a window that expires
+// --- before the flow's last (load-bearing) step fires. At the documented 12 s
+// --- example the window backstop won the race for both 01-02 flows (last steps
+// --- at 13000/13500 ms), the late send() then wrote into an already-ended
+// --- stdin, and the run completed exit 0 with its final probe never delivered.
+// --- Validated BEFORE the spawn so a rejected window never starts the desktop
+// --- app-server (and never writes a capture header).
+const steps = FLOWS[flags.flow]({
+  workspaceDir: flags.workspaceDir,
+  windowMs: flags.windowMs,
+  quietMs: flags.quietMs,
+});
+const lastAtMs = Math.max(...steps.map((s) => s.atMs));
+if (flags.windowMs <= lastAtMs) {
+  process.stderr.write(
+    `app-server-probe: --window-ms ${flags.windowMs} expires before the "${flags.flow}" flow's ` +
+      `last step (${lastAtMs} ms) — the final probe would be swallowed by the window backstop; raise the window\n`,
   );
   process.exit(1);
 }
@@ -509,10 +542,11 @@ child.stdout.on('data', (chunk) => {
     if (quietArmed) resetQuietTimer(); // quiet-window end mode: every line postpones the end
     // Answer server->host REQUESTS (method + id); notifications (no id) need no
     // reply. Every reply is recorded in the capture as a hostSent line.
+    // IN-04: a request is never fed to observeReply (see the guard inside it) —
+    // only method-less frames are candidate replies.
     try {
       const wire = JSON.parse(line);
       if (wire && typeof wire.method === 'string' && wire.id != null) {
-        observeReply(wire);
         const reply = { id: wire.id, ...hostReplyFor(wire.method) };
         send(reply);
         appendFileSync(rawOut, JSON.stringify({ ts: new Date().toISOString(), hostSent: reply }) + '\n');
@@ -605,12 +639,7 @@ function armQuietWindow() {
   resetQuietTimer();
 }
 
-// --- run the flow --------------------------------------------------------------
-const steps = FLOWS[flags.flow]({
-  workspaceDir: flags.workspaceDir,
-  windowMs: flags.windowMs,
-  quietMs: flags.quietMs,
-});
+// --- run the flow (steps computed and window-validated before the spawn) --------
 const timers = steps.map((s, i) =>
   setTimeout(() => {
     // Dynamic steps are evaluated at fire time against the accumulated state;
@@ -658,7 +687,10 @@ if (exitInfo.spawnError) {
   process.exit(1);
 }
 
-const earlyZero = exitInfo.code === 0 && capturedLines === 0;
+// WR-01: key the no-wire-truth guard on capturedLines alone — a child that
+// crashes (exit 1) with zero captured lines is the same EOF-pitfall/no-wire-truth
+// condition as a child that exits 0 with zero lines, and must fail the run too.
+const earlyZero = capturedLines === 0;
 process.stderr.write(
   `app-server-probe: flow=${flags.flow} capture=${captureId} exit=${exitInfo.code}` +
     ` sig=${exitInfo.sig || '-'} lines=${capturedLines} killed=${killed}` +
@@ -666,8 +698,9 @@ process.stderr.write(
 );
 if (earlyZero) {
   process.stderr.write(
-    'app-server-probe: WARNING — exit 0 with zero captured lines is the stdin-EOF\n' +
-      'pitfall signature (or a bad --electron/--cjs path); the run produced no wire truth.\n',
+    'app-server-probe: WARNING — zero captured lines is the stdin-EOF pitfall\n' +
+      'signature (or a bad --electron/--cjs path, or a child that crashed on boot);\n' +
+      'the run produced no wire truth.\n',
   );
   process.exit(1);
 }
