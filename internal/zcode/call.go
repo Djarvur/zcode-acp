@@ -147,6 +147,33 @@ func (c *Conn) Notify(method string, params any) error {
 	return nil
 }
 
+// Stop sends session/stop for sessionID on the bypass lane (dialect §1: the
+// bypass set is exactly session/stop, workspace/cancelGenerateText, and the
+// MCP-UI concurrent set — cancellation must never queue behind ordinary
+// traffic; D-02 makes this the turn-cancel primitive). The frame is
+// request-shaped with a conn-assigned id; the ack reply is deliberately
+// unobserved — cancellation is fire-and-forget (the turn machine watches
+// completion signals, not the stop ack), so the reply resolves nothing and
+// is dropped.
+func (c *Conn) Stop(sessionID string) error {
+	params, err := json.Marshal(map[string]any{"sessionId": sessionID})
+	if err != nil {
+		return fmt.Errorf("zcode: stop %s: marshal params: %w", sessionID, err)
+	}
+
+	env := &Envelope{
+		ID:     &ID{Int: c.nextID.Add(1), IsInt: true},
+		Method: MethodSessionStop,
+		Params: params,
+	}
+
+	if err := c.out.enqueueBypass(env); err != nil {
+		return fmt.Errorf("zcode: stop %s: %w", sessionID, err)
+	}
+
+	return nil
+}
+
 // Reply answers a server→host request id with result on the bypass lane
 // (dialect §1: reverse-request responses bypass the queue — answering them
 // from the queue would deadlock the pairing). The id echoes the request's
