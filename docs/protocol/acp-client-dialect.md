@@ -516,7 +516,10 @@ Still unresolved, recorded as known-unknowns (never presented as verified):
   the repo).
 - `[V-SRC repo src/<path>#<line> @v1.4.262]` — the public client source
   (github.com/stablyai/orca, MIT), read at tag `v1.4.262` (commit `13619bc1`,
-  2026-11-17T22:43:33Z), capture `EXP-ORCASRC-01`. Build match: the installed AppImage
+  2026-11-17T22:43:33Z). Capture evidence: `[V-EXP EXP-ORCASRC-01]` —
+  `experiments/captures/EXP-ORCASRC-01.jsonl` (IN-03: tagged in V-EXP form so the
+  check-docs resolution + capture-header continuity gate covers this capture like
+  the other five). Build match: the installed AppImage
   (mtime 2026-11-18) has no exactly provable tag without rebuilding, but its chunk registry
   (8 cards, kimi and cursor present, no hermes) is byte-count-identical to v1.4.261 and
   v1.4.262, and brackets the build between the cursor merge (2026-11-15) and the hermes merge
