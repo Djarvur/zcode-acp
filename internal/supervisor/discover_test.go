@@ -136,7 +136,11 @@ func discoverUnpackedFixture(t *testing.T) {
 	root := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
 	writeBundleTree(t, root)
 
-	install, probes, err := supervisor.Probers{Home: home}.Discover(context.Background())
+	p := supervisor.Probers{
+		Home:    home,
+		AppDirs: func() []string { return []string{root} },
+	}
+	install, probes, err := p.Discover(context.Background())
 	if err != nil {
 		t.Fatalf("unpacked squashfs-root tree must resolve: %v", err)
 	}
@@ -179,7 +183,8 @@ func discoverAppImageFixture(t *testing.T) {
 
 	var gotAppImagePath string
 	p := supervisor.Probers{
-		Home: filepath.Dir(apps),
+		Home:    filepath.Dir(apps),
+		AppDirs: func() []string { return []string{versioned, symlink} },
 		ExtractAppImage: func(_ context.Context, appImagePath, _ string) (string, error) {
 			gotAppImagePath = appImagePath
 
@@ -403,7 +408,11 @@ func TestDiscoverFindsNewestBuiltin(t *testing.T) {
 	writeBundleTree(t, root)
 	writeRuntimeTree(t, home, []string{"0.0.0-dev", "3.17.1", "3.18.2"}, []int{1, 43, 44})
 
-	install, probes, err := supervisor.Probers{Home: home}.Discover(context.Background())
+	p := supervisor.Probers{
+		Home:    home,
+		AppDirs: func() []string { return []string{root} },
+	}
+	install, probes, err := p.Discover(context.Background())
 	if err != nil {
 		t.Fatalf("root install plus runtime tree must resolve: %v", err)
 	}
