@@ -91,12 +91,12 @@ Plans:
   2. CI runs golden JSONL transcript tests against the scriptable fake app-server (in-process over pipes plus a standalone binary), exercising the protocol with no desktop bundle present
   3. On a machine with ZCode desktop installed, the supervisor locates the install per the Phase 1 matrix, spawns the app-server child with the correct environment, and kills the whole process group on EOF/exit leaving no orphaned Electron processes; when no install is found, startup fails with actionable diagnostics naming what was searched
   4. Against the fake app-server, a fire-and-forget `session/send` is lifted into a synchronous turn that completes exactly once on multi-signal turn-completion detection and honors cancel mid-turn
-**Plans**: 1/9 plans executed
+**Plans**: 2/9 plans executed
 
 Plans:
 **Wave 1**
 - [x] 03-01-PLAN.md — Tracer (TDD): dialect round-trip end-to-end — envelope + two-lane writer + Conn demux + in-process fake + happy-turn golden replay over io.Pipe (BRIDGE-01, BRIDGE-02, D-01, D-05)
-- [ ] 03-04-PLAN.md — Discovery (TDD): Phase-1 matrix probes with seams, first-match order, every-probe diagnostics, mount rejection, builtin revision (BRIDGE-03, D-03)
+- [x] 03-04-PLAN.md — Discovery (TDD): Phase-1 matrix probes with seams, first-match order, every-probe diagnostics, mount rejection, builtin revision (BRIDGE-03, D-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 03-02-PLAN.md — Codec hardening: WR-02 demux lock, id type-safety, single-writer ordering, bypass precedence, line buffer, router deadlines + credential-cipher tracked-no-answer (BRIDGE-01, WR-02, D-05)
@@ -172,7 +172,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
-| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 1/9 | In Progress | - |
+| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 2/9 | In Progress | - |
 | 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
