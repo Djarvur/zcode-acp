@@ -25,6 +25,9 @@
 //   - appends timestamped stdout lines to the raw file (one JSON object per wire
 //     line: {"ts":"<ISO>","line":"<raw wire line>"});
 //   - mirrors child stderr to this process's stderr, capped at 64 KiB;
+//   - answers server->host REQUESTS (the app-server is host-managed):
+//     session/requestRuntimePreferences gets a minimal preferences result,
+//     everything else gets -32601; every reply is recorded as a hostSent line;
 //   - the FIRST line of the raw file is the capture header JSON with the builtin
 //     revision READ AT CAPTURE TIME (stale-evidence guard against desktop
 //     auto-update mid-phase);
@@ -46,6 +49,25 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 const STDERR_CAP_BYTES = 64 * 1024;
 const GRACE_MS = 4000; // between stdin.end() and the SIGKILL backstop
+
+// Host-obligation replies. The app-server is host-managed: some server->host
+// REQUESTS (method + id) must be answered or the internal protocol client closes
+// and in-flight calls fail with -32603. Minimal answers per the 3.17.x reference
+// host fixture (mcp-apps-host-fixture/agent.ts) and the strict result schema
+// (zcodeSessionRuntimePreferencesResultSchema — the remaining fields default at
+// the protocol parse boundary). Unknown host requests get -32601, like the
+// fixture. All replies are recorded into the raw capture (hostSent lines).
+function hostReplyFor(method) {
+  if (method === 'session/requestRuntimePreferences') {
+    return {
+      result: {
+        nativeSearchEnhancementsEnabled: false,
+        memoryEnabled: false,
+      },
+    };
+  }
+  return { error: { code: -32601, message: `probe harness: unsupported host request: ${method}` } };
+}
 
 // ---------------------------------------------------------------------------
 // Flow registry — the dispatch seam. Plans 01-02 add `subscribe` and `turn`
@@ -224,6 +246,18 @@ child.stdout.on('data', (chunk) => {
     stdoutBuf = stdoutBuf.slice(idx + 1);
     appendFileSync(rawOut, JSON.stringify({ ts: new Date().toISOString(), line }) + '\n');
     capturedLines++;
+    // Answer server->host REQUESTS (method + id); notifications (no id) need no
+    // reply. Every reply is recorded in the capture as a hostSent line.
+    try {
+      const wire = JSON.parse(line);
+      if (wire && typeof wire.method === 'string' && wire.id != null) {
+        const reply = { id: wire.id, ...hostReplyFor(wire.method) };
+        send(reply);
+        appendFileSync(rawOut, JSON.stringify({ ts: new Date().toISOString(), hostSent: reply }) + '\n');
+      }
+    } catch {
+      // non-JSON stdout line — keep it in the capture, no reply possible
+    }
   }
 });
 

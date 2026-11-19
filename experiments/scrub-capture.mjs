@@ -28,7 +28,7 @@
 // Idempotent: scrubbing already-scrubbed output changes nothing (fixed point).
 // Exit 0 on success, including empty input -> empty output.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -161,5 +161,9 @@ const lines = raw.split('\n');
 const scrubbed = lines.map((line, i) => (i === 0 ? line : scrubLine(line, redactPaths, home)));
 const output = scrubbed.join('\n');
 
-if (outFile) writeFileSync(outFile, output);
-else process.stdout.write(output);
+if (outFile) {
+  mkdirSync(path.dirname(outFile), { recursive: true });
+  writeFileSync(outFile, output);
+} else {
+  process.stdout.write(output);
+}
