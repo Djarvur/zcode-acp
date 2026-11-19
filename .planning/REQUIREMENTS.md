@@ -17,7 +17,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 
 ### Scaffold (goswitch-style)
 
-- [ ] **SCAFF-01**: Go module scaffolded with strict pinned golangci-lint config (goswitch-style `default: all` v2 config, exact version pin)
+- [x] **SCAFF-01**: Go module scaffolded with strict pinned golangci-lint config (goswitch-style `default: all` v2 config, exact version pin)
 - [ ] **SCAFF-02**: GitHub Actions CI running lint + test + build (+ govulncheck), mise-driven toolchain versions per goswitch pattern
 - [ ] **SCAFF-03**: `master` branch protection configured and documented (required checks, PR-only workflow)
 
@@ -114,7 +114,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISC-03 | Phase 1 | Complete |
 | DISC-04 | Phase 1 | Complete |
 | DISC-05 | Phase 1 | Complete |
-| SCAFF-01 | Phase 2 | Pending |
+| SCAFF-01 | Phase 2 | Complete |
 | SCAFF-02 | Phase 2 | Pending |
 | SCAFF-03 | Phase 2 | Pending |
 | BRIDGE-01 | Phase 3 | Pending |
