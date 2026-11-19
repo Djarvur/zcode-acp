@@ -46,12 +46,17 @@ agents (Phase 7).
 **Plans**: 6 plans
 
 Plans:
+**Wave 1**
 - [ ] 01-01-PLAN.md — Documentation-pipeline walking skeleton: validation gates, provenance legend, scrub-first capture pipeline, E3 experiment + workspace-key.md (DISC-04)
+
+**Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-02-PLAN.md — E1 session/subscribe probe + E2 turn-completion experiment, scrubbed captures (DISC-01 evidence)
-- [ ] 01-03-PLAN.md — docs/protocol/app-server-dialect.md: event surface, subscribe verdict, terminal signals, drift baseline (DISC-01)
 - [ ] 01-04-PLAN.md — Orca chunk re-verification + E5 static answers + docs/protocol/acp-client-dialect.md (DISC-02)
 - [ ] 01-05-PLAN.md — E4 install-layout enumeration + docs/protocol/install-discovery.md (DISC-03)
 - [ ] 01-06-PLAN.md — Reference-repo study + docs/research/reference-adapters.md (DISC-05)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 01-03-PLAN.md — docs/protocol/app-server-dialect.md: event surface, subscribe verdict, terminal signals, drift baseline (DISC-01)
 
 ### Phase 2: Scaffold & CI Bootstrap
 **Goal**: The repository enforces strict quality gates — lint, CI, protected branch — modeled on Djarvur/goswitch, from the very first code commit onward.
