@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Research & Protocol Documentation
 status: executing
-stopped_at: Phase 1 context gathered
-last_updated: "2026-11-19T05:15:32.223Z"
+stopped_at: Completed 01-01-PLAN.md
+last_updated: "2026-11-19T05:54:18.320Z"
 last_activity: 2026-11-19
-last_activity_desc: Roadmap created (7 phases, 35/35 requirements mapped)
-state_head: 23bf748bd53c472c3970e5630e39741e2a1e7752
+last_activity_desc: Phase 1 execution started
+state_head: e7c7745f81a5efa415f354f1b574ded4694fac5c
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 6
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -40,10 +40,10 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 
 ## Current Position
 
-Phase: 1 (Research & Protocol Documentation) — READY TO EXECUTE
-Plan: 0 of 0 in current phase (not yet planned)
+Phase: 1 (Research & Protocol Documentation) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-11-19 — Roadmap created (7 phases, 35/35 requirements mapped)
+Last activity: 2026-11-19 — Phase 1 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -65,6 +65,11 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: —
 
 *Updated after each plan completion*
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 01 P01-01 | 29min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -80,6 +85,8 @@ Recent decisions affecting current work:
 - Hidden-goal rule respected: phase names/goals are neutral ACP-server work; client names (Orca) appear only where requirement text uses them
 - Reference-adapter intelligence folded in post-roadmap (2026-11-19): william0wang/zcode-acp (Apache-2.0, TS) already implements+tests the v2-keyring/credentialCipher/snapshot/PAT chain — Phase 6 ports with attribution. Details: `.planning/research/REFERENCE-ADAPTERS.md`
 - Orca integration resolved (2026-11-19, parallel source session, V-SRC(parallel)): preset-agent identity = **omp card**; CLI decision same day: single binary `zcode-acp` on **cobra v1.10.2** — `omp` subcommand implements the card contract, unknown flags tolerated via `FParseErrWhitelist`, `--version` at root and under any subcommand; wired via the official `agentCmdOverrides` setting (`{ "omp": "zcode-acp omp" }` — no `omp` binary needed in PATH); `--version` prints ≥ 18.1.9 (model-selectors); `--model <id>` at launch is honored (`launchesWithModel:true`); `/model` slash + exact Hb string contracts are IN scope via SESS-03 — generic slash commands stay v2 (EXT-01); client fs/terminal stay uncalled; elicitation {form} and compaction supported. Extensibility intent (EXT-04, v2): each future card = one new subcommand + dialect-contract profile over the same bridge — structure the persona layer as pluggable profiles during Phase 2/4 planning so adding one stays small
+- [Phase 01]: Walking skeleton: scrub-first capture pipeline + validation gates are the per-commit standard; probe harness answers server->host requests and records its own replies (hostSent) in captures — Pipeline proven on a live experiment; keeps captures honest and reusable by plans 01-02..01-06 unchanged
+- [Phase 01]: New 3.18.2 wire fact: session/create carries a host obligation — session/requestRuntimePreferences (15s deadline, minimal answer per 3.17.1 fixture host); unanswered -> creates fail -32603. E3 verdict: workspaceKey is host-opaque (path-as-key and arbitrary string both accepted) — Discovered live during E3 (capture EXP-WORKSPACEKEY-01); feeds DISC-01 method map and the interaction-responder design in Phase 5
 
 ### Pending Todos
 
@@ -101,6 +108,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T03:25:41.163Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-research-protocol-documentation/01-CONTEXT.md
+Last session: 2026-11-19T05:54:09.293Z
+Stopped at: Completed 01-01-PLAN.md
+Resume file: None

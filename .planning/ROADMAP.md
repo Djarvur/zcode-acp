@@ -43,11 +43,11 @@ agents (Phase 7).
   3. A discovery matrix documents how to locate a ZCode desktop install across AppImage / deb / unpacked layouts, including what auto-update does to the builtin revision string
   4. `workspaceKey` derivation semantics are documented with both a source citation and a recorded experiment
   5. A reference-implementation comparison under `docs/research/` records what the TypeScript zcode-acp project covers (elicitation, slash commands, resume/fork, attachments), what to adopt, and what to avoid
-**Plans**: 6 plans
+**Plans**: 1/6 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 01-01-PLAN.md — Documentation-pipeline walking skeleton: validation gates, provenance legend, scrub-first capture pipeline, E3 experiment + workspace-key.md (DISC-04)
+- [x] 01-01-PLAN.md — Documentation-pipeline walking skeleton: validation gates, provenance legend, scrub-first capture pipeline, E3 experiment + workspace-key.md (DISC-04)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-02-PLAN.md — E1 session/subscribe probe + E2 turn-completion experiment, scrubbed captures (DISC-01 evidence)
@@ -140,7 +140,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Research & Protocol Documentation | 0/6 | Not started | - |
+| 1. Research & Protocol Documentation | 1/6 | In Progress | - |
 | 2. Scaffold & CI Bootstrap | 0/TBD | Not started | - |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 0/TBD | Not started | - |
 | 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
