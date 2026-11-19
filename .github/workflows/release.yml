@@ -1,0 +1,68 @@
+# release — goreleaser publishes a release on a v* tag (D-04; template:
+# Djarvur/goswitch release.yml, translated from the Russian header to English,
+# decision ids remapped: goswitch D-09/D-11 -> this repo's D-02).
+#
+# Build and publish: mise install installs goreleaser at exactly the version
+# pinned in mise.toml [tools] — the single source of tool versions locally and
+# in CI (D-02; no version drift between the local release loop and CI).
+# `goreleaser release --clean` then does the rest: builds the binaries with
+# default main.version/main.commit/main.date stamping, archives + checksums,
+# and publishes to GitHub Releases.
+#
+# Token rights: the release publish right — the ONLY workflow in this set
+# granted it (verified by this plan's cross-file grep gate); pr-sanity.yml,
+# e2e-matrix.yml and security-scheduled.yml stay read-only. No secrets beyond
+# GITHUB_TOKEN. The first release lands in Phase 7 (semver tag scheme; no
+# .goreleaser.yaml exists yet).
+#
+# Inert by construction: no v* tag exists and .goreleaser.yaml is not written
+# until Phase 7 — a premature tag failing this job is the honest outcome.
+#
+# Workflow registration resolves from the default branch: tag triggers only
+# fire once this file lands on master.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+# The only write-scoped token in the whole workflow set (T-2-05).
+permissions:
+  contents: write
+
+concurrency:
+  # A release must not be torn down mid-publish: a second tag queues instead
+  # of cancelling the running release (same discipline as e2e-gnome).
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: goreleaser release
+    runs-on: ubuntu-latest
+    steps:
+      # Full history and tags are needed by goreleaser: the changelog is built
+      # from commits; main.commit/main.date are stamped from git state.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Official mise installer — precedent pr-sanity.yml (mise.run is the
+      # canonical distribution point; ephemeral runner, no secrets).
+      - name: Install mise
+        run: curl https://mise.run | sh
+
+      - name: Add mise to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Installs go and goreleaser at exactly the mise.toml pins — CI and the
+      # local release loop use the same tool (D-02).
+      - name: Install tools from mise.toml
+        run: mise install
+
+      # goreleaser publishes under GITHUB_TOKEN — the only secret of this
+      # workflow; its rights are limited by the permissions block above.
+      - name: goreleaser release
+        run: mise exec -- goreleaser release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

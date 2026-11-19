@@ -1,0 +1,52 @@
+# e2e-matrix — self-hosted GNOME runner skeleton (D-04; RESEARCH Pattern 4).
+#
+# SKELETON carrying the goswitch discipline, NOT its content: goswitch's
+# e2e-matrix.yml drives that repo's desktop fixtures (AT-SPI idle-desktop
+# preflight, matrix plumbing, artifact upload — ~15 KB) and none of that
+# plumbing is copied; the real scenario lands in Phase 7.
+#
+# Preserved discipline (goswitch e2e-matrix.yml:44-77, shape only):
+#   - workflow_dispatch is the ONLY trigger. Deliberately no push/PR trigger:
+#     an event from a fork or a branch must never be able to drive the
+#     self-hosted runner (the live GNOME desktop) — dispatch is a
+#     write-role-only right.
+#   - One job at a time: the e2e-gnome concurrency group does NOT cancel
+#     in progress — a second dispatch queues instead of racing the running
+#     one; two runners driving one desktop are forbidden.
+#   - Read-only default token; no workflow secrets.
+#
+# Env-var discipline (goswitch precedent, kept for Phase 7): when a scenario
+# eventually needs event fields in shell, they reach the shell through `env:`
+# indirection (e.g. GITHUB_EVENT_NAME: ${{ github.event_name }}) — never via
+# inline ${{ }} interpolation in run: blocks. No untrusted event fields exist
+# in this skeleton; the pattern comment is preserved so Phase 7 inherits it.
+#
+# The runner itself does not exist yet (no machine is registered with the
+# self-hosted + gnome labels) — a dispatch queues forever, inert as intended.
+name: e2e-matrix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-gnome
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: e2e-gnome placeholder
+    runs-on: [self-hosted, gnome]
+    # Generous watchdog mirroring the template's order of magnitude: the real
+    # Phase-7 scenario drives a live desktop on a self-hosted VM and may run
+    # long; the ceiling exists to protect the machine from a hung run.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      # Placeholder — the real scenario (desktop e2e matrix) is authored in
+      # Phase 7 together with the runner registration and its ops docs.
+      - name: placeholder
+        run: echo "e2e scenario lands in Phase 7 — skeleton only"
