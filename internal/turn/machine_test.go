@@ -33,6 +33,11 @@ const (
 	// intervals to prove no delivery happens after stop returns.
 	stopSilence = 60 * time.Millisecond
 
+	// variantWindow bounds one completion-variant Run: GREEN resolves the
+	// quiet variant in ~150 ms (floor 80 ms + settle 40 ms at the injected
+	// knobs); a RED run fails fast on its planned assertion.
+	variantWindow = 2 * time.Second
+
 	// deliveryKind — every session/event envelope on the wire carried it
 	// (EXP-TURN-01).
 	deliveryKind = "desktop-continuous"
@@ -136,6 +141,35 @@ func sessionEvent(t *testing.T, kind, turnID string) fake.SideEffect {
 		wireKeyTurnID:  turnID,
 		"traceId":      "trace_fix1",
 		"deliveryKind": deliveryKind,
+	})
+}
+
+// v4Telemetry is the v4/telemetry/event carrier envelope (dialect §5:
+// dot-spelled kind literals, turnId carried, eventSeq sequence key).
+func v4Telemetry(t *testing.T, kind, turnID string) fake.SideEffect {
+	t.Helper()
+
+	return emit(t, turn.MethodV4Telemetry, map[string]any{
+		"kind":           kind,
+		wireKeyTurnID:    turnID,
+		"eventSeq":       2,
+		wireKeySessionID: fixSessionID,
+		"version":        1,
+	})
+}
+
+// computerUse is the computer-use/operation-event carrier envelope
+// (dialect §5: hyphen-spelled kind literals, turnId carried).
+func computerUse(t *testing.T, kind, turnID string) fake.SideEffect {
+	t.Helper()
+
+	return emit(t, turn.MethodComputerUseOperation, map[string]any{
+		"kind":           kind,
+		wireKeyTurnID:    turnID,
+		"sequenceNumber": 1,
+		wireKeySessionID: fixSessionID,
+		"eventId":        "ev_fix1",
+		"timestamp":      "2026-01-01T00:00:00Z",
 	})
 }
 
@@ -504,4 +538,181 @@ func TestTurnWatcherDeliversUntilStopped(t *testing.T) {
 	stop()
 
 	assertNoDeliveryAfterStop(t, deliveries)
+}
+
+// completionScenario is the completion-variant script base: the send
+// rule's side effects ARE the variant's signal set, and stable
+// session/messages keeps the watcher's polls quiet unless the variant IS
+// the quiet window.
+func completionScenario(t *testing.T, effects ...fake.SideEffect) *fake.Scenario {
+	t.Helper()
+
+	return &fake.Scenario{
+		Name: "turn-completion-variant",
+		OnRequest: []fake.RequestRule{
+			sendRule(t, effects...),
+			messagesRule(t),
+		},
+		UnknownMethod: &fake.Reply{Error: &zcode.WireError{
+			Code:    zcode.CodeMethodNotFound,
+			Message: "MethodNotFound",
+		}},
+		EOFDrainMs: 50,
+	}
+}
+
+// assertQuietAfterFloor asserts the quiet-window resolution fired strictly
+// after the send-latency floor elapsed post-ack (the floor = FloorMultiple
+// x QuietMs measured from the send ack — the probe's first live-verified
+// gate; a quiet fire before the floor is first-token latency masquerading
+// as silence).
+func assertQuietAfterFloor(t *testing.T, ex *turnExchange) {
+	t.Helper()
+
+	got := ex.spy.snapshot()
+
+	if len(got) != 1 {
+		t.Fatalf("resolution hook fired %d times, want exactly 1", len(got))
+	}
+
+	floor := time.Duration(2) * time.Duration(40) * time.Millisecond // the injected knobs
+
+	if got[0].At.Before(ex.machine.AckAt().Add(floor)) {
+		t.Fatalf("quiet resolution at %v fired before ack %v + floor %v elapsed",
+			got[0].At, ex.machine.AckAt(), floor)
+	}
+}
+
+// The completion-variant contract (D-02 ordered union): terminal event,
+// idle patch, and quiet window each resolve the turn exactly once with the
+// correct StopReason and resolving-signal record. The idle patch resolves
+// only when the status LEAVES running (the running patch itself never
+// resolves); the quiet window resolves only after the send-latency floor
+// and the settle gate (no test scenario resolves on absence of evidence).
+func TestCompletionVariants(t *testing.T) {
+	variants := []struct {
+		name     string
+		scenario func(*testing.T) *fake.Scenario
+		want     turn.StopReason
+		signal   turn.SignalKind
+	}{
+		{
+			name: "terminal-event",
+			scenario: func(t *testing.T) *fake.Scenario {
+				return completionScenario(t,
+					statePatch(t, statusRunning, reasonPromptStarted),
+					sessionEvent(t, turn.KindTurnStarted, fixTurnID),
+					sessionEvent(t, turn.KindTurnCompleted, fixTurnID),
+				)
+			},
+			want:   turn.StopCompleted,
+			signal: turn.SignalTerminalEvent,
+		},
+		{
+			name: "idle-patch",
+			scenario: func(t *testing.T) *fake.Scenario {
+				return completionScenario(t,
+					statePatch(t, statusRunning, reasonPromptStarted),
+					statePatch(t, statusIdle, reasonPromptCompleted),
+				)
+			},
+			want:   turn.StopCompleted,
+			signal: turn.SignalIdlePatch,
+		},
+		{
+			name: "quiet-window",
+			scenario: func(t *testing.T) *fake.Scenario {
+				return completionScenario(t,
+					statePatch(t, statusRunning, reasonPromptStarted),
+					sessionEvent(t, turn.KindTurnStarted, fixTurnID),
+				)
+			},
+			want:   turn.StopCompleted,
+			signal: turn.SignalQuietWindow,
+		},
+	}
+
+	for _, v := range variants {
+		t.Run(v.name, func(t *testing.T) {
+			ex := startTurnExchange(t, v.scenario(t))
+
+			ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
+			defer cancel()
+
+			reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
+			if err != nil {
+				// RED: the planned assertion — this variant must resolve
+				// within the exchange window.
+				t.Fatalf("Run (%s): turn did not resolve within the exchange window: %v", v.name, err)
+			}
+
+			if reason != v.want {
+				t.Fatalf("Run (%s) reason = %q, want %q", v.name, reason, v.want)
+			}
+
+			assertResolution(t, ex.spy, v.want, v.signal)
+
+			if v.signal == turn.SignalQuietWindow {
+				assertQuietAfterFloor(t, ex)
+			}
+
+			ex.finish(t)
+		})
+	}
+}
+
+// carrierScenario is the carrier-tolerance script base: turn.started via
+// the session/event carrier records the turn's id, then a FOREIGN-turnId
+// terminal (which must NOT resolve the turn) precedes the turnId-matched
+// terminal on the carrier under test.
+func carrierScenario(t *testing.T, carrier func(*testing.T, string, string) fake.SideEffect, terminalKind string) *fake.Scenario {
+	t.Helper()
+
+	return completionScenario(t,
+		statePatch(t, statusRunning, reasonPromptStarted),
+		sessionEvent(t, turn.KindTurnStarted, fixTurnID),
+		carrier(t, terminalKind, "turn_foreign1"),
+		carrier(t, terminalKind, fixTurnID),
+	)
+}
+
+// The carrier-tolerance contract (RESEARCH Open Question 1 resolution):
+// the same terminal classification fires whichever carrier delivers the
+// turnId-matched terminal signal — session/event (type turn.completed),
+// v4/telemetry/event (kind turn.completed), and computer-use/operation-
+// event (kind turn-completed). A foreign turnId never resolves the turn.
+func TestTerminalCarrierTolerance(t *testing.T) {
+	carriers := []struct {
+		name    string
+		carrier func(*testing.T, string, string) fake.SideEffect
+		kind    string
+	}{
+		{"session-event", sessionEvent, turn.KindTurnCompleted},
+		{"v4-telemetry", v4Telemetry, turn.KindTurnCompleted},
+		{"computer-use", computerUse, turn.KindTurnCompletedCU},
+	}
+
+	for _, c := range carriers {
+		t.Run(c.name, func(t *testing.T) {
+			ex := startTurnExchange(t, carrierScenario(t, c.carrier, c.kind))
+
+			ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
+			defer cancel()
+
+			reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
+			if err != nil {
+				t.Fatalf("Run (%s): turn did not resolve within the exchange window: %v", c.name, err)
+			}
+
+			if reason != turn.StopCompleted {
+				t.Fatalf("Run (%s) reason = %q, want %q", c.name, reason, turn.StopCompleted)
+			}
+
+			// Exactly once: the spy count also proves the foreign-turnId
+			// terminal never resolved the turn.
+			assertResolution(t, ex.spy, turn.StopCompleted, turn.SignalTerminalEvent)
+
+			ex.finish(t)
+		})
+	}
 }
