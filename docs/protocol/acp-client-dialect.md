@@ -14,9 +14,10 @@ semantics) stay V-RPT-labeled (see Open items).
 build named in the header above; re-run the freshness greps (capture `EXP-SESSIONDIR-01`) after any
 client update before relying on it further. The client source is public
 (github.com/stablyai/orca, MIT): this document was cross-verified against source tag
-`v1.4.262` (@`13619bc1`, 2026-11-17) — the newest release whose card registry is byte-identical
+`v1.4.262` (@`13619bc1`, 2026-11-17) — the newest release whose card registry is byte-count-identical
 to the installed build's 8-card chunk registry (a 9th card, `hermes`, was merged after it and
-shipped in v1.4.263). The installed-build anchors remain the ground truth for what the shipped
+shipped in v1.4.263; see Sources & provenance for the exact claim strength — byte-COUNT identity
+is what the cross-check recorded, not content identity). The installed-build anchors remain the ground truth for what the shipped
 app does; `[V-SRC repo … @v1.4.262]` tags are the corroborating source half of each claim.
 
 Provenance tags (V-SRC / V-EXP / V-RPT) are used per the legend in
@@ -520,7 +521,7 @@ Still unresolved, recorded as known-unknowns (never presented as verified):
   (8 cards, kimi and cursor present, no hermes) is byte-count-identical to v1.4.261 and
   v1.4.262, and brackets the build between the cursor merge (2026-11-15) and the hermes merge
   (#42895, 2026-11-17T21:13Z, first shipped in v1.4.263) — so v1.4.262 (the newest
-  registry-identical release) is used as the citation state; every repo file cited here except
+  byte-count-identical release) is used as the citation state; every repo file cited here except
   `src/main/acp/launch/acp-launch-registry.ts` is byte-identical between v1.4.262 and
   `main` @`e1d344b` (2026-11-19), and the registry differs only by the added `hermes` card.
   Per the legend these repo tags corroborate the installed-build V-SRC anchors; where source
