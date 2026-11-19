@@ -1,0 +1,134 @@
+# PR sanity — headless gates on every push/PR (D-04).
+#
+# Adapted from Djarvur/goswitch pr-sanity.yml (sibling repo; local clone read
+# this session). Exact deltas from the template:
+#   - push branch master (the template says main — this repo's default branch
+#     is master);
+#   - an added `test (experiments suite)` step running the Phase-1 node suite
+#     (`mise run test-experiments`);
+#   - an added third job `secret-scan` (D-05): the fixed experiments gate
+#     script runs over the whole tree on every push/PR;
+#   - the docs conformance gate (`check-docs.sh`) runs as a second step inside
+#     that same job (RESEARCH Open Question 1, resolved: the docs gate shares
+#     the secret-scan job's required context instead of adding a fourth name).
+#
+# Gates: build + vet + golangci-lint + test -race + experiments suite +
+# tidy-diff in the sanity job, plus separate govulncheck and secret-scan jobs.
+# All gates are mise tasks from mise.toml — CI calls exactly the same tasks as
+# the local `mise run ci` (D-02).
+#
+# Tool source: `mise install` reads mise.toml — the single place where tool
+# versions live. setup-go / golangci-lint-action are rejected on purpose (the
+# goswitch rationale, carried over): their `version:` inputs would pin a tool a
+# SECOND time and drift from mise.toml; mise gives exact parity with the local
+# dev loop.
+#
+# CI exercises only the offline tiers (go suite, node experiments suite,
+# static gates) — no workflow here ever calls api.z.ai or spawns the real
+# ZCode desktop.
+name: pr-sanity
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# Minimal default token rights; no secrets are used by any job.
+permissions:
+  contents: read
+
+concurrency:
+  # Event name keeps a push and a pull_request for the same ref from
+  # cancelling each other.
+  group: pr-sanity-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sanity:
+    # This string is a branch-protection required check name (plan 02-05):
+    # the ` / ` separators are load-bearing — never rename without updating
+    # the protection body in the same change.
+    name: build / vet / lint / test / tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Official mise installer (mise.run is the canonical distribution point
+      # of jdx/mise; ephemeral runner, read-only token rights, no secrets).
+      - name: Install mise
+        run: curl https://mise.run | sh
+
+      - name: Add mise to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Installs go, golangci-lint and node at exactly the versions pinned in
+      # mise.toml — the single source of tool versions (D-02).
+      - name: Install tools from mise.toml
+        run: mise install
+
+      - name: build
+        run: mise run build
+
+      - name: vet
+        run: mise run vet
+
+      # golangci-lint pinned EXACTLY (2.15.0) in mise.toml — strict config.
+      - name: golangci-lint
+        run: mise run lint
+
+      - name: test (go)
+        run: mise run test
+
+      # Phase-1 node suite (node --test experiments/) — the real test gate
+      # until Go tests arrive in Phase 3.
+      - name: test (experiments suite)
+        run: mise run test-experiments
+
+      # go mod tidy + git diff --exit-code — go.mod/go.sum drift fails the job.
+      - name: modules are tidy
+        run: mise run tidy-diff
+
+  govulncheck:
+    # Required check name (plan 02-05).
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise
+        run: curl https://mise.run | sh
+
+      - name: Add mise to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install tools from mise.toml
+        run: mise install
+
+      # Network-side tool by design: govulncheck and its vulnerability DB are
+      # fetched here only — the local gate does not mirror it. Non-zero exit
+      # on reachable vulnerabilities turns the job red.
+      #
+      # golang.org/x/vuln is the Go team's first-party module, run on an
+      # ephemeral runner with read-only token rights and no secrets. If
+      # @latest ever requires a newer toolchain, raise the go pin in
+      # mise.toml together with the go.mod directive — one place.
+      - name: run govulncheck
+        run: mise exec -- go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  secret-scan:
+    # Required check name (plan 02-05; D-05 promotion of the Phase-1 gate).
+    name: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fixed gate script (WR-01/IN-03 corrected in plan 02-03): fails on any
+      # tracked file outside .planning matching a live-credential value shape.
+      - name: secret scan
+        run: bash experiments/scan-secrets.sh
+
+      # Docs conformance gate shares this job (resolved Open Question 1):
+      # protected via this job's required context, no fourth check name.
+      - name: docs conformance gate
+        run: bash experiments/check-docs.sh
