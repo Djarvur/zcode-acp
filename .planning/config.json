@@ -12,7 +12,7 @@
   "jina": false,
   "git": {
     "allow_default_branch_commits": true,
-    "branching_strategy": "none",
+    "branching_strategy": "phase",
     "create_tag": true,
     "repo_tagging": "single",
     "phase_branch_template": "gsd/phase-{phase}-{slug}",
