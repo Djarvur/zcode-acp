@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 3
 current_phase_name: ZCode Back Leg
 status: executing
-stopped_at: Completed 03-07-PLAN.md
-last_updated: "2026-11-19T20:33:13.959Z"
+stopped_at: Completed 03-08-PLAN.md
+last_updated: "2026-11-19T21:01:25.469Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 3 execution started
-state_head: 67643e460d4717b13448155e6c3cb53ce9b3b332
+state_head: 11e7f2a9313effe2315500e87ec86f72ded67386
 progress:
   total_phases: 7
   completed_phases: 2
   total_plans: 20
-  completed_plans: 18
+  completed_plans: 19
   percent: 29
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 3 (ZCode Back Leg) — EXECUTING
-Plan: 8 of 9
+Plan: 9 of 9
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 3 execution started
 
@@ -88,6 +88,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 03 P03-05 | 26min | 3 tasks | 5 files |
 | Phase 03 P03-06 | 7min | 2 tasks | 3 files |
 | Phase 03 P03-07 | 26min | 3 tasks | 7 files |
+| Phase 03 P03-08 | 25min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -148,6 +149,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Supervisor lifecycle (03-07): Child.Exited = single buffered delivery, Child.Done = close-based multi-observer reap signal (no double-receive races); staged shutdown = stdin close -> wait within grace (4s probe default) -> UNCONDITIONAL group SIGKILL (ESRCH-tolerated) -> bounded reap wait; stdin-EOF never trusted (PITFALL 6)
 - [Phase 03]: Crash window (03-07): crashes > CrashLimit (fail loud naming count + window), BaseBackoff << (crashes-1), sliding reset when run lifetime > window at crash time — pinned by spawn-count arithmetic (plain trip at 4 spawns, post-reset at 5 vs 4 without reset); grace default 4s (probe GRACE_MS), all knobs Policy-injectable
 - [Phase 03]: Real-desktop positive path (03-07): //go:build realdesktop + ZCODE_ACP_REAL_E2E=1 double guard, manual-only — tagged run without the env var skips in 2ms, default suite unaffected; canonical command in the file header; end-of-phase human check (coverage D5 human_judgment, unrun-verify windows entry)
+- [Phase 03]: Turn machine (03-08): Cancel is a fire-and-forget bypass stop + signal-driven resolution — a cancelling-state patch or the quiet settle while cancelling resolves StopCancelled/SignalCancel exactly once; repeats and post-completion cancels no-op; a cancel racing a terminal resolves whichever signal lands first
+- [Phase 03]: Turn machine (03-08): the server-side -32010 refusal maps to ErrTurnActive by the numeric CodeConcurrency constant only (fixture message deliberately non-bundle — text never matched); ErrTurnActive serves both the wrapper guard and the server rejection surface
+- [Phase 03]: Turn machine (03-08): D-05 degraded completion — any tracked-no-answer deadline expiry mid-turn resolves StopError/SignalDegraded exactly once with the recorded expiry on Resolution.Err (never completed/failed); credential-cipher corpus row 10 through the real codec path is the proof; zero reply bytes asserted
 
 ### Pending Todos
 
@@ -171,6 +175,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T20:32:42.315Z
-Stopped at: Completed 03-07-PLAN.md
+Last session: 2026-11-19T21:01:01.995Z
+Stopped at: Completed 03-08-PLAN.md
 Resume file: None

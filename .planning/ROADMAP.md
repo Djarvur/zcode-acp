@@ -91,7 +91,7 @@ Plans:
   2. CI runs golden JSONL transcript tests against the scriptable fake app-server (in-process over pipes plus a standalone binary), exercising the protocol with no desktop bundle present
   3. On a machine with ZCode desktop installed, the supervisor locates the install per the Phase 1 matrix, spawns the app-server child with the correct environment, and kills the whole process group on EOF/exit leaving no orphaned Electron processes; when no install is found, startup fails with actionable diagnostics naming what was searched
   4. Against the fake app-server, a fire-and-forget `session/send` is lifted into a synchronous turn that completes exactly once on multi-signal turn-completion detection and honors cancel mid-turn
-**Plans**: 7/9 plans executed
+**Plans**: 8/9 plans executed
 
 Plans:
 **Wave 1**
@@ -106,7 +106,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [x] 03-07-PLAN.md — Supervisor lifecycle: canonical spawn line + allowlisted/scrubbed env + Setpgid, staged shutdown + group kill + crash-window restart, env-guarded real-desktop manual path (BRIDGE-03, D-03)
-- [ ] 03-08-PLAN.md — Turn machine part 2 (TDD): bypass-lane cancel exactly-once, -32010 double-send guard, corpus completion variants, credential-cipher honesty (BRIDGE-04, D-02, D-05)
+- [x] 03-08-PLAN.md — Turn machine part 2 (TDD): bypass-lane cancel exactly-once, -32010 double-send guard, corpus completion variants, credential-cipher honesty (BRIDGE-04, D-02, D-05)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 03-09-PLAN.md — E2E exec chain (supervisor + fake binary + Conn + turn machine) + full phase gate `mise run ci` (BRIDGE-01..04)
@@ -172,7 +172,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
-| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 7/9 | In Progress | - |
+| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 8/9 | In Progress | - |
 | 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
