@@ -4,7 +4,7 @@ slug: "research-protocol-documentation"
 # status lifecycle: draft (seeded by plan-phase) → validated (set by validate-phase §6)
 # audit-milestone §5.5 distinguishes NOT-VALIDATED (draft) from PARTIAL (validated + nyquist_compliant: false) (#2117)
 status: draft
-nyquist_compliant: false
+nyquist_compliant: true
 wave_0_complete: false
 created: "2026-11-19"
 ---
@@ -40,13 +40,21 @@ created: "2026-11-19"
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| (seeded by planner) | 01 | 1 | DISC-01 | — | N/A | structure+tag check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 01 | 1 | DISC-02 | — | neutral phrasing (no hidden-goal wording) | structure+tag check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 01 | 1 | DISC-03 | — | N/A | structure check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 01 | 1 | DISC-04 | — | N/A | tag check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 01 | 1 | DISC-05 | — | Apache-2.0 attribution present | structure check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 01 | 1 | D-02 (CONTEXT) | — | no secret shapes in tracked files | secret-scan + id-resolution | `bash experiments/scan-secrets.sh` | ❌ W0 | ⬜ pending |
-| (seeded by planner) | 01 | 1 | D-04 (CONTEXT) | — | N/A | structure check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
+| 01-01-T1 | 01 | 1 | D-02/D-04 (CONTEXT) | T-1-01, T-1-02 | no secret shapes; legend defined once; path-shape grep | structure+gate check | `bash experiments/check-docs.sh && bash experiments/scan-secrets.sh` | created in-task | ⬜ pending |
+| 01-01-T2 | 01 | 1 | D-02 (CONTEXT) | T-1-01 | scrubber rules tested (RED before GREEN) | unit tests (node --test) | `node --test experiments/` | ❌ W0 | ⬜ pending |
+| 01-01-T3 | 01 | 1 | DISC-04 | T-1-01, T-1-07 | V-EXP id resolves; capture header records revision | tag+gate check | `bash experiments/check-docs.sh && bash experiments/scan-secrets.sh` | ❌ W0 | ⬜ pending |
+| 01-02-T1 | 02 | 2 | DISC-01 | T-1-01, T-1-03 | capture verdict fields; no key-minting endpoint | capture header+gate | `bash experiments/scan-secrets.sh` | ❌ W1 | ⬜ pending |
+| 01-02-T2 | 02 | 2 | DISC-01 | T-1-03, T-1-04 | one tiny turn max; honest degradation; quota ledger | capture header+gate | `bash experiments/scan-secrets.sh` | ❌ W1 | ⬜ pending |
+| 01-03-T1 | 03 | 3 | DISC-01 | T-1-08 | tag grammar; capture ids cited and resolving | structure+tag check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
+| 01-03-T2 | 03 | 3 | DISC-01 | T-1-08 | drift baseline first-class; 3.17.x version-pinned | structure+tag check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
+| 01-04-T1 | 04 | 2 | DISC-02 | T-1-09 | chunk citations; build named in capture | capture header+gate | `bash experiments/check-docs.sh && bash experiments/scan-secrets.sh` | ❌ W1 | ⬜ pending |
+| 01-04-T2 | 04 | 2 | DISC-02 | T-1-09 | neutral phrasing; known-unknowns stay V-RPT | structure+tag check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
+| 01-05-T1 | 05 | 2 | DISC-03 | T-1-06, T-1-11 | no package installs; pristine byte-compare recorded | capture header+gate | `bash experiments/check-docs.sh && bash experiments/scan-secrets.sh` | ❌ W1 | ⬜ pending |
+| 01-05-T2 | 05 | 2 | DISC-03 | T-1-06 | matrix rows cite recorded commands | structure check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
+| 01-06-T1 | 06 | 2 | DISC-05 | T-1-10 | license live-verified; nothing upstream committed | CLI check | `gh api repos/william0wang/zcode-acp --jq '.license.spdx_id'` | n/a (network) | ⬜ pending |
+| 01-06-T2 | 06 | 2 | DISC-05 | T-1-10 | Apache-2.0 attribution section present | structure check | `bash experiments/check-docs.sh` | ❌ W0 | ⬜ pending |
+
+*File Exists: ❌ W0 = created by plan 01-01 (Wave 0); ❌ W1 = created by the capture task in the same row; "created in-task" = the task itself authors the files the command runs.*
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
