@@ -82,7 +82,7 @@ Load-bearing wire details (all source/experiment-confirmed): the app-server seri
 7. **Pipe deadlocks** — fixed goroutine topology (one reader per pipe, one writer per sink), never handle `interaction/*` inline in the read loop, drain child stderr or the 64 KB pipe buffer stalls the child mid-turn, no goroutine-per-update (reorders chunks, corrupts NDJSON)
 8. **Cancel races** — `session/cancel` is a notification but `session/prompt` MUST still be answered exactly once with `stopReason:"cancelled"`; an unanswered `interaction/*` holds a 180 s credentials queue that blocks *subsequent* turns; dedupe the 1 s re-announced requests by `requestId`
 
-Moderate but roadmap-shaping: Go caches `ProxyFromEnvironment` once per process (validate proxy at first use, scrub proxy vars from the child env); keyring-less environments must produce an actionable error, never a hang; the Orca masquerade (persona binary name + parseable single-line `--version` + liberal flag handling + fast `initialize` — PAT mint must NOT happen before initialize returns); capability honesty (advertise nothing fs/terminal-related); never let CI call api.z.ai or spawn the real desktop (quota burn, PAT minting *creates* API keys on the user's org) — three test tiers only.
+Moderate but roadmap-shaping: Go caches `ProxyFromEnvironment` once per process (validate proxy at first use, scrub proxy vars from the child env); keyring-less environments must produce an actionable error, never a hang; the Orca persona contract (launch command + parseable single-line `--version` + liberal flag handling + fast `initialize` — PAT mint must NOT happen before initialize returns); capability honesty (advertise nothing fs/terminal-related); never let CI call api.z.ai or spawn the real desktop (quota burn, PAT minting *creates* API keys on the user's org) — three test tiers only.
 
 ## Implications for Roadmap
 
@@ -128,7 +128,7 @@ Suggested structure: **7 phases**, reconciling the researchers' converged 5-step
 **Rationale:** PROJECT.md done-v1 = CI protocol tests + VM tests + manual Orca E2E — this phase *is* the done criterion; fidelity hardening and docs close the milestone.
 **Delivers:** subscribe-based `TurnWatcher` if Phase 1 verified it on 3.18.2; restart-mid-turn behavior; version-gate + unknown-method tolerance tests; versioned, scrubbed fixtures (CI secret-scan for JWT/`enc:v2:`/PAT shapes); config surface (flags > env > discovery per ARCHITECTURE table); Orca mimicry CLI (persona per Phase 1, single-line semver `--version`, liberal flag/env handling, fast `initialize`); README + Orca recipe reproducible on a clean VM (the acceptance test); VM E2E on the self-hosted runner (goswitch e2e-matrix pattern); `acp-tck` non-blocking CI job; manual Orca E2E checklist; no-keyring actionable-error VM test.
 **Addresses:** PROJECT.md done-v1 tiers 2–3, English docs requirement; FEATURES P2 Orca recipe + compat no-ops.
-**Avoids:** Pitfalls 11 (masquerade), 13 (real-desktop testing discipline); the full "looks done but isn't" checklist as exit criteria.
+**Avoids:** Pitfalls 11 (persona contract), 13 (real-desktop testing discipline); the full "looks done but isn't" checklist as exit criteria.
 
 ### Phase Ordering Rationale
 
@@ -167,7 +167,7 @@ Phases with standard patterns (skip research-phase):
 
 - **3.18.2 event-stream surface** — does the shipped binary accept `session/subscribe` / `v4/conversation/subscribe` and emit 3.17.x-style envelopes? Decides whether the subscribe-based TurnWatcher ever replaces polling. → Phase 1 deliverable.
 - **Turn-completion terminal events** — exactly which `state.updated` payloads end a turn (FINDINGS §3.6 ground truth). → Phase 1; unblocks the Phase 4 state machine.
-- **Orca persona + load-bearing startup call set** — which hardcoded agent to masquerade as, and which ACP methods card start actually invokes. → Phase 1, from `agent-session-attachment-store-registry-*.js` in `app.asar.unpacked`.
+- **Orca persona + load-bearing startup call set** — the preset-agent identity (resolved: omp — see REFERENCE-ADAPTERS.md) and which ACP methods card start actually invokes. → Phase 1, from `agent-session-attachment-store-registry-*.js` in `app.asar.unpacked`.
 - **ZCode install discovery matrix** — AppImage/deb/unpacked layouts and auto-update side effects on the builtin revision. → Phase 1; blocks the Phase 3 supervisor.
 - **`workspaceKey` derivation semantics** — wire-required, shim passed a value but rules unconfirmed (LOW). → Phase 1.
 - **Child stdin-EOF exit behavior** — whether Electron-as-node app-server exits when stdin closes is unverified; the supervisor must explicitly kill the process group regardless. → verify in Phase 3.
