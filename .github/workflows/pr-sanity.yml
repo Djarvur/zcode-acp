@@ -51,6 +51,7 @@ jobs:
     # the protection body in the same change.
     name: build / vet / lint / test / tidy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -93,6 +94,7 @@ jobs:
     # Required check name (plan 02-05).
     name: govulncheck
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -120,6 +122,7 @@ jobs:
     # Required check name (plan 02-05; D-05 promotion of the Phase-1 gate).
     name: secret-scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
