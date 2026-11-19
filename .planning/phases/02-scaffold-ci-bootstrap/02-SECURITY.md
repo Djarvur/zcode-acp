@@ -29,7 +29,7 @@ created: "2026-11-19"
 
 | Threat ID | Category | Component | Severity | Disposition | Mitigation | Status |
 |-----------|----------|-----------|----------|-------------|------------|--------|
-| T-2-01 | Information disclosure | secret-gate + scrubber (the capture pipeline → required CI check) | high | mitigate | WR-03 boundary-aware rewrite + IN-04 header guard (02-02, TDD RED→GREEN 18/18); WR-01 scan-gate class aligned byte-identical to scrubber CRED_RX (02-03); gate promoted to required CI check (02-04, observed green both legs) and required protection context (02-05, GET-verified) | closed |
+| T-2-01 | Information disclosure | secret-gate + scrubber (the capture pipeline → required CI check) | high | mitigate | WR-03 boundary-aware rewrite + IN-04 header guard (02-02, TDD RED→GREEN); WR-01 scan-gate class aligned byte-identical to scrubber CRED_RX (02-03); gate promoted to required CI check (02-04, observed green both legs) and required protection context (02-05, GET-verified). REVIEW CR-01 re-opened it (USER_INFO_RX lastIndex leak on multi-object lines — reproduced); fixed TDD (commits 3969eae/4ed831a, multi-object + fixed-point regressions, suite 20/20) — re-closed | closed |
 | T-2-02 | Tampering | master branch history (force-push, deletion) | medium | mitigate | `allow_force_pushes: false`, `allow_deletions: false`, `required_linear_history: true` — GET-verified live | closed |
 | T-2-03 | Elevation of privilege | direct pushes to master bypassing review | medium | mitigate | `required_pull_request_reviews` + `enforce_admins: true`; proven empirically by the GH006 negative push test (remote rejected: "Changes must be made through a pull request") | closed |
 | T-2-04 | Tampering | workflow shell steps (event-field interpolation) | low | mitigate | Zero untrusted event fields interpolated (grep: 0 hits outside event_name/ref in concurrency); goswitch env-indirection discipline preserved in e2e-matrix | closed |
@@ -55,6 +55,7 @@ created: "2026-11-19"
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-11-19 | 6 | 6 | 0 | orchestrator (secure-phase, ASVS L1 short-circuit: threats_open 0 + register authored at plan time + L1 grep/GET verification) |
+| 2026-11-19 | 6 | 6 | 0 | code-review re-audit: CR-01 re-opened T-2-01 (scrubber lastIndex PII leak, reproduced); fixed TDD RED→GREEN (3969eae/4ed831a), WR-01 job timeouts added (3c13b6b); re-closed, threats_open stays 0 |
 
 ---
 
