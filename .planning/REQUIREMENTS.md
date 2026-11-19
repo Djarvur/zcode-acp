@@ -108,13 +108,50 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (populated by roadmap creation) | | |
+| DISC-01 | Phase 1 | Pending |
+| DISC-02 | Phase 1 | Pending |
+| DISC-03 | Phase 1 | Pending |
+| DISC-04 | Phase 1 | Pending |
+| DISC-05 | Phase 1 | Pending |
+| SCAFF-01 | Phase 2 | Pending |
+| SCAFF-02 | Phase 2 | Pending |
+| SCAFF-03 | Phase 2 | Pending |
+| BRIDGE-01 | Phase 3 | Pending |
+| BRIDGE-02 | Phase 3 | Pending |
+| BRIDGE-03 | Phase 3 | Pending |
+| BRIDGE-04 | Phase 3 | Pending |
+| CORE-01 | Phase 4 | Pending |
+| CORE-02 | Phase 4 | Pending |
+| CORE-03 | Phase 4 | Pending |
+| CORE-04 | Phase 4 | Pending |
+| CORE-05 | Phase 4 | Pending |
+| AUTH-01 | Phase 5 | Pending |
+| CORE-06 | Phase 5 | Pending |
+| SESS-01 | Phase 5 | Pending |
+| TOOL-01 | Phase 5 | Pending |
+| TOOL-02 | Phase 5 | Pending |
+| AUTH-02 | Phase 6 | Pending |
+| AUTH-03 | Phase 6 | Pending |
+| AUTH-04 | Phase 6 | Pending |
+| MODEL-01 | Phase 6 | Pending |
+| MODEL-02 | Phase 6 | Pending |
+| DOCS-01 | Phase 7 | Pending |
+| DOCS-02 | Phase 7 | Pending |
+| DOCS-03 | Phase 7 | Pending |
+| QA-01 | Phase 7 | Pending |
+| QA-02 | Phase 7 | Pending |
+| QA-03 | Phase 7 | Pending |
+| SESS-02 | Phase 7 | Pending |
+| SESS-03 | Phase 7 | Pending |
 
 **Coverage:**
-- v1 requirements: 34 total
-- Mapped to phases: 0
-- Unmapped: 34 ⚠️
+- v1 requirements: 35 total
+- Mapped to phases: 35
+- Unmapped: 0 ✓
+
+> Note: the Coverage block previously stated "34 total". The actual count of
+> listed v1 requirement IDs is 35; corrected during roadmap creation (2026-11-19).
 
 ---
 *Requirements defined: 2026-11-19*
-*Last updated: 2026-11-19 after initial definition*
+*Last updated: 2026-11-19 after roadmap creation (traceability populated)*

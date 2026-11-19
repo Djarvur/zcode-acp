@@ -1,0 +1,139 @@
+# Roadmap: zcode-acp
+
+## Overview
+
+zcode-acp turns a Go stdio binary into an honest ACP v1 server in front of the ZCode
+Desktop app-server, so any ACP client can run full turns — streamed text and thoughts,
+tool calls, permission decisions, cancellation — on a real z.ai account via api-key or
+the official OAuth coding-plan path. The road is: establish verified wire truth from
+source and experiments first (Phase 1), put the repo under strict goswitch-style gates
+before any code (Phase 2), build the ZCode back leg with a scriptable fake app-server so
+everything after is CI-testable without the desktop bundle (Phase 3), stand up a minimal
+ACP chat loop (Phase 4), complete the chat cycle with interactions, tools, permissions and
+the api-key auth path (Phase 5), add the OAuth coding-plan chain and the registry-driven
+model/thought-level picker (Phase 6), then close the milestone by meeting the done-v1 bar:
+CI protocol conformance, a reproducible VM scenario, manual E2E in a real chat-UI client,
+and English documentation including a launch recipe for ACP hosts that only accept preset
+agents (Phase 7).
+
+## Phases
+
+**Phase Numbering:**
+- Integer phases (1, 2, 3): Planned milestone work
+- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
+
+- [ ] **Phase 1: Research & Protocol Documentation** - Document the ZCode app-server dialect, the client ACP dialect, install discovery, and workspaceKey semantics from source, with provenance labels
+- [ ] **Phase 2: Scaffold & CI Bootstrap** - goswitch-style repo scaffold: strict pinned linter, GitHub Actions, protected master
+- [ ] **Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor** - JSONL codec, scriptable fake app-server with golden transcripts in CI, desktop discovery + process supervisor, turn state machine
+- [ ] **Phase 4: ACP Front — Minimal Chat Loop** - initialize, session/new (+ setModel workaround), streamed prompt turns with thoughts and cancel
+- [ ] **Phase 5: Interactions & Full Chat Cycle (api-key)** - Host-managed interaction responder, tool-call streaming, permission bridging, api-key auth, resume/close
+- [ ] **Phase 6: OAuth Coding-Plan Path & Model Picker** - Official OAuth chain end-to-end (snapshot, cipher, PAT), both auth methods working, registry-driven configOptions
+- [ ] **Phase 7: Hardening, VM & Manual E2E, Documentation** - CI protocol conformance, dialect compatibility no-ops, VM scenario, manual E2E, English docs + preset-agent launch recipe
+
+## Phase Details
+
+### Phase 1: Research & Protocol Documentation
+**Goal**: The ZCode app-server dialect, the chat-UI client's ACP behavior, desktop install layouts, and workspaceKey semantics are documented from source and experiments, so every later phase builds on verified wire truth instead of assumptions.
+**Mode:** mvp
+**Depends on**: Nothing (first phase)
+**Requirements**: DISC-01, DISC-02, DISC-03, DISC-04, DISC-05
+**Success Criteria** (what must be TRUE):
+  1. `docs/` protocol documentation describes the app-server JSONL event surface — including `session/subscribe`/event-stream availability and the turn-completion terminal signals — with every claim labeled V-SRC or V-EXP against the shipped 3.18.2 binary
+  2. A dialect document names the chosen preset-agent identity (omp vs opencode vs opencode2) with its version floor and env quirks, and enumerates both the load-bearing method set at card startup/per turn and the full range of ACP methods that client sends
+  3. A discovery matrix documents how to locate a ZCode desktop install across AppImage / deb / unpacked layouts, including what auto-update does to the builtin revision string
+  4. `workspaceKey` derivation semantics are documented with both a source citation and a recorded experiment
+  5. A reference-implementation comparison under `docs/research/` records what the TypeScript zcode-acp project covers (elicitation, slash commands, resume/fork, attachments), what to adopt, and what to avoid
+**Plans**: TBD
+
+### Phase 2: Scaffold & CI Bootstrap
+**Goal**: The repository enforces strict quality gates — lint, CI, protected branch — modeled on Djarvur/goswitch, from the very first code commit onward.
+**Mode:** mvp
+**Depends on**: Nothing (no technical dependency on Phase 1; sequenced second by project mandate so all code lands under strict gates)
+**Requirements**: SCAFF-01, SCAFF-02, SCAFF-03
+**Success Criteria** (what must be TRUE):
+  1. A fresh checkout passes the strict pinned golangci-lint config (goswitch-style `default: all` v2 config, exact version pinned via mise); any violation fails the lint target
+  2. A PR to the repository triggers GitHub Actions running lint, test, build, and govulncheck, with toolchain versions driven by mise
+  3. `master` is protected: direct pushes are rejected, merges require the configured checks, and the protection setup is documented in the repo
+**Plans**: TBD
+
+### Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor
+**Goal**: The wrapper speaks the app-server's JSONL dialect and manages its process lifecycle, proven in CI by a scripted fake app-server round-trip — so every later phase is testable without the real desktop bundle.
+**Mode:** mvp
+**Depends on**: Phase 1 (dialect docs, discovery matrix), Phase 2 (CI gates)
+**Requirements**: BRIDGE-01, BRIDGE-02, BRIDGE-03, BRIDGE-04
+**Success Criteria** (what must be TRUE):
+  1. The codec round-trips the app-server JSONL dialect in unit tests: frames without a `jsonrpc` key, the dialect's own error codes, ordered single-writer output — and a JSON-RPC-shaped frame never reaches the child
+  2. CI runs golden JSONL transcript tests against the scriptable fake app-server (in-process over pipes plus a standalone binary), exercising the protocol with no desktop bundle present
+  3. On a machine with ZCode desktop installed, the supervisor locates the install per the Phase 1 matrix, spawns the app-server child with the correct environment, and kills the whole process group on EOF/exit leaving no orphaned Electron processes; when no install is found, startup fails with actionable diagnostics naming what was searched
+  4. Against the fake app-server, a fire-and-forget `session/send` is lifted into a synchronous turn that completes exactly once on multi-signal turn-completion detection and honors cancel mid-turn
+**Plans**: TBD
+
+### Phase 4: ACP Front — Minimal Chat Loop
+**Goal**: An ACP client can open a session and run a streamed prompt turn end-to-end — live text and thought chunks, correct cancellation — against the app-server, before auth and interaction complexity accrete.
+**Mode:** mvp
+**Depends on**: Phase 3
+**Requirements**: CORE-01, CORE-02, CORE-03, CORE-04, CORE-05
+**Success Criteria** (what must be TRUE):
+  1. `initialize` replies `protocolVersion: 1` with an honest capability set (nothing fs/terminal-related), real `agentInfo`, and both advertised authMethods (`zai-api-key`, `zai-individual-coding-plan`)
+  2. `session/new{cwd}` creates a backend session, a follow-up setModel call carrying model + reasoning level is visible on the wire (fake transcript asserts the payload), and `mcpServers` is accepted without error
+  3. `session/prompt` streams `agent_message_chunk` deltas live while the turn runs and returns `stopReason` only after all pending updates have flushed
+  4. When the backend emits reasoning events the client receives `agent_thought_chunk` updates; none are synthesized when it does not
+  5. `session/cancel` during a turn stops it and the prompt call is answered exactly once with `stopReason: "cancelled"`
+**Plans**: TBD
+
+### Phase 5: Interactions & Full Chat Cycle (api-key)
+**Goal**: On a real z.ai account via api-key, a client gets a complete chat cycle — streamed tool calls, permission decisions answered from the client, working session lifecycle — with the host-managed interaction responder always on.
+**Mode:** mvp
+**Depends on**: Phase 4
+**Requirements**: AUTH-01, CORE-06, SESS-01, TOOL-01, TOOL-02
+**Success Criteria** (what must be TRUE):
+  1. Every server→host `interaction/*` request is answered promptly: re-announced requests dedupe, per-method deadlines fire, and unknown methods receive protocol-error replies instead of crashing the wrapper
+  2. Tool use streams to the client as `tool_call` / `tool_call_update` with title, kind, status transitions, and file diffs for edit tools
+  3. A backend permission request reaches the client as `session/request_permission` with allow/reject options; the chosen outcome is forwarded to the backend, and an ACP-side cancel resolves pending requests as `cancelled`
+  4. `authenticate{zai-api-key}` on a real account enables working turns, with success verified by reading registry state back — not by trusting the `provider/updateAccountConfig` ack
+  5. `session/resume` reattaches a session without replay and `session/close` cleans up the child-side session; a full cycle — new → prompt with tool calls and a permission decision → resume → close — runs end-to-end on api-key
+**Plans**: TBD
+
+### Phase 6: OAuth Coding-Plan Path & Model Picker
+**Goal**: Users on an individual coding plan can authenticate through the official OAuth chain end-to-end, and any client can see and switch model and thought level from the live provider registry.
+**Mode:** mvp
+**Depends on**: Phase 5 (interaction responders; supervisor and setModel mechanics arrive transitively from Phases 3–4)
+**Requirements**: AUTH-02, AUTH-03, AUTH-04, MODEL-01, MODEL-02
+**Success Criteria** (what must be TRUE):
+  1. `authenticate{zai-individual-coding-plan}` completes the official chain on a real account — registry snapshot accepted with the exact `zcode-builtin:<rev>:<sha256>` revision (verified via registry state, not the ack), credential cipher answered by decrypting the Secret Service key, PAT minted via the api.z.ai chain, `requestAuth` returned — and subsequent turns run
+  2. Both advertised authMethods authenticate successfully, and account models appear after auth
+  3. On a machine without a keyring (headless/CI), auth fails fast with a clear actionable error and never hangs a turn
+  4. After auth, `session/new` returns `configOptions` covering model and thought level, built from the live provider registry
+  5. A client-side config-option change maps to `session/setModel` / `session/setThoughtLevel` on the wire, re-emits the full `configOptions` list, and `currentValue` always reflects the real session state
+**Plans**: TBD
+
+### Phase 7: Hardening, VM & Manual E2E, Documentation
+**Goal**: The done-v1 bar is met: full CI protocol conformance, a reproducible clean-VM scenario, manual E2E confirmed in a real chat-UI client on a real account through both auth paths, and English documentation including the launch recipe for ACP hosts that only accept preset agents.
+**Mode:** mvp
+**Depends on**: Phase 6 (all functional phases complete)
+**Requirements**: DOCS-01, DOCS-02, DOCS-03, QA-01, QA-02, QA-03, SESS-02, SESS-03
+**Success Criteria** (what must be TRUE):
+  1. The CI protocol conformance suite is green: the fake app-server drives one scripted scenario covering initialize → session/new → prompt streaming → tool calls → permissions → cancel
+  2. Clients that send `session/delete` keep working (graceful no-op) and `session/fork` is handled gracefully — never a crash path
+  3. Every ACP method Orca's client calls at card startup and during a turn (per the Phase 1 dialect document) is implemented or gracefully handled, so a card works end-to-end
+  4. A clean Ubuntu GNOME VM scenario — install, configure, run — is scripted in the repo and reproducible, including the no-keyring error path
+  5. Manual E2E confirmed and documentation published: a working agent card in a real chat-UI client (Orca) on Ubuntu GNOME on a real account through both auth paths, backed by an English README (what it is, install, configuration, both auth paths, troubleshooting), a launch recipe for ACP hosts that only accept preset agents (binary naming, version floor, env, PATH shim), and `docs/` protocol notes with the provenance statement and known limitations
+**Plans**: TBD
+
+## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 1. Research & Protocol Documentation | 0/TBD | Not started | - |
+| 2. Scaffold & CI Bootstrap | 0/TBD | Not started | - |
+| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 0/TBD | Not started | - |
+| 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
+| 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
+| 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
+| 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
+
+---
+*Roadmap created: 2026-11-19*
