@@ -24,11 +24,11 @@ affects: [03-03 golden corpus, 03-05 turn watcher + machine (cancel lane = conn.
 actuals:
   tokens: 11500   # ~46000 chars over this plan's own diff (internal/zcode + evidence records)
   tasks: 3
-  commits: 16     # MEASURED from the plan ledger (560fab1..HEAD); 4 are this plan's task commits — the other 12 are the parallel phase-01 review-fix stream sharing the sequential branch between ledger snapshot and close-out
+  commits: 19     # MEASURED from the plan ledger (560fab1..plan_head_after); 7 are this plan's own commits (4 task + 1 staging fixup + 2 docs) — the other 12 are the parallel phase-01 review-fix stream sharing the sequential branch between ledger snapshot and close-out
 
-commits: 16
+commits: 19
 plan_head_before: 560fab1bc4903e7e633a6c5de5a4d223bc50eeec
-plan_head_after: 6c3bcbe1a268066121c69ecd1a05407294094b2d
+plan_head_after: 0c88f94f0b3e1c085426396c8f1957eb2cecead5
 
 # Tech tracking
 tech-stack:
@@ -143,6 +143,7 @@ Each task was committed atomically:
 2. **Task 2: Writer ordering + bypass precedence locks; conn.Stop bypass helper** - `a4c631b` (test)
 3. **Task 3 RED: failing router deadline + credential-cipher honesty tests (evidence RED_EVIDENCE_OK ×2)** - `f67e21d` (test)
 4. **Task 3 GREEN: router per-method deadlines + tracked-no-answer credential cipher** - `6c3bcbe` (feat)
+5. **Fixup: call_test call sites staged** - `0c88f94` (fix — the Task-2 lint round's call_test.go edits were left unstaged; HEAD did not compile without them; caught at close-out, commit-level consistency restored)
 
 ## Files Created/Modified
 
@@ -229,10 +230,11 @@ No new security-relevant surface beyond the plan's threat model: T-3-03 mitigati
 
 - 03-02-SUMMARY.md exists on disk
 - All claimed files exist: conn_test.go, call_test.go, writer_test.go, conn.go, call.go, envelope.go, 2 evidence records (FOUND ×8)
-- All claimed commits are ancestors of HEAD: 3eef389 (Task 1), a4c631b (Task 2), f67e21d (Task 3 RED), 6c3bcbe (Task 3 GREEN)
+- All claimed commits are ancestors of HEAD: 3eef389 (Task 1), a4c631b (Task 2), f67e21d (Task 3 RED), 6c3bcbe (Task 3 GREEN), 0c88f94 (staging fixup)
 - Acceptance greps: TestDemuxReverseRequestNeverResolvesPendingCall ×1 in conn_test.go; MethodSessionStop ×1 in call.go
 - RED evidence classified RED_EVIDENCE_OK (×2 records) before the GREEN commit
-- Final post-task run: mise run ci fully green (build, vet, lint 0 issues, go test -race all packages, test-experiments 22/22)
+- Final post-task run: mise run ci fully green (build, vet, lint 0 issues, go test -race all packages, test-experiments 22/22); post-fixup go vet + go test -race green at HEAD
+- Ledger-measured plan commit count at close-out: 19 (5 production: 4 task commits + 1 staging fixup; 2 docs commits; 12 belong to the parallel phase-01 review-fix stream on the shared branch)
 
 ---
 *Phase: 03-zcode-back-leg-codec-fake-app-server-supervisor*
