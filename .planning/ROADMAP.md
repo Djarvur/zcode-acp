@@ -43,7 +43,7 @@ agents (Phase 7).
   3. A discovery matrix documents how to locate a ZCode desktop install across AppImage / deb / unpacked layouts, including what auto-update does to the builtin revision string
   4. `workspaceKey` derivation semantics are documented with both a source citation and a recorded experiment
   5. A reference-implementation comparison under `docs/research/` records what the TypeScript zcode-acp project covers (elicitation, slash commands, resume/fork, attachments), what to adopt, and what to avoid
-**Plans**: 5/6 plans executed
+**Plans**: 6/6 plans executed
 
 Plans:
 **Wave 1**
@@ -56,7 +56,7 @@ Plans:
 - [x] 01-06-PLAN.md — Reference-repo study + docs/research/reference-adapters.md (DISC-05)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 01-03-PLAN.md — docs/protocol/app-server-dialect.md: event surface, subscribe verdict, terminal signals, drift baseline (DISC-01)
+- [x] 01-03-PLAN.md — docs/protocol/app-server-dialect.md: event surface, subscribe verdict, terminal signals, drift baseline (DISC-01)
 
 ### Phase 2: Scaffold & CI Bootstrap
 **Goal**: The repository enforces strict quality gates — lint, CI, protected branch — modeled on Djarvur/goswitch, from the very first code commit onward.
@@ -140,7 +140,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Research & Protocol Documentation | 5/6 | In Progress | - |
+| 1. Research & Protocol Documentation | 6/6 | In Progress | - |
 | 2. Scaffold & CI Bootstrap | 0/TBD | Not started | - |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 0/TBD | Not started | - |
 | 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |

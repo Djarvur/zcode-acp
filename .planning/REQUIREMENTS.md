@@ -9,7 +9,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 
 ### Discovery & Documentation (user-mandated first phase)
 
-- [ ] **DISC-01**: ZCode app-server 3.18.2 event surface documented from source (incl. `session/subscribe`/event-stream availability and turn-completion terminal signals), with V-SRC / V-EXP provenance labels per claim
+- [x] **DISC-01**: ZCode app-server 3.18.2 event surface documented from source (incl. `session/subscribe`/event-stream availability and turn-completion terminal signals), with V-SRC / V-EXP provenance labels per claim
 - [x] **DISC-02**: Orca ACP dialect documented: the load-bearing method set at card startup and per turn, the full range of ACP methods Orca's client actually uses, and the preset-agent identity — **resolved: omp** (alternatives ruled out; compiled contract table in REFERENCE-ADAPTERS.md: floor 17.0.5, `--version` prints 18.1.9+, `agentCmdOverrides` wiring, Hb string contracts). Spot-check the table at first integration and answer the two remaining items: the `--session-dir` session-file format (can our Go agent write omp-compatible history files?) and omp modelDiscovery kind `session` behavior
 - [x] **DISC-03**: ZCode desktop discovery matrix documented (AppImage / deb / unpacked layouts, auto-update effects on the builtin revision string)
 - [x] **DISC-04**: `workspaceKey` derivation semantics documented (source + experiment)
@@ -109,7 +109,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DISC-01 | Phase 1 | Pending |
+| DISC-01 | Phase 1 | Complete |
 | DISC-02 | Phase 1 | Complete |
 | DISC-03 | Phase 1 | Complete |
 | DISC-04 | Phase 1 | Complete |
