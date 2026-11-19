@@ -596,17 +596,20 @@ func TestCancelMidTurnAnswersOnce(t *testing.T) {
 | A7 | Quiet-window parameters (2.5 s quiet, 3× send-latency floor) port from the probe harness into the poll watcher unchanged | Pattern 6 | Low — values are tunable test knobs; mis-tuning shows as flaky turn tests, not silent breakage |
 | A8 | `xdg-mime query default x-scheme-handler/zcode` via `exec` is the right seam shape for desktop-entry probing on Ubuntu GNOME | Pattern 5 | Low — matrix row verified in Phase 1 [VERIFIED: docs/protocol/install-discovery.md:65-69]; only the Go invocation shape is new |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Exact terminal-event envelope wrapping for `turn.completed`/`turn.failed`**
    - What we know: the literals exist in the v4 taxonomy; kind schemas carry `turnId` [VERIFIED: EXP-TURN-01.jsonl:56]; never observed live (V-SRC-only).
    - What's unclear: whether they arrive as `session/event` payloads (`type:"turn.completed"`), `v4/telemetry/event` kinds, or v4 conversation frames.
    - Recommendation: define the machine's classifier on `turnId` + terminal-kind matching across the known carriers (all three are already demuxed); the fake fixes the shape for tests; reconcile live in Phase 5/6.
+   - RESOLVED: carrier-tolerant classifier adopted — Machine matches turnId + terminal kind across all known carriers; the fake corpus fixes the shape for tests (adopted by 03-05 Task 2).
 2. **Whether `session/messages` polling needs delta cursors** (quiet-window fallback reads it repeatedly)
    - What we know: result key set observed (`messages` in the create reply's sibling surface; poll shape proven by the predecessor shim, V-RPT).
    - What's unclear: exact `session/messages` params/result schema on 3.18.2.
    - Recommendation: encode the poll watcher against a minimal `{sessionId}` request and treat messages opaquely for length/time heuristics (the probe only needs presence, not content); verify shape when the real-server smoke runs (manual tier).
+   - RESOLVED: PollWatcher polls session/messages with a minimal `{sessionId}` request and treats messages opaquely (presence/time heuristics only, no delta cursors) (adopted by 03-05 Task 2).
 3. **Golden-fixture id strategy** (planner discretion): fixed synthetic ids (`sess_fix1`) make goldens byte-deterministic; a normalization layer would allow replaying scrubbed real transcripts verbatim. Recommendation: fixed ids in scenarios; keep scrubbed captures as *seed* documentation, not goldens.
+   - RESOLVED: fixed synthetic ids (`sess_fix1` / `turn_fix1` / `turn_fix2`) in every scenario and golden; scrubbed captures remain seed documentation only (adopted by 03-01 Task 1 for corpus row 1; extended to rows 2-10 by 03-03 Task 2).
 
 ## Environment Availability
 
