@@ -10,7 +10,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 ### Discovery & Documentation (user-mandated first phase)
 
 - [ ] **DISC-01**: ZCode app-server 3.18.2 event surface documented from source (incl. `session/subscribe`/event-stream availability and turn-completion terminal signals), with V-SRC / V-EXP provenance labels per claim
-- [ ] **DISC-02**: Orca ACP dialect documented: the load-bearing method set at card startup and per turn, the full range of ACP methods Orca's client actually uses, and the preset-agent identity — **resolved: omp** (alternatives ruled out; compiled contract table in REFERENCE-ADAPTERS.md: floor 17.0.5, `--version` prints 18.1.9+, `agentCmdOverrides` wiring, Hb string contracts). Spot-check the table at first integration and answer the two remaining items: the `--session-dir` session-file format (can our Go agent write omp-compatible history files?) and omp modelDiscovery kind `session` behavior
+- [x] **DISC-02**: Orca ACP dialect documented: the load-bearing method set at card startup and per turn, the full range of ACP methods Orca's client actually uses, and the preset-agent identity — **resolved: omp** (alternatives ruled out; compiled contract table in REFERENCE-ADAPTERS.md: floor 17.0.5, `--version` prints 18.1.9+, `agentCmdOverrides` wiring, Hb string contracts). Spot-check the table at first integration and answer the two remaining items: the `--session-dir` session-file format (can our Go agent write omp-compatible history files?) and omp modelDiscovery kind `session` behavior
 - [ ] **DISC-03**: ZCode desktop discovery matrix documented (AppImage / deb / unpacked layouts, auto-update effects on the builtin revision string)
 - [x] **DISC-04**: `workspaceKey` derivation semantics documented (source + experiment)
 - [ ] **DISC-05**: Reference implementation studied and compared: github.com/william0wang/zcode-acp (TypeScript, Apache-2.0 → Go porting allowed with attribution, ~0.88.x, active) — it already implements and tests our hardest chain (keyring `enc:v2:os:` decryption via Secret Service, `requestCredentialCipher` in both paths, exact-revision snapshot, PAT flow): key files `src/backend/credential-store.ts`, `src/config/account-provider.ts`, `src/config/project-token.ts`, `src/handlers/server-requests.ts`, `src/backend/client.ts` + their tests as golden references. Also compare the weaker Rust/Python adapters (REFERENCE-ADAPTERS.md); findings written into `docs/research/`
@@ -110,7 +110,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | DISC-01 | Phase 1 | Pending |
-| DISC-02 | Phase 1 | Pending |
+| DISC-02 | Phase 1 | Complete |
 | DISC-03 | Phase 1 | Pending |
 | DISC-04 | Phase 1 | Complete |
 | DISC-05 | Phase 1 | Pending |

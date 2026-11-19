@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 1
 current_phase_name: Research & Protocol Documentation
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-11-19T06:32:00.965Z"
+stopped_at: Completed 01-04-PLAN.md
+last_updated: "2026-11-19T07:06:21.871Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 1 execution started
-state_head: 7b52d01704d76b1b67cc2ea847148e0366033f4b
+state_head: 6937f8a3c6149792cfc4272f7ca2c05d7605e886
 progress:
   total_phases: 7
   completed_phases: 0
   total_plans: 6
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 1 (Research & Protocol Documentation) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 1 execution started
 
@@ -71,6 +71,7 @@ Progress: [░░░░░░░░░░] 0%
 |------|----------|-------|-------|
 | Phase 01 P01-01 | 29min | 3 tasks | 11 files |
 | Phase 01 P01-02 | 31min | 2 tasks | 6 files |
+| Phase 01 P01-04 | 27min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,9 @@ Recent decisions affecting current work:
 - Orca integration resolved (2026-11-19, parallel source session, V-SRC(parallel)): preset-agent identity = **omp card**; CLI decision same day: single binary `zcode-acp` on **cobra v1.10.2** — `omp` subcommand implements the card contract, unknown flags tolerated via `FParseErrWhitelist`, `--version` at root and under any subcommand; wired via the official `agentCmdOverrides` setting (`{ "omp": "zcode-acp omp" }` — no `omp` binary needed in PATH); `--version` prints ≥ 18.1.9 (model-selectors); `--model <id>` at launch is honored (`launchesWithModel:true`); `/model` slash + exact Hb string contracts are IN scope via SESS-03 — generic slash commands stay v2 (EXT-01); client fs/terminal stay uncalled; elicitation {form} and compaction supported. Extensibility intent (EXT-04, v2): each future card = one new subcommand + dialect-contract profile over the same bridge — structure the persona layer as pluggable profiles during Phase 2/4 planning so adding one stays small
 - [Phase 01]: Walking skeleton: scrub-first capture pipeline + validation gates are the per-commit standard; probe harness answers server->host requests and records its own replies (hostSent) in captures — Pipeline proven on a live experiment; keeps captures honest and reusable by plans 01-02..01-06 unchanged
 - [Phase 01]: New 3.18.2 wire fact: session/create carries a host obligation — session/requestRuntimePreferences (15s deadline, minimal answer per 3.17.1 fixture host); unanswered -> creates fail -32603. E3 verdict: workspaceKey is host-opaque (path-as-key and arbitrary string both accepted) — Discovered live during E3 (capture EXP-WORKSPACEKEY-01); feeds DISC-01 method map and the interaction-responder design in Phase 5
+- [Phase 01]: A2 upgraded by fresh evidence: client --version probe under prefixed agentCmdOverrides = <program> <prefixArgs> --version (no card args), source-verified; live half stays Phase 7
+- [Phase 01]: No native zcode chat card in current client build (operations-side id only) — omp remains the only viable preset-agent identity; ACP card registry unchanged at 8
+- [Phase 01]: E5 verdict: Go agent CAN write omp-compatible history files (slug --<sanitized-cwd>-- + <ts>_<uuid>.jsonl, Claude-style JSONL); v1 without loadSession cannot resume them (client -32601) — Phase 7 nicety, not a v1 gate
 
 ### Pending Todos
 
@@ -109,6 +113,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T06:32:00.907Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-11-19T07:06:11.099Z
+Stopped at: Completed 01-04-PLAN.md
 Resume file: None
