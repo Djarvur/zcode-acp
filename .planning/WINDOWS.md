@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 7
+open_count: 8
 waived_count: 0
 fixed_count: 0
-total_count: 7
-last_updated: 2026-11-19T21:18:34.164Z
+total_count: 8
+last_updated: 2026-11-19T23:46:45.534Z
 ---
 
 # Broken Windows Ledger
@@ -22,6 +22,7 @@ last_updated: 2026-11-19T21:18:34.164Z
 | 5 | 03 | stub | internal/supervisor/discover.go | 769 | defaultOverride production seam is a no-op until plan 03-07 wires the wrapper's explicit root / ZCODE_BUILTIN_PROVIDER_CONFIG_FILE config surface (seam implemented and test-injectable) | open |  | 2026-11-19T17:58:49.323Z |  |
 | 6 | 03 | unrun-verify | internal/supervisor/realdesktop_test.go | 81 | Real-desktop positive path TestRealDesktop is manual-only (build tag + env guard) — scheduled END-OF-PHASE human verification, never run by CI or this plan | open |  | 2026-11-19T20:32:33.515Z |  |
 | 7 | 03 | deviation | internal/supervisor/e2e_test.go |  | plan-text adaptation: the cancel turn is replayed as a SECOND supervised cycle serving the cancel-mid-turn corpus row, not a second machine on the happy child's Conn — the fake's Times=0 rules are unlimited, so the happy-turn send rule re-fires turn.completed on a second send and a same-Conn cancel would race a completed resolution; both cycles end in the zero-survivors staged shutdown | open |  | 2026-11-19T21:18:34.164Z |  |
+| 8 | 04 | stub | internal/acpport/doc.go | 12 | acpport seam package pre-placed as skeleton (doc.go + pin_test.go) — adapter surface (types/agent/sink) lands with plan 04-02 | open |  | 2026-11-19T23:46:45.534Z |  |
 
 ````json
 [
@@ -115,6 +116,19 @@ last_updated: 2026-11-19T21:18:34.164Z
     "recorded_at": "2026-11-19T21:18:34.164Z",
     "resolved_at": null,
     "milestone": null
+  },
+  {
+    "id": 8,
+    "kind": "stub",
+    "phase": "04",
+    "file": "internal/acpport/doc.go",
+    "line": 12,
+    "description": "acpport seam package pre-placed as skeleton (doc.go + pin_test.go) — adapter surface (types/agent/sink) lands with plan 04-02",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-19T23:46:45.534Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
   }
 ]
 ````
