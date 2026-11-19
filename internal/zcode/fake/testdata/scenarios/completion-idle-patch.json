@@ -1,0 +1,25 @@
+{
+  "name": "completion-idle-patch",
+  "on_request": [
+    {
+      "method": "session/send",
+      "reply": {"result": {"accepted": true, "sessionId": "sess_fix1", "stateRevision": 1}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "running"}, "reason": "prompt_started", "revision": 1, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        },
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "idle"}, "reason": "prompt_completed", "revision": 2, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        }
+      ]
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

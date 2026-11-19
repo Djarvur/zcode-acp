@@ -79,6 +79,7 @@ type server struct {
 	reverse  map[string]chan zcode.Envelope
 	nextRev  atomic.Int64
 	closed   chan struct{}
+	ruleMu   sync.Mutex
 	errMu    sync.Mutex
 	firstErr error
 }
@@ -188,12 +189,28 @@ func (s *server) handleRequest(env zcode.Envelope) {
 	s.writeReply(env.ID, rule.Reply, rule.DelayMs)
 }
 
-// ruleFor finds the scenario's request rule for a method, or nil.
+// ruleFor finds the scenario's request rule for a method with remaining
+// match budget, or nil. A rule's times, when positive, caps its matches —
+// a later on_request entry for the same method takes over once the budget
+// is spent. Guarded by ruleMu: handler goroutines are concurrent (one per
+// dispatched request).
 func (s *server) ruleFor(method string) *RequestRule {
+	s.ruleMu.Lock()
+	defer s.ruleMu.Unlock()
+
 	for i := range s.sc.OnRequest {
-		if s.sc.OnRequest[i].Method == method {
-			return &s.sc.OnRequest[i]
+		r := &s.sc.OnRequest[i]
+		if r.Method != method {
+			continue
 		}
+
+		if r.Times > 0 && r.matched >= r.Times {
+			continue
+		}
+
+		r.matched++
+
+		return r
 	}
 
 	return nil
@@ -369,7 +386,10 @@ func (s *server) writeReply(id *zcode.ID, r *Reply, delayMs int) {
 // write encodes one fake→host envelope and writes it to the stream,
 // recording it in the transcript only after the bytes hit the wire. The
 // trMu critical section covers write and record together, so DirOut order
-// equals wire order. Inbound and note lines go through record.
+// equals wire order. Inbound and note lines go through record. A write that
+// fails because the host stream closed at EOF is the drain-window shutdown
+// (dialect §1: a request issued just before stdin EOF is never answered) —
+// the frame is recorded honestly as an unanswered note, never a run error.
 func (s *server) write(env *zcode.Envelope) {
 	line, err := zcode.Encode(env)
 	if err != nil {
@@ -382,12 +402,37 @@ func (s *server) write(env *zcode.Envelope) {
 	defer s.trMu.Unlock()
 
 	if _, err := s.rw.Write(line); err != nil {
+		if isCleanEOF(err) {
+			s.appendLine(DirNote, unansweredNote(env))
+
+			return
+		}
+
 		s.setErr(fmt.Errorf("fake: write %s frame: %w", env.Method, err))
 
 		return
 	}
 
-	s.tr.Lines = append(s.tr.Lines, Line{Dir: DirOut, JSON: string(line[:len(line)-1])})
+	s.appendLine(DirOut, string(line[:len(line)-1]))
+}
+
+// appendLine appends one transcript line; the caller holds trMu (record is
+// the locking entry point — write's critical section appends directly, since
+// a mutex is not reentrant).
+func (s *server) appendLine(dir Dir, line string) {
+	s.tr.Lines = append(s.tr.Lines, Line{Dir: dir, JSON: line})
+}
+
+// unansweredNote renders the honest transcript note for a frame whose write
+// failed because the host stream closed: labeled by method, or by the id key
+// for replies. Record-honesty: never normalized away, never a silent drop.
+func unansweredNote(env *zcode.Envelope) string {
+	label := env.Method
+	if label == "" && env.ID != nil {
+		label = "reply " + env.ID.Key()
+	}
+
+	return label + " unanswered (host stream closed)"
 }
 
 // record appends one transcript line (any direction) under trMu.
@@ -395,7 +440,7 @@ func (s *server) record(dir Dir, line string) {
 	s.trMu.Lock()
 	defer s.trMu.Unlock()
 
-	s.tr.Lines = append(s.tr.Lines, Line{Dir: dir, JSON: line})
+	s.appendLine(dir, line)
 }
 
 // setErr keeps the first run error.

@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestLoadScenarioRejectsInvalidNegativeTimes|TestLoadScenarioAcceptsRuleTimes' ./internal/zcode/fake/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestLoadScenarioAcceptsRuleTimes (0.00s)\n    scenario_test.go:246: scenario with a non-negative times budget must load: fake: parse scenario /tmp/TestLoadScenarioAcceptsRuleTimes3899988470/001/times.json: json: unknown field \"times\"\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/zcode/fake\t0.038s\nFAIL\n",
+  "targetTest": "TestLoadScenarioAcceptsRuleTimes",
+  "targetFile": "internal/zcode/fake/scenario_test.go",
+  "expected": "TestLoadScenarioAcceptsRuleTimes fails on its own planned assertion: the scenario schema has no times field yet, so the strict loader rejects a valid non-negative times budget as an unknown field - the corpus's -32010 double-send row needs budget-matched rules",
+  "actual": "--- FAIL: TestLoadScenarioAcceptsRuleTimes\\n    scenario_test.go:246: scenario with a non-negative times budget must load: fake: parse scenario ...: json: unknown field \"times\"\\nFAIL",
+  "semanticAssessment": "The target compiled, ran, and failed on its own planned assertion: TestLoadScenarioAcceptsRuleTimes expects a valid times-budgeted scenario to load, and the strict decoder (landed in Task 1) rejects the unknown field - exactly the schema gap the GREEN stage closes by adding RequestRule.Times with its >= 0 validation. The sibling negative-times rejection already passes for the wrong reason (unknown-field rejection, not the value check) - after GREEN it asserts the value-check message path. No build failure, no zero-test discovery."
+}

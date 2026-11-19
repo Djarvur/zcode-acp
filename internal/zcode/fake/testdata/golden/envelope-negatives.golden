@@ -1,0 +1,7 @@
+note	undecodable host line (20 bytes): zcode: decode envelope: invalid character 'd' looking for beginning of object key string
+note	undecodable host line (70000 bytes): zcode: decode envelope: invalid character 'x' looking for beginning of value
+in	{"id":1,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/happy-turn-ws","workspacePath":"/tmp/happy-turn-ws"}}}
+out	{"id":1,"result":{"session":{"sessionId":"sess_fix1"},"protocol":{"name":"ZCode Protocol","version":1}}}
+in	{"id":2,"method":"session/send","params":{"content":"Reply with exactly: OK","sessionId":"sess_fix1"}}
+out	{"method":"state.updated","params":{"patch":{"status":"running"},"reason":"prompt_started","revision":1,"scope":"session","sessionId":"sess_fix1","type":"state.updated"}}
+out	{"id":2,"result":{"accepted":true,"sessionId":"sess_fix1","stateRevision":1}}

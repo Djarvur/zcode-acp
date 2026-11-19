@@ -28,12 +28,20 @@ type Scenario struct {
 }
 
 // RequestRule answers one request method: the reply envelope payload plus
-// the ordered side effects to run around it.
+// the ordered side effects to run around it. Times, when positive, caps how
+// many requests the rule matches — once the budget is spent, a later
+// on_request entry for the same method takes over (the -32010 double-send
+// corpus row's second-send error rule).
 type RequestRule struct {
 	Method      string       `json:"method"`
+	Times       int          `json:"times,omitempty"`
 	DelayMs     int          `json:"delay_ms"`
 	Reply       *Reply       `json:"reply"`
 	SideEffects []SideEffect `json:"side_effects"`
+
+	// matched counts rule matches at serve time (guarded by the server's
+	// ruleMu — handler goroutines are concurrent); never serialized.
+	matched int
 }
 
 // Reply is the reply payload of a request rule: exactly one of result or
@@ -142,6 +150,10 @@ func (r *RequestRule) validate(idx int) error {
 
 	if r.DelayMs < 0 {
 		return fmt.Errorf("%w: on_request[%d].delay_ms must be >= 0", errInvalidScenario, idx)
+	}
+
+	if r.Times < 0 {
+		return fmt.Errorf("%w: on_request[%d].times must be >= 0", errInvalidScenario, idx)
 	}
 
 	if r.Reply == nil {

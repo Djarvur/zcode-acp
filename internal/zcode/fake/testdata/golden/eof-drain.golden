@@ -1,0 +1,2 @@
+in	{"id":1,"method":"session/stop","params":{"sessionId":"sess_fix1"}}
+note	reply i:1 unanswered (host stream closed)
