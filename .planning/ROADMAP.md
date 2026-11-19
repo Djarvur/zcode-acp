@@ -24,7 +24,7 @@ agents (Phase 7).
 
 - [x] **Phase 1: Research & Protocol Documentation** - Document the ZCode app-server dialect, the client ACP dialect, install discovery, and workspaceKey semantics from source, with provenance labels (completed 2026-11-19)
 - [x] **Phase 2: Scaffold & CI Bootstrap** - goswitch-style repo scaffold: strict pinned linter, GitHub Actions, protected master (completed 2026-11-19)
-- [ ] **Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor** - JSONL codec, scriptable fake app-server with golden transcripts in CI, desktop discovery + process supervisor, turn state machine
+- [x] **Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor** - JSONL codec, scriptable fake app-server with golden transcripts in CI, desktop discovery + process supervisor, turn state machine (completed 2026-11-20)
 - [ ] **Phase 4: ACP Front — Minimal Chat Loop** - initialize, session/new (+ setModel workaround), streamed prompt turns with thoughts and cancel
 - [ ] **Phase 5: Interactions & Full Chat Cycle (api-key)** - Host-managed interaction responder, tool-call streaming, permission bridging, api-key auth, resume/close
 - [ ] **Phase 6: OAuth Coding-Plan Path & Model Picker** - Official OAuth chain end-to-end (snapshot, cipher, PAT), both auth methods working, registry-driven configOptions
@@ -91,7 +91,7 @@ Plans:
   2. CI runs golden JSONL transcript tests against the scriptable fake app-server (in-process over pipes plus a standalone binary), exercising the protocol with no desktop bundle present
   3. On a machine with ZCode desktop installed, the supervisor locates the install per the Phase 1 matrix, spawns the app-server child with the correct environment, and kills the whole process group on EOF/exit leaving no orphaned Electron processes; when no install is found, startup fails with actionable diagnostics naming what was searched
   4. Against the fake app-server, a fire-and-forget `session/send` is lifted into a synchronous turn that completes exactly once on multi-signal turn-completion detection and honors cancel mid-turn
-**Plans**: 9/9 plans executed
+**Plans**: 9/9 plans complete
 
 Plans:
 **Wave 1**
@@ -122,7 +122,21 @@ Plans:
   3. `session/prompt` streams `agent_message_chunk` deltas live while the turn runs and returns `stopReason` only after all pending updates have flushed
   4. When the backend emits reasoning events the client receives `agent_thought_chunk` updates; none are synthesized when it does not
   5. `session/cancel` during a turn stops it and the prompt call is answered exactly once with `stopReason: "cancelled"`
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+**Wave 1**
+- [ ] 04-01-PLAN.md — SDK dep lands (D-01 audit PASS, exact v0.20.0 pin + tidy-diff gate expectation) + subscribe/setModel method constants + conn notification observer fan-out (TDD)
+
+**Wave 2** *(blocked on Wave 1)*
+- [ ] 04-02-PLAN.md — Tracer (TDD): minimal chat loop end-to-end — SDK test client ↔ acpport ↔ acpfront ↔ machine ↔ fake over pipes (honest initialize, create→subscribe→setModel on wire, live text streaming, cancelled exactly-once) + corpus rows + seam boundary test
+
+**Wave 3** *(blocked on Wave 2; 04-03 and 04-04 run in parallel)*
+- [ ] 04-03-PLAN.md — CORE-01/CORE-02 contract locks: initialize honesty exact-shape lock, authenticate honest error (RED), unadvertised -32601 defaults, relative-cwd validation (RED), mcpServers accept-and-ignored, setModel payload verbatim
+- [ ] 04-04-PLAN.md — CORE-03/CORE-04 streaming locks: reasoning→thought chunks (RED) + never-synthesized negative, flush-before-stopReason ordering proof across both completion variants, zero-delta turn honesty
+
+**Wave 4** *(blocked on Wave 3 — shares front.go with 04-03)*
+- [ ] 04-05-PLAN.md — CORE-05 cancel locks: cancelled exactly-once never -32800, second-prompt rejection (RED), cancel-after-complete no-op + cmd/zcode-acp first real wiring (supervisor override seam, model flags) + binary-level E2E
 
 ### Phase 5: Interactions & Full Chat Cycle (api-key)
 **Goal**: On a real z.ai account via api-key, a client gets a complete chat cycle — streamed tool calls, permission decisions answered from the client, working session lifecycle — with the host-managed interaction responder always on.
@@ -172,8 +186,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
-| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | In Progress | - |
-| 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
+| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
+| 4. ACP Front — Minimal Chat Loop | 0/5 | Planned | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
