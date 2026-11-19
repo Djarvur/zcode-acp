@@ -51,6 +51,10 @@ const (
 	// carrier carries the turnId; session envelopes are session-scoped).
 	wireKeySessionID = "sessionId"
 	wireKeyTurnID    = "turnId"
+
+	// unknownMethodReply is the fake's unknown-method -32601 reply message
+	// (goconst: the literal repeats across the programmatic scenarios).
+	unknownMethodReply = "MethodNotFound"
 )
 
 // state.updated patch.status values (dialect §5: only "running" was ever
@@ -192,7 +196,7 @@ func happyTurnScenario(t *testing.T) *fake.Scenario {
 		},
 		UnknownMethod: &fake.Reply{Error: &zcode.WireError{
 			Code:    zcode.CodeMethodNotFound,
-			Message: "MethodNotFound",
+			Message: unknownMethodReply,
 		}},
 		EOFDrainMs: 50,
 	}
@@ -239,8 +243,9 @@ type serveResult struct {
 }
 
 // startFake runs fake.Serve on a goroutine and returns its completion
-// channel.
-func startFake(fakeEnd *pipeEnd, sc *fake.Scenario) <-chan serveResult {
+// channel. The stream end is an io.ReadWriteCloser so harness wrappers (the
+// cancel tier's read gate) can wrap the raw pipe end.
+func startFake(fakeEnd io.ReadWriteCloser, sc *fake.Scenario) <-chan serveResult {
 	serveDone := make(chan serveResult, 1)
 
 	go func() {
@@ -555,7 +560,7 @@ func completionScenario(t *testing.T, effects ...fake.SideEffect) *fake.Scenario
 		},
 		UnknownMethod: &fake.Reply{Error: &zcode.WireError{
 			Code:    zcode.CodeMethodNotFound,
-			Message: "MethodNotFound",
+			Message: unknownMethodReply,
 		}},
 		EOFDrainMs: 50,
 	}
