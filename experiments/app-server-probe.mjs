@@ -658,7 +658,10 @@ if (exitInfo.spawnError) {
   process.exit(1);
 }
 
-const earlyZero = exitInfo.code === 0 && capturedLines === 0;
+// WR-01: key the no-wire-truth guard on capturedLines alone — a child that
+// crashes (exit 1) with zero captured lines is the same EOF-pitfall/no-wire-truth
+// condition as a child that exits 0 with zero lines, and must fail the run too.
+const earlyZero = capturedLines === 0;
 process.stderr.write(
   `app-server-probe: flow=${flags.flow} capture=${captureId} exit=${exitInfo.code}` +
     ` sig=${exitInfo.sig || '-'} lines=${capturedLines} killed=${killed}` +
@@ -666,8 +669,9 @@ process.stderr.write(
 );
 if (earlyZero) {
   process.stderr.write(
-    'app-server-probe: WARNING — exit 0 with zero captured lines is the stdin-EOF\n' +
-      'pitfall signature (or a bad --electron/--cjs path); the run produced no wire truth.\n',
+    'app-server-probe: WARNING — zero captured lines is the stdin-EOF pitfall\n' +
+      'signature (or a bad --electron/--cjs path, or a child that crashed on boot);\n' +
+      'the run produced no wire truth.\n',
   );
   process.exit(1);
 }
