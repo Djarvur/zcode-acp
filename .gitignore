@@ -35,3 +35,7 @@ go.work.sum
 
 # Phase 1: raw experiment captures never enter the repo (D-02)
 experiments/raw/
+
+# Local build output: `go build ./...` writes the single main-package binary
+# to the repo root (discarded again once more packages exist, Phase 3+)
+/zcode-acp

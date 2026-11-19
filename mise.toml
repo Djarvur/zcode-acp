@@ -1,0 +1,51 @@
+# Single source of tool versions for local development and CI (plan 02-01).
+# D-02: every gate reads its tool versions from this file — CI runs `mise
+# install` and calls the same mise tasks as the local loop, so no tool
+# version is ever pinned a second time (the goswitch D-09 idea; this repo's
+# decision id is D-02).
+[tools]
+# Stable Go line; resolves to the current 1.27.x patch release. go.mod's
+# `go` directive declares the same line — the two must agree exactly.
+go = "1.27"
+# EXACT pin (D-02) — a deliberate tightening over goswitch's floating major
+# "2": the strict linter set churns between releases and only an exact pin
+# reproduces lint results.
+golangci-lint = "2.15.0"
+# Release tool (D-02) — CI/release tooling, NOT a module dependency (go.mod
+# is untouched). release.yml installs it with the same `mise install`.
+# Inert until the Phase 7 release flow.
+goreleaser = "2.20.2"
+# experiments/ scripts + the `node --test` suite (D-02): Active LTS major.
+node = "26"
+
+[env]
+# Deterministic build/test paths
+GOFLAGS = "-trimpath"
+
+[tasks.build]
+description = "Build all packages"
+run = "go build ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.lint]
+description = "Run golangci-lint v2 with the strict config"
+run = "golangci-lint run"
+
+[tasks.test]
+description = "Run all Go tests with the race detector"
+run = "go test -race -count=1 ./..."
+
+[tasks.test-experiments]
+description = "Run the Phase-1 experiments suite (node --test)"
+run = "node --test experiments/"
+
+[tasks.tidy-diff]
+description = "go mod tidy and fail on any go.mod/go.sum drift"
+run = "go mod tidy && git diff --exit-code -- go.mod go.sum"
+
+[tasks.ci]
+description = "Full CI gate: build + vet + lint + test + test-experiments (D-02)"
+depends = ["build", "vet", "lint", "test", "test-experiments"]
