@@ -14,7 +14,7 @@
 //     --builtin <builtin-config-file> \
 //     --flow <flow-name> \
 //     --raw-out <scratch-path-outside-repo> \
-//     --window-ms 12000 [--quiet-ms 2500] [--workspace-dir <dir>]
+//     --window-ms 30000 [--quiet-ms 2500] [--workspace-dir <dir>]
 //
 // Behavior:
 //   - spawns `<electron> <cjs> app-server --stdio` with ELECTRON_RUN_AS_NODE=1 and
@@ -430,7 +430,7 @@ function usage() {
     'usage: node experiments/app-server-probe.mjs --electron <bundle-root>/zcode \\\n' +
       '  --cjs <bundle-root>/resources/glm/zcode.cjs --builtin <builtin-config-file> \\\n' +
       '  --flow <probe|workspacekey|subscribe|turn> --raw-out <scratch-path-outside-repo> \\\n' +
-      '  --window-ms 12000 [--quiet-ms 2500] [--end-mode fixed|quiet-window] [--workspace-dir <dir>] \\\n' +
+      '  --window-ms 30000 [--quiet-ms 2500] [--end-mode fixed|quiet-window] [--workspace-dir <dir>] \\\n' +
       '  [--desktop-version <value>]\n',
   );
 }
@@ -457,6 +457,27 @@ if (!Object.hasOwn(FLOWS, flags.flow)) {
   process.stderr.write(
     `app-server-probe: unknown flow "${flags.flow}" (known: ${Object.keys(FLOWS).join(', ')}` +
       `${pending.length ? `; not implemented yet: ${pending.join(', ')}` : ''})\n`,
+  );
+  process.exit(1);
+}
+
+// --- WR-02: the probe knows its own steps — never accept a window that expires
+// --- before the flow's last (load-bearing) step fires. At the documented 12 s
+// --- example the window backstop won the race for both 01-02 flows (last steps
+// --- at 13000/13500 ms), the late send() then wrote into an already-ended
+// --- stdin, and the run completed exit 0 with its final probe never delivered.
+// --- Validated BEFORE the spawn so a rejected window never starts the desktop
+// --- app-server (and never writes a capture header).
+const steps = FLOWS[flags.flow]({
+  workspaceDir: flags.workspaceDir,
+  windowMs: flags.windowMs,
+  quietMs: flags.quietMs,
+});
+const lastAtMs = Math.max(...steps.map((s) => s.atMs));
+if (flags.windowMs <= lastAtMs) {
+  process.stderr.write(
+    `app-server-probe: --window-ms ${flags.windowMs} expires before the "${flags.flow}" flow's ` +
+      `last step (${lastAtMs} ms) — the final probe would be swallowed by the window backstop; raise the window\n`,
   );
   process.exit(1);
 }
@@ -605,12 +626,7 @@ function armQuietWindow() {
   resetQuietTimer();
 }
 
-// --- run the flow --------------------------------------------------------------
-const steps = FLOWS[flags.flow]({
-  workspaceDir: flags.workspaceDir,
-  windowMs: flags.windowMs,
-  quietMs: flags.quietMs,
-});
+// --- run the flow (steps computed and window-validated before the spawn) --------
 const timers = steps.map((s, i) =>
   setTimeout(() => {
     // Dynamic steps are evaluated at fire time against the accumulated state;
