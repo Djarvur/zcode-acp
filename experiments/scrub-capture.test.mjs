@@ -1,0 +1,191 @@
+// experiments/scrub-capture.test.mjs — unit tests for every canonical scrub rule
+// (D-02; the scrubber experiments/scrub-capture.mjs is the only path into
+// experiments/captures/). Run: node --test experiments/
+//
+// IMPORTANT: forbidden shapes (JWT values, credential-blob payloads, long token
+// values, UUIDs) are constructed here by STRING CONCATENATION so that no forbidden
+// literal appears verbatim in this tracked file — `bash experiments/scan-secrets.sh`
+// must stay green with this file committed.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scrub-capture.mjs');
+
+// --- fixtures (concatenated: no forbidden literal in tracked source) ----------
+const JWT_FIXTURE = 'ey' + 'J' + 'abcDEFghij' + '.' + 'pQrsTuv01x' + '.' + 'wXyZ12345_y';
+const CRED_V2 = 'enc:v' + '2:os:' + 'Aa09+/=_Bb11Cc22Dd33Ee44';
+const CRED_V1 = 'enc:v' + '1:' + 'Zz88-99_Xx77__Qq66Ww55Vv44';
+const TOKEN_A = 't' + 'k9' + 'E'.repeat(20); // 22 class chars
+const TOKEN_B = 'k'.repeat(24);
+const UUID_A = '0123ab' + 'cd-' + '45ef' + '-4' + 'c01-' + '89ab' + '-cdef01234567';
+const UUID_B = '9f8e7d' + '6c-' + '12ab' + '-4' + 'd02-' + '9e8d' + '-123456abcdef';
+// Byte-identity probe: odd spacing that re-serialization would destroy.
+const HEADER =
+  '{"capture": "EXP-SCRUBTEST-01",  "date":"2026-11-19T00:00:00Z","desktopVersion":"3.18.2","builtinRevision":"44","host":"test-host"}';
+
+// --- harness ------------------------------------------------------------------
+function runScrub(inputText, extraArgs = []) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'scrub-test-'));
+  const inFile = path.join(dir, 'raw.jsonl');
+  const outFile = path.join(dir, 'scrubbed.jsonl');
+  writeFileSync(inFile, inputText);
+  const res = spawnSync(process.execPath, [script, inFile, outFile, ...extraArgs], {
+    encoding: 'utf8',
+  });
+  let out = null;
+  try {
+    out = readFileSync(outFile, 'utf8');
+  } catch {
+    out = null;
+  }
+  return { res, out };
+}
+
+// Defensive extractor: returns the parsed nth (0-based) line or null — so a missing
+// scrubber fails tests on ASSERTIONS (null vs expected), never on parse errors.
+function dataLine(out, n = 1) {
+  const lines = (out ?? '').split('\n');
+  try {
+    return JSON.parse(lines[n] ?? '');
+  } catch {
+    return null;
+  }
+}
+
+// --- the canonical rules -------------------------------------------------------
+
+test('JWT-shaped token values are redacted and the line stays parseable JSON', () => {
+  const input =
+    HEADER + '\n' + JSON.stringify({ id: 1, result: { authHeader: 'Bearer ' + JWT_FIXTURE } }) + '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.authHeader, 'Bearer [REDACTED-JWT]');
+  assert.ok(!(out ?? '').includes(JWT_FIXTURE), 'raw JWT shape must not survive');
+  assert.ok(!/eyJ/.test(out ?? ''), 'no JWT prefix may remain');
+});
+
+test('credential blobs with the enc:v2:os: prefix are fully redacted including the prefix', () => {
+  const input = HEADER + '\n' + JSON.stringify({ id: 2, result: { blob: CRED_V2 } }) + '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.blob, '[REDACTED-CREDENTIAL]');
+  assert.ok(!(out ?? '').includes('enc:v'), 'prefix itself must be gone');
+});
+
+test('legacy enc:v1: credential blobs are fully redacted including the prefix', () => {
+  const input = HEADER + '\n' + JSON.stringify({ id: 3, result: { blob: CRED_V1 } }) + '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.blob, '[REDACTED-CREDENTIAL]');
+  assert.ok(!(out ?? '').includes('enc:v'), 'legacy prefix itself must be gone');
+});
+
+test('long token values under credential keys are redacted', () => {
+  const input =
+    HEADER +
+    '\n' +
+    JSON.stringify({
+      id: 4,
+      result: {
+        access_token: TOKEN_A,
+        apiKey: TOKEN_B,
+        'api-key': TOKEN_B,
+        token: TOKEN_A,
+        keep: 'short-value',
+      },
+    }) +
+    '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.access_token, '[REDACTED-TOKEN]');
+  assert.equal(parsed?.result?.apiKey, '[REDACTED-TOKEN]');
+  assert.equal(parsed?.result?.['api-key'], '[REDACTED-TOKEN]');
+  assert.equal(parsed?.result?.token, '[REDACTED-TOKEN]');
+  assert.equal(parsed?.result?.keep, 'short-value', 'short non-credential values stay');
+  assert.ok(!(out ?? '').includes(TOKEN_A) && !(out ?? '').includes(TOKEN_B));
+});
+
+test('UUID-shaped identifiers become stable per-file placeholders (nth distinct -> nth)', () => {
+  const input =
+    HEADER +
+    '\n' +
+    JSON.stringify({ id: 5, result: { attemptId: UUID_A, ref: UUID_A, other: UUID_B } }) +
+    '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.attemptId, '<uuid-1>', 'first distinct value -> first placeholder');
+  assert.equal(parsed?.result?.ref, '<uuid-1>', 'same value always maps to the same placeholder');
+  assert.equal(parsed?.result?.other, '<uuid-2>', 'second distinct value -> second placeholder');
+  assert.ok(!(out ?? '').includes(UUID_A) && !(out ?? '').includes(UUID_B));
+});
+
+test('absolute paths under the user home directory become tilde-relative', () => {
+  const home = os.homedir();
+  const input =
+    HEADER +
+    '\n' +
+    JSON.stringify({ id: 6, result: { cwd: home + '/proj/e3', bare: home } }) +
+    '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.cwd, '~' + '/proj/e3');
+  assert.equal(parsed?.result?.bare, '~');
+  assert.ok(!(out ?? '').includes(home), 'home prefix must not survive');
+});
+
+test('the header line (line 1) passes through byte-identical', () => {
+  const input = HEADER + '\n' + JSON.stringify({ id: 7, result: { authHeader: JWT_FIXTURE } }) + '\n';
+  const { out } = runScrub(input);
+  assert.equal((out ?? '').split('\n')[0], HEADER, 'header must not be re-serialized or scrubbed');
+});
+
+test('scrubbing is idempotent: scrubbing already-scrubbed output changes nothing', () => {
+  const input =
+    HEADER +
+    '\n' +
+    JSON.stringify({
+      id: 8,
+      result: { authHeader: JWT_FIXTURE, blob: CRED_V2, token: TOKEN_A, u: UUID_A, cwd: os.homedir() + '/w' },
+    }) +
+    '\n';
+  const first = runScrub(input);
+  assert.ok(first.out !== null && first.out.length > 0, 'first pass must produce output');
+  const second = runScrub(first.out);
+  assert.equal(second.out, first.out, 'second scrub pass must be a fixed point');
+});
+
+test('empty input produces empty output and exit 0', () => {
+  const { res, out } = runScrub('');
+  assert.equal(res.status, 0, 'expected exit 0, saw: ' + (res.stderr || '').slice(0, 200));
+  assert.equal(out, '');
+});
+
+test('user_info payload objects are redacted wholesale', () => {
+  const input =
+    HEADER +
+    '\n' +
+    JSON.stringify({
+      method: 'state.updated',
+      params: { user_info: { email: 'x' + '@' + 'y.z', nested: { deep: true } }, sequence: 3 },
+    }) +
+    '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.params?.user_info, '[REDACTED-USERINFO]');
+  assert.ok(!(out ?? '').includes('email'), 'no field of the payload may survive');
+});
+
+test('path prefixes passed via --redact-path become the <path> placeholder', () => {
+  const input =
+    HEADER + '\n' + JSON.stringify({ id: 9, result: { note: '/tmp' + '/scrub-private' + '/notes/f.md' } }) + '\n';
+  const { out } = runScrub(input, ['--redact-path', '/tmp' + '/scrub-private']);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.note, '<path>' + '/notes/f.md');
+});
