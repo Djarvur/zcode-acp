@@ -221,6 +221,14 @@ None - no external service configuration required.
 - cmd/fake-app-server (03-06) wraps Serve over stdio; Serve's clean-EOF classification already covers io.EOF, io.ErrClosedPipe, and os.ErrClosed (exec pipes)
 - BRIDGE-01/BRIDGE-02 completion is intentionally pending: both are declared by later plans (03-02/03-09 and 03-03/03-06/03-09 respectively) and mark-complete fires only when every declaring plan has a SUMMARY
 
+## Self-Check: PASSED
+
+- 03-01-SUMMARY.md exists on disk
+- internal/zcode/fake/testdata/golden/happy-turn.golden exists (1 fixture, >= 1 required)
+- All claimed commits are ancestors of HEAD: 394dcbb (Task 1 RED), acfa17e (Task 2 GREEN), 4bcae69 (Task 3 GREEN), 28c498d (SUMMARY), ced0797 (tracking)
+- Ledger-measured plan commit count: 5 (3 task commits at SUMMARY write + 2 docs commits)
+- Final post-close-out run: go test -race -count=1 ./internal/zcode/... — all green
+
 ---
 *Phase: 03-zcode-back-leg-codec-fake-app-server-supervisor*
 *Completed: 2026-11-19*
