@@ -1,6 +1,7 @@
 package fake_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,30 @@ func TestHappyTurnRoundTrip(t *testing.T) {
 	assertSendAck(t, res)
 	assertNotificationOrder(t, res.notices)
 	assertTranscript(t, res.transcript)
+}
+
+// TestGoldenHappyTurn replays the happy-turn exchange against the recorded
+// golden fixture — the protocol-spec-made-executable (D-01). Any frame drift
+// or missing frame FAILS; -update re-records (never auto-creates).
+func TestGoldenHappyTurn(t *testing.T) {
+	res := runHappyTurn(t)
+
+	fake.CompareGolden(t, "testdata/golden/happy-turn.golden", goldenBytes(res.transcript))
+}
+
+// goldenBytes renders a transcript in the golden fixture format: one
+// direction tag, a tab, and the raw wire line per transcript entry.
+func goldenBytes(tr fake.Transcript) []byte {
+	var buf bytes.Buffer
+
+	for _, line := range tr.Lines {
+		buf.WriteString(string(line.Dir))
+		buf.WriteByte('\t')
+		buf.WriteString(line.JSON)
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes()
 }
 
 // pipeEnd joins one io.Pipe half-pair into an io.ReadWriteCloser end.
@@ -117,6 +142,8 @@ func runHappyTurn(t *testing.T) happyTurnResult {
 	}
 
 	hostEnd, fakeEnd := roundTripPipes()
+	t.Cleanup(func() { _ = fakeEnd.Close() })
+
 	serveDone := startFake(fakeEnd, sc)
 
 	conn := zcode.NewConn(hostEnd)
@@ -137,6 +164,10 @@ func runHappyTurn(t *testing.T) happyTurnResult {
 	}
 
 	served := waitServed(t, serveDone)
+
+	if served.err != nil {
+		t.Fatalf("fake.Serve: %v", served.err)
+	}
 
 	return happyTurnResult{
 		createRes:  createRes,
@@ -325,8 +356,10 @@ func assertNotificationOrder(t *testing.T, notices []zcode.Envelope) {
 }
 
 // assertTranscript checks the recorded wire conversation: non-empty, both
-// sides of the runtime-preferences exchange present, and every host→server
-// line valid JSON carrying no JSON-RPC framing key (dialect §1).
+// sides of the runtime-preferences exchange present — the fake's reverse
+// request travels fake→host (DirOut), the host's answer host→fake (DirIn) —
+// and every host→server line valid JSON carrying no JSON-RPC framing key
+// (dialect §1).
 func assertTranscript(t *testing.T, tr fake.Transcript) {
 	t.Helper()
 
@@ -338,18 +371,18 @@ func assertTranscript(t *testing.T, tr fake.Transcript) {
 	sawReverseAnswer := false
 
 	for _, line := range tr.Lines {
-		if line.Dir != fake.DirIn {
-			continue
+		if line.Dir == fake.DirIn {
+			if strings.Contains(line.JSON, jsonRPCFramingKey) {
+				t.Fatalf("host→server line carries the JSON-RPC framing key: %s", line.JSON)
+			}
+
+			var validity map[string]any
+			if err := json.Unmarshal([]byte(line.JSON), &validity); err != nil {
+				t.Fatalf("host→server line is not JSON: %v (%s)", err, line.JSON)
+			}
 		}
 
-		if strings.Contains(line.JSON, jsonRPCFramingKey) {
-			t.Fatalf("host→server line carries the JSON-RPC framing key: %s", line.JSON)
-		}
-
-		var probe map[string]any
-		if err := json.Unmarshal([]byte(line.JSON), &probe); err != nil {
-			t.Fatalf("host→server line is not JSON: %v (%s)", err, line.JSON)
-		}
+		probe := probeLine(line.JSON)
 
 		if method, _ := probe["method"].(string); method == zcode.MethodRequestRuntimePreferences {
 			sawReverseRequest = true
@@ -372,6 +405,17 @@ func assertTranscript(t *testing.T, tr fake.Transcript) {
 		t.Fatalf("runtime-preferences exchange missing from transcript (request=%v answer=%v)",
 			sawReverseRequest, sawReverseAnswer)
 	}
+}
+
+// probeLine best-effort decodes a transcript line for content assertions;
+// note lines (prose) decode to nil.
+func probeLine(line string) map[string]any {
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(line), &probe); err != nil {
+		return nil
+	}
+
+	return probe
 }
 
 // jsonPathString digs a nested string value out of a decoded result.

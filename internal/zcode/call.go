@@ -43,8 +43,7 @@ func newPendingTable() *pendingTable {
 	return &pendingTable{calls: make(map[string]*pendingCall)}
 }
 
-// register creates the reply channel for a new pending id. The resolving
-// side (demux) lands with the conn stage (plan Task 3).
+// register creates the reply channel for a new pending id.
 func (p *pendingTable) register(id *ID) <-chan Envelope {
 	call := newPendingCall()
 
@@ -62,6 +61,28 @@ func (p *pendingTable) remove(id *ID) {
 	defer p.mu.Unlock()
 
 	delete(p.calls, id.Key())
+}
+
+// resolve delivers a reply envelope to the pending call registered under the
+// envelope's canonical id key and deregisters it — one reply resolves one
+// call, and the reply channel's capacity-1 buffer keeps the read loop
+// non-blocking. An unknown id (a late reply after ctx cancellation, or an
+// unsolicited one) is dropped: the demux only routes result/error frames
+// here — method-bearing frames never enter the table (WR-02, RESEARCH
+// Pitfall 8).
+func (p *pendingTable) resolve(env Envelope) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	key := env.ID.Key()
+
+	call, ok := p.calls[key]
+	if !ok {
+		return
+	}
+
+	delete(p.calls, key)
+	call.reply <- env
 }
 
 // Call sends method with params on the ordered queue lane and waits for the
