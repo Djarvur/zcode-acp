@@ -112,7 +112,7 @@ Plans:
 - [x] 03-09-PLAN.md — E2E exec chain (supervisor + fake binary + Conn + turn machine) + full phase gate `mise run ci` (BRIDGE-01..04)
 
 ### Phase 4: ACP Front — Minimal Chat Loop
-**Goal**: As an ACP client, I want to open a session against ZCode and run a streamed prompt turn end-to-end — live text and thought chunks with correct cancellation — against the app-server, so that the minimal chat loop is proven on the real ACP boundary before auth and interaction complexity accrete.
+**Goal**: As a v1 chat UI client, I want to open a session against ZCode and run a streamed prompt turn end-to-end, with live text and thought chunks and correct cancellation, against the app-server, so that the minimal chat loop is proven on the real ACP boundary before auth and interaction complexity accrete.
 **Mode:** mvp
 **Depends on**: Phase 3
 **Requirements**: CORE-01, CORE-02, CORE-03, CORE-04, CORE-05
