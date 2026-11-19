@@ -194,6 +194,59 @@ test('user_info payload objects are redacted wholesale', () => {
   assert.ok(!(out ?? '').includes('email'), 'no field of the payload may survive');
 });
 
+// --- CR-01: USER_INFO_RX lastIndex regression ------------------------------------
+// USER_INFO_RX is a module-level /g regex driven by exec() in a loop over
+// progressively shorter suffixes of the line; lastIndex persists in the
+// PREVIOUS string's coordinates, so every user_info object after the first on
+// a line is skipped (the second leaks verbatim) and pass 2 redacts it — the
+// output is not a fixed point, violating the documented idempotency contract.
+
+test('CR-01: two user_info objects on ONE line are both redacted in a single pass', () => {
+  const input =
+    HEADER +
+    '\n' +
+    JSON.stringify({
+      method: 'state.updated',
+      params: {
+        events: [
+          { user_info: { email: 'first' + '@' + 'example.test', marker: 'FIRST_USERINFO_MARKER' } },
+          { user_info: { email: 'second' + '@' + 'example.test', marker: 'SECOND_USERINFO_MARKER' } },
+        ],
+      },
+    }) +
+    '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.params?.events?.[0]?.user_info, '[REDACTED-USERINFO]', 'first user_info must be redacted');
+  assert.equal(
+    parsed?.params?.events?.[1]?.user_info,
+    '[REDACTED-USERINFO]',
+    'the SECOND user_info on the same line must be redacted in the same pass',
+  );
+  assert.ok(!(out ?? '').includes('FIRST_USERINFO_MARKER'), 'first payload must not survive');
+  assert.ok(!(out ?? '').includes('SECOND_USERINFO_MARKER'), 'second payload must not survive verbatim');
+});
+
+test('CR-01: scrubbing a multi-user_info line is a fixed point (re-scrub is byte-identical)', () => {
+  const input =
+    HEADER +
+    '\n' +
+    JSON.stringify({
+      method: 'state.updated',
+      params: {
+        events: [
+          { user_info: { email: 'first' + '@' + 'example.test' } },
+          { user_info: { email: 'second' + '@' + 'example.test' } },
+        ],
+      },
+    }) +
+    '\n';
+  const first = runScrub(input);
+  assert.ok(first.out !== null && first.out.length > 0, 'first pass must produce output');
+  const second = runScrub(first.out);
+  assert.equal(second.out, first.out, 'second scrub pass must be a fixed point');
+});
+
 test('path prefixes passed via --redact-path become the <path> placeholder', () => {
   const input =
     HEADER + '\n' + JSON.stringify({ id: 9, result: { note: '/tmp' + '/scrub-private' + '/notes/f.md' } }) + '\n';
