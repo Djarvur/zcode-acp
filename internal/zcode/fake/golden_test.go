@@ -167,6 +167,7 @@ func goldenDrivers() map[string]driverFunc {
 		"eof-drain":                  driveEOFDrain,
 		"envelope-negatives":         driveEnvelopeNegatives,
 		"credential-cipher-scripted": driveCredentialCipherScripted,
+		"setmodel-followup":          driveSetModelFollowup,
 	}
 }
 
@@ -418,5 +419,44 @@ func driveEnvelopeNegatives(ctx context.Context, d *exchangeDriver) {
 // expect_answer: the timeout path is the fixture's point.
 func driveCredentialCipherScripted(ctx context.Context, d *exchangeDriver) {
 	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx)
+}
+
+// driveSetModelFollowup: the front-tier session/new contract replayed at the
+// back tier (plan 04-02 corpus row the tracer rides) — bare create (no model
+// object: create drops options.reasoningLevel, PITFALL 4), subscribe (the
+// session/event push gate, dialect §4), the setModel follow-up carrying
+// model.options.reasoningLevel and persistAsWorkspaceLastUsed:false (D-03;
+// Open Question 3 resolution), then send whose scripted stream emits the
+// two part.delta text rows the prompt leg consumes. The golden
+// byte-asserts the setModel request payload verbatim — the wire acceptance
+// of the scripted rule is the golden's job, not the scenario's.
+func driveSetModelFollowup(ctx context.Context, d *exchangeDriver) {
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.create(ctx)
+
+	subParams := map[string]any{
+		wireKeySessionID: fixSessionID,
+		"deliveryKind":   "desktop-continuous",
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
+		d.t.Fatalf("session/subscribe: %v", err)
+	}
+
+	setModelParams := map[string]any{
+		wireKeySessionID: fixSessionID,
+		"model": map[string]any{
+			"providerId": "zai-api",
+			"modelId":    "GLM-5.3-Flash",
+			"options":    map[string]any{"reasoningLevel": "high"},
+		},
+		"persistAsWorkspaceLastUsed": false,
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSetModel, setModelParams); err != nil {
+		d.t.Fatalf("session/setModel: %v", err)
+	}
+
 	h.send(ctx)
 }
