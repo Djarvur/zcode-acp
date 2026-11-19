@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +41,11 @@ const (
 	// completion-idle-patch corpus row).
 	reasonPromptStarted   = "prompt_started"
 	reasonPromptCompleted = "prompt_completed"
+
+	// wire keys of the turn-scoped carrier params (dialect §5: every
+	// carrier carries the turnId; session envelopes are session-scoped).
+	wireKeySessionID = "sessionId"
+	wireKeyTurnID    = "turnId"
 )
 
 // state.updated patch.status values (dialect §5: only "running" was ever
@@ -49,6 +54,10 @@ const (
 	statusRunning = "running"
 	statusIdle    = "idle"
 )
+
+// errUnexpectedSession is the stub poll source's sentinel for a poll
+// addressed to a foreign session.
+var errUnexpectedSession = errors.New("poll source: unexpected session")
 
 // rawOf marshals one scenario payload for the wire.
 func rawOf(t *testing.T, v any) json.RawMessage {
@@ -70,34 +79,34 @@ func emit(t *testing.T, method string, params any) fake.SideEffect {
 }
 
 // sendRule is the session/send rule: the fast ack with the EXP-TURN-01
-// verbatim result keys (accepted, sessionId, stateRevision) and the
-// rule's ordered side effects (the fake's documented ordering: side
-// effects before reply — the wire order the capture records).
+// verbatim result keys (accepted, sessionId, stateRevision) and the rule's
+// ordered side effects (the fake's documented ordering: side effects
+// before reply — the wire order the capture records).
 func sendRule(t *testing.T, effects ...fake.SideEffect) fake.RequestRule {
 	t.Helper()
 
 	return fake.RequestRule{
 		Method: zcode.MethodSessionSend,
 		Reply: &fake.Reply{Result: rawOf(t, map[string]any{
-			"accepted":      true,
-			"sessionId":     fixSessionID,
-			"stateRevision": 1,
+			"accepted":       true,
+			wireKeySessionID: fixSessionID,
+			"stateRevision":  1,
 		})},
 		SideEffects: effects,
 	}
 }
 
 // messagesRule answers session/messages polls with stable content — the
-// quiet-window settling surface (the completion-quiet-window corpus
-// shape: stable polls, presence/time evidence only).
+// quiet-window settling surface (the completion-quiet-window corpus shape:
+// stable polls, presence/time evidence only).
 func messagesRule(t *testing.T) fake.RequestRule {
 	t.Helper()
 
 	return fake.RequestRule{
 		Method: zcode.MethodSessionMessages,
 		Reply: &fake.Reply{Result: rawOf(t, map[string]any{
-			"messages":  []any{},
-			"sessionId": fixSessionID,
+			"messages":       []any{},
+			wireKeySessionID: fixSessionID,
 		})},
 	}
 }
@@ -108,12 +117,12 @@ func statePatch(t *testing.T, status, reason string) fake.SideEffect {
 	t.Helper()
 
 	return emit(t, zcode.MethodStateUpdated, map[string]any{
-		"patch":     map[string]any{"status": status},
-		"reason":    reason,
-		"revision":  1,
-		"scope":     "session",
-		"sessionId": fixSessionID,
-		"type":      "state.updated",
+		"patch":          map[string]any{"status": status},
+		"reason":         reason,
+		"revision":       1,
+		"scope":          "session",
+		wireKeySessionID: fixSessionID,
+		"type":           "state.updated",
 	})
 }
 
@@ -124,38 +133,9 @@ func sessionEvent(t *testing.T, kind, turnID string) fake.SideEffect {
 	return emit(t, zcode.MethodSessionEvent, map[string]any{
 		"type":         kind,
 		"seq":          4,
-		"turnId":       turnID,
+		wireKeyTurnID:  turnID,
 		"traceId":      "trace_fix1",
 		"deliveryKind": deliveryKind,
-	})
-}
-
-// v4Telemetry is the v4/telemetry/event carrier envelope (dialect §5:
-// kind literals with dots, turnId carried).
-func v4Telemetry(t *testing.T, kind, turnID string) fake.SideEffect {
-	t.Helper()
-
-	return emit(t, turn.MethodV4Telemetry, map[string]any{
-		"kind":      kind,
-		"turnId":    turnID,
-		"eventSeq":  2,
-		"sessionId": fixSessionID,
-		"version":   1,
-	})
-}
-
-// computerUse is the computer-use/operation-event carrier envelope
-// (dialect §5: hyphenated kind literals, turnId carried).
-func computerUse(t *testing.T, kind, turnID string) fake.SideEffect {
-	t.Helper()
-
-	return emit(t, turn.MethodComputerUseOperation, map[string]any{
-		"kind":           kind,
-		"turnId":         turnID,
-		"sequenceNumber": 1,
-		"sessionId":      fixSessionID,
-		"eventId":        "ev_fix1",
-		"timestamp":      "2026-01-01T00:00:00Z",
 	})
 }
 
@@ -252,6 +232,99 @@ func waitServed(t *testing.T, serveDone <-chan serveResult) serveResult {
 	return served
 }
 
+// resolutionSpy is the exactly-once observation hook: a synchronized
+// counter/record of every OnResolve delivery (the hook runs on observing
+// goroutines; the test reads it under the same lock).
+type resolutionSpy struct {
+	mu  sync.Mutex
+	got []turn.Resolution
+}
+
+// record implements the OnResolve hook signature.
+func (s *resolutionSpy) record(res turn.Resolution) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.got = append(s.got, res)
+}
+
+// snapshot returns the recorded resolutions.
+func (s *resolutionSpy) snapshot() []turn.Resolution {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return slices.Clone(s.got)
+}
+
+// turnExchange bundles one machine exchange against the fake: the conn,
+// the machine with millisecond quiet knobs, and the resolution spy.
+type turnExchange struct {
+	conn      *zcode.Conn
+	machine   *turn.Machine
+	spy       *resolutionSpy
+	serveDone <-chan serveResult
+}
+
+// startTurnExchange wires the fake, the conn, a machine bound to the fixed
+// session with injectable millisecond quiet knobs, and the resolution spy.
+// Cleanup joins both ends.
+func startTurnExchange(t *testing.T, sc *fake.Scenario) *turnExchange {
+	t.Helper()
+
+	hostEnd, fakeEnd := roundTripPipes()
+	t.Cleanup(func() { _ = fakeEnd.Close() })
+
+	serveDone := startFake(fakeEnd, sc)
+
+	conn := zcode.NewConn(hostEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	m := turn.NewMachine(conn, fixSessionID, turn.NewPollWatcher(conn, turn.PollConfig{
+		QuietMs:        40,
+		FloorMultiple:  2,
+		PollIntervalMs: 10,
+	}))
+
+	spy := &resolutionSpy{}
+	m.OnResolve = spy.record
+
+	return &turnExchange{conn: conn, machine: m, spy: spy, serveDone: serveDone}
+}
+
+// finish closes the conn (the fake sees stdin EOF and drains) and asserts
+// the scripted run ended clean.
+func (ex *turnExchange) finish(t *testing.T) {
+	t.Helper()
+
+	_ = ex.conn.Close()
+
+	served := waitServed(t, ex.serveDone)
+
+	if served.err != nil {
+		t.Fatalf("fake.Serve: %v", served.err)
+	}
+}
+
+// assertResolution asserts exactly one resolution carrying the expected
+// reason and resolving-signal record.
+func assertResolution(t *testing.T, spy *resolutionSpy, reason turn.StopReason, signal turn.SignalKind) {
+	t.Helper()
+
+	got := spy.snapshot()
+
+	if len(got) != 1 {
+		t.Fatalf("resolution hook fired %d times, want exactly 1", len(got))
+	}
+
+	if got[0].Reason != reason {
+		t.Fatalf("resolution reason = %q, want %q", got[0].Reason, reason)
+	}
+
+	if got[0].Signal != signal {
+		t.Fatalf("resolving signal = %q, want %q", got[0].Signal, signal)
+	}
+}
+
 // The happy-turn contract: the machine lifts one fire-and-forget
 // session/send into a synchronous turn — Run returns StopCompleted exactly
 // once after the backend emitted the terminal signal, the resolving-signal
@@ -259,55 +332,25 @@ func waitServed(t *testing.T, serveDone <-chan serveResult) serveResult {
 // StopReason without re-resolving (PITFALL 8: the machine owns the
 // completion).
 func TestHappyTurnCompletedExactlyOnce(t *testing.T) {
-	hostEnd, fakeEnd := roundTripPipes()
-	t.Cleanup(func() { _ = fakeEnd.Close() })
-
-	serveDone := startFake(fakeEnd, happyTurnScenario(t))
-
-	conn := zcode.NewConn(hostEnd)
-	t.Cleanup(func() { _ = conn.Close() })
-
-	// Millisecond knobs: the terminal event resolves the turn long before
-	// any quiet gate could arm — no test waits on wall-clock defaults.
-	m := turn.NewMachine(conn, fixSessionID, turn.NewPollWatcher(conn, turn.PollConfig{
-		QuietMs:        40,
-		FloorMultiple:  2,
-		PollIntervalMs: 10,
-	}))
-
-	resolutions := make(chan turn.Resolution, 8)
-	m.OnResolve = func(res turn.Resolution) { resolutions <- res }
+	ex := startTurnExchange(t, happyTurnScenario(t))
 
 	ctx, cancel := context.WithTimeout(context.Background(), turnTestTimeout)
 	defer cancel()
 
-	reason, err := m.Run(ctx, "Reply with exactly: OK")
+	reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
 	if err != nil {
-		t.Fatalf("Run: %v", err) // RED: the stub fails this planned assertion
+		t.Fatalf("Run: %v", err)
 	}
 
 	if reason != turn.StopCompleted {
 		t.Fatalf("Run reason = %q, want %q", reason, turn.StopCompleted)
 	}
 
-	// The resolving-signal record is honest: the turnId-matched terminal
-	// event is the D-02 primary completion signal.
-	select {
-	case res := <-resolutions:
-		if res.Signal != turn.SignalTerminalEvent {
-			t.Fatalf("resolving signal = %q, want %q", res.Signal, turn.SignalTerminalEvent)
-		}
-
-		if res.Reason != turn.StopCompleted {
-			t.Fatalf("resolution reason = %q, want %q", res.Reason, turn.StopCompleted)
-		}
-	default:
-		t.Fatal("no resolution delivered to the OnResolve hook")
-	}
+	assertResolution(t, ex.spy, turn.StopCompleted, turn.SignalTerminalEvent)
 
 	// Exactly-once: a second wait returns the SAME StopReason and the
-	// resolution hook has fired exactly once (no re-resolution).
-	reason2, err := m.Wait(ctx)
+	// resolution hook has still fired exactly once (no re-resolution).
+	reason2, err := ex.machine.Wait(ctx)
 	if err != nil {
 		t.Fatalf("second Wait: %v", err)
 	}
@@ -316,17 +359,9 @@ func TestHappyTurnCompletedExactlyOnce(t *testing.T) {
 		t.Fatalf("second Wait reason = %q, want %q (idempotent)", reason2, turn.StopCompleted)
 	}
 
-	if n := len(resolutions); n != 1 {
-		t.Fatalf("resolution hook fired %d times, want exactly 1", n)
-	}
+	assertResolution(t, ex.spy, turn.StopCompleted, turn.SignalTerminalEvent)
 
-	_ = conn.Close()
-
-	served := waitServed(t, serveDone)
-
-	if served.err != nil {
-		t.Fatalf("fake.Serve: %v", served.err)
-	}
+	ex.finish(t)
 }
 
 // stubPollSource returns scripted poll pages; calls counts the polls the
@@ -343,7 +378,7 @@ func (s *stubPollSource) Poll(_ context.Context, sessionID string) ([]zcode.Enve
 	defer s.mu.Unlock()
 
 	if sessionID != fixSessionID {
-		return nil, fmt.Errorf("poll source: unexpected session %q", sessionID)
+		return nil, errUnexpectedSession
 	}
 
 	i := s.calls
@@ -356,66 +391,52 @@ func (s *stubPollSource) Poll(_ context.Context, sessionID string) ([]zcode.Enve
 	return s.pages[i], nil
 }
 
-// TestTurnWatcherDeliversUntilStopped: the PollWatcher delivers
-// session-scoped envelopes to the callback and honors stop — stop is
-// synchronous and after it returns no delivery happens (no watcher leak).
-func TestTurnWatcherDeliversUntilStopped(t *testing.T) {
-	pageA := []zcode.Envelope{{
-		Method: zcode.MethodSessionMessages,
-		Params: json.RawMessage(`{"messages":["a"],"sessionId":"sess_fix1"}`),
-	}}
-	pageB := []zcode.Envelope{{
-		Method: zcode.MethodSessionMessages,
-		Params: json.RawMessage(`{"messages":["a","b"],"sessionId":"sess_fix1"}`),
-	}}
+// pollPage builds one session-scoped session/messages poll page carrying
+// the given message ids (opaque payloads — presence evidence only).
+func pollPage(t *testing.T, messages ...string) []zcode.Envelope {
+	t.Helper()
 
-	source := &stubPollSource{pages: [][]zcode.Envelope{pageA, pageB, pageA}}
-
-	w := turn.NewPollWatcher(nil, turn.PollConfig{
-		Source:         source,
-		QuietMs:        40,
-		FloorMultiple:  2,
-		PollIntervalMs: 10,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), turnTestTimeout)
-	defer cancel()
-
-	deliveries := make(chan turn.Observation, 64)
-	stop, err := w.Watch(ctx, fixSessionID, func(obs turn.Observation) {
-		deliveries <- obs
+	b, err := json.Marshal(map[string]any{
+		"messages":       messages,
+		wireKeySessionID: fixSessionID,
 	})
 	if err != nil {
-		t.Fatalf("Watch: %v", err) // RED: the stub fails this planned assertion
+		t.Fatalf("marshal poll page: %v", err)
 	}
 
-	// Session-scoped envelopes arrive at the callback, advancing across the
-	// scripted poll pages.
-	saw := make([]string, 0, 2)
+	return []zcode.Envelope{{
+		Method: zcode.MethodSessionMessages,
+		Params: b,
+	}}
+}
+
+// collectDeliveries reads want envelope deliveries off the watcher channel.
+func collectDeliveries(t *testing.T, deliveries <-chan turn.Observation, want int) []string {
+	t.Helper()
+
+	saw := make([]string, 0, want)
 	deadline := time.After(2 * time.Second)
 
-	for len(saw) < 2 {
+	for len(saw) < want {
 		select {
 		case obs := <-deliveries:
 			if obs.Env != nil {
 				saw = append(saw, string(obs.Env.Params))
 			}
 		case <-deadline:
-			t.Fatalf("expected 2 distinct deliveries, got %d", len(saw))
+			t.Fatalf("expected %d distinct deliveries, got %d", want, len(saw))
 		}
 	}
 
-	if saw[0] == saw[1] {
-		t.Fatalf("deliveries did not advance across poll pages: %v", saw)
-	}
+	return saw
+}
 
-	// Stop is synchronous: the watcher goroutine is joined before it
-	// returns.
-	stop()
+// assertNoDeliveryAfterStop drains pre-stop buffered deliveries and proves
+// silence past several poll intervals — no delivery may happen after stop
+// returned (no watcher leak).
+func assertNoDeliveryAfterStop(t *testing.T, deliveries <-chan turn.Observation) {
+	t.Helper()
 
-	// Drain anything buffered from BEFORE the stop, then prove silence
-	// past several poll intervals — no delivery may happen after stop
-	// returned.
 drain:
 	for {
 		select {
@@ -440,4 +461,47 @@ drain:
 			return
 		}
 	}
+}
+
+// The watcher contract: the PollWatcher delivers session-scoped envelopes
+// to the callback and honors stop — stop is synchronous and after it
+// returns no delivery happens.
+func TestTurnWatcherDeliversUntilStopped(t *testing.T) {
+	source := &stubPollSource{
+		pages: [][]zcode.Envelope{
+			pollPage(t, "a"),
+			pollPage(t, "a", "b"),
+			pollPage(t, "a"),
+		},
+	}
+
+	w := turn.NewPollWatcher(nil, turn.PollConfig{
+		Source:         source,
+		QuietMs:        40,
+		FloorMultiple:  2,
+		PollIntervalMs: 10,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), turnTestTimeout)
+	defer cancel()
+
+	deliveries := make(chan turn.Observation, 64)
+	stop, err := w.Watch(ctx, fixSessionID, func(obs turn.Observation) {
+		deliveries <- obs
+	})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	// Session-scoped envelopes arrive at the callback, advancing across the
+	// scripted poll pages.
+	saw := collectDeliveries(t, deliveries, 2)
+
+	if saw[0] == saw[1] {
+		t.Fatalf("deliveries did not advance across poll pages: %v", saw)
+	}
+
+	stop()
+
+	assertNoDeliveryAfterStop(t, deliveries)
 }
