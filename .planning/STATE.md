@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Scaffold & CI Bootstrap
 status: executing
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-11-19T14:00:46.384Z"
+stopped_at: Completed 02-03-PLAN.md
+last_updated: "2026-11-19T14:08:59.021Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 2 execution started
-state_head: 8f86de76d9b479ddb9f61ac8394d5e04b9e90a6e
+state_head: e28ed400fac1799e50804f70396509e8dca7405c
 progress:
   total_phases: 7
   completed_phases: 1
   total_plans: 11
-  completed_plans: 8
+  completed_plans: 9
   percent: 14
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 2 (Scaffold & CI Bootstrap) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 2 execution started
 
@@ -77,6 +77,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P01-03 | 24min | 2 tasks | 1 files |
 | Phase 02 P02-01 | 11min | 2 tasks | 5 files |
 | Phase 02 P02-02 | 8min | 2 tasks | 2 files |
+| Phase 02 P02-03 | 5min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,8 @@ Recent decisions affecting current work:
 - [Phase 02]: WR-03 fixed with the execution-verified boundary form: escapeRegExp(home) + '(?!/?[A-Za-z0-9._-])' negative lookahead (RESEARCH Pattern 7); the 01-REVIEW hint (?!/[A-Za-z0-9._-]) is known-bad (falsifies home+'x' -> ~x) and was deliberately not used
 - [Phase 02]: IN-04 header guard: scrub-capture.mjs validates line 1 as a JSON object with a capture key (clear stderr + exit 1 otherwise); --no-header escape hatch scrubs line 1 as a data line; suite 12->18 green — scrubber contract test-locked before 02-04 promotes the gate into CI
 - [Phase 02]: git.allow_default_branch_commits:true encoded in .planning/config.json (02-01's recommendation adopted) — pre-protection window for plans 02-02..02-04, D-01 sequences protection LAST in 02-05
+- [Phase 02]: WR-04 closed as review option (b): probe --desktop-version CLI arg, default+empty 'unknown' — capture header never asserts an unread value (hardcoded 3.18.2 removed)
+- [Phase 02]: D-05 non-TDD findings complete: scan-secrets.sh credential class byte-identical to scrubber CRED_RX + quote-free token match; both gates toplevel-pinned (CWD-independent); dialect doc recipes re-derivable (grep -o -e '-32603', digit-inclusive class, v4 extractor, singletons 9)
 
 ### Pending Todos
 
@@ -131,6 +134,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T14:00:13.102Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-11-19T14:08:51.774Z
+Stopped at: Completed 02-03-PLAN.md
 Resume file: None

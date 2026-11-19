@@ -67,13 +67,13 @@ Plans:
   1. A fresh checkout passes the strict pinned golangci-lint config (goswitch-style `default: all` v2 config, exact version pinned via mise); any violation fails the lint target
   2. A PR to the repository triggers GitHub Actions running lint, test, build, and govulncheck, with toolchain versions driven by mise
   3. `master` is protected: direct pushes are rejected, merges require the configured checks, and the protection setup is documented in the repo
-**Plans**: 2/5 plans executed
+**Plans**: 3/5 plans executed
 
 Plans:
 **Wave 1**
 - [x] 02-01-PLAN.md — Tracer: module skeleton (go.mod, cmd/zcode-acp --version) + mise pins + goswitch strict lint config; `mise run lint` green end-to-end + planted-violation red-proof (SCAFF-01, D-02, D-03, D-06)
 - [x] 02-02-PLAN.md — TDD scrubber hardening: WR-03 boundary-aware home rewrite + IN-04 capture-header guard, RED→GREEN node:test (D-05)
-- [ ] 02-03-PLAN.md — Sibling review fixes: scan-secrets WR-01/IN-03, check-docs IN-03, probe WR-04, dialect-doc recipes WR-02/IN-01/IN-02 (D-05)
+- [x] 02-03-PLAN.md — Sibling review fixes: scan-secrets WR-01/IN-03, check-docs IN-03, probe WR-04, dialect-doc recipes WR-02/IN-01/IN-02 (D-05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 02-04-PLAN.md — Four goswitch workflow shapes (pr-sanity / release / e2e-matrix / security-scheduled) + README CI/protection section + push + observed green pr-sanity run (SCAFF-02, D-04, D-05, D-06)
@@ -153,7 +153,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
-| 2. Scaffold & CI Bootstrap | 2/5 | In Progress | - |
+| 2. Scaffold & CI Bootstrap | 3/5 | In Progress | - |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 0/TBD | Not started | - |
 | 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
