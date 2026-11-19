@@ -1,0 +1,30 @@
+{
+  "name": "completion-quiet-window",
+  "on_request": [
+    {
+      "method": "session/send",
+      "times": 1,
+      "reply": {"result": {"accepted": true, "sessionId": "sess_fix1", "stateRevision": 1}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "running"}, "reason": "prompt_started", "revision": 1, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"type": "turn.started", "seq": 4, "turnId": "turn_fix1", "deliveryKind": "desktop-continuous"}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/messages",
+      "reply": {"result": {"messages": [], "sessionId": "sess_fix1"}}
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

@@ -211,3 +211,43 @@ func TestLoadScenarioRejectsInvalidEmptyRequestTableWithoutTermination(t *testin
 
 	assertScenarioRejected(t, path, "eof_drain_ms", "terminates")
 }
+
+// TestLoadScenarioRejectsInvalidNegativeTimes: a negative times match
+// budget is rejected, naming the times field.
+func TestLoadScenarioRejectsInvalidNegativeTimes(t *testing.T) {
+	path := writeInvalidScenario(t, `{
+	  "name": "negative-times",
+	  "on_request": [{"method": "session/send", "times": -1, "reply": {"result": {}}}],
+	  "eof_drain_ms": 100
+	}`)
+
+	assertScenarioRejected(t, path, "times")
+}
+
+// TestLoadScenarioAcceptsRuleTimes: a non-negative times budget is valid —
+// a rule stops matching once its budget is spent so a later on_request entry
+// for the same method takes over (the -32010 double-send corpus row).
+func TestLoadScenarioAcceptsRuleTimes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "times.json")
+	content := `{
+	  "name": "times-budget",
+	  "on_request": [
+	    {"method": "session/send", "times": 1, "reply": {"result": {"accepted": true}}},
+	    {"method": "session/send", "reply": {"error": {"code": -32010,
+	                                                    "message": "A prompt is already running for this session"}}}
+	  ],
+	  "eof_drain_ms": 100
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write scenario: %v", err)
+	}
+
+	sc, err := fake.LoadScenario(path)
+	if err != nil {
+		t.Fatalf("scenario with a non-negative times budget must load: %v", err)
+	}
+
+	if len(sc.OnRequest) != 2 {
+		t.Fatalf("on_request rules = %d, want 2", len(sc.OnRequest))
+	}
+}

@@ -1,0 +1,12 @@
+{
+  "name": "eof-drain",
+  "on_request": [
+    {
+      "method": "session/stop",
+      "delay_ms": 150,
+      "reply": {"result": {}}
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

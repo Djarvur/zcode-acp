@@ -1,0 +1,33 @@
+{
+  "name": "unknown-host-method",
+  "on_request": [
+    {
+      "method": "session/create",
+      "reply": {"result": {"session": {"sessionId": "sess_fix1"}, "protocol": {"name": "ZCode Protocol", "version": 1}}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "interaction/requestOfficialMcpAuthHeaders",
+            "params": {"mcpKey": "sites", "pluginId": "zcode-site@zcode-plugins-official", "requestId": "official-mcp-auth:1", "targetOrigin": "https://zcode.z.ai", "workspace": {"workspaceKey": "/tmp/unknown-host-method-ws", "workspacePath": "/tmp/unknown-host-method-ws"}},
+            "timeout_ms": 5000,
+            "expect_answer": {"error": {"code": -32601, "message": "unsupported host request: interaction/requestOfficialMcpAuthHeaders"}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

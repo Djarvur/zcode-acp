@@ -1,0 +1,6 @@
+in	{"id":1,"method":"session/send","params":{"content":"Reply with exactly: OK","sessionId":"sess_fix1"}}
+out	{"method":"state.updated","params":{"patch":{"status":"running"},"reason":"prompt_started","revision":1,"scope":"session","sessionId":"sess_fix1","type":"state.updated"}}
+out	{"method":"session/event","params":{"type":"turn.started","seq":4,"turnId":"turn_fix1","deliveryKind":"desktop-continuous"}}
+out	{"id":1,"result":{"accepted":true,"sessionId":"sess_fix1","stateRevision":1}}
+in	{"id":2,"method":"session/send","params":{"content":"Reply with exactly: OK","sessionId":"sess_fix1"}}
+out	{"id":2,"error":{"code":-32010,"message":"A prompt is already running for this session"}}
