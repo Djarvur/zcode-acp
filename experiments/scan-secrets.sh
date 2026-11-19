@@ -17,6 +17,10 @@
 #
 # Shapes match VALUES, not documentation prose — legitimate doc text must stay green.
 # .planning/ is excluded (planning artifacts are not shipped material).
+# Exact-string allowlist: the synthetic fixture marker ("enc:v2:os:" prefix plus
+# a body ending in "-synthetic-not-a-real-credential", fake/testdata golden
+# corpus) is self-declaring and is dropped before classification — nothing else
+# is exempt.
 # Phase 2 CI reuses this script verbatim as the per-commit secret gate.
 
 # Pin to the repo toplevel so the `git grep` pathspec below is CWD-independent
@@ -32,6 +36,15 @@ patterns=(
 rc=0
 for p in "${patterns[@]}"; do
   out=$(git grep -nE "$p" -- . ':(exclude).planning' 2>/dev/null || true)
+  # Allowlist: Phase-3 golden-corpus fixtures (fake/testdata) deliberately carry
+  # a self-declaring synthetic credential marker (the "enc:v2:os:"-prefixed
+  # string whose body ends in "-synthetic-not-a-real-credential") — capture-
+  # verbatim credential SHAPE is the fixture's point. Drop only lines containing
+  # that EXACT string, before classification; the patterns themselves are
+  # untouched and every other match still fails the gate.
+  if [ -n "$out" ]; then
+    out=$(printf '%s\n' "$out" | grep -vF 'enc:v2:os:fix1-synthetic-not-a-real-credential' || true)
+  fi
   if [ -n "$out" ]; then
     printf '%s\n' "$out" | head -5
     echo "SECRET SHAPE: $p"
