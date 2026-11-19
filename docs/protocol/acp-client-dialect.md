@@ -7,8 +7,9 @@ read 2026-11-19 in chunks `agent-session-attachment-store-registry-CR_MCAgP.js`,
 `session-json-object-CljYgSvh.js`, `commit-message-agent-output-lRxbgzAd.js`, `omp-profile-DU6kfV0l.js`
 **Confidence:** HIGH — every load-bearing claim below was re-read from that fresh extract of the
 installed build (upgrade from the parallel-session V-SRC(parallel) table); the two formerly open
-items are answered statically and cited to `[V-EXP EXP-SESSIONDIR-01]`; the two remaining
-known-unknowns stay V-RPT-labeled.
+items are answered statically and cited to `[V-EXP EXP-SESSIONDIR-01]`; the three remaining
+known-unknowns (settings-store persistence path, live end-to-end `--version`, interruption
+semantics) stay V-RPT-labeled (see Open items).
 **Build drift warning:** chunk hash suffixes differ per client build. This document describes the
 build named in the header above; re-run the freshness greps (capture `EXP-SESSIONDIR-01`) after any
 client update before relying on it further. The client source is public
