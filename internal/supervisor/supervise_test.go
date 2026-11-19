@@ -50,7 +50,7 @@ const (
 	// trusted to clean the tree).
 	grandchildSleepSecs = "30"
 	// grandchildReadyPrefix is the helper's readiness line ("ready <pid>").
-	grandchildReadyPrefix = "ready "
+	grandchildReadyPrefix = "ready"
 
 	// restartWindowShort is the injectable crash window for tests
 	// (production default 60 s per D-03; RESEARCH Pitfall 7).
@@ -67,10 +67,15 @@ const (
 	resetStayMs = 400
 	// stableSpawnOrdinal is which spawn number stays alive (after one crash).
 	stableSpawnOrdinal = 2
-	// resetTripSpawnCount pins the reset arithmetic: crash(1) → stable reset →
-	// crashes 1'..4' trip → 1 + 1 + 4 spawns. Without the reset the trip
-	// would come at spawn 5 (crashes 1,2,3,4 with the counter never zeroed).
-	resetTripSpawnCount = 6
+	// resetTripSpawnCount pins the reset arithmetic: crash(1) → the 400 ms
+	// stable run resets the counter, so its own crash counts 1' → crashes
+	// 2', 3' restart → 4' trips → 1 + 1 + 3 = 5 spawns. Without the reset the
+	// trip would come at spawn 4 (crashes 1,2,3,4 with the counter never
+	// zeroed).
+	resetTripSpawnCount = 5
+	// noResetSpawnCount is what the trip arithmetic would be WITHOUT the
+	// sliding reset — documented for the failure message.
+	noResetSpawnCount = 4
 	// tripSpawnCount pins the plain trip arithmetic: 3 attempts within the
 	// window, then fail loud on the 4th consecutive crash.
 	tripSpawnCount = 4
@@ -121,7 +126,7 @@ func runGrandchildHelper() {
 		os.Exit(1)
 	}
 
-	_, _ = fmt.Fprintf(os.Stdout, "%s%d\n", grandchildReadyPrefix, grandchild.Process.Pid)
+	_, _ = fmt.Fprintf(os.Stdout, "%s %d\n", grandchildReadyPrefix, grandchild.Process.Pid)
 	_, _ = io.Copy(io.Discard, os.Stdin) // stay alive until stdin EOF
 
 	os.Exit(0)
@@ -216,8 +221,9 @@ func testRestartWindowTrip(t *testing.T) {
 
 // testRestartWindowReset: after one crash, a child that stays alive LONGER
 // than the window resets the sliding counter (RESEARCH Pitfall 7 — absent
-// from both analogs), so the limit trips only after FOUR further crashes —
-// six spawns total; a five-spawn trip would prove the counter never reset.
+// from both analogs): the stable run's own crash then counts from zero, so
+// the limit trips on that count's fourth crash — five spawns total; a
+// four-spawn trip would prove the counter never reset.
 func testRestartWindowReset(t *testing.T) {
 	policy := restartTestPolicy()
 
@@ -247,8 +253,8 @@ func testRestartWindowReset(t *testing.T) {
 	}
 
 	if spawns != resetTripSpawnCount {
-		t.Fatalf("spawn attempts = %d, want %d — a stable run longer than the window must reset the counter",
-			spawns, resetTripSpawnCount)
+		t.Fatalf("spawn attempts = %d, want %d (no-reset trip: %d) — a stable run must reset the sliding counter",
+			spawns, resetTripSpawnCount, noResetSpawnCount)
 	}
 
 	assertNamesCrashAndWindow(t, err, policy)
