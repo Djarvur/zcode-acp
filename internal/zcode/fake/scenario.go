@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/Djarvur/zcode-acp/internal/zcode"
@@ -65,9 +66,11 @@ type Reverse struct {
 	ExpectAnswer *Reply          `json:"expect_answer,omitempty"`
 }
 
-// LoadScenario reads and validates a scenario JSON file. Every raw payload
-// is compacted at load so authored fixtures may be pretty-printed while the
-// wire stays one line per envelope (dialect §1 framing).
+// LoadScenario reads and validates a scenario JSON file. Decoding is strict
+// (unknown schema keys are rejections, never silent defaults — a typo'd key
+// would silently change the scripted wire behavior), and every raw payload is
+// compacted at load so authored fixtures may be pretty-printed while the wire
+// stays one line per envelope (dialect §1 framing).
 func LoadScenario(path string) (*Scenario, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -75,8 +78,16 @@ func LoadScenario(path string) (*Scenario, error) {
 	}
 
 	var sc Scenario
-	if err := json.Unmarshal(data, &sc); err != nil {
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+
+	if err := dec.Decode(&sc); err != nil {
 		return nil, fmt.Errorf("fake: parse scenario %s: %w", path, err)
+	}
+
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: %s must hold exactly one JSON scenario document", errInvalidScenario, path)
 	}
 
 	if err := sc.validate(); err != nil {
@@ -103,7 +114,15 @@ func (s *Scenario) validate() error {
 	}
 
 	if len(s.OnRequest) == 0 {
-		return fmt.Errorf("%w: at least one on_request rule required", errInvalidScenario)
+		// A scenario must declare how it terminates: with no request rules,
+		// the eof_drain_ms window is the only declared end (dialect §1 EOF
+		// facts).
+		if s.EOFDrainMs <= 0 {
+			return fmt.Errorf("%w: scenario must declare how it terminates: "+
+				"eof_drain_ms required when on_request is empty", errInvalidScenario)
+		}
+
+		return nil
 	}
 
 	for i := range s.OnRequest {
@@ -145,7 +164,8 @@ func (r *RequestRule) validate(idx int) error {
 }
 
 // validate checks that the reply carries exactly a usable payload and
-// compacts it byte-deterministically.
+// compacts it byte-deterministically. An error payload must name its dialect
+// §6 numeric code — consumers match the code, never the message text.
 func (r *Reply) validate(where string) error {
 	if r.Result == nil && r.Error == nil {
 		return fmt.Errorf("%w: %s needs result or error", errInvalidScenario, where)
@@ -155,6 +175,10 @@ func (r *Reply) validate(where string) error {
 		if err := compactRaw(&r.Result); err != nil {
 			return fmt.Errorf("%w: %s.result: %w", errInvalidScenario, where, err)
 		}
+	}
+
+	if r.Error != nil && r.Error.Code == 0 {
+		return fmt.Errorf("%w: %s.error.code required (dialect §6 numeric code)", errInvalidScenario, where)
 	}
 
 	return nil
@@ -174,9 +198,14 @@ func (se *SideEffect) rule() string {
 	return ""
 }
 
-// validate checks one side effect (exactly one of emit/reverse).
+// validate checks one side effect: exactly one of emit/reverse must be
+// present — both is ambiguous, neither is inert.
 func (se *SideEffect) validate(reqIdx, sideIdx int) error {
 	where := fmt.Sprintf("on_request[%d].side_effects[%d]", reqIdx, sideIdx)
+
+	if se.Emit != nil && se.Reverse != nil {
+		return fmt.Errorf("%w: %s must carry exactly one of emit or reverse", errInvalidScenario, where)
+	}
 
 	kind := se.rule()
 	if kind == "" {
