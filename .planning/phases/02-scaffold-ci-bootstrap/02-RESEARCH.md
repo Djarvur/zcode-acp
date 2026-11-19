@@ -651,24 +651,37 @@ should say so.]
 | A6 | e2e-matrix skeleton's self-hosted label `[self-hosted, gnome]` — no such runner is registered yet, so dispatches queue forever (inert, as intended) | Pattern 4 | Low — skeleton is dispatch-only by design; Phase 7 registers the runner and scenario |
 | A7 | mise `node = "26"` resolves to the latest 26.x on install (major-line floating) — matches D-02's "pinned to the LTS major" wording | Standard Stack | Low — if an exact node pin is wanted later, it is a one-line mise.toml change |
 
-## Open Questions
+## Open Questions (RESOLVED 2026-11-19)
 
-1. **check-docs.sh promotion scope**
+All three questions were resolved at planning time; the adopted resolutions are
+implemented in the phase's executable plan content (plans 02-04 and 02-05). No
+question below remains open.
+
+1. **check-docs.sh promotion scope — RESOLVED: docs-gate runs as a step inside the
+   secret-scan job; adopted by plan 02-04 (Task 1).**
    - What we know: CONTEXT.md's Reusable Assets say both gate scripts "become CI
      jobs"; D-04's locked pr-sanity list names only secret-scan.
-   - What's unclear: whether docs-gate is a required check or a best-effort step.
-   - Recommendation: run `check-docs.sh` as a step inside the secret-scan job (Pattern:
-     A4) — protected via the job's required context without expanding D-04's list.
-2. **`required_linear_history` on or off**
+   - Adopted resolution: run `check-docs.sh` as a step inside the secret-scan job
+     (Pattern: A4) — protected via the job's required context without expanding
+     D-04's list of required check names. [Implemented: 02-04 Task 1, second step
+     of the `secret-scan` job.]
+2. **`required_linear_history` on or off — RESOLVED: `true`; adopted by plan 02-05
+   (Task 1 body, read back via GET in Task 2).**
    - What we know: feasible today (squash/rebase allowed); goswitch has no precedent
      (its ruleset lacks it); GSD squash-merges or fast-forwards PRs.
-   - Recommendation: set `true` (clean master history; goswitch-sibling spirit); drop
-     to `false` if the API or GSD merge flow objects — D-01 fallback applies.
-3. **delete_branch_on_merge**
+   - Adopted resolution: set `true` (clean master history; goswitch-sibling spirit);
+     drop to `false` if the API or the GSD merge flow objects — D-01 fallback
+     applies (refusals recorded honestly, never faked). [Implemented: 02-05 Task 1,
+     `required_linear_history: true` in protection-body.json; verified by the
+     Task 2 GET check `linear: .required_linear_history.enabled`.]
+3. **`delete_branch_on_merge` — RESOLVED: leave untouched this phase; adopted by
+   plan 02-05 by omission (no task reads or writes this repo setting).**
    - What we know: repo currently `false` [VERIFIED: gh api repo fields]; goswitch
      state unknown/not researched.
-   - Recommendation: leave as-is this phase (out of D-01 scope); optionally enable
-     later so `gsd/phase-*` branches clean up after merge.
+   - Adopted resolution: leave as-is this phase (out of D-01 scope); optionally
+     enable later so `gsd/phase-*` branches clean up after merge. [Implemented:
+     02-05's only repo-settings write is the protection PUT, whose body does not
+     carry this field — the setting stays `false`.]
 
 ## Environment Availability
 
