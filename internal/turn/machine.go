@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -59,8 +60,10 @@ const (
 	// (dialect §5 :141).
 	SignalQuietWindow SignalKind = "quiet-window"
 
-	// SignalCancel — the bypass-lane session/stop path (declared now; its
-	// transition logic lands with 03-08's cancel handling).
+	// SignalCancel — the turn resolved through the bypass-lane
+	// session/stop path: the stop's observed outcome (the cancelled state
+	// patch, or the quiet settle while cancelling) while the machine is in
+	// the cancelling state.
 	SignalCancel SignalKind = "cancel"
 )
 
@@ -108,14 +111,17 @@ type machineState string
 const (
 	stateIdle       machineState = "idle"
 	stateRunning    machineState = "running"
-	stateCancelling machineState = "cancelling" // transitions land with 03-08
+	stateCancelling machineState = "cancelling"
 	stateDone       machineState = "done"
 )
 
-// ErrTurnActive is the wrapper-side concurrency guard (D-02): a second
-// concurrent session/send while a turn is running is rejected with a clean
-// error, never silently queued — the wrapper-side analog of the dialect §6
-// -32010 concurrency rejection (match the condition, not any message text).
+// ErrTurnActive is the -32010 concurrency guard mapped as a clean error
+// (D-02, PITFALL 5): a second concurrent session/send while a turn is
+// running is rejected with it wrapper-side — never silently queued — and
+// the same sentinel surfaces when the SERVER refuses a send with dialect
+// §6 CodeConcurrency (-32010). The mapping keys on the numeric code only;
+// message text is never compared (dialect §6: messages are not a stable
+// contract).
 var ErrTurnActive = errors.New("turn: a prompt is already running for this session")
 
 // Machine lifts fire-and-forget session/send turns into synchronous
@@ -171,9 +177,10 @@ func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machin
 // ({accepted, sessionId, stateRevision} — EXP-TURN-01.jsonl:36) starts the
 // quiet-window floor clock; the watcher runs for the session until the turn
 // resolves and is joined before Run returns. A second concurrent Run is
-// rejected ErrTurnActive (the -32010 guard, wrapper-side). A transport
-// failure or ctx cancellation returns an error — never a synthesized
-// StopReason (the machine never resolves on absence of evidence).
+// rejected ErrTurnActive (the -32010 guard, wrapper-side); a send that does
+// proceed and is refused -32010 by the server surfaces the same mapped
+// error. A transport failure or ctx cancellation returns an error — never a
+// synthesized StopReason (the machine never resolves on absence of evidence).
 func (m *Machine) Run(ctx context.Context, content string) (StopReason, error) {
 	m.mu.Lock()
 
@@ -191,6 +198,16 @@ func (m *Machine) Run(ctx context.Context, content string) (StopReason, error) {
 		"content":   content,
 	}); err != nil {
 		m.finishTurn()
+
+		// The server-side -32010 rejection (PITFALL 5): when the send
+		// reached the wire and the server refused it with dialect §6
+		// CodeConcurrency, surface the same mapped clean error the
+		// wrapper-side guard uses — matched by the numeric code, never the
+		// message text.
+		var callErr *zcode.CallError
+		if errors.As(err, &callErr) && callErr.Err.Code == zcode.CodeConcurrency {
+			return "", fmt.Errorf("turn: session/send: %w: %w", callErr, ErrTurnActive)
+		}
 
 		return "", fmt.Errorf("turn: session/send: %w", err)
 	}
@@ -237,11 +254,37 @@ func (m *Machine) Wait(ctx context.Context) (StopReason, error) {
 	}
 }
 
-// Cancel requests cancellation of the current turn (03-08 stub): the
-// bypass-lane session/stop, the cancelling transition, and the exactly-once
-// cancelled resolution land with the GREEN stage — the RED contract tests
-// run against this deliberate no-op.
-func (m *Machine) Cancel() {}
+// Cancel requests cancellation of the current turn (D-02 lane 3, PITFALL 4):
+// the first call on a running turn transitions it to cancelling and sends
+// session/stop for the session through the conn's bypass lane — immediately,
+// never queued behind ordinary traffic (dialect §1: the bypass set is
+// exactly session/stop and friends). Further calls are no-ops: the stop is
+// sent exactly once per turn, a cancel after the turn resolved writes
+// nothing, and a cancel with no turn running is a no-op. The resolution
+// itself is signal-driven through the one observe path — the stop outcome
+// (the cancelled state patch, or the quiet settle while cancelling) resolves
+// StopCancelled exactly once via the existing sync.Once completion path; a
+// cancel racing a terminal event resolves whichever signal lands first,
+// still exactly once.
+func (m *Machine) Cancel() {
+	m.mu.Lock()
+
+	if m.resolved || m.state != stateRunning {
+		m.mu.Unlock()
+
+		return
+	}
+
+	m.state = stateCancelling
+	m.mu.Unlock()
+
+	if err := m.conn.Stop(m.sessID); err != nil {
+		// The bypass write failed (a dead stream): record it structurally —
+		// the watcher's quiet settle while cancelling still ends the turn
+		// honestly cancelled.
+		slog.Warn("turn: bypass stop failed", "session", m.sessID, "err", err)
+	}
+}
 
 // AckAt returns when the current turn's session/send ack arrived (zero
 // before the ack) — the floor clock's origin for the quiet-window gates.
@@ -275,6 +318,16 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	}
 
 	if m.classifyIdlePatchLocked(env) {
+		// A patch leaving running while cancelling is the stop's observed
+		// outcome (the corpus cancel row's cancelled patch) — the honest
+		// cancelled resolution, never a completed one (PITFALL 4: the
+		// machine must not lie about how the turn ended).
+		if m.state == stateCancelling {
+			m.resolveLocked(Resolution{Reason: StopCancelled, Signal: SignalCancel, At: time.Now()})
+
+			return
+		}
+
 		m.resolveLocked(Resolution{Reason: StopCompleted, Signal: SignalIdlePatch, At: time.Now()})
 	}
 }
@@ -324,6 +377,15 @@ func (m *Machine) onWatcherObservation(obs Observation) {
 	if obs.Quiet {
 		m.mu.Lock()
 		defer m.mu.Unlock()
+
+		// The quiet settle while cancelling is the stop's observed outcome
+		// when no patch follows the stop: the turn winds down cancelled,
+		// never claiming a completed turn the stop interrupted.
+		if m.state == stateCancelling {
+			m.resolveLocked(Resolution{Reason: StopCancelled, Signal: SignalCancel, At: time.Now()})
+
+			return
+		}
 
 		m.resolveLocked(Resolution{Reason: StopCompleted, Signal: SignalQuietWindow, At: time.Now()})
 
