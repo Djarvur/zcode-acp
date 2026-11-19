@@ -67,7 +67,7 @@ Plans:
   1. A fresh checkout passes the strict pinned golangci-lint config (goswitch-style `default: all` v2 config, exact version pinned via mise); any violation fails the lint target
   2. A PR to the repository triggers GitHub Actions running lint, test, build, and govulncheck, with toolchain versions driven by mise
   3. `master` is protected: direct pushes are rejected, merges require the configured checks, and the protection setup is documented in the repo
-**Plans**: 4/5 plans executed
+**Plans**: 5/5 plans executed
 
 Plans:
 **Wave 1**
@@ -79,7 +79,7 @@ Plans:
 - [x] 02-04-PLAN.md — Four goswitch workflow shapes (pr-sanity / release / e2e-matrix / security-scheduled) + README CI/protection section + push + observed green pr-sanity run (SCAFF-02, D-04, D-05, D-06)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 02-05-PLAN.md — Branch protection applied LAST via gh api + GET verify + GH006 negative push test + branching_strategy flip to `phase` (SCAFF-03, D-01)
+- [x] 02-05-PLAN.md — Branch protection applied LAST via gh api + GET verify + GH006 negative push test + branching_strategy flip to `phase` (SCAFF-03, D-01)
 
 ### Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor
 **Goal**: The wrapper speaks the app-server's JSONL dialect and manages its process lifecycle, proven in CI by a scripted fake app-server round-trip — so every later phase is testable without the real desktop bundle.
@@ -153,7 +153,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
-| 2. Scaffold & CI Bootstrap | 4/5 | In Progress | - |
+| 2. Scaffold & CI Bootstrap | 5/5 | In Progress | - |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 0/TBD | Not started | - |
 | 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
