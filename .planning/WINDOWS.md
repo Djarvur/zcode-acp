@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 4
+open_count: 5
 waived_count: 0
 fixed_count: 0
-total_count: 4
-last_updated: 2026-11-19T13:47:11.524Z
+total_count: 5
+last_updated: 2026-11-19T17:58:49.323Z
 ---
 
 # Broken Windows Ledger
@@ -19,6 +19,7 @@ last_updated: 2026-11-19T13:47:11.524Z
 | 2 | 01 | deviation | experiments/README.md |  | Quota: 3 tiny sends issued vs 1 planned (two harness quiet-window mis-arms, fixed in-plan); 0 turns completed | open |  | 2026-11-19T06:32:59.065Z |  |
 | 3 | 02 | stub | cmd/zcode-acp/main.go | 14 | var version = "0.0.0-dev" dev-fallback — stamping-contract placeholder until Phase 7 release flow stamps a real value (intentional, plan-documented) | open |  | 2026-11-19T13:47:11.362Z |  |
 | 4 | 02 | stub | cmd/zcode-acp/main.go | 19 | main() implements only --version — real CLI/agent arrive with Phases 3-4 per D-06 (intentional skeleton, plan-documented) | open |  | 2026-11-19T13:47:11.524Z |  |
+| 5 | 03 | stub | internal/supervisor/discover.go | 769 | defaultOverride production seam is a no-op until plan 03-07 wires the wrapper's explicit root / ZCODE_BUILTIN_PROVIDER_CONFIG_FILE config surface (seam implemented and test-injectable) | open |  | 2026-11-19T17:58:49.323Z |  |
 
 ````json
 [
@@ -71,6 +72,19 @@ last_updated: 2026-11-19T13:47:11.524Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-19T13:47:11.524Z",
+    "resolved_at": null,
+    "milestone": null
+  },
+  {
+    "id": 5,
+    "kind": "stub",
+    "phase": "03",
+    "file": "internal/supervisor/discover.go",
+    "line": 769,
+    "description": "defaultOverride production seam is a no-op until plan 03-07 wires the wrapper's explicit root / ZCODE_BUILTIN_PROVIDER_CONFIG_FILE config surface (seam implemented and test-injectable)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-19T17:58:49.323Z",
     "resolved_at": null,
     "milestone": null
   }
