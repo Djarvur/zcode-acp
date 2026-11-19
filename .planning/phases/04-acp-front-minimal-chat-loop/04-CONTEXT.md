@@ -145,6 +145,9 @@ picker (Phase 6).
 - elicitation/create preference — Phase 5+ (client capability-gated)
 - model/thought configOptions — Phase 6 (MODEL-01/02)
 - subscribe-based TurnWatcher — reserved slot (Phase 3 D-02)
+- acp-tck external conformance harness wiring — Phase 7 (QA-01; adjudicated at Phase-4 plan
+  revision iteration 1, RESEARCH Open Questions 1 RESOLVED; no Phase-4 plan wires it — the
+  optional manual smoke stays non-gating per 04-VALIDATION.md)
 
 </deferred>
 

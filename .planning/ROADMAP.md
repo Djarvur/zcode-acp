@@ -122,20 +122,23 @@ Plans:
   3. `session/prompt` streams `agent_message_chunk` deltas live while the turn runs and returns `stopReason` only after all pending updates have flushed
   4. When the backend emits reasoning events the client receives `agent_thought_chunk` updates; none are synthesized when it does not
   5. `session/cancel` during a turn stops it and the prompt call is answered exactly once with `stopReason: "cancelled"`
-**Plans**: 5 plans
+**Plans**: 6 plans
 
 Plans:
 **Wave 1**
 - [ ] 04-01-PLAN.md — SDK dep lands (D-01 audit PASS, exact v0.20.0 pin + tidy-diff gate expectation) + subscribe/setModel method constants + conn notification observer fan-out (TDD)
 
 **Wave 2** *(blocked on Wave 1)*
-- [ ] 04-02-PLAN.md — Tracer (TDD): minimal chat loop end-to-end — SDK test client ↔ acpport ↔ acpfront ↔ machine ↔ fake over pipes (honest initialize, create→subscribe→setModel on wire, live text streaming, cancelled exactly-once) + corpus rows + seam boundary test
+- [ ] 04-02-PLAN.md — Enablement (TDD): acpport seam package (SDK imports confined, D-02-honest initialize assembly, -32601 unadvertised defaults) + internal/core session registry + setmodel-followup corpus row + front-tier test harness + seam boundary test
 
-**Wave 3** *(blocked on Wave 2; 04-03 and 04-04 run in parallel)*
+**Wave 3** *(blocked on Wave 2)*
+- [ ] 04-06-PLAN.md — Tracer (TDD): minimal chat loop end-to-end — SDK test client ↔ acpport ↔ acpfront ↔ machine ↔ fake over pipes (honest initialize, create→subscribe→setModel on wire, live text streaming, cancelled exactly-once) + cancel-mid-turn front-preamble corpus
+
+**Wave 4** *(blocked on Wave 3; 04-03 and 04-04 run in parallel)*
 - [ ] 04-03-PLAN.md — CORE-01/CORE-02 contract locks: initialize honesty exact-shape lock, authenticate honest error (RED), unadvertised -32601 defaults, relative-cwd validation (RED), mcpServers accept-and-ignored, setModel payload verbatim
 - [ ] 04-04-PLAN.md — CORE-03/CORE-04 streaming locks: reasoning→thought chunks (RED) + never-synthesized negative, flush-before-stopReason ordering proof across both completion variants, zero-delta turn honesty
 
-**Wave 4** *(blocked on Wave 3 — shares front.go with 04-03)*
+**Wave 5** *(blocked on Wave 4 — shares front.go with 04-03)*
 - [ ] 04-05-PLAN.md — CORE-05 cancel locks: cancelled exactly-once never -32800, second-prompt rejection (RED), cancel-after-complete no-op + cmd/zcode-acp first real wiring (supervisor override seam, model flags) + binary-level E2E
 
 ### Phase 5: Interactions & Full Chat Cycle (api-key)

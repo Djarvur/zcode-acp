@@ -19,7 +19,7 @@ What Phase 4 actually "integrates":
 
 | Surface | Kind | Coverage mechanism |
 |---------|------|--------------------|
-| `acp.NewAgentSideConnection` / `acp.Agent` (12 methods) | Protocol SDK, agent side | Every handler exercised by an SDK `ClientSideConnection` round-trip over pipes (fake-driven, in-process — RESEARCH Pattern 6); contract locks per CORE-01..05 in plans 04-02..04-05 |
+| `acp.NewAgentSideConnection` / `acp.Agent` (12 methods) | Protocol SDK, agent side | Every handler exercised by an SDK `ClientSideConnection` round-trip over pipes (fake-driven, in-process — RESEARCH Pattern 6); contract locks per CORE-01..05 in plans 04-02..04-06 |
 | `acp.NewClientSideConnection` / `acp.Client` | Protocol SDK, client side (test counterparty) | Used as the honest client in all front-tier tests; keeps the counterparty spec-true |
 | ZCode app-server (back leg) | Local process, scripted | The Phase-3 fake app-server corpus — no real service is touched in CI (STATE.md standing constraint: CI never calls api.z.ai) |
 

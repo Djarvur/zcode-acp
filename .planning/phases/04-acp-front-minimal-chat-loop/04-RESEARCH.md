@@ -95,7 +95,7 @@ Audit method: the Go ecosystem is not covered by the `gsd-tools package-legitima
 |---------|---------|---------|-------------|
 | acp.NewClientSideConnection (from the same SDK) | v0.20.0 | The test ACP client: full ACP-v1 client speaking to acpfront over io.Pipe in-process | Every CORE-01..05 test; the SDK's client side is the honest counterparty (no hand-rolled client to drift) |
 | Hand-rolled ACP-leg transcript recorder | ~40 LOC in tests | Record raw JSON-RPC frames both directions on the ACP pipes for wire-order assertions (chunk-before-stopReason, exactly-once answers) | Extends the Phase-3 golden pattern to the front leg; stdlib-only per house style |
-| agentclientprotocol/acp-tck | pinned tag, non-blocking | External conformance harness | Optional; STACK assigns it a separate non-blocking CI job. Deferring wiring to Phase 7 (QA-01) is acceptable — planner decides (Open Question 1) |
+| agentclientprotocol/acp-tck | pinned tag, non-blocking | External conformance harness | Optional; STACK assigns it a separate non-blocking CI job. Deferring wiring to Phase 7 (QA-01) is acceptable — planner decides (Open Question 1) — **RESOLVED: deferred to Phase 7** (Open Questions 1) |
 
 ### Alternatives Considered
 | Instead of | Could Use | Tradeoff |
@@ -416,27 +416,34 @@ Note: `zcode.MethodSessionCreate/Send/Stop` constants exist [VERIFIED: `internal
 | A6 | `session/subscribe` before the first prompt guarantees complete delta capture from turn start (no snapshot reconciliation needed in Phase 4) | Pattern 2 | If a client could prompt before our subscribe landed, early deltas could be missed — sequence subscribe-then-ready inside `session/new` handling to close the window |
 | A7 | Empty sub-capability objects (`"mcpCapabilities":{}` etc.) in the marshaled response advertise nothing (spec: all-null/empty = no modes) | Code Examples (probe output) | Spec text supports it for elicitation explicitly; for mcp/prompt caps, `{}` = all flags false = baseline-only. Cosmetic either way; the honesty test asserts on the ABSENT features (no loadSession/fs/terminal), not on empty-object cosmetics |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All five questions below are adjudicated as of plan revision iteration 1 (2026-11-20). Each carries a RESOLVED line naming the adopting artifact; no unresolved open question remains in this file.
 
 1. **Wire acp-tck in Phase 4 or defer to Phase 7 (QA-01)?**
    - What we know: STACK assigns acp-tck a separate non-blocking CI job; CONTEXT defers nothing about it explicitly; QA-01 (Phase 7) owns the full conformance suite.
    - What's unclear: whether the marginal value of an external harness justifies CI wiring now.
    - Recommendation: defer wiring to Phase 7; optionally run it manually once at end of Phase 4 as a smoke signal (it spawns the agent over stdio — cheap).
+   - **RESOLVED — DEFER to Phase 7 (QA-01).** Adjudicated by the orchestrator during plan revision iteration 1 (no Phase-4 plan wires acp-tck); the deferral is recorded in 04-CONTEXT.md "Deferred Ideas". The optional manual smoke remains covered by the non-gating real-client spot check (04-VALIDATION.md Manual-Only row).
 2. **Phase 4 behavior of `authenticate` (advertised but not functional).**
    - What we know: D-02 locks ADVERTISING both authMethods now; auth flows land Phase 5–6; spec: clients call `authenticate{methodId}` after the user picks a method.
    - What's unclear: the exact error shape a real client sees in Phase 4 (recommended: `-32603` "authentication is not available in this build yet" — honest, non-crashing).
    - Recommendation: confirm the wording in discuss-phase; no spec constraint violated either way.
+   - **RESOLVED — honest `-32603`-class not-available error with a stable readable message.** Adopted by plans 04-02 (agent.go ships Authenticate behind the generic default) and 04-03 (RED→GREEN TestAuthenticateHonestError flips it to the honest error).
 3. **`session/setModel` `persistAsWorkspaceLastUsed` for product sessions.**
    - What we know: server schema default is `true` (persists to workspace last-used); experiments sent `false` to avoid mutating account config [VERIFIED: dialect §2]; success criterion 2 only requires the setModel payload on the wire.
    - What's unclear: whether honoring a configured model should mutate the user's workspace default (desktop-parity says the desktop host persists user picks; a wrapper honoring `--model` arguably shouldn't).
    - Recommendation: send `persistAsWorkspaceLastUsed:false` explicitly in Phase 4 (predictable, experiment-proven shape); revisit in Phase 6 with the model picker.
+   - **RESOLVED — explicit `persistAsWorkspaceLastUsed:false`.** Adopted by plan 04-03 (TestNewSessionCreatesAndSetsModel locks the payload verbatim on the back-leg transcript; the payload shape ships via the 04-02 corpus golden and 04-06's front). Phase-6 revisit unchanged.
 4. **SetModel only-when-configured branch.**
    - What we know: success criterion 2 requires the setModel visible on the wire; production default model arrives via config (ARCHITECTURE `--model`/env).
    - What's unclear: behavior when no model is configured (skip setModel and use the app-server personal-config default — but then the criterion's fake test must configure one, which it can).
    - Recommendation: implement "setModel iff a model selection is configured"; the fake test always configures one so the criterion holds.
+   - **RESOLVED — setModel iff a model selection is configured.** Adopted by plan 04-06 (front.go NewSession conditional; the tests always configure a selection) with the wire shape asserted by the 04-02 corpus golden.
 5. **Session registry home: `internal/core` (ARCHITECTURE verbatim) vs inside `acpfront` for Phase 4 minimalism.**
    - What we know: ARCHITECTURE places SessionRegistry + TurnTranslator in `internal/core`; Phase 5 will need both regardless.
    - Recommendation: create `internal/core` now with the registry only (translator logic can start in acpfront and move when it grows) — planner's wave decomposition call (explicit discretion per CONTEXT).
+   - **RESOLVED — registry lives in `internal/core` now (translator deferred).** Adopted by plan 04-02 (core/registry.go + unit tests; package comment notes the later TurnTranslator home).
 
 ## Environment Availability
 
