@@ -371,6 +371,7 @@ function parseArgs(argv) {
     quietMs: 2500,
     endMode: 'fixed',
     workspaceDir: null,
+    desktopVersion: 'unknown',
   };
   const required = ['electron', 'cjs', 'builtin', 'flow', 'rawOut', 'windowMs'];
   const map = {
@@ -383,6 +384,7 @@ function parseArgs(argv) {
     '--quiet-ms': 'quietMs',
     '--end-mode': 'endMode',
     '--workspace-dir': 'workspaceDir',
+    '--desktop-version': 'desktopVersion',
   };
   for (let i = 0; i < argv.length; i++) {
     const key = map[argv[i]];
@@ -412,6 +414,9 @@ function parseArgs(argv) {
     process.stderr.write('app-server-probe: --end-mode must be "fixed" or "quiet-window"\n');
     return null;
   }
+  // Header honesty (WR-04): an unset or empty value stays "unknown" — the
+  // capture header never asserts a desktop version the probe did not read.
+  if (!out.desktopVersion) out.desktopVersion = 'unknown';
   if (out.workspaceDir == null && out.rawOut) {
     // Default: the scratch directory holding the raw capture (guarded to be
     // outside the repo below).
@@ -425,7 +430,8 @@ function usage() {
     'usage: node experiments/app-server-probe.mjs --electron <bundle-root>/zcode \\\n' +
       '  --cjs <bundle-root>/resources/glm/zcode.cjs --builtin <builtin-config-file> \\\n' +
       '  --flow <probe|workspacekey|subscribe|turn> --raw-out <scratch-path-outside-repo> \\\n' +
-      '  --window-ms 12000 [--quiet-ms 2500] [--end-mode fixed|quiet-window] [--workspace-dir <dir>]\n',
+      '  --window-ms 12000 [--quiet-ms 2500] [--end-mode fixed|quiet-window] [--workspace-dir <dir>] \\\n' +
+      '  [--desktop-version <value>]\n',
   );
 }
 
@@ -455,7 +461,7 @@ if (!Object.hasOwn(FLOWS, flags.flow)) {
   process.exit(1);
 }
 
-// --- capture header (builtinRevision read AT CAPTURE TIME, Pitfall 5) ---------
+// --- capture header (builtinRevision + desktopVersion read AT CAPTURE TIME) ---
 let builtinRevision = 'unknown';
 try {
   const parsed = JSON.parse(readFileSync(flags.builtin, 'utf8'));
@@ -470,7 +476,7 @@ writeFileSync(
   JSON.stringify({
     capture: captureId,
     date: new Date().toISOString(),
-    desktopVersion: '3.18.2',
+    desktopVersion: flags.desktopVersion,
     builtinRevision,
     host: os.release(),
   }) + '\n',
