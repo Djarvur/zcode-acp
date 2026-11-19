@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Scaffold & CI Bootstrap
 status: executing
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-11-19T14:08:59.021Z"
+stopped_at: Completed 02-04-PLAN.md
+last_updated: "2026-11-19T14:26:53.092Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 2 execution started
-state_head: e28ed400fac1799e50804f70396509e8dca7405c
+state_head: efb8628b12f7a50e07b9284cbdd9836c65f9bea3
 progress:
   total_phases: 7
   completed_phases: 1
   total_plans: 11
-  completed_plans: 9
+  completed_plans: 10
   percent: 14
 ---
 
@@ -41,7 +41,7 @@ See: .planning/PROJECT.md (updated 2026-11-19)
 ## Current Position
 
 Phase: 2 (Scaffold & CI Bootstrap) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-11-19 — Phase 2 execution started
 
@@ -78,6 +78,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P02-01 | 11min | 2 tasks | 5 files |
 | Phase 02 P02-02 | 8min | 2 tasks | 2 files |
 | Phase 02 P02-03 | 5min | 2 tasks | 4 files |
+| Phase 02 P02-04 | 13min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -111,6 +112,9 @@ Recent decisions affecting current work:
 - [Phase 02]: git.allow_default_branch_commits:true encoded in .planning/config.json (02-01's recommendation adopted) — pre-protection window for plans 02-02..02-04, D-01 sequences protection LAST in 02-05
 - [Phase 02]: WR-04 closed as review option (b): probe --desktop-version CLI arg, default+empty 'unknown' — capture header never asserts an unread value (hardcoded 3.18.2 removed)
 - [Phase 02]: D-05 non-TDD findings complete: scan-secrets.sh credential class byte-identical to scrubber CRED_RX + quote-free token match; both gates toplevel-pinned (CWD-independent); dialect doc recipes re-derivable (grep -o -e '-32603', digit-inclusive class, v4 extractor, singletons 9)
+- [Phase 02]: CI surface wired: pr-sanity jobs named exactly build / vet / lint / test / tidy, govulncheck, secret-scan (docs gate shares secret-scan job); SCAFF-02 observed green on BOTH legs — push run 44542652193 and PR run 44542927603, probe PR closed unmerged
+- [Phase 02]: e2e-matrix skeleton carries goswitch discipline only (dispatch-only, e2e-gnome serial, self-hosted+gnome, env:-indirection note) — no AT-SPI fixture body; release/security shapes inert by construction
+- [Phase 02]: Remote master had been re-initialized with a byte-identical-but-unrelated scaffold root (f444edf); reconciled via one unrelated-histories merge 57d48a2 (not rebase/force-push) preserving all 81 local hashes — push fast-forwarded, CI green on merged head
 
 ### Pending Todos
 
@@ -134,6 +138,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-19T14:08:51.774Z
-Stopped at: Completed 02-03-PLAN.md
+Last session: 2026-11-19T14:26:37.414Z
+Stopped at: Completed 02-04-PLAN.md
 Resume file: None
