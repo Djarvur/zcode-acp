@@ -82,7 +82,7 @@ Plans:
 - [x] 02-05-PLAN.md — Branch protection applied LAST via gh api + GET verify + GH006 negative push test + branching_strategy flip to `phase` (SCAFF-03, D-01)
 
 ### Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor
-**Goal**: As a later-phase implementer on this repo, I want to the wrapper's back leg — a JSONL codec for the app-server dialect, a scriptable fake app-server with golden transcripts in CI, a desktop discovery + process supervisor, and a turn state machine — so that every later phase is testable without the real desktop bundle.
+**Goal**: As a later-phase implementer on this repo, I want to the wrapper's back leg — a JSONL codec for the app-server dialect, a scriptable fake app-server with golden transcripts in CI, a desktop discovery + process supervisor, and a turn state machine, so that every later phase is testable without the real desktop bundle.
 **Mode:** mvp
 **Depends on**: Phase 1 (dialect docs, discovery matrix), Phase 2 (CI gates)
 **Requirements**: BRIDGE-01, BRIDGE-02, BRIDGE-03, BRIDGE-04
