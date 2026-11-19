@@ -201,3 +201,80 @@ test('path prefixes passed via --redact-path become the <path> placeholder', () 
   const parsed = dataLine(out);
   assert.equal(parsed?.result?.note, '<path>' + '/notes/f.md');
 });
+
+// --- WR-03: boundary-aware home rewrite ----------------------------------------
+// A path that merely SHARES A PREFIX with the home directory (home followed
+// directly by a name character) is a different directory — it must pass through
+// scrubbing verbatim, never be falsified into a tilde path. Sibling paths are
+// built dynamically from os.homedir() (never literal machine paths).
+
+test('WR-03: a sibling path sharing only the home prefix survives verbatim (home + name + /segment)', () => {
+  const home = os.homedir();
+  const sibling = home + 'x' + '/otherproj/file.txt';
+  const input = HEADER + '\n' + JSON.stringify({ id: 10, result: { cwd: sibling } }) + '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.cwd, sibling, 'a path that merely shares the home prefix must pass through verbatim');
+  assert.ok(!(out ?? '').includes('~x'), 'the falsified tilde+suffix rewrite must never appear');
+});
+
+test('WR-03: a bare sibling of the home directory survives verbatim (home + name)', () => {
+  const home = os.homedir();
+  const sibling = home + 'x';
+  const input = HEADER + '\n' + JSON.stringify({ id: 11, result: { cwd: sibling } }) + '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.cwd, sibling, 'home + one name character is a different directory — verbatim');
+  assert.ok(!(out ?? '').includes('~x'), 'the falsified tilde rewrite must never appear');
+});
+
+test('WR-03: the boundary rewrite is idempotent — scrubbing scrubbed sibling output is a fixed point', () => {
+  const home = os.homedir();
+  const input =
+    HEADER +
+    '\n' +
+    JSON.stringify({ id: 12, result: { cwd: home + 'x' + '/otherproj/file.txt', bare: home } }) +
+    '\n';
+  const first = runScrub(input);
+  assert.ok(first.out !== null && first.out.length > 0, 'first pass must produce output');
+  const second = runScrub(first.out);
+  assert.equal(second.out, first.out, 'second scrub pass must be a fixed point');
+});
+
+// --- IN-04: capture-header validation on line 1 --------------------------------
+// Line 1 of a capture must parse as JSON with a `capture` key; otherwise the
+// scrubber fails loudly instead of passing an unvalidated header through.
+// --no-header is the escape hatch for legitimately header-less raw captures.
+
+test('IN-04: a first line that is not JSON fails loudly (non-zero exit, message names the problem)', () => {
+  const input = 'not json at all\n' + JSON.stringify({ id: 13, note: 'plain data line' }) + '\n';
+  const { res, out } = runScrub(input);
+  assert.notEqual(res.status, 0, 'header-less non-JSON input must not exit 0');
+  assert.match(res.stderr ?? '', /capture/, 'stderr must name the failed capture-header contract');
+  assert.equal(out, '', 'no scrubbed output is written for invalid input');
+});
+
+test('IN-04: a JSON first line without a capture key fails loudly', () => {
+  const input =
+    JSON.stringify({ date: '2026-11-19T00:00:00Z', desktopVersion: '3.18.2' }) +
+    '\n' +
+    JSON.stringify({ id: 14, note: 'plain data line' }) +
+    '\n';
+  const { res, out } = runScrub(input);
+  assert.notEqual(res.status, 0, 'JSON line 1 without a capture key must not exit 0');
+  assert.match(res.stderr ?? '', /capture/, 'stderr must name the missing capture-key contract');
+  assert.equal(out, '', 'no scrubbed output is written for invalid input');
+});
+
+test('IN-04: --no-header scrubs line 1 like a data line and exits 0', () => {
+  const home = os.homedir();
+  const input =
+    JSON.stringify({ method: 'state.updated', params: { cwd: home + '/proj/e3' } }) +
+    '\n' +
+    JSON.stringify({ id: 15, note: 'plain data line' }) +
+    '\n';
+  const { res, out } = runScrub(input, ['--no-header']);
+  assert.equal(res.status, 0, 'expected exit 0 with --no-header, saw: ' + (res.stderr || '').slice(0, 200));
+  const firstLine = dataLine(out, 0);
+  assert.equal(firstLine?.params?.cwd, '~' + '/proj/e3', 'line 1 must be scrubbed like a data line');
+});
