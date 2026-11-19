@@ -4,10 +4,10 @@ current_phase: 3
 current_phase_name: ZCode Back Leg
 status: executing
 stopped_at: Completed 03-06-PLAN.md
-last_updated: "2026-11-19T19:57:57.937Z"
+last_updated: "2026-11-19T19:58:25.860Z"
 last_activity: 2026-11-19
 last_activity_desc: Phase 3 execution started
-state_head: 46291e06c3ad92610b8a144afbd6c371daf63dc0
+state_head: 00469263d0eabf3abac48de0adae99d8eeac1625
 progress:
   total_phases: 7
   completed_phases: 2
@@ -140,6 +140,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Turn machine (03-05): exactly-once completion via per-turn resolved flag under the machine mutex + OnResolve hook (sync.Once semantics; sync.Once cannot reset between turns); one observe path (ObserveEnvelope = conn.OnNotification receiver) classifies terminal/idle; watcher deliveries funnel into the same path
 - [Phase 03]: Turn machine (03-05): PollWatcher polls session/messages opaquely (one observation envelope per poll, activity = raw payload change — presence/time only, OQ2) with the probe-ported quiet-window gates (floor = 3x quiet from the send ack, then settle); subscribe-based watcher reserved, not implemented
 - [Phase 03]: Turn machine (03-05): 03-05 shipped terminal-only classification in Task 2 GREEN so Task 3's variant RED failed genuinely — idle-patch/quiet-window/carrier-resolution landed with Task 3 GREEN; carrier kinds map session/event->type, v4/telemetry + computer-use->kind, record-on-first-sight turnId, foreign-turnId never resolves
+- [Phase 03]: Fake binary (03-06): one scripting core, two hosting modes — cmd/fake-app-server is a thin main over an exported fake.Main stdio entry in the fake package (named exit codes ExitUsage=2/ExitServeFailed=1), so the standalone binary and the reexec helper execute the identical call path by construction
+- [Phase 03]: Reexec tier (03-06): exec-tier zero-lines proof named TestEOFSignatureChild (TestEOFSignature taken by 03-03 in-package) but reuses the SAME errZeroFrameExchange classifier — exactly one verdict function; parent drives RAW zcode envelopes (not zcode.Conn) to keep the tier's subject the plumbing
+- [Phase 03]: Reexec tier (03-06): drain observability asserted by elapsed-time floor (>= 90 ms from parent stdin close to child exit; eof_drain_ms=100 makes instant exit impossible) and the happy exchange pins exact frame counts both directions (parent 3, child 8); reexec idiom stable under -race x5 — A2 built-binary fallback not needed
 
 ### Pending Todos
 
