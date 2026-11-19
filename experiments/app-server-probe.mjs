@@ -5,7 +5,7 @@
 // NEVER wire this into CI: it spawns the real desktop bundle and (for the turn
 // flow) spends account quota — see experiments/README.md ("Ground rules").
 // No experiment here ever mutates account state: there is deliberately no
-// api_keys POST anywhere in this file.
+// key-minting endpoint call anywhere in this file.
 //
 // Usage:
 //   node experiments/app-server-probe.mjs \
@@ -78,17 +78,29 @@ function hostReplyFor(method) {
 const state = {
   replies: {}, // id -> parsed reply wire object (result OR error)
   sessionId: null, // first result.session.sessionId observed
+  createModel: null, // {providerId, modelId} out of the create reply (session default)
   notifications: [], // { method, keys } per server->host notification line
   seqKeyHits: {}, // sequence-ish top-level key -> times seen in notifications
+  stateUpdatedPatchShapes: [], // unique JSON key-sets of state.updated params.patch
+  sendReplyTs: null, // when the session/send reply arrived (latency-floor anchor)
+  turnSettledTs: null, // when the session last LEFT status "running" per state.updated
+  turnStatusSeen: [], // distinct state.updated patch.status values, in arrival order
+  endReason: null, // quiet-window | window-expired | child-exit
 };
 const SEQ_WATCH_KEYS = ['seq', 'sequence', 'eventSeq', 'sequenceNumber', 'revision', 'afterSeq'];
 
 function observeReply(wire) {
   if (wire == null || typeof wire !== 'object') return;
   if (wire.id != null) state.replies[wire.id] = wire;
+  if (PROBED_METHODS[wire.id] === 'session/send' && state.sendReplyTs == null) {
+    state.sendReplyTs = Date.now();
+  }
   const sess = wire && wire.result && wire.result.session;
   if (sess && typeof sess.sessionId === 'string' && !state.sessionId) {
     state.sessionId = sess.sessionId;
+  }
+  if (sess && sess.model && typeof sess.model === 'object' && !state.createModel) {
+    state.createModel = { providerId: sess.model.providerId, modelId: sess.model.modelId };
   }
 }
 
@@ -98,6 +110,16 @@ function observeNotification(wire) {
   state.notifications.push({ method: wire.method, keys });
   for (const k of keys) {
     if (SEQ_WATCH_KEYS.includes(k)) state.seqKeyHits[k] = (state.seqKeyHits[k] || 0) + 1;
+  }
+  if (wire.method === 'state.updated' && wire.params.patch && typeof wire.params.patch === 'object') {
+    const shape = JSON.stringify(Object.keys(wire.params.patch).sort());
+    if (!state.stateUpdatedPatchShapes.includes(shape)) state.stateUpdatedPatchShapes.push(shape);
+    if (wire.params.patch.status !== undefined && !state.turnStatusSeen.includes(wire.params.patch.status)) {
+      state.turnStatusSeen.push(wire.params.patch.status);
+    }
+    if (wire.params.patch.status !== undefined && wire.params.patch.status !== 'running' && state.sendReplyTs != null) {
+      state.turnSettledTs = Date.now();
+    }
   }
 }
 
@@ -119,7 +141,7 @@ function classifyReply(id, method) {
   return { method, probeId: id, verdict: 'accepted', resultKeys: keys };
 }
 
-function appendVerdicts(rawOut) {
+function appendVerdicts(rawOut, flowName) {
   const ts = new Date().toISOString();
   appendFileSync(
     rawOut,
@@ -145,6 +167,38 @@ function appendVerdicts(rawOut) {
       },
     }) + '\n',
   );
+  if (flowName === 'turn') {
+    // Turn-completion terminal-signal summary (E2): which payloads arrived at the
+    // end of the turn, whether permission/user-input interactions fired (expected
+    // no for a no-tool turn), and the state.updated patch shapes seen.
+    const turnFamily = {};
+    for (const n of state.notifications) {
+      if (/turn|complet|fail/i.test(n.method)) turnFamily[n.method] = (turnFamily[n.method] || 0) + 1;
+    }
+    const permission = {};
+    for (const n of state.notifications) {
+      if (/^interaction\/(requestPermission|requestUserInput)$/.test(n.method)) {
+        permission[n.method] = (permission[n.method] || 0) + 1;
+      }
+    }
+    const stateUpdatedCount = (notifCounts['state.updated'] || 0);
+    appendFileSync(
+      rawOut,
+      JSON.stringify({
+        ts,
+        verdict: {
+          kind: 'turn-summary',
+          endReason: state.endReason,
+          setModel: classifyReply(4, 'session/setModel'),
+          send: classifyReply(5, 'session/send'),
+          turnCompletionFamily: turnFamily,
+          interactionRequests: permission,
+          stateUpdated: { count: stateUpdatedCount, patchKeyShapes: state.stateUpdatedPatchShapes },
+          turnStatusSeen: state.turnStatusSeen,
+        },
+      }) + '\n',
+    );
+  }
 }
 
 // Probed request ids -> method names. Flows that probe specific methods list
@@ -231,6 +285,68 @@ const FLOWS = {
       },
     ];
   },
+
+  // E2 (DISC-01): turn-completion terminal signals. THE ONLY quota-spending flow:
+  // exactly one tiny real turn ("Reply with exactly: OK"), manual tier, never
+  // from CI. Subscribe first (E1 verdict: accepted), then a best-effort
+  // session/setModel carrying the session's CURRENT default model (documents the
+  // create-drops-reasoningLevel workaround with a live id; persistAsWorkspaceLastUsed
+  // is forced false — no account-config mutation), then the send. Run with
+  // --end-mode quiet-window --quiet-ms 2500: the run ends after 2.5 s without new
+  // stdout lines once the send has fired (the field-verified fallback heuristic).
+  // Reuses existing key material only; there is no key-minting endpoint call
+  // anywhere in this file and no flow mints anything.
+  'turn'(ctx) {
+    const ws = ctx.workspaceDir;
+    PROBED_METHODS[2] = 'session/create';
+    PROBED_METHODS[3] = 'session/subscribe';
+    PROBED_METHODS[4] = 'session/setModel';
+    PROBED_METHODS[5] = 'session/send';
+    return [
+      { atMs: 1500, msg: { id: 1, method: 'provider/refreshRegistry', params: { reason: 'probe' } } },
+      {
+        atMs: 5000,
+        msg: {
+          id: 2,
+          method: 'session/create',
+          params: {
+            workspace: { workspacePath: ws, workspaceKey: ws },
+            mode: 'build',
+            persistence: 'immediate',
+          },
+        },
+      },
+      {
+        atMs: 8500,
+        make: (st) =>
+          st.sessionId
+            ? { id: 3, method: 'session/subscribe', params: { sessionId: st.sessionId, deliveryKind: 'desktop-continuous' } }
+            : null,
+      },
+      {
+        atMs: 11000,
+        make: (st) =>
+          st.sessionId && st.createModel
+            ? {
+                id: 4,
+                method: 'session/setModel',
+                params: {
+                  sessionId: st.sessionId,
+                  model: { providerId: st.createModel.providerId, modelId: st.createModel.modelId },
+                  persistAsWorkspaceLastUsed: false,
+                },
+              }
+            : null,
+      },
+      {
+        atMs: 13500,
+        make: (st) =>
+          st.sessionId
+            ? { id: 5, method: 'session/send', params: { sessionId: st.sessionId, content: 'Reply with exactly: OK' } }
+            : null,
+      },
+    ];
+  },
 };
 
 // Experiment ids per flow (D-04: [V-EXP <id>] resolves to
@@ -253,6 +369,7 @@ function parseArgs(argv) {
     rawOut: null,
     windowMs: null,
     quietMs: 2500,
+    endMode: 'fixed',
     workspaceDir: null,
   };
   const required = ['electron', 'cjs', 'builtin', 'flow', 'rawOut', 'windowMs'];
@@ -264,6 +381,7 @@ function parseArgs(argv) {
     '--raw-out': 'rawOut',
     '--window-ms': 'windowMs',
     '--quiet-ms': 'quietMs',
+    '--end-mode': 'endMode',
     '--workspace-dir': 'workspaceDir',
   };
   for (let i = 0; i < argv.length; i++) {
@@ -290,6 +408,10 @@ function parseArgs(argv) {
     process.stderr.write('app-server-probe: --quiet-ms must be a positive number\n');
     return null;
   }
+  if (out.endMode !== 'fixed' && out.endMode !== 'quiet-window') {
+    process.stderr.write('app-server-probe: --end-mode must be "fixed" or "quiet-window"\n');
+    return null;
+  }
   if (out.workspaceDir == null && out.rawOut) {
     // Default: the scratch directory holding the raw capture (guarded to be
     // outside the repo below).
@@ -302,8 +424,8 @@ function usage() {
   process.stderr.write(
     'usage: node experiments/app-server-probe.mjs --electron <bundle-root>/zcode \\\n' +
       '  --cjs <bundle-root>/resources/glm/zcode.cjs --builtin <builtin-config-file> \\\n' +
-      '  --flow <probe|workspacekey|subscribe> --raw-out <scratch-path-outside-repo> \\\n' +
-      '  --window-ms 12000 [--quiet-ms 2500] [--workspace-dir <dir>]\n',
+      '  --flow <probe|workspacekey|subscribe|turn> --raw-out <scratch-path-outside-repo> \\\n' +
+      '  --window-ms 12000 [--quiet-ms 2500] [--end-mode fixed|quiet-window] [--workspace-dir <dir>]\n',
   );
 }
 
@@ -378,6 +500,7 @@ child.stdout.on('data', (chunk) => {
     stdoutBuf = stdoutBuf.slice(idx + 1);
     appendFileSync(rawOut, JSON.stringify({ ts: new Date().toISOString(), line }) + '\n');
     capturedLines++;
+    if (quietArmed) resetQuietTimer(); // quiet-window end mode: every line postpones the end
     // Answer server->host REQUESTS (method + id); notifications (no id) need no
     // reply. Every reply is recorded in the capture as a hostSent line.
     try {
@@ -423,29 +546,93 @@ function killGroup() {
   }
 }
 
+// --- quiet-window end mode (E2) ------------------------------------------------
+// In quiet-window mode the run ends --quiet-ms after the LAST stdout line, once
+// every flow step has fired — the field-verified fallback heuristic for "the turn
+// is over" when no dedicated terminal envelope is trusted. Two live-verified gates
+// hold the close until the turn can actually be over (both corrections came from
+// real runs that otherwise cancelled the turn mid-generation):
+// 1. latency floor — the close is held until QUIET_SEND_FLOOR_MULTIPLE x quiet-ms
+//    after the session/send reply (the send->first-output gap is request latency,
+//    not silence between parts);
+// 2. settle gate — the close is held until a state.updated patch reports a status
+//    other than "running" AFTER the send (the session-status patch channel is
+//    observed, not assumed to be the terminal signal itself — the capture records
+//    everything around it, which is exactly the E2 evidence).
+// windowMs stays as the absolute backstop. In fixed mode (default) the run always
+// lasts windowMs.
+const QUIET_SEND_FLOOR_MULTIPLE = 3;
+let quietTimer = null;
+let quietArmed = false;
+let finishRun = null;
+const finished = new Promise((resolve) => {
+  finishRun = resolve;
+});
+function closeQuiet() {
+  // Gate semantics:
+  // - send never answered -> no turn is running; close on quiet immediately;
+  // - send answered but the latency floor has not elapsed -> hold (gate 1);
+  // - status never left "running" -> HOLD (gate 2): a turn that never settles is
+  //   collected until the windowMs backstop, never quietly cut short mid-generation;
+  // - settled >= quietMs ago and past the floor -> the turn is over; close.
+  if (state.sendReplyTs == null) {
+    state.endReason = state.endReason || 'quiet-window';
+    finishRun();
+    return;
+  }
+  const floorOk = Date.now() - state.sendReplyTs >= flags.quietMs * QUIET_SEND_FLOOR_MULTIPLE;
+  const settled = state.turnSettledTs != null && Date.now() - state.turnSettledTs >= flags.quietMs;
+  if (!floorOk || !settled) {
+    quietTimer = setTimeout(closeQuiet, flags.quietMs);
+    return;
+  }
+  state.endReason = state.endReason || 'quiet-window';
+  finishRun();
+}
+function resetQuietTimer() {
+  if (quietTimer) clearTimeout(quietTimer);
+  quietTimer = setTimeout(closeQuiet, flags.quietMs);
+}
+function armQuietWindow() {
+  if (flags.endMode !== 'quiet-window' || quietArmed) return;
+  quietArmed = true;
+  resetQuietTimer();
+}
+
 // --- run the flow --------------------------------------------------------------
 const steps = FLOWS[flags.flow]({
   workspaceDir: flags.workspaceDir,
   windowMs: flags.windowMs,
   quietMs: flags.quietMs,
 });
-const timers = steps.map((s) =>
+const timers = steps.map((s, i) =>
   setTimeout(() => {
     // Dynamic steps are evaluated at fire time against the accumulated state;
     // a step whose prerequisite never arrived (e.g. no session id) sends
     // nothing and its probe id is recorded as no-reply in the verdicts.
     const msg = s.msg !== undefined ? s.msg : s.make ? s.make(state) : null;
     if (msg) send(msg);
+    if (i === steps.length - 1) armQuietWindow();
   }, s.atMs),
 );
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let exitInfo = await Promise.race([exited, sleep(flags.windowMs).then(() => null)]);
+let exitInfo = await Promise.race([
+  exited.then((e) => {
+    state.endReason = state.endReason || 'child-exit';
+    return e;
+  }),
+  finished.then(() => null),
+  sleep(flags.windowMs).then(() => {
+    state.endReason = state.endReason || 'window-expired';
+    return null;
+  }),
+]);
 
 let killed = false;
 if (!exitInfo) {
-  // collection window over: clean shutdown first, SIGKILL group as backstop
-  appendVerdicts(rawOut);
+  // collection window over: record verdicts, clean shutdown, SIGKILL backstop
+  appendVerdicts(rawOut, flags.flow);
   child.stdin.end();
   exitInfo = await Promise.race([exited, sleep(GRACE_MS).then(() => null)]);
   if (!exitInfo) {
@@ -454,9 +641,10 @@ if (!exitInfo) {
     exitInfo = await exited;
   }
 } else {
-  appendVerdicts(rawOut);
+  appendVerdicts(rawOut, flags.flow);
   child.stdin.end();
 }
+if (quietTimer) clearTimeout(quietTimer);
 for (const t of timers) clearTimeout(t);
 
 if (exitInfo.spawnError) {
@@ -467,7 +655,8 @@ if (exitInfo.spawnError) {
 const earlyZero = exitInfo.code === 0 && capturedLines === 0;
 process.stderr.write(
   `app-server-probe: flow=${flags.flow} capture=${captureId} exit=${exitInfo.code}` +
-    ` sig=${exitInfo.sig || '-'} lines=${capturedLines} killed=${killed} raw=${rawOut}\n`,
+    ` sig=${exitInfo.sig || '-'} lines=${capturedLines} killed=${killed}` +
+    ` end=${state.endReason || 'n/a'} raw=${rawOut}\n`,
 );
 if (earlyZero) {
   process.stderr.write(

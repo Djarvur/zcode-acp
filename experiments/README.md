@@ -67,9 +67,14 @@ The builtin revision is read at capture time (stale-evidence guard: a desktop
 auto-update can swap the revision mid-phase, and the header makes that
 detectable).
 
-Flows: `probe` (spawn + provider registry warm-up) and `workspacekey` (two
-session/create calls with different workspaceKey shapes — no turn, no quota).
-Plan 01-02 adds the `subscribe` and `turn` flows at the dispatch seam.
+Flows: `probe` (spawn + provider registry warm-up), `workspacekey` (two
+session/create calls with different workspaceKey shapes — no turn, no quota),
+`subscribe` (E1 surface probe — no turn, no quota), and `turn` (E2 — the ONLY
+quota-spending flow: one tiny real turn). The turn flow supports
+`--end-mode quiet-window --quiet-ms 2500`: the run ends 2.5 s after the last
+stdout line, gated by a send-latency floor and a settle gate (the close is held
+until a `state.updated` patch reports a status other than "running" after the
+send — a turn that never settles is collected until the `--window-ms` backstop).
 
 ## Scrubber: `scrub-capture.mjs` — the only path into captures/
 
@@ -140,7 +145,44 @@ config at run time; write the raw capture outside the repo; scrub into
   `["desktop-continuous","web-remote-replayable"]` appears in multiple minified
   schemas in the bundle — matching the 3.17.x `zcodeDeliveryKindSchema`.
 
+### EXP-TURN-01 (E2, plan 01-02) — 2026-11-19
+
+- Command shape: `node experiments/app-server-probe.mjs --electron <bundle-root>/zcode
+  --cjs <bundle-root>/resources/glm/zcode.cjs --builtin <active zcode-builtin.json>
+  --flow turn --raw-out <scratch-outside-repo>/raw-exp-turn-01.jsonl --window-ms 180000
+  --end-mode quiet-window --quiet-ms 2500 --workspace-dir <scratch>/ws` — same
+  path-resolution and scrub-first rules as E1; scrubbed into
+  `experiments/captures/EXP-TURN-01.jsonl`.
+- Outcome: **honest V-SRC-only degradation per D-05.** The turn flow works
+  mechanically — create accepted, subscribe accepted, send accepted
+  (`result{accepted, sessionId, stateRevision}`), the model request started and
+  streamed — but no turn-completion envelope was ever observed on the wire: the
+  session status patch stayed `"running"` until harness shutdown, and the client
+  log recorded `turn.failed cancelled` at each teardown. The blocking host
+  obligation is `interaction/requestCredentialCipher` (operation `decrypt`), a
+  server→host request that fires mid-turn; answering it requires decrypted keyring
+  credential material, which Phase 1 deliberately never reads (threat register
+  T-1-05). Turn-completion terminal signals are therefore documented from bundle
+  source enumeration + reported client-log facts; plan 01-03 labels the affected
+  claims V-SRC-only / V-RPT.
+- Live evidence captured anyway (the committed capture is not empty): turn-START
+  signals — `computer-use/operation-event` with `kind:"turn-started"` + `turnId`,
+  `state.updated` patch `{status:"running"}` reason `prompt_started`,
+  `session/event` envelopes with `seq` numbering, `session/lifecycle/changed` with
+  `revision`; and a live confirmation of the create-drops-reasoningLevel quirk —
+  `session/setModel` refused `-32603 "Reasoning level is required for
+  zai-api/GLM-5.3-Flash"` (the workaround needs `options.reasoningLevel`).
+- Quota honesty note: three tiny `session/send` calls were issued across three
+  runs (the first two were cancelled by harness shutdown after quiet-window
+  mis-arms — both fixed in-plan and documented in the harness comments; the third
+  by the same shutdown while the turn was still generating). No turn completed;
+  no API key was minted; no CI involvement. See the quota ledger below.
+
 ## Quota ledger
 
-- **Real turns spent: 0** — plan 01-02 updates this line; every experiment in
-  plan 01-01 is registry-level and spends nothing.
+- **real turns spent: 3 tiny sends issued, 0 completed** (plan 01-02, E2, 2026-11-19)
+  — three `session/send` calls with the fixed one-line prompt; none produced a
+  completed model response (see the EXP-TURN-01 run notes for the failure reason:
+  the turn requires answering `interaction/requestCredentialCipher`, which Phase 1
+  does not do). Plan 01-01 spent nothing (registry-level only). No key was ever
+  minted; nothing here may ever run from CI.

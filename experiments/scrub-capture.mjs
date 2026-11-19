@@ -43,7 +43,9 @@ const REDACT = {
 // Value-shape rules. Each regex matches VALUES only; a bare prefix mention in
 // surrounding prose never matches (bodies below minimum lengths are left alone).
 const JWT_RX = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
-const CRED_RX = /enc:v[12]:(os:)?[A-Za-z0-9+/=_-]{20,}/g;
+// Credential bodies may contain separators (dots/colons) inside the payload —
+// consume the whole value up to the JSON string boundary, never stop mid-body.
+const CRED_RX = /enc:v[12]:(os:)?[A-Za-z0-9+/=_:.-]{20,}/g;
 const TOKEN_RX = /("(?:access_token|apiKey|api-key|token)"\s*:\s*")[A-Za-z0-9_-]{20,}(")/g;
 const UUID_RX = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
 const USER_INFO_RX = /"user_info"\s*:\s*\{/g;

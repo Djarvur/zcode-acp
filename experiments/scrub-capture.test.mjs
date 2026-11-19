@@ -87,6 +87,18 @@ test('legacy enc:v1: credential blobs are fully redacted including the prefix', 
   assert.ok(!(out ?? '').includes('enc:v'), 'legacy prefix itself must be gone');
 });
 
+test('credential blob bodies containing dots/colons are redacted WHOLE (no residue after the placeholder)', () => {
+  // Real enc:v2 values can carry separators inside the body; the rule must consume
+  // the entire value up to the JSON string boundary, not stop at the first dot.
+  const CRED_DOTTED = 'enc:v' + '2:os:' + 'Aa09+/=_Bb11.Cc22:Dd33Ee44Ff55Gg66.' + 'Hh77Ii88Jj99';
+  const input = HEADER + '\n' + JSON.stringify({ id: 31, result: { blob: CRED_DOTTED } }) + '\n';
+  const { out } = runScrub(input);
+  const parsed = dataLine(out);
+  assert.equal(parsed?.result?.blob, '[REDACTED-CREDENTIAL]');
+  assert.ok(!(out ?? '').includes('Cc22'), 'body fragment after an inner dot must not survive');
+  assert.ok(!(out ?? '').includes('Hh77'), 'body tail must not survive');
+});
+
 test('long token values under credential keys are redacted', () => {
   const input =
     HEADER +
