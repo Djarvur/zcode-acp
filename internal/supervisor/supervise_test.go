@@ -41,6 +41,11 @@ const (
 	// helperModeGrandchild spawns a sleeping grandchild (inheriting the
 	// process group), reports its pid, and stays alive until stdin EOF.
 	helperModeGrandchild = "grandchild"
+	// helperModeGrandchildCrash spawns a sleeping grandchild (inheriting the
+	// process group), reports its pid, then exits 1 immediately — the crash
+	// that strands a LIVE grandchild inside the group (the CR-01 fixture:
+	// the fail-loud crash-loop exit must still clean the tree).
+	helperModeGrandchildCrash = "grandchild-crash"
 
 	// superviseHelperRunFlag targets the helper inside the re-executed binary.
 	superviseHelperRunFlag = "-test.run=^TestSuperviseHelper$"
@@ -114,6 +119,8 @@ func TestSuperviseHelper(t *testing.T) {
 		os.Exit(1)
 	case helperModeGrandchild:
 		runGrandchildHelper()
+	case helperModeGrandchildCrash:
+		runGrandchildCrashHelper()
 	}
 }
 
@@ -130,6 +137,22 @@ func runGrandchildHelper() {
 	_, _ = io.Copy(io.Discard, os.Stdin) // stay alive until stdin EOF
 
 	os.Exit(0)
+}
+
+// runGrandchildCrashHelper is the grandchild-crash branch: spawn a sleeping
+// grandchild in the same process group (no new group — exactly the tree the
+// staged shutdown must reap), report its pid, and exit 1 immediately. The
+// sequencing is the fixture's existence proof: the grandchild is ALREADY
+// running in the group at the moment the helper crashes.
+func runGrandchildCrashHelper() {
+	grandchild := exec.CommandContext(context.Background(), "sleep", grandchildSleepSecs)
+	if err := grandchild.Start(); err != nil {
+		os.Exit(1)
+	}
+
+	_, _ = fmt.Fprintf(os.Stdout, "%s %d\n", grandchildReadyPrefix, grandchild.Process.Pid)
+
+	os.Exit(1)
 }
 
 // TestGroupKillNoSurvivors proves the staged shutdown leaves ZERO surviving
@@ -183,6 +206,7 @@ func TestGroupKillNoSurvivors(t *testing.T) {
 func TestRestartWindow(t *testing.T) {
 	t.Run("trips loud past the limit", testRestartWindowTrip)
 	t.Run("stable run resets the sliding window", testRestartWindowReset)
+	t.Run("crash-loop trip leaves zero group survivors", testRestartWindowTripZeroSurvivors)
 }
 
 // testRestartWindowTrip: a helper child that exits immediately consumes the
@@ -260,6 +284,76 @@ func testRestartWindowReset(t *testing.T) {
 	assertNamesCrashAndWindow(t, err, policy)
 }
 
+// testRestartWindowTripZeroSurvivors: the fail-loud crash-loop exit owes the
+// same staged shutdown as every other exit path (supervise.go's "staged
+// shutdown ALWAYS" invariant, PITFALL 6): every crashing helper strands a
+// LIVE sleeping grandchild inside its process group, so after Start returns
+// the crash-loop error EVERY spawned group — the finally-crashed child's
+// included — must report ESRCH. Without the shutdown on the trip path, the
+// last group's grandchild survives as an orphan — exactly the leak the
+// supervisor exists to contain (review CR-01).
+func testRestartWindowTripZeroSurvivors(t *testing.T) {
+	policy := restartTestPolicy()
+
+	var children []*supervisor.Child // written by the Start goroutine; read only after runDone (channel sync)
+
+	sup := supervisor.NewSupervisor(func(ctx context.Context) (*supervisor.Child, error) {
+		child, err := spawnSuperviseChild(ctx, helperModeGrandchildCrash, 0)
+		if err != nil {
+			return child, err
+		}
+
+		children = append(children, child)
+
+		// The readiness line prints only AFTER the grandchild started, and
+		// exec.Wait (the monitor's reap) closes the parent-side stdout pipe
+		// — discarding anything unread — so the line must be read HERE,
+		// while the helper is alive. Reading it in the spawn path is also
+		// the fixture's synchronization: the grandchild EXISTS inside the
+		// group before its helper's crash can count.
+		_, perr := readGrandchildReady(child)
+		if perr != nil {
+			t.Errorf("crashing child %d never proved its grandchild: %v", len(children), perr)
+		}
+
+		return child, nil
+	}, policy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), restartWatchdog)
+	defer cancel()
+
+	runDone := make(chan error, 1)
+
+	go func() {
+		runDone <- sup.Start(ctx)
+	}()
+
+	var err error
+
+	select {
+	case err = <-runDone:
+	case <-time.After(restartWatchdog):
+		t.Fatalf("the crash-loop trip did not return within %v", restartWatchdog)
+	}
+
+	if err == nil {
+		t.Fatal("Start must fail loud past the crash limit even with a grandchild in every group")
+	}
+
+	if len(children) != tripSpawnCount {
+		t.Fatalf("spawn attempts = %d, want %d (3 attempts within the window, then fail loud)",
+			len(children), tripSpawnCount)
+	}
+
+	assertNamesCrashAndWindow(t, err, policy)
+
+	// Zero survivors — each child's WHOLE group (the child crash-reaped by
+	// its own monitor; the grandchild only the group SIGKILL can reach).
+	for i, child := range children {
+		assertGone(t, fmt.Sprintf("crashing child %d's process group (grandchild included)", i+1), -child.PgID)
+	}
+}
+
 // restartTestPolicy is the injectable-knobs policy for the restart tests:
 // production shape (3 attempts, sliding window, exponential backoff), test
 // timescales.
@@ -318,6 +412,19 @@ func waitSpawnedChild(t *testing.T, spawnCh <-chan *supervisor.Child) *superviso
 func readGrandchildPid(t *testing.T, child *supervisor.Child) int {
 	t.Helper()
 
+	pid, err := readGrandchildReady(child)
+	if err != nil {
+		t.Fatalf("read the helper's readiness line: %v", err)
+	}
+
+	return pid
+}
+
+// readGrandchildReady is readGrandchildPid's test-goroutine-free core: it
+// returns the grandchild pid (or the failure) so the supervisor's spawn
+// goroutine can call it too — t.Fatalf is only legal on the test goroutine,
+// and the spawn path runs on the Start goroutine.
+func readGrandchildReady(child *supervisor.Child) (int, error) {
 	type result struct {
 		pid  int
 		line string
@@ -350,16 +457,14 @@ func readGrandchildPid(t *testing.T, child *supervisor.Child) int {
 	select {
 	case res := <-done:
 		if res.err != nil {
-			t.Fatalf("read the helper's readiness line: %v (line %q)", res.err, res.line)
+			return 0, fmt.Errorf("%w (line %q)", res.err, res.line)
 		}
 
-		return res.pid
+		return res.pid, nil
 
 	case <-time.After(spawnSettleDeadline):
-		t.Fatalf("no readiness line from the helper within %v", spawnSettleDeadline)
+		return 0, fmt.Errorf("%w within %v", errReadyTimeout, spawnSettleDeadline)
 	}
-
-	return 0 // unreachable: both select arms end the test
 }
 
 // assertReaped asserts the monitor reaped the child (Done closed, Exited
@@ -401,9 +506,10 @@ func assertGone(t *testing.T, what string, pid int) {
 	}
 }
 
-// errNoReadyLine and errUnexpectedReadyLine are readGrandchildPid's failure
-// sentinels.
+// errNoReadyLine, errUnexpectedReadyLine and errReadyTimeout are
+// readGrandchildReady's failure sentinels.
 var (
 	errNoReadyLine         = errors.New("child stdout reached EOF without a readiness line")
 	errUnexpectedReadyLine = errors.New("unexpected readiness line")
+	errReadyTimeout        = errors.New("no readiness line from the helper")
 )
