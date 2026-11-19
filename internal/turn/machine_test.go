@@ -599,6 +599,8 @@ func TestCompletionVariants(t *testing.T) {
 		{
 			name: "terminal-event",
 			scenario: func(t *testing.T) *fake.Scenario {
+				t.Helper()
+
 				return completionScenario(t,
 					statePatch(t, statusRunning, reasonPromptStarted),
 					sessionEvent(t, turn.KindTurnStarted, fixTurnID),
@@ -611,6 +613,8 @@ func TestCompletionVariants(t *testing.T) {
 		{
 			name: "idle-patch",
 			scenario: func(t *testing.T) *fake.Scenario {
+				t.Helper()
+
 				return completionScenario(t,
 					statePatch(t, statusRunning, reasonPromptStarted),
 					statePatch(t, statusIdle, reasonPromptCompleted),
@@ -622,6 +626,8 @@ func TestCompletionVariants(t *testing.T) {
 		{
 			name: "quiet-window",
 			scenario: func(t *testing.T) *fake.Scenario {
+				t.Helper()
+
 				return completionScenario(t,
 					statePatch(t, statusRunning, reasonPromptStarted),
 					sessionEvent(t, turn.KindTurnStarted, fixTurnID),
@@ -634,38 +640,51 @@ func TestCompletionVariants(t *testing.T) {
 
 	for _, v := range variants {
 		t.Run(v.name, func(t *testing.T) {
-			ex := startTurnExchange(t, v.scenario(t))
-
-			ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
-			defer cancel()
-
-			reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
-			if err != nil {
-				// RED: the planned assertion — this variant must resolve
-				// within the exchange window.
-				t.Fatalf("Run (%s): turn did not resolve within the exchange window: %v", v.name, err)
-			}
-
-			if reason != v.want {
-				t.Fatalf("Run (%s) reason = %q, want %q", v.name, reason, v.want)
-			}
-
-			assertResolution(t, ex.spy, v.want, v.signal)
-
-			if v.signal == turn.SignalQuietWindow {
-				assertQuietAfterFloor(t, ex)
-			}
-
-			ex.finish(t)
+			runCompletionVariant(t, v.name, v.scenario(t), v.want, v.signal)
 		})
 	}
 }
+
+// runCompletionVariant drives one completion variant: Run must resolve
+// within the exchange window with the expected reason and resolving-signal
+// record; the quiet variant additionally asserts its fire is gated strictly
+// after the send-latency floor post-ack.
+func runCompletionVariant(t *testing.T, name string, sc *fake.Scenario, want turn.StopReason, signal turn.SignalKind) {
+	t.Helper()
+
+	ex := startTurnExchange(t, sc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
+	defer cancel()
+
+	reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
+	if err != nil {
+		// The planned assertion: this variant must resolve within the
+		// exchange window.
+		t.Fatalf("Run (%s): turn did not resolve within the exchange window: %v", name, err)
+	}
+
+	if reason != want {
+		t.Fatalf("Run (%s) reason = %q, want %q", name, reason, want)
+	}
+
+	assertResolution(t, ex.spy, want, signal)
+
+	if signal == turn.SignalQuietWindow {
+		assertQuietAfterFloor(t, ex)
+	}
+
+	ex.finish(t)
+}
+
+// carrierFunc builds one carrier envelope with a kind literal and a turnId.
+type carrierFunc func(*testing.T, string, string) fake.SideEffect
 
 // carrierScenario is the carrier-tolerance script base: turn.started via
 // the session/event carrier records the turn's id, then a FOREIGN-turnId
 // terminal (which must NOT resolve the turn) precedes the turnId-matched
 // terminal on the carrier under test.
-func carrierScenario(t *testing.T, carrier func(*testing.T, string, string) fake.SideEffect, terminalKind string) *fake.Scenario {
+func carrierScenario(t *testing.T, carrier carrierFunc, terminalKind string) *fake.Scenario {
 	t.Helper()
 
 	return completionScenario(t,
@@ -684,7 +703,7 @@ func carrierScenario(t *testing.T, carrier func(*testing.T, string, string) fake
 func TestTerminalCarrierTolerance(t *testing.T) {
 	carriers := []struct {
 		name    string
-		carrier func(*testing.T, string, string) fake.SideEffect
+		carrier carrierFunc
 		kind    string
 	}{
 		{"session-event", sessionEvent, turn.KindTurnCompleted},
