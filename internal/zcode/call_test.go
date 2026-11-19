@@ -169,6 +169,10 @@ func TestCallResolvesOnStreamDeath(t *testing.T) {
 			t.Fatal("a call against a dead stream must fail, not return a result")
 		}
 
+		if !errors.Is(oc.err, zcode.ErrConnClosed) {
+			t.Fatalf("stream-death error %v must match ErrConnClosed", oc.err)
+		}
+
 		if errors.Is(oc.err, context.DeadlineExceeded) {
 			t.Fatalf("stream-death error %v must not be the caller ctx expiry", oc.err)
 		}
@@ -206,6 +210,10 @@ func TestCallResolvesOnClose(t *testing.T) {
 	case oc := <-outcomes:
 		if oc.err == nil {
 			t.Fatal("a call pending across Close must fail, not return a result")
+		}
+
+		if !errors.Is(oc.err, zcode.ErrConnClosed) {
+			t.Fatalf("Close error %v must match ErrConnClosed", oc.err)
 		}
 
 		if errors.Is(oc.err, context.DeadlineExceeded) {

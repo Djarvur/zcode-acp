@@ -139,8 +139,9 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 // Close stops the stream and the writer, in that order: the peer sees EOF
 // and runs its drain window (dialect §1 EOF facts), and closing rw first
 // unblocks any writeFrame parked on the stream so the writer goroutine can
-// exit. Request goroutines are cancelled via the base context; the read
-// loop is joined. Idempotent.
+// exit. Request goroutines are cancelled via the base context; pending
+// calls are drained with an error matching ErrConnClosed (WR-01 — the base
+// context never reaches them); the read loop is joined. Idempotent.
 func (c *Conn) Close() error {
 	var closeErr error
 
@@ -153,6 +154,7 @@ func (c *Conn) Close() error {
 
 		c.out.stop()
 		<-c.readDone
+		c.drainPending() // sweep entries registered after the read loop's drain; idempotent
 	})
 
 	return closeErr
@@ -161,9 +163,15 @@ func (c *Conn) Close() error {
 // readLoop scans wire lines until EOF, demuxing each decoded envelope
 // (ARCHITECTURE Pattern 2). Undecodable lines are logged structurally —
 // method names, id keys and byte sizes only, never params or results, which
-// carry prompt content — and skipped; the stream continues.
+// carry prompt content — and skipped; the stream continues. On exit the
+// pending table is drained: no reply can ever arrive on a dead stream, so
+// in-flight calls fail promptly instead of hanging until their own ctx
+// expires (WR-01).
 func (c *Conn) readLoop() {
-	defer close(c.readDone)
+	defer func() {
+		c.drainPending()
+		close(c.readDone)
+	}()
 
 	sc := bufio.NewScanner(c.rw)
 	sc.Buffer(make([]byte, 0, readBufInitial), readBufMax)
@@ -184,6 +192,25 @@ func (c *Conn) readLoop() {
 	if err := sc.Err(); err != nil {
 		slog.Warn("zcode: read loop ended", "err", err)
 	}
+}
+
+// drainPending fails every in-flight call — the stream died or the conn is
+// closing, so no reply can ever arrive. The writer's first recorded write
+// error is the cause when one exists (the stream's last observable
+// failure), wrapped by ErrConnClosed; the sentinel alone otherwise. Called
+// on read-loop exit and again at the end of Close — idempotent (a drained
+// table is empty), and exact-once per entry: drainAll and resolve both
+// delete under the table lock, so a call can never receive both a drain
+// failure and a wire reply (the table's once semantics, WR-01).
+func (c *Conn) drainPending() {
+	err := c.out.firstError()
+	if err != nil {
+		err = fmt.Errorf("%w: %w", ErrConnClosed, err)
+	} else {
+		err = ErrConnClosed
+	}
+
+	c.pending.drainAll(err)
 }
 
 // demux classifies one inbound envelope per the RESEARCH Pattern 1 rule

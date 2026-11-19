@@ -3,9 +3,17 @@ package zcode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 )
+
+// ErrConnClosed reports a call that can never complete: the stream died
+// (the read loop exited) or the conn closed before the reply arrived.
+// errors.Is matches it through the returned call error — match the
+// sentinel, never the message text (the dialect §6 matching rule applied
+// to Go errors).
+var ErrConnClosed = errors.New("zcode: connection closed")
 
 // CallError is a request that completed with a wire error reply. Consumers
 // match the numeric Code, never the message text (dialect §6 matching rule:
@@ -19,14 +27,22 @@ func (e *CallError) Error() string {
 	return fmt.Sprintf("zcode: wire error %d: %s", e.Err.Code, e.Err.Message)
 }
 
+// callResult is one pending call's terminal delivery: the wire reply
+// envelope (resolve), or a drain error — the stream died or the conn
+// closed, so no reply can ever arrive (WR-01).
+type callResult struct {
+	env Envelope
+	err error
+}
+
 // pendingCall is one in-flight request awaiting its reply envelope. The
 // reply channel is capacity 1: resolve never blocks the read loop.
 type pendingCall struct {
-	reply chan Envelope
+	reply chan callResult
 }
 
 func newPendingCall() *pendingCall {
-	return &pendingCall{reply: make(chan Envelope, 1)}
+	return &pendingCall{reply: make(chan callResult, 1)}
 }
 
 // pendingTable correlates replies by type-tagged canonical id (dialect §1:
@@ -44,7 +60,7 @@ func newPendingTable() *pendingTable {
 }
 
 // register creates the reply channel for a new pending id.
-func (p *pendingTable) register(id *ID) <-chan Envelope {
+func (p *pendingTable) register(id *ID) <-chan callResult {
 	call := newPendingCall()
 
 	p.mu.Lock()
@@ -82,14 +98,32 @@ func (p *pendingTable) resolve(env Envelope) {
 	}
 
 	delete(p.calls, key)
-	call.reply <- env
+	call.reply <- callResult{env: env}
+}
+
+// drainAll fails and removes EVERY pending call — the stream died or the
+// conn closed, so no reply will ever arrive (WR-01). Each entry resolves
+// exactly once: the delete runs under the same lock resolve holds, so a
+// call drained here can never also consume a late wire reply, and a wire
+// reply that resolved first simply leaves nothing to drain.
+func (p *pendingTable) drainAll(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for key, call := range p.calls {
+		delete(p.calls, key)
+		call.reply <- callResult{err: err}
+	}
 }
 
 // Call sends method with params on the ordered queue lane and waits for the
 // matching reply, correlated by type-tagged canonical id (dialect §1: ids
 // are string-or-int and replies echo the request id verbatim). A wire error
 // reply surfaces as a *CallError; ctx cancellation deregisters the pending
-// entry. Outbound ids are integers, counted per Conn like the probe's.
+// entry; stream death (read-loop exit) and Close drain the pending table,
+// failing every in-flight call with an error matching ErrConnClosed
+// (WR-01) — a dead stream never wedges a call until its own ctx expires.
+// Outbound ids are integers, counted per Conn like the probe's.
 func (c *Conn) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := &ID{Int: c.nextID.Add(1), IsInt: true}
 
@@ -118,11 +152,15 @@ func (c *Conn) Call(ctx context.Context, method string, params any) (json.RawMes
 
 		return nil, fmt.Errorf("zcode: call %s: %w", method, ctx.Err())
 	case res := <-reply:
-		if res.Error != nil {
-			return nil, &CallError{Err: res.Error}
+		if res.err != nil {
+			return nil, fmt.Errorf("zcode: call %s: %w", method, res.err)
 		}
 
-		return res.Result, nil
+		if res.env.Error != nil {
+			return nil, &CallError{Err: res.env.Error}
+		}
+
+		return res.env.Result, nil
 	}
 }
 
