@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 6
+open_count: 7
 waived_count: 0
 fixed_count: 0
-total_count: 6
-last_updated: 2026-11-19T20:32:33.515Z
+total_count: 7
+last_updated: 2026-11-19T21:18:34.164Z
 ---
 
 # Broken Windows Ledger
@@ -21,6 +21,7 @@ last_updated: 2026-11-19T20:32:33.515Z
 | 4 | 02 | stub | cmd/zcode-acp/main.go | 19 | main() implements only --version — real CLI/agent arrive with Phases 3-4 per D-06 (intentional skeleton, plan-documented) | open |  | 2026-11-19T13:47:11.524Z |  |
 | 5 | 03 | stub | internal/supervisor/discover.go | 769 | defaultOverride production seam is a no-op until plan 03-07 wires the wrapper's explicit root / ZCODE_BUILTIN_PROVIDER_CONFIG_FILE config surface (seam implemented and test-injectable) | open |  | 2026-11-19T17:58:49.323Z |  |
 | 6 | 03 | unrun-verify | internal/supervisor/realdesktop_test.go | 81 | Real-desktop positive path TestRealDesktop is manual-only (build tag + env guard) — scheduled END-OF-PHASE human verification, never run by CI or this plan | open |  | 2026-11-19T20:32:33.515Z |  |
+| 7 | 03 | deviation | internal/supervisor/e2e_test.go |  | plan-text adaptation: the cancel turn is replayed as a SECOND supervised cycle serving the cancel-mid-turn corpus row, not a second machine on the happy child's Conn — the fake's Times=0 rules are unlimited, so the happy-turn send rule re-fires turn.completed on a second send and a same-Conn cancel would race a completed resolution; both cycles end in the zero-survivors staged shutdown | open |  | 2026-11-19T21:18:34.164Z |  |
 
 ````json
 [
@@ -99,6 +100,19 @@ last_updated: 2026-11-19T20:32:33.515Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-19T20:32:33.515Z",
+    "resolved_at": null,
+    "milestone": null
+  },
+  {
+    "id": 7,
+    "kind": "deviation",
+    "phase": "03",
+    "file": "internal/supervisor/e2e_test.go",
+    "line": null,
+    "description": "plan-text adaptation: the cancel turn is replayed as a SECOND supervised cycle serving the cancel-mid-turn corpus row, not a second machine on the happy child's Conn — the fake's Times=0 rules are unlimited, so the happy-turn send rule re-fires turn.completed on a second send and a same-Conn cancel would race a completed resolution; both cycles end in the zero-survivors staged shutdown",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-19T21:18:34.164Z",
     "resolved_at": null,
     "milestone": null
   }

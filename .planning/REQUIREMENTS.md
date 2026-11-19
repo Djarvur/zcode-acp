@@ -23,10 +23,10 @@ Requirements for the initial release. Each maps to roadmap phases.
 
 ### ZCode Back Leg (bridge)
 
-- [ ] **BRIDGE-01**: JSONL codec for the app-server dialect (no `jsonrpc` key, its error codes, ordered single-writer output) with unit tests
-- [ ] **BRIDGE-02**: Fake app-server (in-process over pipes + standalone binary) and golden JSONL transcript tests running in CI
-- [ ] **BRIDGE-03**: Desktop discovery + process supervisor: locate the ZCode desktop install, spawn `ELECTRON_RUN_AS_NODE=1 …/zcode.cjs app-server --stdio`, kill the whole process group on EOF/exit, fail loudly with actionable diagnostics when not found
-- [ ] **BRIDGE-04**: Turn state machine lifting fire-and-forget `session/send` into a synchronous prompt lifecycle, with multi-signal turn-completion detection (per ARCHITECTURE.md) and cancel handling
+- [x] **BRIDGE-01**: JSONL codec for the app-server dialect (no `jsonrpc` key, its error codes, ordered single-writer output) with unit tests
+- [x] **BRIDGE-02**: Fake app-server (in-process over pipes + standalone binary) and golden JSONL transcript tests running in CI
+- [x] **BRIDGE-03**: Desktop discovery + process supervisor: locate the ZCode desktop install, spawn `ELECTRON_RUN_AS_NODE=1 …/zcode.cjs app-server --stdio`, kill the whole process group on EOF/exit, fail loudly with actionable diagnostics when not found
+- [x] **BRIDGE-04**: Turn state machine lifting fire-and-forget `session/send` into a synchronous prompt lifecycle, with multi-signal turn-completion detection (per ARCHITECTURE.md) and cancel handling
 
 ### ACP Front (core loop)
 
@@ -117,10 +117,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SCAFF-01 | Phase 2 | Complete |
 | SCAFF-02 | Phase 2 | Complete |
 | SCAFF-03 | Phase 2 | Complete |
-| BRIDGE-01 | Phase 3 | Pending |
-| BRIDGE-02 | Phase 3 | Pending |
-| BRIDGE-03 | Phase 3 | Pending |
-| BRIDGE-04 | Phase 3 | Pending |
+| BRIDGE-01 | Phase 3 | Complete |
+| BRIDGE-02 | Phase 3 | Complete |
+| BRIDGE-03 | Phase 3 | Complete |
+| BRIDGE-04 | Phase 3 | Complete |
 | CORE-01 | Phase 4 | Pending |
 | CORE-02 | Phase 4 | Pending |
 | CORE-03 | Phase 4 | Pending |
