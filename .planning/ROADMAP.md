@@ -23,7 +23,7 @@ agents (Phase 7).
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
 - [x] **Phase 1: Research & Protocol Documentation** - Document the ZCode app-server dialect, the client ACP dialect, install discovery, and workspaceKey semantics from source, with provenance labels (completed 2026-11-19)
-- [ ] **Phase 2: Scaffold & CI Bootstrap** - goswitch-style repo scaffold: strict pinned linter, GitHub Actions, protected master
+- [x] **Phase 2: Scaffold & CI Bootstrap** - goswitch-style repo scaffold: strict pinned linter, GitHub Actions, protected master (completed 2026-11-19)
 - [ ] **Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor** - JSONL codec, scriptable fake app-server with golden transcripts in CI, desktop discovery + process supervisor, turn state machine
 - [ ] **Phase 4: ACP Front — Minimal Chat Loop** - initialize, session/new (+ setModel workaround), streamed prompt turns with thoughts and cancel
 - [ ] **Phase 5: Interactions & Full Chat Cycle (api-key)** - Host-managed interaction responder, tool-call streaming, permission bridging, api-key auth, resume/close
@@ -67,7 +67,7 @@ Plans:
   1. A fresh checkout passes the strict pinned golangci-lint config (goswitch-style `default: all` v2 config, exact version pinned via mise); any violation fails the lint target
   2. A PR to the repository triggers GitHub Actions running lint, test, build, and govulncheck, with toolchain versions driven by mise
   3. `master` is protected: direct pushes are rejected, merges require the configured checks, and the protection setup is documented in the repo
-**Plans**: 5/5 plans executed
+**Plans**: 5/5 plans complete
 
 Plans:
 **Wave 1**
@@ -91,7 +91,25 @@ Plans:
   2. CI runs golden JSONL transcript tests against the scriptable fake app-server (in-process over pipes plus a standalone binary), exercising the protocol with no desktop bundle present
   3. On a machine with ZCode desktop installed, the supervisor locates the install per the Phase 1 matrix, spawns the app-server child with the correct environment, and kills the whole process group on EOF/exit leaving no orphaned Electron processes; when no install is found, startup fails with actionable diagnostics naming what was searched
   4. Against the fake app-server, a fire-and-forget `session/send` is lifted into a synchronous turn that completes exactly once on multi-signal turn-completion detection and honors cancel mid-turn
-**Plans**: TBD
+**Plans**: 9 plans
+
+Plans:
+**Wave 1**
+- [ ] 03-01-PLAN.md — Tracer (TDD): dialect round-trip end-to-end — envelope + two-lane writer + Conn demux + in-process fake + happy-turn golden replay over io.Pipe (BRIDGE-01, BRIDGE-02, D-01, D-05)
+- [ ] 03-04-PLAN.md — Discovery (TDD): Phase-1 matrix probes with seams, first-match order, every-probe diagnostics, mount rejection, builtin revision (BRIDGE-03, D-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 03-02-PLAN.md — Codec hardening: WR-02 demux lock, id type-safety, single-writer ordering, bypass precedence, line buffer, router deadlines + credential-cipher tracked-no-answer (BRIDGE-01, WR-02, D-05)
+- [ ] 03-03-PLAN.md — Golden corpus: fail-loud scenario loader + scenarios 2-10 + byte-deterministic goldens + EOF failure signature (BRIDGE-02, D-01)
+- [ ] 03-05-PLAN.md — Turn machine part 1 (TDD): TurnWatcher poll + quiet-window gates + Machine.Run exactly-once completion, carrier-tolerant terminal classification (BRIDGE-04, D-02, D-04)
+- [ ] 03-06-PLAN.md — Standalone fake-app-server binary + helper-reexec exec-plumbing tier + EOF drain contract (BRIDGE-02, D-01)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 03-07-PLAN.md — Supervisor lifecycle: canonical spawn line + allowlisted/scrubbed env + Setpgid, staged shutdown + group kill + crash-window restart, env-guarded real-desktop manual path (BRIDGE-03, D-03)
+- [ ] 03-08-PLAN.md — Turn machine part 2 (TDD): bypass-lane cancel exactly-once, -32010 double-send guard, corpus completion variants, credential-cipher honesty (BRIDGE-04, D-02, D-05)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 03-09-PLAN.md — E2E exec chain (supervisor + fake binary + Conn + turn machine) + full phase gate `mise run ci` (BRIDGE-01..04)
 
 ### Phase 4: ACP Front — Minimal Chat Loop
 **Goal**: An ACP client can open a session and run a streamed prompt turn end-to-end — live text and thought chunks, correct cancellation — against the app-server, before auth and interaction complexity accrete.
@@ -153,8 +171,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
-| 2. Scaffold & CI Bootstrap | 5/5 | In Progress | - |
-| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 0/TBD | Not started | - |
+| 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
+| 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 0/9 | Not started | - |
 | 4. ACP Front — Minimal Chat Loop | 0/TBD | Not started | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
