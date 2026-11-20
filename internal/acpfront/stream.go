@@ -11,9 +11,10 @@ import (
 // The delta tap (RESEARCH Pattern 2): the Front's face on the conn's
 // ordered observer fan-out, registered BEFORE any machine (front.go New —
 // registration order is delivery order, RESEARCH Pattern 3). One backend
-// session/event envelope with type part.delta and field text becomes
-// exactly ONE agent_message_chunk in arrival order — never synthesized,
-// never an upsert (Pitfall 5: upserts carry cumulative part text and would
+// session/event envelope with type part.delta becomes exactly ONE chunk in
+// arrival order — field text maps to agent_message_chunk, field reasoning
+// to agent_thought_chunk (CORE-03/CORE-04) — never synthesized, never an
+// upsert (Pitfall 5: upserts carry cumulative part text and would
 // duplicate every delta).
 
 // part.delta kind and field literals (zcode-src schema, RESEARCH Pattern 2
@@ -21,10 +22,10 @@ import (
 const (
 	kindPartDelta = "part.delta"
 
-	deltaFieldText      = "text"
-	deltaFieldReasoning = "reasoning" // plan 04-04's RED target: agent_thought_chunk mapping
-	deltaFieldInput     = "input"     // Phase 5 tool surface — ignored this plan
-	deltaFieldOutput    = "output"    // Phase 5 tool surface — ignored this plan
+	deltaFieldText      = "text"      // → agent_message_chunk (acpport.NoteMessage)
+	deltaFieldReasoning = "reasoning" // → agent_thought_chunk (acpport.NoteThought, CORE-04)
+	deltaFieldInput     = "input"     // Phase 5 tool surface — ignored, never synthesized
+	deltaFieldOutput    = "output"    // Phase 5 tool surface — ignored, never synthesized
 )
 
 // observeEnvelope is the tap body. It runs on the conn's read goroutine
@@ -33,10 +34,9 @@ const (
 // ObserveEnvelope, so a terminal event can never resolve the turn ahead of
 // earlier delta envelopes. Routing keys on the front's single active turn
 // (the single-active-turn invariant): envelopes outside an active prompt
-// turn are observation only. field reasoning/input/output are silently
-// skipped this plan — the reasoning mapping is plan 04-04's RED target and
-// the input/output fields are Phase 5 tool surfaces; nothing is ever
-// synthesized for them (D-04 honesty).
+// turn are observation only. field input/output are Phase 5 tool surfaces
+// and are silently skipped — nothing is ever synthesized for them (D-04
+// honesty).
 func (f *Front) observeEnvelope(env zcode.Envelope) {
 	if env.Method != zcode.MethodSessionEvent {
 		return
@@ -52,8 +52,17 @@ func (f *Front) observeEnvelope(env zcode.Envelope) {
 		return
 	}
 
-	if params.Field != deltaFieldText {
-		// reasoning → plan 04-04 (agent_thought_chunk, CORE-04);
+	var kind acpport.SessionNoteKind
+
+	switch params.Field {
+	case deltaFieldText:
+		kind = acpport.NoteMessage
+	case deltaFieldReasoning:
+		// CORE-04: backend reasoning deltas are the ONLY source of thought
+		// chunks — the acpport sink maps the note onto
+		// acp.UpdateAgentThoughtText (the executed-probe wire shape).
+		kind = acpport.NoteThought
+	default:
 		// input/output → Phase 5 tool surfaces. Skipped, never synthesized.
 		return
 	}
@@ -73,7 +82,7 @@ func (f *Front) observeEnvelope(env zcode.Envelope) {
 	// stalled or closing ACP wire) is recorded structurally — never with
 	// params/content — and the turn continues; the prompt answer carries
 	// the honest outcome.
-	note := acpport.SessionNote{Kind: acpport.NoteMessage, Delta: params.Delta}
+	note := acpport.SessionNote{Kind: kind, Delta: params.Delta}
 	if err := emit(note); err != nil {
 		slog.Warn("acpfront: session update write failed", "session", note.SessionID, "err", err)
 	}
