@@ -154,14 +154,29 @@ Plans:
   5. `session/resume` reattaches a session without replay and `session/close` cleans up the child-side session; a full cycle — new → prompt with tool calls and a permission decision → resume → close — runs end-to-end on api-key
 **Plans**: 9 plans
 Plans:
+**Wave 1**
 - [ ] 05-01-PLAN.md — CORE-06 interaction responder policy object (deadlines, requestId dedupe, unknown -32601, runtime-prefs migration) + fake re-announce extension
+
+**Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 05-02-PLAN.md — TOOL-02 permission bridge end-to-end (option mapping, outcome forwarding verbatim, cancel → -32021, expiry → deny) + WR-02 atomic sink
 - [ ] 05-03-PLAN.md — WR-01 router-event fan-out + WR-07 exposed observer removes + IN-01/IN-02 (multi-session enablement for teardown)
+
+**Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 05-04-PLAN.md — TOOL-01 tool streaming (tool.updated → tool_call/update, edit/write diffs) + WR-03 bounded pump + WR-06/IN-05
+
+**Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 05-05-PLAN.md — SESS-01 resume/close with teardown (WR-04/WR-05, IN-03/IN-04) + adapter delegates
+
+**Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 05-06-PLAN.md — AUTH-01 backend: hostsvc snapshot push (exact-revision builtin), awaitRegistryContains read-back, runtime-headers answer
+
+**Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 05-07-PLAN.md — AUTH-01 front: authenticate (read-back-proven, no-key honest error) + D-06 CredentialDecrypt seam + cmd wiring (ZCODE_ACP_API_KEY, responder OnRequest)
+
+**Wave 7** *(blocked on Wave 6 completion)*
 - [ ] 05-08-PLAN.md — Full-cycle fake E2E: authenticate → new → prompt(tool+permission) → resume → close
+
+**Wave 8** *(blocked on Wave 7 completion)*
 - [ ] 05-09-PLAN.md — Guarded real tier (TestAPIKeyFullCycle, double guard) + quota ledger; real run = end-of-phase verification
 
 ### Phase 6: OAuth Coding-Plan Path & Model Picker
