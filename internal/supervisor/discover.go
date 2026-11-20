@@ -209,6 +209,16 @@ func bundleInstall(root, layout string) (Install, bool) {
 	return inst, true
 }
 
+// ExplicitRootInstall builds the Install for an explicitly configured root —
+// the discovery order-step-1 override (install-discovery.md :93): the same
+// layout-invariant spawn surface every discovered bundle must carry
+// (<root>/zcode + <root>/resources/glm/zcode.cjs, :38) is validated here, so
+// an override that names a non-spawnable tree is an honest miss the caller
+// reports, never a spawn-time guess. Layout "explicit" marks the override.
+func ExplicitRootInstall(root string) (Install, bool) {
+	return bundleInstall(root, "explicit")
+}
+
 // probeOverride is order step 1: the explicit override wins over any on-disk
 // discovery (install-discovery.md :93).
 func (p Probers) probeOverride() (Probe, Install, bool) {

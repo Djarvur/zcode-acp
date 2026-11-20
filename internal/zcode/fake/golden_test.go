@@ -171,6 +171,7 @@ func goldenDrivers() map[string]driverFunc {
 		"part-delta-streaming":       drivePartDeltaStreaming,
 		"no-reasoning":               driveNoReasoning,
 		"send-refused-32010":         driveSendRefused32010,
+		"complete-then-cancel":       driveCompleteThenCancel,
 	}
 }
 
@@ -334,7 +335,7 @@ func driveError32010(ctx context.Context, d *exchangeDriver) {
 
 	params := map[string]any{
 		wireKeySessionID: fixSessionID,
-		"content":        "Reply with exactly: OK",
+		wireKeyContent:   sendContent,
 	}
 
 	_, err := d.call(ctx, zcode.MethodSessionSend, params)
@@ -523,7 +524,7 @@ func driveSendRefused32010(ctx context.Context, d *exchangeDriver) {
 
 	params := map[string]any{
 		wireKeySessionID: fixSessionID,
-		"content":        "Reply with exactly: OK",
+		wireKeyContent:   sendContent,
 	}
 
 	_, err := d.call(ctx, zcode.MethodSessionSend, params)
@@ -536,4 +537,29 @@ func driveSendRefused32010(ctx context.Context, d *exchangeDriver) {
 	if callErr.Err.Code != zcode.CodeConcurrency {
 		d.t.Fatalf("session/send error code = %d, want %d (-32010)", callErr.Err.Code, zcode.CodeConcurrency)
 	}
+}
+
+// driveCompleteThenCancel: the binary-E2E corpus row (plan 04-05) — the
+// front preamble, then the FIRST send completing with its scripted deltas
+// (times budget 1: the loop-1 end_turn turn), then a SECOND send whose
+// stream stays active (the slow delta, no terminal), then the bypass
+// session/stop whose cancelled patch is the observed stop outcome — the two
+// prompt loops the built zcode-acp binary drives: end_turn, then cancelled.
+func driveCompleteThenCancel(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx) // rule 1 (times 1): deltas + turn.completed — loop 1 end_turn
+	h.send(ctx) // rule 2 (unlimited): slow delta, no terminal — loop 2 in flight
+
+	if err := d.conn.Stop(fixSessionID); err != nil {
+		d.t.Fatalf("session/stop: %v", err)
+	}
+
+	d.waitStatePatch("cancelled")
+
+	// Bounded quiet window: the cancelled patch precedes the stop ack on the
+	// wire by microseconds; settle so the ack is always recorded before the
+	// host closes stdin.
+	time.Sleep(stopSettle)
 }

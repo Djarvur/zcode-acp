@@ -24,6 +24,13 @@ const (
 	fixSessionID = "sess_fix1"
 	fixTurnID    = "turn_fix1"
 
+	// sendContent is the driver's scripted prompt content — arbitrary (the
+	// fake matches requests by method), named so no magic string repeats.
+	sendContent = "Reply with exactly: OK"
+
+	// wireKeyContent is the dialect's content params key.
+	wireKeyContent = "content"
+
 	// happyTurnTimeout bounds the whole exchange; the GREEN run completes
 	// in milliseconds and a RED run fails fast on its own assertion.
 	happyTurnTimeout = 10 * time.Second
@@ -242,8 +249,8 @@ func (h *happyTurnHarness) send(ctx context.Context) json.RawMessage {
 	h.t.Helper()
 
 	res, err := h.conn.Call(ctx, zcode.MethodSessionSend, map[string]any{
-		"sessionId": fixSessionID,
-		"content":   "Reply with exactly: OK",
+		"sessionId":    fixSessionID,
+		wireKeyContent: sendContent,
 	})
 	if err != nil {
 		h.t.Fatalf("session/send: %v", err)

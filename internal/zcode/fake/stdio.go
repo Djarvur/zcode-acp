@@ -1,6 +1,7 @@
 package fake
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
@@ -34,6 +35,18 @@ const (
 // the clean EOF-drain exit. Both cmd/fake-app-server and the reexec helper
 // tests call this entry — one scripting core, two hosting modes.
 func Main(scenarioPath string) int {
+	return MainTo(scenarioPath, "")
+}
+
+// MainTo is Main with an optional transcript sink (plan 04-05): when
+// transcriptPath is non-empty, the served transcript is written there after
+// the clean EOF-drain exit — golden format, one dir\tline record per frame —
+// so the exec tier can assert what the standalone binary ACTUALLY served
+// (the binary E2E's setModel payload assertion rides it; the in-process
+// Serve already hands the transcript back, but the binary hosting mode had
+// no window into its own wire). A transcript write failure is a serve
+// failure (ExitServeFailed): the run's evidence must never be silently lost.
+func MainTo(scenarioPath, transcriptPath string) int {
 	sc, err := LoadScenario(scenarioPath)
 	if err != nil {
 		slog.Error("fake-app-server: load scenario failed", "err", err)
@@ -48,9 +61,48 @@ func Main(scenarioPath string) int {
 		return ExitServeFailed
 	}
 
+	if transcriptPath != "" {
+		if werr := writeTranscriptFile(transcriptPath, tr); werr != nil {
+			slog.Error("fake-app-server: write transcript failed", "path", transcriptPath, "err", werr)
+
+			return ExitServeFailed
+		}
+	}
+
 	slog.Info("fake-app-server: scenario served to EOF", "name", sc.Name, "frames", len(tr.Lines))
 
 	return 0
+}
+
+// writeTranscriptFile writes the transcript in the golden fixture format —
+// one "dir\tjson" record per line — so every tier reads the same shape.
+func writeTranscriptFile(path string, tr Transcript) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("fake: create transcript file: %w", err)
+	}
+
+	w := bufio.NewWriter(f)
+
+	for _, line := range tr.Lines {
+		if _, werr := fmt.Fprintf(w, "%s\t%s\n", line.Dir, line.JSON); werr != nil {
+			_ = f.Close()
+
+			return fmt.Errorf("fake: write transcript record: %w", werr)
+		}
+	}
+
+	if err := w.Flush(); err != nil {
+		_ = f.Close()
+
+		return fmt.Errorf("fake: flush transcript file: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("fake: close transcript file: %w", err)
+	}
+
+	return nil
 }
 
 // stdioRW adapts the raw stdio pair to the io.ReadWriteCloser Serve expects:

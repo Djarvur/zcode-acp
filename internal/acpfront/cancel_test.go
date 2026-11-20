@@ -81,8 +81,8 @@ func assertSingleCancelledResponse(t *testing.T, lines []TeeLine) {
 
 	for i, line := range lines {
 		if i > stopIdxs[0] && line.Dir == "in" && strings.Contains(line.JSON, `"sessionUpdate"`) {
-			t.Fatalf("update frame at %d streams after the prompt response (line %d) — post-cancel updates MUST precede the response",
-				i, stopIdxs[0])
+			t.Fatalf("update frame at %d streams after the prompt response (line %d) — "+
+				"post-cancel updates MUST precede the response", i, stopIdxs[0])
 		}
 	}
 }
