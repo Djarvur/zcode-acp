@@ -1,0 +1,11 @@
+in	{"id":1,"method":"provider/updateAccountConfig","params":{"basedOnZCodeBuiltinRevision":"zcode-builtin:44:17a5ba97f090b6ea3b979cb793f404b51aaf27763d8e3a4f20ce067b7866424f","providers":{},"revision":"account-bridge:corpus-fix1","states":{}}}
+out	{"id":1,"result":{"receivedRevision":"account-bridge:corpus-fix1","providerCount":0,"status":"received"}}
+in	{"id":2,"method":"provider/refreshRegistry","params":{"reason":"account-config-sync"}}
+out	{"method":"state.updated","params":{"scope":"registry","reason":"registry_refresh","revision":2,"patch":{"providers":{"zai-api":{"models":["GLM-5.3-Flash","GLM-5.3"]}}}}}
+out	{"id":2,"result":{"refreshed":true}}
+in	{"id":3,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/happy-turn-ws","workspacePath":"/tmp/happy-turn-ws"}}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"starting","generation":1,"revision":1,"lastError":null}}
+out	{"id":"fake-1","method":"session/requestRuntimePreferences","params":{"sessionId":"sess_fix1","scope":"runtime-materialization"}}
+in	{"id":"fake-1","result":{"memoryEnabled":false,"nativeSearchEnhancementsEnabled":false}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"ready","generation":1,"revision":2,"lastError":null}}
+out	{"id":3,"result":{"session":{"sessionId":"sess_fix1"},"protocol":{"name":"ZCode Protocol","version":1},"settings":{"model":{"available":[{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"},"label":"GLM-5.3-Flash","providerLabel":"zai-api"},{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"},"label":"GLM-5.3","providerLabel":"zai-api"}]}}}}

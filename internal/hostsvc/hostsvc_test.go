@@ -23,6 +23,10 @@ import (
 // — the failure-shaped success arm (headersApplied:false) never leaves the
 // process.
 
+// syntheticTestKey is the in-test key material (fixture data only — never a
+// real credential; the scan-secrets gate stays green).
+const syntheticTestKey = "zc-synthetic-test-key"
+
 // fixtureInstall writes a temp install whose zcode-builtin.json records the
 // given revision int. The formula input is the resolved absolute PATH
 // STRING, so two temp dirs with equal revision ints must produce different
@@ -40,7 +44,7 @@ func fixtureInstall(t *testing.T, rev int) supervisor.Install {
 	return supervisor.Install{
 		Root:        root,
 		Binary:      filepath.Join(root, "zcode"),
-		Entrypoint:  filepath.Join(root, "resources/glm/zcode.cjs"),
+		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
 		BuiltinFile: builtin,
 		Layout:      "explicit",
 	}
@@ -67,7 +71,8 @@ func TestSnapshotEnvelope(t *testing.T) {
 	}
 
 	if !strings.HasPrefix(snapA.Revision, "account-bridge:") {
-		t.Fatalf("snapshot revision %q lacks the account-bridge: stable form (reference-adapter precedent)", snapA.Revision)
+		t.Fatalf("snapshot revision %q lacks the account-bridge: stable form (reference-adapter precedent)",
+			snapA.Revision)
 	}
 
 	wantA := supervisor.BuiltinRevision(instA.BuiltinFile, 44)
@@ -86,18 +91,15 @@ func TestSnapshotEnvelope(t *testing.T) {
 	}
 
 	if snapB.BasedOn == snapA.BasedOn {
-		t.Fatalf("basedOn is path-insensitive (%q for both installs) — the formula must be computed at runtime, never hard-coded", snapA.BasedOn)
+		t.Fatalf("basedOn is path-insensitive (%q for both installs) — "+
+			"the formula must be computed at runtime, never hard-coded", snapA.BasedOn)
 	}
 
 	assertStrictEnvelope(t, snapA)
 
 	fixed := "account-bridge:corpus-fix1"
 	bf := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return fixed }))
-
-	snapF, err := bf.BuildRevision(instA, 44)
-	if err != nil {
-		t.Fatalf("build with injected revision: %v", err)
-	}
+	snapF := bf.BuildRevision(instA, 44)
 
 	if snapF.Revision != fixed {
 		t.Fatalf("injected revision = %q, want %q", snapF.Revision, fixed)
@@ -126,7 +128,8 @@ func assertStrictEnvelope(t *testing.T, snap hostsvc.Snapshot) {
 
 	wantKeys := []string{"revision", "basedOnZCodeBuiltinRevision", "providers", "states"}
 	if len(got) != len(wantKeys) {
-		t.Fatalf("envelope keys = %v, want exactly %v (strict schema — extra fields are parse errors)", keysOf(got), wantKeys)
+		t.Fatalf("envelope keys = %v, want exactly %v (strict schema — extra fields are parse errors)",
+			keysOf(got), wantKeys)
 	}
 
 	for _, k := range wantKeys {
@@ -136,14 +139,7 @@ func assertStrictEnvelope(t *testing.T, snap hostsvc.Snapshot) {
 	}
 
 	for _, k := range []string{"providers", "states"} {
-		var rec map[string]any
-		if err := json.Unmarshal(got[k], &rec); err != nil {
-			t.Fatalf("%s does not decode as a record: %v (%s)", k, err, got[k])
-		}
-
-		if len(rec) != 0 {
-			t.Fatalf("%s = %s, want the empty record {} (the personal-layer no-op overlay)", k, got[k])
-		}
+		assertEmptyRecord(t, k, got[k])
 	}
 
 	var revision string
@@ -154,6 +150,20 @@ func assertStrictEnvelope(t *testing.T, snap hostsvc.Snapshot) {
 	var basedOn string
 	if err := json.Unmarshal(got["basedOnZCodeBuiltinRevision"], &basedOn); err != nil || basedOn == "" {
 		t.Fatalf("basedOnZCodeBuiltinRevision = %s, want a non-empty string", got["basedOnZCodeBuiltinRevision"])
+	}
+}
+
+// assertEmptyRecord asserts one envelope member decodes as the empty record.
+func assertEmptyRecord(t *testing.T, key string, raw json.RawMessage) {
+	t.Helper()
+
+	var rec map[string]any
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatalf("%s does not decode as a record: %v (%s)", key, err, raw)
+	}
+
+	if len(rec) != 0 {
+		t.Fatalf("%s = %s, want the empty record {} (the personal-layer no-op overlay)", key, raw)
 	}
 }
 
@@ -173,25 +183,58 @@ type stubKey struct {
 	ok     bool
 }
 
-func (s *stubKey) APIKey(_ context.Context) (string, string, bool) {
+func (s *stubKey) APIKey(_ context.Context) (apiKey, keyID string, ok bool) {
 	return s.apiKey, s.keyID, s.ok
 }
 
 // runtimeHeadersEnvelope builds one interaction/requestProviderRuntimeHeaders
 // reverse-request envelope with a distinct requestId per arm.
 func runtimeHeadersEnvelope(reqID string) zcode.Envelope {
-	params, _ := json.Marshal(map[string]any{
-		"requestId":  reqID,
-		"sessionId":  "sess_fix1",
-		"providerId": "zhipu-account",
-		"reason":     "model-refresh",
-	})
-
 	return zcode.Envelope{
 		ID:     &zcode.ID{Str: "server-" + reqID},
 		Method: "interaction/requestProviderRuntimeHeaders",
-		Params: params,
+		Params: json.RawMessage(fmt.Sprintf(
+			`{"requestId":%q,"sessionId":"sess_fix1","providerId":"zhipu-account","reason":"model-refresh"}`,
+			reqID)),
 	}
+}
+
+// serveRuntimeHeaders builds a responder over a stub key source (the 05-01
+// seam wired with the hostsvc handler) and serves one ask; the result is
+// returned as its marshaled wire payload (nil result marshals "null").
+func serveRuntimeHeaders(
+	t *testing.T,
+	reqID string,
+	src hostsvc.KeySource,
+) (wire []byte, werr *zcode.WireError) {
+	t.Helper()
+
+	responder := interact.NewResponder(interact.WithRuntimeHeadersKeySource(
+		hostsvc.RuntimeHeadersHandler(src)))
+
+	result, serveErr, handled := responder.Serve(context.Background(), runtimeHeadersEnvelope(reqID))
+	if !handled {
+		t.Fatal("the runtime-headers ask must be handled by the responder, never silence")
+	}
+
+	out, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+
+	return out, serveErr
+}
+
+// decodeResult decodes a served result payload into its object shape.
+func decodeResult(t *testing.T, wire []byte) map[string]any {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatalf("decode result: %v (%s)", err, wire)
+	}
+
+	return got
 }
 
 // TestRuntimeHeaders locks both reply arms over the 05-01 seam: with a key
@@ -201,91 +244,84 @@ func runtimeHeadersEnvelope(reqID string) zcode.Envelope {
 // headersApplied:false arm).
 func TestRuntimeHeaders(t *testing.T) {
 	t.Run("configured", func(t *testing.T) {
-		responder := interact.NewResponder(interact.WithRuntimeHeadersKeySource(
-			hostsvc.RuntimeHeadersHandler(&stubKey{apiKey: "zc-synthetic-test-key", keyID: "key_fix_1", ok: true})))
-
-		result, werr, handled := responder.Serve(context.Background(), runtimeHeadersEnvelope("rh-fix-1"))
-		if !handled {
-			t.Fatal("configured arm must be handled by the responder")
-		}
+		wire, werr := serveRuntimeHeaders(t, "rh-fix-1",
+			&stubKey{apiKey: syntheticTestKey, keyID: "key_fix_1", ok: true})
 
 		if werr != nil {
 			t.Fatalf("configured arm answered a wire error: %v", werr)
 		}
 
-		wire, err := json.Marshal(result)
-		if err != nil {
-			t.Fatalf("marshal result: %v", err)
-		}
-
-		var got map[string]any
-		if err := json.Unmarshal(wire, &got); err != nil {
-			t.Fatalf("decode result: %v (%s)", err, wire)
-		}
-
-		if applied, _ := got["headersApplied"].(bool); !applied {
-			t.Fatalf("headersApplied = %v, want true (the discriminant)", got["headersApplied"])
-		}
-
-		auth, ok := got["requestAuth"].(map[string]any)
-		if !ok {
-			t.Fatalf("requestAuth missing or not an object: %v (strict requestAuth object)", got["requestAuth"])
-		}
-
-		if len(auth) != 2 {
-			t.Fatalf("requestAuth keys = %v, want exactly [apiKey apiKeyId]", keysOfAny(auth))
-		}
-
-		if auth["apiKey"] != "zc-synthetic-test-key" || auth["apiKeyId"] != "key_fix_1" {
-			t.Fatalf("requestAuth = %v, want the injected key material verbatim", auth)
-		}
+		assertHeadersSuccess(t, wire, syntheticTestKey, "key_fix_1")
 	})
 
 	t.Run("apiKeyId omitted when empty", func(t *testing.T) {
-		responder := interact.NewResponder(interact.WithRuntimeHeadersKeySource(
-			hostsvc.RuntimeHeadersHandler(&stubKey{apiKey: "zc-synthetic-test-key", ok: true})))
+		wire, werr := serveRuntimeHeaders(t, "rh-fix-2",
+			&stubKey{apiKey: syntheticTestKey, ok: true})
 
-		result, werr, _ := responder.Serve(context.Background(), runtimeHeadersEnvelope("rh-fix-2"))
 		if werr != nil {
 			t.Fatalf("configured arm (no key id) answered a wire error: %v", werr)
 		}
 
-		wire, _ := json.Marshal(result)
-
-		var got map[string]any
-		_ = json.Unmarshal(wire, &got)
-
-		auth, ok := got["requestAuth"].(map[string]any)
+		auth, ok := decodeResult(t, wire)["requestAuth"].(map[string]any)
 		if !ok {
 			t.Fatalf("requestAuth missing: %s", wire)
 		}
 
 		if len(auth) != 1 || auth["apiKey"] == "" {
-			t.Fatalf("requestAuth = %v, want exactly {apiKey} (apiKeyId is an optional string, omitted when empty)", keysOfAny(auth))
+			t.Fatalf("requestAuth = %v, want exactly {apiKey} "+
+				"(apiKeyId is an optional string, omitted when empty)", keysOfAny(auth))
 		}
 	})
 
 	t.Run("unconfigured answers coded error", func(t *testing.T) {
-		responder := interact.NewResponder(interact.WithRuntimeHeadersKeySource(
-			hostsvc.RuntimeHeadersHandler(&stubKey{ok: false})))
-
-		result, werr, handled := responder.Serve(context.Background(), runtimeHeadersEnvelope("rh-fix-3"))
-		if !handled {
-			t.Fatal("unconfigured arm must still be handled (never silence)")
-		}
-
-		if result != nil {
-			t.Fatalf("unconfigured arm answered a result %v — the failure-shaped success arm must never leave the process", result)
-		}
-
-		if werr == nil {
-			t.Fatal("unconfigured arm answered no wire error, want the coded error envelope")
-		}
-
-		if werr.Code != zcode.CodeInternalError {
-			t.Fatalf("error code = %d, want %d (-32603 coded internal)", werr.Code, zcode.CodeInternalError)
-		}
+		wire, werr := serveRuntimeHeaders(t, "rh-fix-3", &stubKey{ok: false})
+		assertHeadersCodedError(t, wire, werr)
 	})
+}
+
+// assertHeadersSuccess locks the strict D-02 success shape: the
+// headersApplied discriminant true and the requestAuth object carrying the
+// injected material verbatim.
+func assertHeadersSuccess(t *testing.T, wire []byte, wantKey, wantID string) {
+	t.Helper()
+
+	got := decodeResult(t, wire)
+
+	if applied, _ := got["headersApplied"].(bool); !applied {
+		t.Fatalf("headersApplied = %v, want true (the discriminant)", got["headersApplied"])
+	}
+
+	auth, ok := got["requestAuth"].(map[string]any)
+	if !ok {
+		t.Fatalf("requestAuth missing or not an object: %v (strict requestAuth object)", got["requestAuth"])
+	}
+
+	if len(auth) != 2 {
+		t.Fatalf("requestAuth keys = %v, want exactly [apiKey apiKeyId]", keysOfAny(auth))
+	}
+
+	if auth["apiKey"] != wantKey || auth["apiKeyId"] != wantID {
+		t.Fatalf("requestAuth = %v, want the injected key material verbatim", auth)
+	}
+}
+
+// assertHeadersCodedError locks the unconfigured arm: nil result, coded
+// -32603 wire error — never the failure-shaped success arm.
+func assertHeadersCodedError(t *testing.T, wire []byte, werr *zcode.WireError) {
+	t.Helper()
+
+	if string(wire) != "null" {
+		t.Fatalf("unconfigured arm answered a result %s — "+
+			"the failure-shaped success arm must never leave the process", wire)
+	}
+
+	if werr == nil {
+		t.Fatal("unconfigured arm answered no wire error, want the coded error envelope")
+	}
+
+	if werr.Code != zcode.CodeInternalError {
+		t.Fatalf("error code = %d, want %d (-32603 coded internal)", werr.Code, zcode.CodeInternalError)
+	}
 }
 
 func keysOfAny(m map[string]any) []string {

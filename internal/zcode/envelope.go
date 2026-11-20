@@ -137,19 +137,21 @@ func Decode(line []byte) (Envelope, error) {
 // after the dialect method strings (PascalCase) per D-06. The map names
 // survive minification in the shipped bundle; 3.18.2 is the truth source.
 const (
-	MethodSessionCreate             = "session/create"
-	MethodSessionSend               = "session/send"
-	MethodSessionStop               = "session/stop"
-	MethodSessionMessages           = "session/messages"
-	MethodRequestRuntimePreferences = "session/requestRuntimePreferences"
-	MethodRequestCredentialCipher   = "interaction/requestCredentialCipher"
-	MethodStateUpdated              = "state.updated"
-	MethodSessionEvent              = "session/event"
-	MethodSessionLifecycleChanged   = "session/lifecycle/changed"
-	MethodSessionSubscribe          = "session/subscribe"
-	MethodSessionSetModel           = "session/setModel"
-	MethodSessionResume             = "session/resume"
-	MethodSessionClose              = "session/close"
+	MethodSessionCreate               = "session/create"
+	MethodSessionSend                 = "session/send"
+	MethodSessionStop                 = "session/stop"
+	MethodSessionMessages             = "session/messages"
+	MethodRequestRuntimePreferences   = "session/requestRuntimePreferences"
+	MethodRequestCredentialCipher     = "interaction/requestCredentialCipher"
+	MethodStateUpdated                = "state.updated"
+	MethodSessionEvent                = "session/event"
+	MethodSessionLifecycleChanged     = "session/lifecycle/changed"
+	MethodSessionSubscribe            = "session/subscribe"
+	MethodSessionSetModel             = "session/setModel"
+	MethodSessionResume               = "session/resume"
+	MethodSessionClose                = "session/close"
+	MethodProviderUpdateAccountConfig = "provider/updateAccountConfig"
+	MethodProviderRefreshRegistry     = "provider/refreshRegistry"
 )
 
 // Error-code constants carry the dialect §6 numeric values verbatim.

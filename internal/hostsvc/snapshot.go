@@ -1,25 +1,70 @@
-// Package hostsvc implements AUTH-01's execution tier: the api-key snapshot
-// push (provider/updateAccountConfig with the exact-revision builtin
-// formula), the provider/refreshRegistry call, the registry read-back
-// helper, and the runtime-headers answer over the 05-01 KeySource seam.
+// Package hostsvc implements AUTH-01's execution tier (plan 05-06): the
+// api-key snapshot push (provider/updateAccountConfig with the
+// exact-revision builtin formula over the field-verified EMPTY personal-layer
+// overlay), the provider/refreshRegistry call, the registry read-back helper
+// (PITFALL 1 discipline — the ack is never the verdict), and the
+// runtime-headers answer over the 05-01 KeySource seam (D-02's success
+// shape). The front's authenticate (plan 05-07) composes these step
+// functions.
 package hostsvc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/interact"
 	"github.com/Djarvur/zcode-acp/internal/supervisor"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
+// revisionPrefix is the stable form of the wrapper-generated snapshot
+// revision (reference-adapter precedent "account:bridge:<timestamp>",
+// docs/research/reference-adapters.md row 3): any non-empty string is
+// schema-valid, so a testable deterministic form is the honest choice.
+const revisionPrefix = "account-bridge:"
+
+// refreshReason is the provider/refreshRegistry params reason (the probe's
+// field-verified params shape {reason} — EXP-WORKSPACEKEY-01 answered
+// {"refreshed":true}).
+const refreshReason = "account-config-sync"
+
+// defaultRevision renders the push revision: account-bridge:<unix-nano> —
+// fresh per build, stable in form.
+func defaultRevision() string {
+	return fmt.Sprintf("%s%d", revisionPrefix, time.Now().UnixNano())
+}
+
 // KeySource supplies the authenticate-sourced api-key material (the 05-01
 // responder seam shape: apiKey/apiKeyID accessors). Implementations hold
-// the material in memory only — never in logs, captures, or fixtures.
+// the material in memory only — never in logs, captures, or fixtures
+// (T-5-15).
 type KeySource interface {
 	// APIKey returns the configured key material; ok=false when
 	// unconfigured (the honest coded-error arm).
 	APIKey(ctx context.Context) (apiKey, apiKeyID string, ok bool)
+}
+
+// StaticKey is the config-sourced KeySource: material handed over at
+// authenticate time from the wrapper's own config (env ZCODE_ACP_API_KEY /
+// flag per OQ4), held in memory only.
+type StaticKey struct {
+	apiKey string
+	keyID  string
+}
+
+// NewStaticKey returns a KeySource over fixed material (either part may be
+// empty — an empty key pair answers the unconfigured arm).
+func NewStaticKey(apiKey, keyID string) *StaticKey {
+	return &StaticKey{apiKey: apiKey, keyID: keyID}
+}
+
+// APIKey returns the fixed material.
+func (s *StaticKey) APIKey(_ context.Context) (apiKey, keyID string, ok bool) {
+	return s.apiKey, s.keyID, s.apiKey != ""
 }
 
 // SnapshotOption configures a SnapshotBuilder at construction.
@@ -27,18 +72,36 @@ type SnapshotOption func(*SnapshotBuilder)
 
 // WithRevisionSource overrides the push-revision generator (tests and
 // corpus replays inject a fixed value for byte-deterministic goldens; the
-// default generates a fresh account-bridge:<unix-nano> per build).
-func WithRevisionSource(func() string) SnapshotOption {
-	return func(*SnapshotBuilder) {}
+// default generates a fresh account-bridge:<unix-nano> per build). The
+// builtin-revision formula is NOT injectable — it is always computed at
+// runtime via supervisor.BuiltinRevision over the resolved path
+// (T-5-16: never hard-coded, never cached).
+func WithRevisionSource(source func() string) SnapshotOption {
+	return func(b *SnapshotBuilder) { b.revision = source }
 }
 
-// SnapshotBuilder builds the provider/updateAccountConfig snapshot params.
-type SnapshotBuilder struct{}
+// SnapshotBuilder builds the provider/updateAccountConfig snapshot params:
+// the strict envelope {revision, basedOnZCodeBuiltinRevision, providers,
+// states} whose overlay is intentionally EMPTY for the api-key path (zai-api
+// is the personal layer, untouched by account snapshots — field-verified
+// no-op; the protocol comment places keys/JWTs/dynamic headers in the
+// request-time runtime-headers protocol, never the snapshot).
+type SnapshotBuilder struct {
+	keys     KeySource
+	revision func() string
+}
 
 // NewSnapshotBuilder returns a builder over the account-credential binding
-// (keys) with options applied.
-func NewSnapshotBuilder(_ KeySource, _ ...SnapshotOption) *SnapshotBuilder {
-	return &SnapshotBuilder{}
+// (keys — the same binding the runtime-headers answer serves; the envelope
+// itself carries no key material) with options applied.
+func NewSnapshotBuilder(keys KeySource, opts ...SnapshotOption) *SnapshotBuilder {
+	b := &SnapshotBuilder{keys: keys, revision: defaultRevision}
+
+	for _, opt := range opts {
+		opt(b)
+	}
+
+	return b
 }
 
 // Snapshot is one built push envelope and its identity: Revision is the
@@ -51,47 +114,154 @@ type Snapshot struct {
 }
 
 // Build computes the strict envelope for install, reading the recorded
-// revision int out of the active zcode-builtin.json.
-func (b *SnapshotBuilder) Build(_ supervisor.Install) (Snapshot, error) {
-	return Snapshot{}, nil
+// revision int out of the active zcode-builtin.json (the probe-time read
+// the realdesktop tier records — a live desktop may update mid-probe; the
+// value is read, never assumed).
+func (b *SnapshotBuilder) Build(install supervisor.Install) (Snapshot, error) {
+	rev, err := readBuiltinRevision(install.BuiltinFile)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: %w", err)
+	}
+
+	return b.BuildRevision(install, rev), nil
 }
 
 // BuildRevision computes the strict envelope over an explicitly supplied
-// recorded revision int (probe-time reads hold it already).
-func (b *SnapshotBuilder) BuildRevision(_ supervisor.Install, _ int) (Snapshot, error) {
-	return Snapshot{}, nil
+// recorded revision int (probe-time reads hold it already; the corpus
+// fixture passes a fixed synthetic value). basedOnZCodeBuiltinRevision is
+// the EXACT zcode-builtin:<rev>:<sha256(resolved-path)> formula REUSED from
+// supervisor.BuiltinRevision — never re-derived, never hard-coded.
+func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Snapshot {
+	basedOn := supervisor.BuiltinRevision(install.BuiltinFile, rev)
+	revision := b.revision()
+
+	params := map[string]any{
+		"revision":                    revision,
+		"basedOnZCodeBuiltinRevision": basedOn,
+		"providers":                   map[string]any{},
+		"states":                      map[string]any{},
+	}
+
+	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}
 }
 
-// Ack is the provider/updateAccountConfig reply — receipt evidence only,
-// never application (PITFALL 1).
+// readBuiltinRevision reads the recorded revision number out of the active
+// zcode-builtin.json.
+func readBuiltinRevision(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read builtin revision: %w", err)
+	}
+
+	var parsed struct {
+		Revision int `json:"revision"`
+	}
+
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return 0, fmt.Errorf("parse builtin revision %s: %w", path, err)
+	}
+
+	return parsed.Revision, nil
+}
+
+// Ack is the provider/updateAccountConfig reply (dialect §8) — receipt
+// evidence only. The schema's own comment warns the ack is not application
+// ("收到账号结果不代表配套 Built-in 已到达"): success is proven ONLY by the
+// registry read-back (PITFALL 1), never by this value.
 type Ack struct {
 	ReceivedRevision string
 	ProviderCount    int
-	Status           string
+	Status           string // "received" | "unchanged"
 }
 
 // PushSnapshot builds with the default builder and runs the
 // provider/updateAccountConfig Call.
-func PushSnapshot(_ context.Context, _ *zcode.Conn, _ supervisor.Install) (Ack, error) {
-	return Ack{}, nil
+func PushSnapshot(ctx context.Context, conn *zcode.Conn, install supervisor.Install) (Ack, error) {
+	snap, err := NewSnapshotBuilder(nil).Build(install)
+	if err != nil {
+		return Ack{}, err
+	}
+
+	return PushEnvelope(ctx, conn, snap.Params)
 }
 
-// PushEnvelope runs the provider/updateAccountConfig Call with params.
-func PushEnvelope(_ context.Context, _ *zcode.Conn, _ map[string]any) (Ack, error) {
-	return Ack{}, nil
+// PushEnvelope runs the provider/updateAccountConfig Call with params —
+// the Call + wrap-on-error pattern (front.go NewSession discipline) — and
+// parses the receipt ack.
+func PushEnvelope(ctx context.Context, conn *zcode.Conn, params map[string]any) (Ack, error) {
+	res, err := conn.Call(ctx, zcode.MethodProviderUpdateAccountConfig, params)
+	if err != nil {
+		return Ack{}, fmt.Errorf("provider/updateAccountConfig: %w", err)
+	}
+
+	return parseAck(res)
 }
 
-// RefreshRegistry runs provider/refreshRegistry {reason}.
-func RefreshRegistry(_ context.Context, _ *zcode.Conn) error {
+// parseAck decodes the ack result {receivedRevision, providerCount,
+// status} (dialect §8 bundle literal) — the map dig-out keeps the
+// capture-verbatim camelCase wire keys (the tagliatelle contract).
+func parseAck(res json.RawMessage) (Ack, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(res, &obj); err != nil {
+		return Ack{}, fmt.Errorf("provider/updateAccountConfig: decode ack: %w (%s)", err, res)
+	}
+
+	return Ack{
+		ReceivedRevision: ackString(obj, "receivedRevision"),
+		ProviderCount:    ackInt(obj, "providerCount"),
+		Status:           ackString(obj, "status"),
+	}, nil
+}
+
+// ackString digs one string field out of a decoded ack object.
+func ackString(obj map[string]any, key string) string {
+	s, _ := obj[key].(string)
+
+	return s
+}
+
+// ackInt digs one numeric field out of a decoded ack object.
+func ackInt(obj map[string]any, key string) int {
+	n, _ := obj[key].(float64)
+
+	return int(n)
+}
+
+// RefreshRegistry runs provider/refreshRegistry {reason} — step 1 of the
+// PITFALL-1 verification recipe (the observed reply {"refreshed":true} is
+// not asserted beyond transport success; the verdict is the read-back).
+func RefreshRegistry(ctx context.Context, conn *zcode.Conn) error {
+	params := map[string]any{"reason": refreshReason}
+
+	if _, err := conn.Call(ctx, zcode.MethodProviderRefreshRegistry, params); err != nil {
+		return fmt.Errorf("provider/refreshRegistry: %w", err)
+	}
+
 	return nil
 }
 
-// errAPIKeyUnconfigured is the honest unconfigured-key arm.
-var errAPIKeyUnconfigured = errors.New("api key not configured")
+// errAPIKeyUnconfigured is the honest unconfigured-key arm (OQ4: the error
+// names the env var). It answers the coded -32603 envelope at the
+// responder's deliver seam — NEVER the failure-shaped headersApplied:false
+// success arm (a guaranteed turn death for account providers, PITFALL 3).
+var errAPIKeyUnconfigured = errors.New("api key not configured " +
+	"(set ZCODE_ACP_API_KEY or pass the api key at authenticate)")
 
-// RuntimeHeadersHandler adapts src to the 05-01 responder seam.
-func RuntimeHeadersHandler(_ KeySource) interact.RuntimeHeadersKeySource {
-	return func(_ context.Context, _ interact.Request) (string, string, error) {
-		return "", "", errAPIKeyUnconfigured
+// RuntimeHeadersHandler adapts src to the 05-01 responder seam
+// (interact.WithRuntimeHeadersKeySource): with a key present the
+// responder's policy row marshals the strict D-02 success shape
+// {headersApplied:true, requestAuth:{apiKey, apiKeyId}} from the material
+// this handler hands over (in-memory only); with no key the handler errors
+// and the responder answers the coded error envelope. The api-key path's
+// success arm always carries a non-empty apiKey (the mode's credential);
+// apiKeyId rides whenever the source supplies it.
+func RuntimeHeadersHandler(src KeySource) interact.RuntimeHeadersKeySource {
+	return func(ctx context.Context, _ interact.Request) (string, string, error) {
+		apiKey, apiKeyID, ok := src.APIKey(ctx)
+		if !ok || apiKey == "" {
+			return "", "", errAPIKeyUnconfigured
+		}
+
+		return apiKey, apiKeyID, nil
 	}
 }

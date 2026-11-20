@@ -1,0 +1,62 @@
+{
+  "name": "auth-apikey",
+  "on_request": [
+    {
+      "method": "provider/updateAccountConfig",
+      "reply": {"result": {"receivedRevision": "account-bridge:corpus-fix1", "providerCount": 0, "status": "received"}}
+    },
+    {
+      "method": "provider/refreshRegistry",
+      "reply": {"result": {"refreshed": true}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"scope": "registry", "reason": "registry_refresh", "revision": 2,
+                       "patch": {"providers": {"zai-api": {"models": ["GLM-5.3-Flash", "GLM-5.3"]}}}}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/create",
+      "reply": {"result": {"session": {"sessionId": "sess_fix1"}, "protocol": {"name": "ZCode Protocol", "version": 1},
+                           "settings": {"model": {"available": [
+                             {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash", "providerLabel": "zai-api"},
+                             {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3", "providerLabel": "zai-api"}
+                           ]}}}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {"sessionId": "sess_fix1", "scope": "runtime-materialization"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"nativeSearchEnhancementsEnabled": false, "memoryEnabled": false}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {"result": {"sessionId": "sess_fix1", "eventSeq": 0, "events": []}}
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {}}
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

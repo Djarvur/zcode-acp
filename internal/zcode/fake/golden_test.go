@@ -15,7 +15,9 @@ import (
 
 	"github.com/Djarvur/zcode-acp/internal/acpfront"
 	"github.com/Djarvur/zcode-acp/internal/acpport"
+	"github.com/Djarvur/zcode-acp/internal/hostsvc"
 	"github.com/Djarvur/zcode-acp/internal/interact"
+	"github.com/Djarvur/zcode-acp/internal/supervisor"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
@@ -94,7 +96,30 @@ const (
 	// the two re-announce envelopes.
 	reannounceJoinID1 = "fake-3"
 	reannounceJoinID2 = "fake-4"
+
+	// corpusAuthInstall is the synthetic absolute install the auth-apikey
+	// corpus row pushes against. The revision formula hashes the resolved
+	// PATH STRING (the file need not exist), so the fixed string keeps the
+	// recorded push-envelope golden bytes deterministic across machines; the
+	// formula itself is proven path-sensitive at the unit tier
+	// (hostsvc.TestSnapshotEnvelope).
+	corpusAuthBuiltinPath = "/zcode-acp-corpus-fixture/zcode-builtin.json"
+
+	// corpusAuthBuiltinRev is the fixture's recorded builtin revision int
+	// (the 3.18.2-recorded value — EXP-DISCOVERY-01 style probe-time read).
+	corpusAuthBuiltinRev = 44
+
+	// corpusAuthRevision is the injected fixed push revision (the corpus
+	// fixture's synthetic value; the fake's static ack echoes it verbatim).
+	corpusAuthRevision = "account-bridge:corpus-fix1"
 )
+
+// corpusAuthModels returns the personal zai-api models the auth-apikey
+// row's registry surfaces must carry for the read-back verdict
+// (providerId/modelId).
+func corpusAuthModels() []string {
+	return []string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3"}
+}
 
 // errZeroFrameExchange is the exit-0-with-zero-lines failure signature
 // (dialect §1 EOF facts): an exchange that ends with zero recorded frames is
@@ -228,6 +253,7 @@ func goldenDrivers() map[string]driverFunc {
 		"tool-lifecycle":             driveToolLifecycle,
 		"session-lifecycle":          driveSessionLifecycle,
 		"newsession-orphan-close":    driveNewSessionOrphanClose,
+		"auth-apikey":                driveAuthApikey,
 	}
 }
 
@@ -947,6 +973,166 @@ func driveNewSessionOrphanClose(ctx context.Context, d *exchangeDriver) {
 	}
 
 	assertCloseResult(d.t, closeRes)
+}
+
+// driveAuthApikey: the AUTH-01 corpus row (plan 05-06) — the push →
+// refreshRegistry → read-back sequence against the fake. The driver pushes
+// the strict snapshot envelope built by hostsvc over the synthetic fixture
+// install (injected fixed revision — the fake's static ack echoes it
+// verbatim, the pairing the unit tier cannot show), asserts the ack echo
+// pairing, refreshes the registry, and asserts BOTH read-back surfaces: the
+// refresh rule's side-effect state.updated (the emit precedes the rule's
+// reply on the wire, so the notice is already buffered) and the fresh
+// session/create reply's settings.model.available. The golden locks the
+// push envelope bytes — the exact formula revision string computed at
+// runtime over the fixture path — and the whole read-back sequence.
+func driveAuthApikey(ctx context.Context, d *exchangeDriver) {
+	// D-01 posture: the responder answers the create framing's
+	// runtime-preferences reverse (byte-identical to the built-in router).
+	d.conn.OnRequest = interact.NewResponder().Serve
+
+	install := supervisor.Install{
+		Root:        "/zcode-acp-corpus-fixture",
+		Binary:      "/zcode-acp-corpus-fixture/zcode",
+		Entrypoint:  "/zcode-acp-corpus-fixture/resources/glm/zcode.cjs",
+		BuiltinFile: corpusAuthBuiltinPath,
+		Layout:      "explicit",
+	}
+
+	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return corpusAuthRevision }))
+	snap := b.BuildRevision(install, corpusAuthBuiltinRev)
+
+	ack, err := hostsvc.PushEnvelope(ctx, d.conn, snap.Params)
+	if err != nil {
+		d.t.Fatalf("provider/updateAccountConfig: %v", err)
+	}
+
+	// The ack echo pairing: the reply's receivedRevision must echo the
+	// pushed revision verbatim. Receipt evidence only — the verdict below
+	// is the registry's (PITFALL 1).
+	if ack.ReceivedRevision != corpusAuthRevision {
+		d.t.Fatalf("ack receivedRevision = %q, want the pushed revision %q echoed",
+			ack.ReceivedRevision, corpusAuthRevision)
+	}
+
+	if ack.Status != "received" {
+		d.t.Fatalf("ack status = %q, want %q", ack.Status, "received")
+	}
+
+	if ack.ProviderCount != 0 {
+		d.t.Fatalf("ack providerCount = %d, want 0 (the empty overlay)", ack.ProviderCount)
+	}
+
+	if err := hostsvc.RefreshRegistry(ctx, d.conn); err != nil {
+		d.t.Fatalf("provider/refreshRegistry: %v", err)
+	}
+
+	// Read-back surface 1: the registry patch the refresh emitted.
+	waitRegistryModels(d, corpusAuthModels())
+
+	// Read-back surface 2: a fresh create reply's settings.model.available.
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	res := h.create(ctx)
+
+	if got := digCreateReplyModels(res); !containsAll(got, corpusAuthModels()) {
+		d.t.Fatalf("create reply models = %v, want the personal zai-api models intact %v",
+			got, corpusAuthModels())
+	}
+}
+
+// waitRegistryModels waits for a buffered state.updated whose dug registry
+// model set contains want (the registry read-back surface 1).
+func waitRegistryModels(d *exchangeDriver, want []string) {
+	d.t.Helper()
+
+	deadline := time.After(noticeWaitTimeout)
+
+	for {
+		select {
+		case env := <-d.notices:
+			if env.Method != zcode.MethodStateUpdated {
+				continue
+			}
+
+			if got := digRegistryPatchModels(env.Params); containsAll(got, want) {
+				return
+			}
+		case <-deadline:
+			d.t.Fatalf("no state.updated registry patch carrying %v within %v "+
+				"(the read-back verdict is the registry's, never the ack's)", want, noticeWaitTimeout)
+		}
+	}
+}
+
+// digRegistryPatchModels digs patch.providers.<id>.models[] out of a
+// state.updated params payload, normalized to providerId/modelId strings.
+func digRegistryPatchModels(raw json.RawMessage) []string {
+	var params struct {
+		Patch struct {
+			Providers map[string]struct {
+				Models []string `json:"models"`
+			} `json:"providers"`
+		} `json:"patch"`
+	}
+
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil
+	}
+
+	out := make([]string, 0, len(params.Patch.Providers))
+
+	for pid, entry := range params.Patch.Providers {
+		for _, m := range entry.Models {
+			out = append(out, pid+"/"+m)
+		}
+	}
+
+	return out
+}
+
+// digCreateReplyModels digs settings.model.available[].ref out of a create
+// reply result, normalized to providerId/modelId strings.
+func digCreateReplyModels(res json.RawMessage) []string {
+	var result struct {
+		Settings struct {
+			Model struct {
+				Available []struct {
+					Ref struct {
+						ProviderID string `json:"providerId"`
+						ModelID    string `json:"modelId"`
+					} `json:"ref"`
+				} `json:"available"`
+			} `json:"model"`
+		} `json:"settings"`
+	}
+
+	if err := json.Unmarshal(res, &result); err != nil {
+		return nil
+	}
+
+	out := make([]string, 0, len(result.Settings.Model.Available))
+
+	for _, m := range result.Settings.Model.Available {
+		out = append(out, m.Ref.ProviderID+"/"+m.Ref.ModelID)
+	}
+
+	return out
+}
+
+// containsAll reports whether got carries every want string.
+func containsAll(got, want []string) bool {
+	set := make(map[string]struct{}, len(got))
+	for _, g := range got {
+		set[g] = struct{}{}
+	}
+
+	for _, w := range want {
+		if _, ok := set[w]; !ok {
+			return false
+		}
+	}
+
+	return true
 }
 
 // assertResumeSnapshot digs result.session.sessionId out of the resume
