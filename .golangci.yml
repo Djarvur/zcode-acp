@@ -139,6 +139,20 @@ linters:
       - linters: [wrapcheck]
         path: "internal/acpport/.*\\.go"
         text: ".*coder/acp-go-sdk.*"
+      # The acpfront policy layer returns acpport's coded seam errors
+      # UNWRAPPED by contract: the adapter maps acpport.Error onto the SDK's
+      # coded RequestError with the same toReqErr type-assert semantics as
+      # the seam exclusion above (plan 04-06 — front errors must reach the
+      # wire with their codes intact)
+      - linters: [wrapcheck]
+        path: "internal/acpfront/.*\\.go"
+        text: ".*acpport.*"
+      # Front-tier wire-shape tests decode the DIALECT's camelCase payload
+      # keys verbatim (the repo's own tagliatelle contract: wire payloads
+      # keep the capture-verbatim spelling) — snake_case tags would never
+      # match the wire (plan 04-06)
+      - linters: [tagliatelle]
+        path: ".*_test\\.go"
       # Allow unchecked errors in main() init paths
       - linters: [errcheck]
         path: "cmd/.*"

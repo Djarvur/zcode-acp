@@ -2,10 +2,13 @@ package acpfront
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"sync"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/core"
+	"github.com/Djarvur/zcode-acp/internal/turn"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
@@ -36,22 +39,25 @@ import (
 //     app-server event stream routes by turnId only — dialect §5 — so
 //     single-active-turn is the delta-routing precondition).
 type Front struct {
-	baseCtx  context.Context
 	conn     *zcode.Conn
 	registry *core.SessionRegistry
 	model    *ModelSelection
 	version  string
 
+	// newTurnCtx derives a front-owned turn context from the front's base
+	// context (closure-captured in New — the containedctx house rule:
+	// contexts never live in struct fields, conn.go captures the same way).
+	newTurnCtx func() (context.Context, context.CancelFunc)
+
 	// turnMu guards the front-wide turn slot (the single-active-turn
-	// invariant) and the active turn's tap-facing state: the sink the tap
-	// emits through and the turn context it writes on. Held for the turn's
-	// whole lifetime — from Prompt entry to its return.
+	// invariant) and the active turn's tap-facing emitter — the closure
+	// binding the turn's sink, session id, and context into one call the
+	// stream.go tap makes per delta envelope. Nil when no turn is active.
+	// The slot is held for the turn's whole lifetime: from Prompt entry to
+	// its return.
 	turnMu     sync.Mutex
 	turnActive bool
-	turnCancel context.CancelFunc
-	turnCtx    context.Context
-	turnSink   acpport.UpdateSink
-	turnSessID string
+	turnEmit   func(note acpport.SessionNote) error
 }
 
 // ModelSelection is the configured backend model the session/new leg binds
@@ -86,11 +92,18 @@ func WithModel(sel ModelSelection) Option {
 // acpport.NewAgent; the acpport connection binds the update sink that
 // Prompt hands back into the front's turn slot.
 func New(conn *zcode.Conn, opts ...Option) *Front {
+	// The front's base context — the parent of every front-owned turn
+	// context. A process-lifetime context; the cmd wiring derives a
+	// cancellable one when the supervisor lifecycle joins (plan 04-05).
+	baseCtx := context.Background()
+
 	f := &Front{
-		baseCtx:  context.Background(),
 		conn:     conn,
 		registry: core.NewSessionRegistry(),
 		version:  "0.0.0-dev",
+		newTurnCtx: func() (context.Context, context.CancelFunc) {
+			return context.WithCancel(baseCtx)
+		},
 	}
 
 	for _, opt := range opts {
@@ -104,32 +117,180 @@ func New(conn *zcode.Conn, opts ...Option) *Front {
 	return f
 }
 
-// Initialize returns the honest D-02 report (RESEARCH Code Examples:
-// executed-probe shape — protocolVersion 1 and the zero-value capabilities
-// are assembled by the adapter).
+// Initialize returns the honest D-02 report: real agent identity and the
+// two advertised auth methods (zai-api-key and zai-individual-coding-plan —
+// functional in Phases 5-6). Wire capabilities are assembled by the adapter
+// as the SDK zero value — honesty by construction, nothing to suppress
+// (RESEARCH Code Examples: executed-probe shape).
 func (f *Front) Initialize(ctx context.Context) (acpport.InitReport, error) {
 	_ = ctx
 
-	return acpport.InitReport{}, nil // TODO(04-06 GREEN): the honest report
+	return acpport.InitReport{
+		Name:    "zcode-acp",
+		Title:   "zcode-acp agent",
+		Version: f.version,
+		AuthMethods: []acpport.AuthMethodDef{
+			{ID: "zai-api-key", Name: "z.ai API key"},
+			{ID: "zai-individual-coding-plan", Name: "z.ai Individual Coding Plan"},
+		},
+	}, nil
 }
 
-// NewSession runs the D-03 contract on the back leg.
+// NewSession runs the D-03 contract on the back leg: bare session/create
+// (workspaceKey = cwd; no model object — the create path serializes the
+// selection to providerId/modelId and drops options.reasoningLevel,
+// Pitfall 4), session/subscribe {deliveryKind:desktop-continuous} BEFORE
+// any turn (A6 — session/event pushes are gated on the deliveryKind
+// record, Pitfall 1), then the session/setModel follow-up ONLY when a
+// model selection is configured (Open Question 4 resolution) with explicit
+// persistAsWorkspaceLastUsed:false (Open Question 3 resolution). The
+// session's turn machine registers in the core registry before the id
+// returns. mcpServers are accepted and ignored (D-03).
 func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams) (string, error) {
-	_, _ = ctx, params
+	if params.Cwd == "" {
+		return "", acpport.NewInvalidRequest("session/new: cwd required (spec MUST)")
+	}
 
-	return "", nil // TODO(04-06 GREEN): create → subscribe → setModel → register
+	res, err := f.conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
+		"workspace": map[string]any{"workspacePath": params.Cwd, "workspaceKey": params.Cwd},
+	})
+	if err != nil {
+		return "", acpport.NewInternal("session/create: %v", err)
+	}
+
+	sid, err := createSessionID(res)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := f.conn.Call(ctx, zcode.MethodSessionSubscribe, map[string]any{
+		"sessionId":    sid,
+		"deliveryKind": "desktop-continuous",
+	}); err != nil {
+		return "", acpport.NewInternal("session/subscribe: %v", err)
+	}
+
+	if f.model != nil {
+		if _, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
+			"sessionId": sid,
+			"model": map[string]any{
+				"providerId": f.model.ProviderID,
+				"modelId":    f.model.ModelID,
+				"options":    map[string]any{"reasoningLevel": f.model.ReasoningLevel},
+			},
+			"persistAsWorkspaceLastUsed": false,
+		}); err != nil {
+			return "", acpport.NewInternal("session/setModel: %v", err)
+		}
+	}
+
+	// The machine registers on the conn's fan-out AFTER the tap (constructed
+	// earlier, front.go New) — the flush-before-stopReason registration
+	// order. Phase-3 watcher defaults; corpus-grade terminal/cancel signals
+	// resolve turns well inside the quiet-window gates.
+	machine := turn.NewMachine(f.conn, sid, turn.NewPollWatcher(f.conn, turn.PollConfig{}))
+	f.registry.Register(core.Session{ID: sid, Machine: machine, Subscribed: true})
+
+	slog.Info("acpfront: session opened", "session", sid)
+
+	return sid, nil
 }
 
-// Prompt runs one turn (D-04/D-05).
-func (f *Front) Prompt(ctx context.Context, params acpport.PromptParams, sink acpport.UpdateSink) (acpport.StopReason, error) {
-	_, _, _ = ctx, params, sink
+// Prompt runs one prompt turn (D-04/D-05): the front-wide turn slot is
+// acquired for the turn's whole lifetime (the single-active-turn
+// invariant — the delta-routing precondition, see the type doc), the turn
+// context is front-owned (NOT the SDK request ctx — turnctx.go), and the
+// machine's outcome maps onto the neutral stop reasons. Cancelled resolves
+// as a SUCCESS stopReason exactly once; errors surface as coded -32603
+// internal errors (A5 — the ErrTurnActive → invalid-request sharpening is
+// plan 04-05's RED target).
+func (f *Front) Prompt(
+	sdkCtx context.Context, params acpport.PromptParams, sink acpport.UpdateSink,
+) (acpport.StopReason, error) {
+	st, err := f.registry.Get(params.SessionID)
+	if err != nil {
+		return "", acpport.NewInvalidRequest("session/prompt: %v: %s", err, params.SessionID)
+	}
 
-	return "", nil // TODO(04-06 GREEN): turn slot → front-owned ctx → machine.Run
+	turnCtx, release := f.acquireTurn(params.SessionID, sink)
+	if release == nil {
+		return "", acpport.NewInvalidRequest("a prompt is already running for this session")
+	}
+
+	defer release()
+
+	go func() { // cancel fan-in: either source triggers exactly one machine.Cancel
+		select {
+		case <-sdkCtx.Done():
+			st.Machine.Cancel() // idempotent (Phase 3: repeats no-op)
+		case <-turnCtx.Done():
+		}
+	}()
+
+	//nolint:contextcheck // the turn ctx is front-owned BY CONTRACT (Pattern 5,
+	// turnctx.go): deriving it from sdkCtx would surface the SDK's -32800
+	// error instead of the cancelled success stopReason.
+	reason, runErr := st.Machine.Run(turnCtx, params.Text)
+	if runErr != nil {
+		return "", acpport.NewInternal("session/prompt: %v", runErr)
+	}
+
+	switch reason {
+	case turn.StopCompleted:
+		return acpport.StopEndTurn, nil
+	case turn.StopCancelled:
+		return acpport.StopCancelled, nil
+	case turn.StopFailed, turn.StopError:
+		// A5: ACP v1 has no failure stopReason — a backend failure surfaces
+		// as the coded internal error, never a synthetic result.
+		return "", acpport.NewInternal("session/prompt: turn ended: %s", reason)
+	default:
+		return "", acpport.NewInternal("session/prompt: turn ended: %s", reason)
+	}
 }
 
-// Cancel cancels the session's active turn (D-05).
+// Cancel cancels the session's active turn exactly once (D-05): the
+// machine's bypass-lane Cancel is idempotent — repeats and
+// cancel-after-complete are no-ops (Phase 3 proven). The prompt call
+// resolves stopReason cancelled as a SUCCESS response; this handler never
+// touches the turn context — cancelling it would surface the SDK's -32800
+// error instead of the success stopReason (Pitfall 2, turnctx.go).
 func (f *Front) Cancel(ctx context.Context, sessionID string) error {
-	_, _ = ctx, sessionID
+	_ = ctx
 
-	return nil // TODO(04-06 GREEN): registry lookup → machine.Cancel
+	st, err := f.registry.Get(sessionID)
+	if err != nil {
+		return acpport.NewInvalidRequest("session/cancel: %v: %s", err, sessionID)
+	}
+
+	st.Machine.Cancel()
+
+	return nil
+}
+
+// createSessionID digs result.session.sessionId out of the create reply
+// (the happy-turn.json corpus shape); a reply without the id fails loud —
+// the session registry must never hold an empty key. The id digs out
+// through a map because the wire key is the dialect's camelCase (the
+// tagliatelle contract: production decode structs stay snake-safe).
+func createSessionID(res json.RawMessage) (string, error) {
+	var result struct {
+		Session json.RawMessage `json:"session"`
+	}
+
+	if err := json.Unmarshal(res, &result); err != nil {
+		return "", acpport.NewInternal("session/create: decode reply: %v", err)
+	}
+
+	var session map[string]any
+	if err := json.Unmarshal(result.Session, &session); err != nil {
+		return "", acpport.NewInternal("session/create: decode session: %v", err)
+	}
+
+	sid, _ := session["sessionId"].(string)
+	if sid == "" {
+		return "", acpport.NewInternal("session/create: reply carries no session.sessionId")
+	}
+
+	return sid, nil
 }
