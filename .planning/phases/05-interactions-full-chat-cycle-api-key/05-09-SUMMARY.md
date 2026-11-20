@@ -81,7 +81,7 @@ coverage:
     rationale: "Coverage not determined at authoring time — the REAL RUN is the end-of-phase verification act (orchestrator-run, quota-ledgered per D-05), explicitly NOT an executor step (the plan's user_setup.why and the human-check boundary). Everything the run needs is staged and verified: the guarded test, the ledger row, 05-USER-SETUP.md. The verifier must classify after the run executes."
 
 # Metrics
-duration: 26min
+duration: 16min
 completed: 2026-11-20
 status: complete
 
@@ -93,8 +93,8 @@ status: complete
 
 ## Performance
 
-- **Duration:** 26 min
-- **Started / Completed:** 2026-11-20T15:40:26Z / 2026-11-20T16:06:50Z
+- **Duration:** 16 min
+- **Started / Completed:** 2026-11-20T15:40:26Z / 2026-11-20T15:56:23Z
 - **Tasks:** 2 · **Files:** 3 created / 1 modified (+923/-0; test-weighted — the guarded test IS the deliverable)
 
 ## Accomplishments
