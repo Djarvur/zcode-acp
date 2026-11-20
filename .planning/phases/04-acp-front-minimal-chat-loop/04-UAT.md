@@ -3,7 +3,7 @@ status: complete
 phase: 04-ACP Front — Minimal Chat Loop
 source: [04-VERIFICATION.md]
 started: 2026-11-20T03:30:00Z
-updated: 2026-11-20T03:21:10.111Z
+updated: 2026-11-20T03:21:25.938Z
 ---
 
 ## Current Test
@@ -18,7 +18,7 @@ result: pass (2026-11-20, agent) — `TestConcurrentRequestDispatch` written (co
 
 ### 2. Real-client spot check
 expected: Built binary under a real ACP v1 client (`--app-server` shim) — initialize → session/new → streamed turn → mid-turn cancel, exactly-once cancelled.
-result: pass-with-scope-note (2026-11-20, agent) — `TestAgentBinaryEndToEnd` drives the BUILT binary over real exec pipes under the SDK's ClientSideConnection (the reference protocol client implementation): initialize → session/new → end_turn loop → mid-turn cancel → staged shutdown, all green. A NON-SDK real client (Orca chat UI) is the Phase 7 manual-E2E done-criterion (QA-03) — recorded there.
+result: pass (2026-11-20, agent; scope note: non-SDK real client = Phase 7 QA-03) — `TestAgentBinaryEndToEnd` drives the BUILT binary over real exec pipes under the SDK's ClientSideConnection (the reference protocol client implementation): initialize → session/new → end_turn loop → mid-turn cancel → staged shutdown, all green. A NON-SDK real client (Orca chat UI) is the Phase 7 manual-E2E done-criterion (QA-03) — recorded there.
 
 ### 3. Five judgment-tier prohibitions (advertise=implemented; no fake auth success; never synthesize chunks; stdout protocol-exclusive; no paths/content in errors)
 expected: Each judged SATISFIED with cited evidence.
