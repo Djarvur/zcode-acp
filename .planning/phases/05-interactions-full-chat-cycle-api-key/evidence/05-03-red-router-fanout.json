@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run TestRouterFanout ./internal/zcode/",
+  "exitCode": 1,
+  "output": "2026/11/20 13:14:40 WARN zcode: reverse-request deadline expired without an answer method=interaction/requestCredentialCipher id=s:server-1 deadline=60ms\n2026/11/20 13:14:40 WARN zcode: read loop ended err=\"io: read/write on closed pipe\"\n--- FAIL: TestRouterFanout (0.21s)\n    conn_test.go:1275: first event delivery order = [B], want [A B] (registration order, both observers)\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/zcode\t0.224s\nFAIL\nrc1=1\n",
+  "targetTest": "TestRouterFanout",
+  "targetFile": "internal/zcode/conn_test.go",
+  "expected": "TestRouterFanout fails on its planned assertions: both AddRouterObserver observers receive events in registration order ([A B]); removing A stops A deliveries. Build must succeed.",
+  "actual": "TestRouterFanout failed 1/1 assertions: first event delivery order = [B] — the AddRouterObserver RED stub delegates to the last-wins single slot, so observer A never received the event.",
+  "semanticAssessment": "Genuine RED on the planned assertion, not an incidental failure: the target executed and failed on its own planned contract (registration-order violation / degraded-path stolen). Build succeeded beforehand; unrelated tests green. Provenance note: the RED commit (3b54156) landed one classifier run before these evidence files were finalized — the tree state is unchanged (only test files + the RED stub were committed), so this re-run reproduces the committed RED exactly."
+}

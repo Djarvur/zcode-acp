@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run TestTwoMachinesDegradedSignalNotStolen ./internal/turn/",
+  "exitCode": 1,
+  "output": "2026/11/20 13:14:40 WARN zcode: reverse-request deadline expired without an answer method=interaction/requestCredentialCipher id=s:fake-1 deadline=60ms\n2026/11/20 13:14:41 WARN zcode: reverse-request deadline expired without an answer method=interaction/requestCredentialCipher id=s:fake-2 deadline=60ms\n2026/11/20 13:14:41 WARN zcode: read loop ended err=\"io: read/write on closed pipe\"\n--- FAIL: TestTwoMachinesDegradedSignalNotStolen (0.49s)\n    machine_test.go:831: turn 2 reason = \"completed\", want \"error\" — the first machine's degraded-resolution path was stolen (WR-01)\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/turn\t0.496s\nFAIL\nrc2=1\n",
+  "targetTest": "TestTwoMachinesDegradedSignalNotStolen",
+  "targetFile": "internal/turn/machine_test.go",
+  "expected": "Turn 2 on machine 1 (after machine 2 is constructed) resolves degraded exactly once via the router-expiry event — the first machine keeps its degraded-resolution path. Build must succeed.",
+  "actual": "Turn 2 resolved \"completed\" via the quiet-window watcher: the expiry event never reached machine 1 (its observeRouterEvent was stolen by machine 2 construction), so the turn completed normally instead of degrading.",
+  "semanticAssessment": "Genuine RED on the planned assertion, not an incidental failure: the target executed and failed on its own planned contract (registration-order violation / degraded-path stolen). Build succeeded beforehand; unrelated tests green. Provenance note: the RED commit (3b54156) landed one classifier run before these evidence files were finalized — the tree state is unchanged (only test files + the RED stub were committed), so this re-run reproduces the committed RED exactly."
+}
