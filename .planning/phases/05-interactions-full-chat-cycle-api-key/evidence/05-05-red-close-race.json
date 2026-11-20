@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestCloseWhileTurnActiveRace$' ./internal/acpfront/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestCloseWhileTurnActiveRace (0.02s)\n    lifecycle_test.go:327: session/close: {\"code\":-32603,\"message\":\"session/close is not available yet (SESS-01 lifecycle lands with plan 05-05 Task 2)\"}\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpfront\t0.037s\nFAIL\n",
+  "targetTest": "TestCloseWhileTurnActiveRace",
+  "targetFile": "internal/acpfront/lifecycle_test.go",
+  "expected": "The concurrency probe compiles and fails on its planned behavior assertion: close cancels the active turn first, waits bounded, and a second prompt racing the close lands exactly one clean outcome — never a hang, never a resolve-after-removal (three prompts, exactly three outcome frames).",
+  "actual": "The probe executed and failed at its first contract assertion: client.CloseSession answered the coded -32603 not-available error (the teardown contract is unimplemented, so no cancel-first race resolution exists).",
+  "semanticAssessment": "Genuine RED: the target compiled, executed, and failed on the planned behavior (no teardown, hence no race resolution). Not a build failure, not zero-test discovery, not an unrelated assertion."
+}

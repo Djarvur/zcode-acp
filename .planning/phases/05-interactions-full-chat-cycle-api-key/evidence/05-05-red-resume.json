@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestResume$' ./internal/acpfront/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestResume (0.04s)\n    lifecycle_test.go:125: session/resume: {\"code\":-32603,\"message\":\"session/resume is not available yet (SESS-01 lifecycle lands with plan 05-05 Task 2)\"}\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpfront\t0.076s\nFAIL\n",
+  "targetTest": "TestResume",
+  "targetFile": "internal/acpfront/lifecycle_test.go",
+  "expected": "TestResume compiles and fails on its planned behavior assertion: session/resume reattaches (same id back through the create-shaped snapshot, re-issued subscribe, no setModel on the leg, post-resume prompt resolves, zero replayed updates).",
+  "actual": "TestResume executed and failed at its first contract assertion: client.ResumeSession answered the coded -32603 not-available error (the Task-1 compile-presence placeholder in lifecycle.go — the real reattach contract is unimplemented).",
+  "semanticAssessment": "Genuine RED: the target test compiled, executed, and failed on the planned behavior (the reattach contract does not exist yet — the placeholder answers the honest not-available error by design, the 04 Authenticate posture). Not a build failure, not zero-test discovery, not an unrelated assertion."
+}

@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestNewSessionOrphanClosed$' ./internal/acpfront/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestNewSessionOrphanClosed (0.11s)\n    lifecycle_test.go:416: back leg records 0 session/close frames, want exactly 1 (WR-04: the error-path orphan closes)\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpfront\t0.138s\nFAIL\n",
+  "targetTest": "TestNewSessionOrphanClosed",
+  "targetFile": "internal/acpfront/lifecycle_test.go",
+  "expected": "The WR-04 lock compiles and fails on its planned behavior assertion: a session/new whose subscribe refuses after create succeeded answers the coded error AND closes the just-created backend session best-effort (exactly one session/close on the back leg, after the refused subscribe, carrying the created session id).",
+  "actual": "The target executed against the EXISTING NewSession error path: the coded internal error surfaced correctly, but the back leg recorded 0 session/close frames — the error-path orphan is never closed (WR-04 unimplemented).",
+  "semanticAssessment": "Genuine RED on the planned assertion: the target compiled, executed, and failed precisely because WR-04 (best-effort orphan close in NewSession's error path) does not exist yet. Not a build failure, not zero-test discovery, not an unrelated assertion — the same test confirms the error-surfacing half already works, isolating the missing behavior."
+}
