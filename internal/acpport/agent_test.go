@@ -826,6 +826,153 @@ func TestUpdateSinkEmitsChunkShapes(t *testing.T) {
 	expectNoFrame(t, lines, "unknown note kind must not emit a frame")
 }
 
+// Tool-note wire fixture ids and paths (the goconst contract — reused
+// across the table rows).
+const (
+	toolNoteCallID    = "tc1"
+	toolNoteCallID2   = "tc2"
+	toolNoteDiffPath  = "/w/main.go"
+	toolNoteDiffPath2 = "/w/new.go"
+)
+
+// toolNoteCase is one wire-shape table row: a note and its byte-exact
+// expected frame (the SDK wraps each in the JSON-RPC notification
+// envelope — the existing chunk-shape test's contract).
+type toolNoteCase struct {
+	name string
+	note acpport.SessionNote
+	want string
+}
+
+// toolNoteFrame wraps one session/update payload in the JSON-RPC
+// notification envelope for the fixture session — the rows compose their
+// expected update payloads through it.
+func toolNoteFrame(update string) string {
+	return `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` +
+		testSessionID + `","update":{` + update + `}}}`
+}
+
+// toolNoteCases is the wire-shape table: one note per row, the byte-exact
+// expected frame.
+func toolNoteCases() []toolNoteCase {
+	return append(editToolNoteCases(), writeToolNoteCase())
+}
+
+// editToolNoteCases covers the tc1 lifecycle: the start card with diff,
+// locations, and verbatim raw input; the patch-semantics update; the
+// result re-emitting the diff with rawOutput.
+func editToolNoteCases() []toolNoteCase {
+	return []toolNoteCase{
+		{
+			name: "start note renders tool_call with diff, locations, raw input",
+			note: acpport.SessionNote{
+				SessionID: testSessionID,
+				Kind:      acpport.NoteTool,
+				Tool: &acpport.ToolNote{
+					ToolCallID: toolNoteCallID,
+					IsStart:    true,
+					Title:      "Edit main.go",
+					Name:       "Edit",
+					Kind:       acpport.ToolKindEdit,
+					Status:     acpport.ToolStatusPending,
+					RawInput: json.RawMessage(
+						`{"file_path":"` + toolNoteDiffPath + `","old_string":"a","new_string":"b"}`),
+					Diff:      &acpport.ToolDiff{Path: toolNoteDiffPath, OldText: "a", NewText: "b"},
+					Locations: []acpport.ToolLocation{{Path: toolNoteDiffPath}},
+				},
+			},
+			want: toolNoteFrame(
+				`"content":[{"newText":"b","oldText":"a","path":"` + toolNoteDiffPath + `","type":"diff"}],` +
+					`"kind":"edit","locations":[{"path":"` + toolNoteDiffPath + `"}],` +
+					`"name":"Edit","rawInput":{"file_path":"` + toolNoteDiffPath + `",` +
+					`"old_string":"a","new_string":"b"},"sessionUpdate":"tool_call",` +
+					`"status":"pending","title":"Edit main.go","toolCallId":"` + toolNoteCallID + `"`),
+		},
+		{
+			name: "update note carries only the changed field (patch semantics)",
+			note: acpport.SessionNote{
+				SessionID: testSessionID,
+				Kind:      acpport.NoteTool,
+				Tool: &acpport.ToolNote{
+					ToolCallID: toolNoteCallID,
+					Status:     acpport.ToolStatusInProgress,
+				},
+			},
+			want: toolNoteFrame(
+				`"sessionUpdate":"tool_call_update","status":"in_progress",` +
+					`"toolCallId":"` + toolNoteCallID + `"`),
+		},
+		{
+			name: "result note re-emits the diff and completes with raw output",
+			note: acpport.SessionNote{
+				SessionID: testSessionID,
+				Kind:      acpport.NoteTool,
+				Tool: &acpport.ToolNote{
+					ToolCallID: toolNoteCallID,
+					Status:     acpport.ToolStatusCompleted,
+					RawOutput:  json.RawMessage(`{"ok":true}`),
+					Diff:       &acpport.ToolDiff{Path: toolNoteDiffPath, OldText: "a", NewText: "b"},
+				},
+			},
+			want: toolNoteFrame(
+				`"content":[{"newText":"b","oldText":"a","path":"` + toolNoteDiffPath + `","type":"diff"}],` +
+					`"rawOutput":{"ok":true},"sessionUpdate":"tool_call_update",` +
+					`"status":"completed","toolCallId":"` + toolNoteCallID + `"`),
+		},
+	}
+}
+
+// writeToolNoteCase covers the tc2 new-file shape: oldText absent on the
+// wire (empty OldText renders no old text).
+func writeToolNoteCase() toolNoteCase {
+	return toolNoteCase{
+		name: "new-file write shape omits oldText on the wire",
+		note: acpport.SessionNote{
+			SessionID: testSessionID,
+			Kind:      acpport.NoteTool,
+			Tool: &acpport.ToolNote{
+				ToolCallID: toolNoteCallID2,
+				IsStart:    true,
+				Title:      "Write new.go",
+				Name:       "Write",
+				Kind:       acpport.ToolKindEdit,
+				Status:     acpport.ToolStatusPending,
+				RawInput:   json.RawMessage(`{"content":"file body","file_path":"` + toolNoteDiffPath2 + `"}`),
+				Diff:       &acpport.ToolDiff{Path: toolNoteDiffPath2, NewText: "file body"},
+			},
+		},
+		want: toolNoteFrame(
+			`"content":[{"newText":"file body","path":"` + toolNoteDiffPath2 + `","type":"diff"}],` +
+				`"kind":"edit","name":"Write","rawInput":{"content":"file body",` +
+				`"file_path":"` + toolNoteDiffPath2 + `"},"sessionUpdate":"tool_call",` +
+				`"status":"pending","title":"Write new.go","toolCallId":"` + toolNoteCallID2 + `"`),
+	}
+}
+
+// syncBuffer is a mutex-guarded bytes.Buffer — the write side serves the
+// default slog handler (including other tests' background goroutines),
+// the read side is the assertion snapshot.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+// Write appends p under the mutex (io.Writer).
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.buf.Write(p)
+}
+
+// String snapshots the buffer under the mutex.
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.buf.String()
+}
+
 // TestToolNote (plan 05-04 Task 1 RED target) locks the TOOL-01 sink
 // translation on recorded session/update wire frames: the neutral ToolNote
 // vocabulary maps onto the SDK's tool vocabulary byte-exactly —
@@ -863,90 +1010,7 @@ func TestToolNote(t *testing.T) {
 
 	ctx := context.Background()
 
-	// The wire-shape table: one note per row, the byte-exact expected frame
-	// (the SDK wraps each in the JSON-RPC notification envelope — the
-	// existing chunk-shape test's contract).
-	cases := []struct {
-		name string
-		note acpport.SessionNote
-		want string
-	}{
-		{
-			name: "start note renders tool_call with diff, locations, raw input",
-			note: acpport.SessionNote{
-				SessionID: testSessionID,
-				Kind:      acpport.NoteTool,
-				Tool: &acpport.ToolNote{
-					ToolCallID: "tc1",
-					IsStart:    true,
-					Title:      "Edit main.go",
-					Name:       "Edit",
-					Kind:       acpport.ToolKindEdit,
-					Status:     acpport.ToolStatusPending,
-					RawInput:   json.RawMessage(`{"file_path":"/w/main.go","old_string":"a","new_string":"b"}`),
-					Diff:       &acpport.ToolDiff{Path: "/w/main.go", OldText: "a", NewText: "b"},
-					Locations:  []acpport.ToolLocation{{Path: "/w/main.go"}},
-				},
-			},
-			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
-				`","update":{"content":[{"newText":"b","oldText":"a","path":"/w/main.go","type":"diff"}],` +
-				`"kind":"edit","locations":[{"path":"/w/main.go"}],"name":"Edit",` +
-				`"rawInput":{"file_path":"/w/main.go","old_string":"a","new_string":"b"},` +
-				`"sessionUpdate":"tool_call","status":"pending","title":"Edit main.go","toolCallId":"tc1"}}}`,
-		},
-		{
-			name: "update note carries only the changed field (patch semantics)",
-			note: acpport.SessionNote{
-				SessionID: testSessionID,
-				Kind:      acpport.NoteTool,
-				Tool: &acpport.ToolNote{
-					ToolCallID: "tc1",
-					Status:     acpport.ToolStatusInProgress,
-				},
-			},
-			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
-				`","update":{"sessionUpdate":"tool_call_update","status":"in_progress","toolCallId":"tc1"}}}`,
-		},
-		{
-			name: "result note re-emits the diff and completes with raw output",
-			note: acpport.SessionNote{
-				SessionID: testSessionID,
-				Kind:      acpport.NoteTool,
-				Tool: &acpport.ToolNote{
-					ToolCallID: "tc1",
-					Status:     acpport.ToolStatusCompleted,
-					RawOutput:  json.RawMessage(`{"ok":true}`),
-					Diff:       &acpport.ToolDiff{Path: "/w/main.go", OldText: "a", NewText: "b"},
-				},
-			},
-			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
-				`","update":{"content":[{"newText":"b","oldText":"a","path":"/w/main.go","type":"diff"}],` +
-				`"rawOutput":{"ok":true},"sessionUpdate":"tool_call_update","status":"completed","toolCallId":"tc1"}}}`,
-		},
-		{
-			name: "new-file write shape omits oldText on the wire",
-			note: acpport.SessionNote{
-				SessionID: testSessionID,
-				Kind:      acpport.NoteTool,
-				Tool: &acpport.ToolNote{
-					ToolCallID: "tc2",
-					IsStart:    true,
-					Title:      "Write new.go",
-					Name:       "Write",
-					Kind:       acpport.ToolKindEdit,
-					Status:     acpport.ToolStatusPending,
-					RawInput:   json.RawMessage(`{"content":"file body","file_path":"/w/new.go"}`),
-					Diff:       &acpport.ToolDiff{Path: "/w/new.go", NewText: "file body"},
-				},
-			},
-			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
-				`","update":{"content":[{"newText":"file body","path":"/w/new.go","type":"diff"}],` +
-				`"kind":"edit","name":"Write","rawInput":{"content":"file body","file_path":"/w/new.go"},` +
-				`"sessionUpdate":"tool_call","status":"pending","title":"Write new.go","toolCallId":"tc2"}}}`,
-		},
-	}
-
-	for _, tc := range cases {
+	for _, tc := range toolNoteCases() {
 		if err := sink(ctx, tc.note); err != nil {
 			t.Fatalf("%s: sink: %v", tc.name, err)
 		}
@@ -977,10 +1041,13 @@ func TestToolNote(t *testing.T) {
 // the block content (the base64 payload must not appear anywhere in the
 // log record).
 func TestUnsupportedPromptBlocksWarnStructural(t *testing.T) {
-	var logBuf bytes.Buffer
+	// The log buffer is mutex-guarded: the swapped-in default handler ALSO
+	// receives the SDK's background connection logs from other tests'
+	// goroutines, and the test's own reads must not race those writes.
+	var logs syncBuffer
 
 	prevLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	h := newScriptedHandlers()
@@ -1009,17 +1076,17 @@ func TestUnsupportedPromptBlocksWarnStructural(t *testing.T) {
 		t.Fatalf("joined prompt text = %q, want %q (held blocks contribute nothing)", prompted[0].Text, "before after")
 	}
 
-	logs := logBuf.String()
+	recorded := logs.String()
 
-	if !strings.Contains(logs, "unsupported prompt content blocks held") {
-		t.Fatalf("no drop-site warn recorded:\n%s", logs)
+	if !strings.Contains(recorded, "unsupported prompt content blocks held") {
+		t.Fatalf("no drop-site warn recorded:\n%s", recorded)
 	}
 
-	if !strings.Contains(logs, "image=1") || !strings.Contains(logs, "audio=1") {
-		t.Fatalf("drop-site warn must carry kinds and counts (image=1, audio=1):\n%s", logs)
+	if !strings.Contains(recorded, "image=1") || !strings.Contains(recorded, "audio=1") {
+		t.Fatalf("drop-site warn must carry kinds and counts (image=1, audio=1):\n%s", recorded)
 	}
 
-	if strings.Contains(logs, secretPixel) {
+	if strings.Contains(recorded, secretPixel) {
 		t.Fatal("drop-site warn leaked block content — the warn carries kinds and counts ONLY")
 	}
 }

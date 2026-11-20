@@ -86,12 +86,12 @@ func (f *Front) observeEnvelope(env zcode.Envelope) {
 
 	// The envelope header keys dig out camelCase-safe (the tagliatelle
 	// contract: production decode structs stay snake-safe — single-word
-	// keys only here, the payload digs through raw maps below).
+	// keys in the struct; the camelCase turnId and the payload dig through
+	// raw maps below).
 	var params struct {
 		Type    string          `json:"type"`
 		Field   string          `json:"field"`
 		Delta   string          `json:"delta"`
-		TurnID  string          `json:"turnId"`
 		Payload json.RawMessage `json:"payload"`
 	}
 
@@ -99,11 +99,13 @@ func (f *Front) observeEnvelope(env zcode.Envelope) {
 		return
 	}
 
+	turnID := wireString(env.Params, "turnId")
+
 	switch params.Type {
 	case kindPartDelta:
-		f.observePartDelta(params.Field, params.Delta, params.TurnID)
+		f.observePartDelta(params.Field, params.Delta, turnID)
 	case "tool.updated":
-		f.observeToolUpdated(params.Payload, params.TurnID)
+		f.observeToolUpdated(params.Payload, turnID)
 	}
 }
 
@@ -290,12 +292,9 @@ func decodeToolPayload(raw json.RawMessage) (toolPayload, bool) {
 		ToolName:    rawString(obj["toolName"]),
 		Description: rawString(obj["description"]),
 		Source:      rawString(obj["source"]),
+		Background:  rawBool(obj["background"]),
 		Input:       obj["input"],
 		Result:      obj["result"],
-	}
-
-	if b, err := rawBool(obj["background"]); err == nil {
-		p.Background = b
 	}
 
 	return p, true
@@ -408,15 +407,38 @@ func rawString(raw json.RawMessage) string {
 	return s
 }
 
-// rawBool decodes one raw JSON member as a bool.
-func rawBool(raw json.RawMessage) (bool, error) {
+// rawBool decodes one raw JSON member as a bool; absent or undecodable
+// members decode as false (the observation-only posture — background
+// mirrors are held on the positive marker only).
+func rawBool(raw json.RawMessage) bool {
 	var b bool
 
-	if err := json.Unmarshal(raw, &b); err != nil {
-		return false, err
+	if len(raw) == 0 {
+		return false
 	}
 
-	return b, nil
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return false
+	}
+
+	return b
+}
+
+// wireString digs one top-level string member out of a raw params payload
+// — the camelCase wire keys go through a raw map (the tagliatelle
+// contract; the machine.go paramsString discipline).
+func wireString(raw json.RawMessage, key string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var obj map[string]json.RawMessage
+
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+
+	return rawString(obj[key])
 }
 
 // firstNonEmpty returns the first non-empty string (the title recipe:

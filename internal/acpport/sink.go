@@ -73,38 +73,7 @@ func noteToNotification(note SessionNote) (acp.SessionNotification, error) {
 // empty (the new-file Write shape per the ACP tool-calls spec).
 func toolUpdate(t *ToolNote) acp.SessionUpdate {
 	if t.IsStart {
-		opts := make([]acp.ToolCallStartOpt, 0, 6)
-
-		if t.Kind != "" {
-			opts = append(opts, acp.WithStartKind(acp.ToolKind(t.Kind)))
-		}
-
-		if t.Status != "" {
-			opts = append(opts, acp.WithStartStatus(acp.ToolCallStatus(t.Status)))
-		}
-
-		if len(t.Locations) > 0 {
-			locations := make([]acp.ToolCallLocation, len(t.Locations))
-			for i, loc := range t.Locations {
-				locations[i] = acp.ToolCallLocation{Path: loc.Path}
-			}
-
-			opts = append(opts, acp.WithStartLocations(locations))
-		}
-
-		if content := toolContent(t.Diff); content != nil {
-			opts = append(opts, acp.WithStartContent(content))
-		}
-
-		if t.RawInput != nil {
-			opts = append(opts, acp.WithStartRawInput(t.RawInput))
-		}
-
-		if t.Name != "" {
-			opts = append(opts, acp.WithStartName(t.Name))
-		}
-
-		return acp.StartToolCall(acp.ToolCallId(t.ToolCallID), t.Title, opts...)
+		return acp.StartToolCall(acp.ToolCallId(t.ToolCallID), t.Title, startOpts(t)...)
 	}
 
 	var opts []acp.ToolCallUpdateOpt
@@ -122,6 +91,44 @@ func toolUpdate(t *ToolNote) acp.SessionUpdate {
 	}
 
 	return acp.UpdateToolCall(acp.ToolCallId(t.ToolCallID), opts...)
+}
+
+// startOpts assembles the start frame's populated-field options in the
+// order that keeps rawInput verbatim (see toolUpdate). Only populated
+// fields map — unset note fields leave the corresponding wire fields out.
+func startOpts(t *ToolNote) []acp.ToolCallStartOpt {
+	var opts []acp.ToolCallStartOpt
+
+	if t.Kind != "" {
+		opts = append(opts, acp.WithStartKind(acp.ToolKind(t.Kind)))
+	}
+
+	if t.Status != "" {
+		opts = append(opts, acp.WithStartStatus(acp.ToolCallStatus(t.Status)))
+	}
+
+	if len(t.Locations) > 0 {
+		locations := make([]acp.ToolCallLocation, len(t.Locations))
+		for i, loc := range t.Locations {
+			locations[i] = acp.ToolCallLocation{Path: loc.Path}
+		}
+
+		opts = append(opts, acp.WithStartLocations(locations))
+	}
+
+	if content := toolContent(t.Diff); content != nil {
+		opts = append(opts, acp.WithStartContent(content))
+	}
+
+	if t.RawInput != nil {
+		opts = append(opts, acp.WithStartRawInput(t.RawInput))
+	}
+
+	if t.Name != "" {
+		opts = append(opts, acp.WithStartName(t.Name))
+	}
+
+	return opts
 }
 
 // toolContent renders the note's diff as the SDK's diff tool-call content

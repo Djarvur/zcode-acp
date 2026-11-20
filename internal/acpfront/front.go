@@ -74,6 +74,7 @@ type Front struct {
 	turnID     string
 	turnCwd    string
 	turnDiffs  map[string]acpport.ToolDiff
+	turnPump   *turnPump
 
 	// cwdMu guards the session-cwd registry (session id → the validated
 	// absolute cwd from session/new) — acquireTurn copies the active
@@ -284,6 +285,15 @@ func (f *Front) Prompt(
 	// turnctx.go): deriving it from sdkCtx would surface the SDK's -32800
 	// error instead of the cancelled success stopReason.
 	reason, runErr := st.Machine.Run(turnCtx, params.Text)
+
+	// WR-03 fail-loud gate (plan 05-04): a stream-ceiling breach fails the
+	// turn REGARDLESS of how the machine resolved — the streamed output
+	// dropped at the ceiling, so a success stopReason would be dishonest.
+	// The breach error is the coded prompt error naming the cause.
+	if breach := f.turnBreach(); breach != nil {
+		return "", breach
+	}
+
 	if runErr != nil {
 		// The concurrency guard (CORE-05): the machine's ErrTurnActive — its
 		// backend-refusal leg being the numeric -32010 mapping — is the same
@@ -347,15 +357,6 @@ func (f *Front) recordCwd(sessionID, cwd string) {
 	f.cwds[sessionID] = cwd
 }
 
-// sessionCwd returns the recorded cwd for one session ("" when unknown —
-// the tap then passes backend paths through unchanged).
-func (f *Front) sessionCwd(sessionID string) string {
-	f.cwdMu.Lock()
-	defer f.cwdMu.Unlock()
-
-	return f.cwds[sessionID]
-}
-
 // turnScope copies the active turn's emitter out under the slot lock and
 // applies the IN-05 turn-id guard (record-on-first-sight; a foreign-turnId
 // envelope is not scoped). The emit call itself happens OUTSIDE the lock —
@@ -416,6 +417,21 @@ func (f *Front) turnDiffFor(toolCallID string) (acpport.ToolDiff, bool) {
 	diff, ok := f.turnDiffs[toolCallID]
 
 	return diff, ok
+}
+
+// turnBreach returns the active turn's recorded stream-ceiling breach, if
+// any (the WR-03 fail-loud path). Prompt gates on this BEFORE mapping the
+// machine outcome: a turn that dropped streamed output at the ceiling must
+// never answer a success stopReason.
+func (f *Front) turnBreach() error {
+	f.turnMu.Lock()
+	defer f.turnMu.Unlock()
+
+	if f.turnPump == nil {
+		return nil
+	}
+
+	return f.turnPump.breachErr()
 }
 
 // createSessionID digs result.session.sessionId out of the create reply

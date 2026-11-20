@@ -109,87 +109,55 @@ func testToolLifecycleEdit(t *testing.T) {
 
 	updates := h.Updates()
 
-	// Exactly the client-visible frames: 4 tool frames + 1 same-turn text
-	// chunk. A batch card, a subagent child card, or a foreign delta would
-	// break this count.
-	if got := len(updates); got != 5 {
-		t.Fatalf("leg 1 collected %d updates, want exactly 5 (4 tool frames + 1 text chunk) — "+
-			"batch/subagent mirrors must stay log-only and foreign deltas suppressed; got: %s",
-			got, updateKinds(updates))
-	}
+	// Coalescing-aware composition lock (WR-03, same plan): the per-turn
+	// pump may coalesce same-toolCallId patches keep-latest under drain
+	// pressure, so the intermediate in_progress count is pressure-dependent
+	// — the deterministic invariants are the ORDER (start card → patches →
+	// same-turn text), exactly ONE start card (batch/subagent mirrors never
+	// render), the terminal completed patch, the lossless text delta, and
+	// the foreign delta's absence. The byte-level ORDER of the backend
+	// envelopes is golden-locked at the fake tier.
 
-	starts := toolUpdates(updates)
-	if len(starts) != 1 {
-		t.Fatalf("leg 1 collected %d tool_call starts, want exactly 1 (tc1; batch/subagent never render)", len(starts))
-	}
+	assertEditStartCard(t, updates, sid)
 
-	start := starts[0].Update.ToolCall
+	assertEditPatchSequence(t, updates)
+	assertForeignSuppression(t, h)
+	assertToolFramesBeforeResponse(t, h, "leg 1")
+}
 
-	if starts[0].SessionID != sid {
-		t.Fatalf("tool_call session id = %q, want %q", starts[0].SessionID, sid)
-	}
+// assertEditPatchSequence checks leg 1's patch stream in lifecycle order:
+// any in_progress patches the drain delivered precede the terminal
+// completed patch (keep-latest never drops the LAST same-id note — the
+// completed result is always delivered, and it is always the last patch),
+// with the rawOutput verbatim and the diff re-emitted (clients render
+// early; ACP update content merges per spec).
+func assertEditPatchSequence(t *testing.T, updates []ACPUpdate) {
+	t.Helper()
 
-	if start.ToolCallId != "tc1" {
-		t.Fatalf("tool_call toolCallId = %q, want tc1", start.ToolCallId)
-	}
-
-	if start.Title != "Edit main.go" {
-		t.Fatalf("tool_call title = %q, want %q (title from description)", start.Title, "Edit main.go")
-	}
-
-	if start.Name == nil || *start.Name != "Edit" {
-		t.Fatalf("tool_call name = %v, want Edit", start.Name)
-	}
-
-	if start.Kind != acp.ToolKindEdit {
-		t.Fatalf("tool_call kind = %q, want edit (the Edit mapping row)", start.Kind)
-	}
-
-	if start.Status != acp.ToolCallStatusPending {
-		t.Fatalf("tool_call status = %q, want pending (scheduled starts pending)", start.Status)
-	}
-
-	wantPath := toolLifecycleCwd + "/src/main.go"
-
-	if len(start.Content) != 1 || start.Content[0].Diff == nil {
-		t.Fatalf("tool_call carries no diff content: %s", updateKinds(updates))
-	}
-
-	diff := start.Content[0].Diff
-
-	if diff.Path != wantPath {
-		t.Fatalf("diff path = %q, want %q (absolute, resolved against the session cwd)", diff.Path, wantPath)
-	}
-
-	if diff.NewText != "new body" || diff.OldText == nil || *diff.OldText != "old body" {
-		t.Fatalf("diff fields = (new %q, old %v), want (new %q, old %q)", diff.NewText, diff.OldText, "new body", "old body")
-	}
-
-	if len(start.Locations) != 1 || start.Locations[0].Path != wantPath {
-		t.Fatalf("tool_call locations = %v, want [{path %q}]", start.Locations, wantPath)
-	}
-
-	// The ordered patch sequence: in_progress (started), in_progress
-	// (progress), completed (result, rawOutput + diff re-emitted).
 	patches := toolPatchUpdates(updates)
-	if len(patches) != 3 {
-		t.Fatalf("leg 1 collected %d tool_call_update patches, want exactly 3", len(patches))
+	if len(patches) == 0 {
+		t.Fatalf("leg 1 collected zero tool_call_update patches — at least the terminal patch must stream; got: %s",
+			updateKinds(updates))
 	}
 
-	wantStatus := []acp.ToolCallStatus{acp.ToolCallStatusInProgress, acp.ToolCallStatusInProgress, acp.ToolCallStatusCompleted}
-	for i, want := range wantStatus {
+	for i := range patches {
 		got := patches[i].Update.ToolCallUpdate
 
-		if got.ToolCallId != "tc1" {
-			t.Fatalf("patch[%d] toolCallId = %q, want tc1", i, got.ToolCallId)
+		if got.ToolCallId != permToolCallID {
+			t.Fatalf("patch[%d] toolCallId = %q, want %q", i, got.ToolCallId, permToolCallID)
+		}
+
+		want := acp.ToolCallStatusInProgress
+		if i == len(patches)-1 {
+			want = acp.ToolCallStatusCompleted
 		}
 
 		if status, _ := got.Status.Value(); status != want {
-			t.Fatalf("patch[%d] status = %v, want %q", i, got.Status, want)
+			t.Fatalf("patch[%d] status = %q, want %q (lifecycle order; completed is the last patch)", i, status, want)
 		}
 	}
 
-	resultPatch := patches[2].Update.ToolCallUpdate
+	resultPatch := patches[len(patches)-1].Update.ToolCallUpdate
 
 	raw, _ := resultPatch.RawOutput.Value()
 	if string(raw) != `{"ok":true,"display":{"kind":"diff"}}` {
@@ -200,8 +168,15 @@ func testToolLifecycleEdit(t *testing.T) {
 	if len(content) != 1 || content[0].Diff == nil || content[0].Diff.NewText != "new body" {
 		t.Fatalf("result patch must re-emit the diff (clients render early), got %s", updateKinds(updates))
 	}
+}
 
-	// The same-turn text delta streamed; the foreign one did not.
+// assertForeignSuppression checks the same-turn text delta streamed
+// losslessly and the foreign-turnId delta never reached the wire (IN-05).
+func assertForeignSuppression(t *testing.T, h *FrontHarness) {
+	t.Helper()
+
+	updates := h.Updates()
+
 	messages := messageUpdates(updates)
 	if len(messages) != 1 || chunkText(messages[0].Update) != "done text" {
 		t.Fatalf("message chunks = %s, want exactly the same-turn 'done text' delta", updateKinds(updates))
@@ -212,8 +187,6 @@ func testToolLifecycleEdit(t *testing.T) {
 			t.Fatalf("foreign-turnId delta reached the ACP wire (IN-05 violated): %s", line.JSON)
 		}
 	}
-
-	assertToolFramesBeforeResponse(t, h, "leg 1")
 }
 
 // testToolLifecycleWrite drives prompt 2 (the Write lifecycle) and asserts
@@ -252,14 +225,28 @@ func testToolLifecycleWrite(t *testing.T) {
 		t.Fatalf("stopReason = %q, want %q", resp.StopReason, acp.StopReasonEndTurn)
 	}
 
+	assertWriteStartCard(t, h)
+
+	assertWriteStartWire(t, h)
+
+	assertToolFramesBeforeResponse(t, h, "leg 2")
+}
+
+// assertWriteStartCard checks leg 2's single tc2 tool_call start: the
+// Write mapping row (kind edit, pending) and the new-file diff recipe —
+// absolute path, newText only, oldText nil on the decoded surface.
+func assertWriteStartCard(t *testing.T, h *FrontHarness) {
+	t.Helper()
+
 	// The collector spans both prompts of this harness — the leg-2 starts
 	// are the tc2 rows (the warm-up prompt's tc1 start stays in the same
 	// collection, so the filter is by id, not by count).
 	var starts []ACPUpdate
 
-	for _, u := range toolUpdates(h.Updates()) {
-		if u.Update.ToolCall.ToolCallId == "tc2" {
-			starts = append(starts, u)
+	tc2Starts := toolUpdates(h.Updates())
+	for i := range tc2Starts {
+		if tc2Starts[i].Update.ToolCall.ToolCallId == "tc2" {
+			starts = append(starts, tc2Starts[i])
 		}
 	}
 
@@ -297,32 +284,6 @@ func testToolLifecycleWrite(t *testing.T) {
 	if diff.OldText != nil {
 		t.Fatalf("write diff oldText = %q, want nil (a new file renders no old text)", *diff.OldText)
 	}
-
-	// The raw wire truth: the tc2 tool_call frame carries newText and NOT
-	// oldText — the omission is a wire property, not just a decoded nil.
-	var startFrame string
-
-	for _, line := range h.ACPLines() {
-		if line.Dir == "in" && strings.Contains(line.JSON, `"toolCallId":"tc2"`) && strings.Contains(line.JSON, `"tool_call"`) {
-			startFrame = line.JSON
-
-			break
-		}
-	}
-
-	if startFrame == "" {
-		t.Fatal("no tool_call frame for tc2 on the tee")
-	}
-
-	if !strings.Contains(startFrame, `"newText":"file body"`) {
-		t.Fatalf("tc2 tool_call frame carries no newText: %s", startFrame)
-	}
-
-	if strings.Contains(startFrame, `"oldText"`) {
-		t.Fatalf("tc2 tool_call frame carries oldText — the new-file shape must omit it: %s", startFrame)
-	}
-
-	assertToolFramesBeforeResponse(t, h, "leg 2")
 }
 
 // assertToolFramesBeforeResponse checks that every tool_call /
@@ -484,27 +445,18 @@ func testBackpressureReadLoopLive(t *testing.T) {
 		return nil
 	}
 
-	type promptResult struct {
-		reason acpport.StopReason
-		err    error
-	}
-
-	done := make(chan promptResult, 1)
+	promptDone := make(chan gatedPromptResult, 1)
 
 	go func() {
-		reason, err := h.front.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "hi"}, sink)
-		done <- promptResult{reason: reason, err: err}
+		promptDone <- driveGatedPrompt(ctx, t, h, sid, sink)
 	}()
 
 	time.Sleep(backpressureSettle) // the whole scripted exchange enqueues behind the park
 
-	var res promptResult
-
-	select {
-	case res = <-done:
-		// The proof: resolved while the gate is still closed.
-	case <-time.After(backpressureWait):
-		t.Fatal("prompt never resolved while the sink gate stayed closed — "+
+	// The proof: resolved while the gate is still closed.
+	res := <-promptDone
+	if res.timedOut {
+		t.Fatal("prompt never resolved while the sink gate stayed closed — " +
 			"the backend read loop parked on the stalled ACP write (the WR-03 defect)")
 	}
 
@@ -535,42 +487,21 @@ func testBackpressureCoalesce(t *testing.T) {
 
 	gate := make(chan struct{})
 
-	var (
-		mu   sync.Mutex
-		seen []acpport.SessionNote
-	)
+	collector := newStartParkingCollector(gate)
 
-	sink := func(_ context.Context, note acpport.SessionNote) error {
-		mu.Lock()
-		seen = append(seen, note)
-		mu.Unlock()
-
-		if note.Kind == acpport.NoteTool && note.Tool != nil && note.Tool.IsStart {
-			<-gate // park the drain on the start card: everything else queues
-		}
-
-		return nil
-	}
-
-	type promptResult struct {
-		reason acpport.StopReason
-		err    error
-	}
-
-	done := make(chan promptResult, 1)
+	promptDone := make(chan gatedPromptResult, 1)
 
 	go func() {
-		reason, err := h.front.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "hi"}, sink)
-		done <- promptResult{reason: reason, err: err}
+		promptDone <- driveGatedPrompt(ctx, t, h, sid, collector.sink)
 	}()
 
 	time.Sleep(backpressureSettle) // scheduled + started + progress + result all enqueue
 	close(gate)                    // release the drain: keep-latest delivers
 
-	var res promptResult
+	var res gatedPromptResult
 
 	select {
-	case res = <-done:
+	case res = <-promptDone:
 	case <-time.After(backpressureWait):
 		t.Fatal("prompt never resolved after the gate opened")
 	}
@@ -583,21 +514,19 @@ func testBackpressureCoalesce(t *testing.T) {
 		t.Fatalf("coalescing turn resolved %q, want end_turn", res.reason)
 	}
 
-	mu.Lock()
-	seenCopy := seen
-	mu.Unlock()
-
 	var patches []string
 
-	for _, note := range seenCopy {
-		if note.Kind == acpport.NoteTool && note.Tool != nil && !note.Tool.IsStart && note.Tool.ToolCallID == "tc1" {
-			patches = append(patches, note.Tool.Status)
+	for _, note := range collector.snapshot() {
+		if !isTc1Patch(&note) {
+			continue
 		}
+
+		patches = append(patches, note.Tool.Status)
 	}
 
 	if len(patches) != 1 {
-		t.Fatalf("tc1 delivered %d tool_call_update frames (%v), want exactly 1 — "+
-			"intermediate same-toolCallId updates must coalesce keep-latest behind a parked drain", len(patches), patches)
+		t.Fatalf("tc1 delivered %d tool_call_update frames (%v), want exactly 1 — intermediate "+
+			"same-toolCallId updates must coalesce keep-latest behind a parked drain", len(patches), patches)
 	}
 
 	if patches[0] != acpport.ToolStatusCompleted {
@@ -647,4 +576,187 @@ func testBackpressureCeiling(t *testing.T) {
 		t.Fatalf("%d notes were delivered past a breached ceiling — the breach must fail the turn, "+
 			"never stream a partial", got)
 	}
+}
+
+// assertEditStartCard checks leg 1's single tc1 tool_call start: the
+// title/kind/status mapping row and the diff recipe (absolute path,
+// old/new text) with the location — the Pattern-4 mapping table at the
+// composed tier.
+func assertEditStartCard(t *testing.T, updates []ACPUpdate, sid string) {
+	t.Helper()
+
+	starts := toolUpdates(updates)
+	if len(starts) != 1 {
+		t.Fatalf("leg 1 collected %d tool_call starts, want exactly 1 "+
+			"(batch/subagent mirrors never render)", len(starts))
+	}
+
+	start := starts[0].Update.ToolCall
+
+	if starts[0].SessionID != sid {
+		t.Fatalf("tool_call session id = %q, want %q", starts[0].SessionID, sid)
+	}
+
+	if start.ToolCallId != permToolCallID {
+		t.Fatalf("tool_call toolCallId = %q, want %q", start.ToolCallId, permToolCallID)
+	}
+
+	if start.Title != "Edit main.go" {
+		t.Fatalf("tool_call title = %q, want %q (title from description)", start.Title, "Edit main.go")
+	}
+
+	if start.Name == nil || *start.Name != "Edit" {
+		t.Fatalf("tool_call name = %v, want Edit", start.Name)
+	}
+
+	if start.Kind != acp.ToolKindEdit {
+		t.Fatalf("tool_call kind = %q, want edit (the Edit mapping row)", start.Kind)
+	}
+
+	if start.Status != acp.ToolCallStatusPending {
+		t.Fatalf("tool_call status = %q, want pending (scheduled starts pending)", start.Status)
+	}
+
+	assertEditStartDiff(t, start, updates)
+}
+
+// assertEditStartDiff checks leg 1's start-card diff recipe: the absolute
+// session-cwd-resolved path, the old/new texts, and the location.
+func assertEditStartDiff(t *testing.T, start *acp.SessionUpdateToolCall, updates []ACPUpdate) {
+	t.Helper()
+
+	wantPath := toolLifecycleCwd + "/src/main.go"
+
+	if len(start.Content) != 1 || start.Content[0].Diff == nil {
+		t.Fatalf("tool_call carries no diff content: %s", updateKinds(updates))
+	}
+
+	diff := start.Content[0].Diff
+
+	if diff.Path != wantPath {
+		t.Fatalf("diff path = %q, want %q (absolute, resolved against the session cwd)", diff.Path, wantPath)
+	}
+
+	if diff.NewText != "new body" || diff.OldText == nil || *diff.OldText != "old body" {
+		t.Fatalf("diff fields = (new %q, old %v), want (new %q, old %q)",
+			diff.NewText, diff.OldText, "new body", "old body")
+	}
+
+	if len(start.Locations) != 1 || start.Locations[0].Path != wantPath {
+		t.Fatalf("tool_call locations = %v, want [{path %q}]", start.Locations, wantPath)
+	}
+}
+
+// assertWriteStartWire checks the raw tee for the tc2 tool_call frame: the
+// new-file shape carries newText and NOT oldText — the omission is a wire
+// property, not just a decoded nil.
+func assertWriteStartWire(t *testing.T, h *FrontHarness) {
+	t.Helper()
+
+	var startFrame string
+
+	for _, line := range h.ACPLines() {
+		isToolStart := line.Dir == "in" &&
+			strings.Contains(line.JSON, `"toolCallId":"tc2"`) &&
+			strings.Contains(line.JSON, `"tool_call"`)
+
+		if isToolStart {
+			startFrame = line.JSON
+
+			break
+		}
+	}
+
+	if startFrame == "" {
+		t.Fatal("no tool_call frame for tc2 on the tee")
+	}
+
+	if !strings.Contains(startFrame, `"newText":"file body"`) {
+		t.Fatalf("tc2 tool_call frame carries no newText: %s", startFrame)
+	}
+
+	if strings.Contains(startFrame, `"oldText"`) {
+		t.Fatalf("tc2 tool_call frame carries oldText — the new-file shape must omit it: %s", startFrame)
+	}
+}
+
+// gatedPromptResult is one stalled-sink prompt's resolution.
+type gatedPromptResult struct {
+	reason   acpport.StopReason
+	err      error
+	timedOut bool
+}
+
+// driveGatedPrompt runs one prompt on its own goroutine and waits bounded
+// for its resolution — the stalled-sink legs' shared driver.
+func driveGatedPrompt(
+	ctx context.Context,
+	t *testing.T,
+	h *backLegHarness,
+	sid string,
+	sink acpport.UpdateSink,
+) gatedPromptResult {
+	t.Helper()
+
+	done := make(chan gatedPromptResult, 1)
+
+	go func() {
+		reason, err := h.front.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "hi"}, sink)
+		done <- gatedPromptResult{reason: reason, err: err}
+	}()
+
+	select {
+	case res := <-done:
+		return res
+	case <-time.After(backpressureWait):
+		return gatedPromptResult{timedOut: true}
+	}
+}
+
+// isTc1Patch reports whether the note is one of tc1's tool_call_update
+// patches (the coalescing leg's filter).
+func isTc1Patch(note *acpport.SessionNote) bool {
+	return note.Kind == acpport.NoteTool &&
+		note.Tool != nil &&
+		!note.Tool.IsStart &&
+		note.Tool.ToolCallID == permToolCallID
+}
+
+// startParkingCollector is the coalescing leg's sink: it records every
+// note it is handed and PARKS the drain on the first start card (the
+// adversarial client holds the wire while the lifecycle enqueues).
+type startParkingCollector struct {
+	gate <-chan struct{}
+
+	mu   sync.Mutex
+	seen []acpport.SessionNote
+}
+
+// newStartParkingCollector builds the collector around one gate channel.
+func newStartParkingCollector(gate <-chan struct{}) *startParkingCollector {
+	return &startParkingCollector{gate: gate}
+}
+
+// sink is the acpport.UpdateSink: record, park on the start card.
+func (c *startParkingCollector) sink(_ context.Context, note acpport.SessionNote) error {
+	c.mu.Lock()
+	c.seen = append(c.seen, note)
+	c.mu.Unlock()
+
+	if note.Kind == acpport.NoteTool && note.Tool != nil && note.Tool.IsStart {
+		<-c.gate // park the drain on the start card: everything else queues
+	}
+
+	return nil
+}
+
+// snapshot copies the recorded notes in arrival order.
+func (c *startParkingCollector) snapshot() []acpport.SessionNote {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	out := make([]acpport.SessionNote, len(c.seen))
+	copy(out, c.seen)
+
+	return out
 }
