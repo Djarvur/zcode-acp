@@ -190,7 +190,7 @@ func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machin
 
 	if conn != nil {
 		conn.AddObserver(m.ObserveEnvelope)
-		conn.OnRouterEvent = m.observeRouterEvent
+		conn.SetOnRouterEvent(m.observeRouterEvent)
 	}
 
 	return m

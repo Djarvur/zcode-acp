@@ -104,7 +104,19 @@ type Conn struct {
 	// policy decision (answered / deadline-expired) as it happens — the
 	// observable face of the D-05 record-honesty contract. Invoked on the
 	// request or tracker goroutine; must not block.
+	//
+	// Single slot by design in Phase 4 (one active turn per front; CORE-06
+	// revisits). Reads are guarded by routerMu so a registration may also
+	// arrive mid-traffic via SetOnRouterEvent — the front tier constructs
+	// one machine per session DURING the session/new exchange (the create's
+	// runtime-preferences reverse exchange is concurrently routing), so the
+	// Phase-3 assign-before-traffic contract cannot hold for this hook.
+	// Direct field assignment stays supported for pre-traffic test wiring.
 	OnRouterEvent func(ev RouterEvent)
+
+	// routerMu guards OnRouterEvent reads (recordRouterEvent) against the
+	// synchronized SetOnRouterEvent registration.
+	routerMu sync.RWMutex
 }
 
 // NewConn returns a Conn over rw and starts its writer and read-loop
@@ -135,6 +147,18 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 	go c.readLoop()
 
 	return c
+}
+
+// SetOnRouterEvent installs the router-event hook under the router lock —
+// the synchronized registration form for hooks that arrive mid-traffic
+// (the front tier's per-session machines, constructed during the
+// session/new exchange while a reverse request routes concurrently).
+// Semantics unchanged: single slot, last registration wins.
+func (c *Conn) SetOnRouterEvent(fn func(ev RouterEvent)) {
+	c.routerMu.Lock()
+	defer c.routerMu.Unlock()
+
+	c.OnRouterEvent = fn
 }
 
 // Close stops the stream and the writer, in that order: the peer sees EOF
@@ -426,10 +450,16 @@ func (c *Conn) recordDeadlineExpired(env Envelope, deadline time.Duration, err e
 }
 
 // recordRouterEvent delivers one policy observation to the OnRouterEvent
-// hook when installed.
+// hook when installed. The hook is read under the router lock so a
+// mid-traffic SetOnRouterEvent registration cannot race the routing
+// goroutine.
 func (c *Conn) recordRouterEvent(ev RouterEvent) {
-	if c.OnRouterEvent != nil {
-		c.OnRouterEvent(ev)
+	c.routerMu.RLock()
+	hook := c.OnRouterEvent
+	c.routerMu.RUnlock()
+
+	if hook != nil {
+		hook(ev)
 	}
 }
 
