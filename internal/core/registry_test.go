@@ -20,6 +20,9 @@ const (
 	registryOpsPerG    = 25
 )
 
+// fixedSessionID is the synthetic session id the lifecycle test rides.
+const fixedSessionID = "sess_1"
+
 // newMachine builds a detached turn machine for identity assertions —
 // the registry stores *turn.Machine pointers, and NewMachine tolerates a
 // nil conn (no traffic ever flows in these tests).
@@ -34,22 +37,22 @@ func newMachine(sessionID string) *turn.Machine {
 func TestRegistryRegisterGetRemove(t *testing.T) {
 	r := core.NewSessionRegistry()
 
-	m1 := newMachine("sess_1")
-	r.Register(core.Session{ID: "sess_1", Machine: m1, Subscribed: true})
+	m1 := newMachine(fixedSessionID)
+	r.Register(core.Session{ID: fixedSessionID, Machine: m1, Subscribed: true})
 
-	got, err := r.Get("sess_1")
+	got, err := r.Get(fixedSessionID)
 	if err != nil {
 		t.Fatalf("Get(sess_1): %v", err)
 	}
 
-	if got.ID != "sess_1" || got.Machine != m1 || !got.Subscribed {
-		t.Fatalf("Get(sess_1) = %+v, want the registered session (same machine pointer, subscribed)", got)
+	if got.ID != fixedSessionID || got.Machine != m1 || !got.Subscribed {
+		t.Fatalf("Get(%s) = %+v, want the registered session (same machine pointer, subscribed)", fixedSessionID, got)
 	}
 
-	m1b := newMachine("sess_1")
-	r.Register(core.Session{ID: "sess_1", Machine: m1b})
+	m1b := newMachine(fixedSessionID)
+	r.Register(core.Session{ID: fixedSessionID, Machine: m1b})
 
-	got, err = r.Get("sess_1")
+	got, err = r.Get(fixedSessionID)
 	if err != nil {
 		t.Fatalf("Get(sess_1) after re-register: %v", err)
 	}
@@ -62,9 +65,9 @@ func TestRegistryRegisterGetRemove(t *testing.T) {
 		t.Fatalf("Get(sess_missing) = %v, want the loud ErrNoSession sentinel", err)
 	}
 
-	r.Remove("sess_1")
+	r.Remove(fixedSessionID)
 
-	if _, err := r.Get("sess_1"); !errors.Is(err, core.ErrNoSession) {
+	if _, err := r.Get(fixedSessionID); !errors.Is(err, core.ErrNoSession) {
 		t.Fatalf("Get(sess_1) after Remove = %v, want ErrNoSession", err)
 	}
 
