@@ -170,6 +170,7 @@ func goldenDrivers() map[string]driverFunc {
 		"setmodel-followup":          driveSetModelFollowup,
 		"part-delta-streaming":       drivePartDeltaStreaming,
 		"no-reasoning":               driveNoReasoning,
+		"send-refused-32010":         driveSendRefused32010,
 	}
 }
 
@@ -508,4 +509,31 @@ func driveNoReasoning(ctx context.Context, d *exchangeDriver) {
 
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.send(ctx)
+}
+
+// driveSendRefused32010: the CORE-05 backend-refusal corpus row (plan 04-05)
+// — the front preamble (copied verbatim from cancel-mid-turn; the front
+// cannot open a session without it), then ONE session/send the fake refuses
+// with the dialect §6 concurrency guard -32010 (times budget 1). The
+// machine maps the numeric code to ErrTurnActive (message text never
+// matched) and the front surfaces ONE invalid-request rejection — the wire
+// shape the front-tier TestSecondPromptRejected locks.
+func driveSendRefused32010(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	params := map[string]any{
+		wireKeySessionID: fixSessionID,
+		"content":        "Reply with exactly: OK",
+	}
+
+	_, err := d.call(ctx, zcode.MethodSessionSend, params)
+
+	var callErr *zcode.CallError
+	if !errors.As(err, &callErr) {
+		d.t.Fatalf("the refused session/send must answer a wire error, got %v", err)
+	}
+
+	if callErr.Err.Code != zcode.CodeConcurrency {
+		d.t.Fatalf("session/send error code = %d, want %d (-32010)", callErr.Err.Code, zcode.CodeConcurrency)
+	}
 }
