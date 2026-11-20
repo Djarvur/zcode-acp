@@ -941,14 +941,14 @@ func assertRequestPermissionFrame(t *testing.T, raw string) {
 	var frame struct {
 		Method string `json:"method"`
 		Params struct {
-			SessionId string `json:"sessionId"`
+			SessionID string `json:"sessionId"`
 			Options   []struct {
 				Kind     string `json:"kind"`
 				Name     string `json:"name"`
-				OptionId string `json:"optionId"`
+				OptionID string `json:"optionId"`
 			} `json:"options"`
 			ToolCall struct {
-				ToolCallId string `json:"toolCallId"`
+				ToolCallID string `json:"toolCallId"`
 			} `json:"toolCall"`
 		} `json:"params"`
 	}
@@ -963,13 +963,13 @@ func assertRequestPermissionFrame(t *testing.T, raw string) {
 
 	ask := permissionAsk()
 
-	if frame.Params.SessionId != ask.SessionID {
-		t.Fatalf("request_permission sessionId = %q, want %q", frame.Params.SessionId, ask.SessionID)
+	if frame.Params.SessionID != ask.SessionID {
+		t.Fatalf("request_permission sessionId = %q, want %q", frame.Params.SessionID, ask.SessionID)
 	}
 
-	if frame.Params.ToolCall.ToolCallId != ask.ToolCallID {
-		t.Fatalf("request_permission toolCall.toolCallId = %q, want %q (the backend toolCallId must ride the ToolCall patch)",
-			frame.Params.ToolCall.ToolCallId, ask.ToolCallID)
+	if frame.Params.ToolCall.ToolCallID != ask.ToolCallID {
+		t.Fatalf("request_permission toolCall.toolCallId = %q, want %q (the backend toolCallId must ride ToolCall)",
+			frame.Params.ToolCall.ToolCallID, ask.ToolCallID)
 	}
 
 	if len(frame.Params.Options) != len(ask.Options) {
@@ -980,7 +980,7 @@ func assertRequestPermissionFrame(t *testing.T, raw string) {
 	for i, want := range ask.Options {
 		got := frame.Params.Options[i]
 
-		if got.Kind != want.Kind || got.Name != want.Name || got.OptionId != want.OptionID {
+		if got.Kind != want.Kind || got.Name != want.Name || got.OptionID != want.OptionID {
 			t.Fatalf("request_permission options[%d] = %+v, want kind %q name %q optionId %q (verbatim passthrough)",
 				i, got, want.Kind, want.Name, want.OptionID)
 		}
@@ -993,6 +993,90 @@ func assertPermissionOutcome(t *testing.T, got, want acpport.PermissionOutcome) 
 
 	if got != want {
 		t.Fatalf("decoded outcome = %+v, want %+v", got, want)
+	}
+}
+
+// TestSinkBindIsAtomic locks the WR-02 sink-publish contract (04-REVIEW,
+// batched with the plan 05-02 agent.go seam touch): an adapter whose
+// connection bound the sink hands every concurrent Prompt the BOUND sink
+// (each sink write succeeds through the connection), while a directly
+// constructed NewAgent adapter keeps the loud unbound fallback — its sink
+// write fails with the stable no-connection-bound message, never a nil
+// deref. Run under -race: every Prompt loads the sink pointer concurrently.
+func TestSinkBindIsAtomic(t *testing.T) {
+	h := newScriptedHandlers()
+	h.promptReason = acpport.StopEndTurn
+
+	toAgentR, toAgentW := io.Pipe()
+	fromAgentR, fromAgentW := io.Pipe()
+
+	t.Cleanup(func() {
+		for _, c := range []io.Closer{toAgentR, toAgentW, fromAgentR, fromAgentW} {
+			_ = c.Close()
+		}
+	})
+
+	adapter := acpport.NewAgent(h)
+
+	//nolint:dogsled // the adapter carries all three bindings; none is needed here
+	_, _, _ = acpport.NewAgentSideConnection(adapter, fromAgentW, toAgentR)
+
+	go func() { _, _ = io.Copy(io.Discard, fromAgentR) }() // drain the bound sinks' chunk writes
+
+	const prompts = 16
+
+	var wg sync.WaitGroup
+
+	req := acp.PromptRequest{
+		SessionId: testSessionID,
+		Prompt:    []acp.ContentBlock{acp.TextBlock("sink-bind probe")},
+	}
+
+	for range prompts {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			if _, err := adapter.Prompt(context.Background(), req); err != nil {
+				t.Errorf("bound-adapter prompt: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if len(h.sinkErrs) != prompts {
+		t.Fatalf("recorded %d sink writes, want %d", len(h.sinkErrs), prompts)
+	}
+
+	for i, sinkErr := range h.sinkErrs {
+		if sinkErr != nil {
+			t.Fatalf("prompt %d's sink failed — the adapter handed over a non-bound sink: %v", i, sinkErr)
+		}
+	}
+
+	// The unbound fallback: a directly constructed adapter's sink fails
+	// loud with the stable message (no nil deref, no fake success).
+	assertUnboundSinkFallback(t, req)
+}
+
+// assertUnboundSinkFallback drives a directly constructed NewAgent adapter
+// and asserts its handed-over sink fails loud with the stable
+// no-connection-bound message.
+func assertUnboundSinkFallback(t *testing.T, req acp.PromptRequest) {
+	t.Helper()
+
+	loneH := newScriptedHandlers()
+	loneH.promptReason = acpport.StopEndTurn
+	lone := acpport.NewAgent(loneH)
+
+	if _, err := lone.Prompt(context.Background(), req); err != nil {
+		t.Fatalf("unbound prompt itself must answer normally (the reason is canned): %v", err)
+	}
+
+	if len(loneH.sinkErrs) == 0 || !strings.Contains(loneH.sinkErrs[0].Error(), "no connection bound") {
+		t.Fatalf("unbound adapter's sink must fail loud naming the missing connection, got %v", loneH.sinkErrs)
 	}
 }
 
@@ -1047,6 +1131,7 @@ type scriptedHandlers struct {
 	newSessionCalls []acpport.NewSessionParams
 	promptCalls     []acpport.PromptParams
 	sinks           []acpport.UpdateSink
+	sinkErrs        []error
 	cancelCalls     []string
 }
 
@@ -1084,7 +1169,10 @@ func (s *scriptedHandlers) NewSession(ctx context.Context, params acpport.NewSes
 }
 
 // Prompt records the params and sink, then answers with the canned reason
-// and error.
+// and error. The sink is invoked once per prompt with a probe note and the
+// write error recorded — the sink-binding contract asserts WHICH sink the
+// adapter handed over (the bound one writes through the connection; the
+// unbound fallback fails loud).
 func (s *scriptedHandlers) Prompt(
 	ctx context.Context,
 	params acpport.PromptParams,
@@ -1093,6 +1181,13 @@ func (s *scriptedHandlers) Prompt(
 	s.mu.Lock()
 	s.promptCalls = append(s.promptCalls, params)
 	s.sinks = append(s.sinks, sink)
+	s.mu.Unlock()
+
+	probe := acpport.SessionNote{SessionID: params.SessionID, Kind: acpport.NoteMessage, Delta: "sink-probe"}
+	sinkErr := sink(ctx, probe)
+
+	s.mu.Lock()
+	s.sinkErrs = append(s.sinkErrs, sinkErr)
 	s.mu.Unlock()
 
 	return s.promptReason, s.promptErr

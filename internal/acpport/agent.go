@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 
 	"github.com/coder/acp-go-sdk"
 )
@@ -25,8 +26,14 @@ import (
 // empty at construction), so Handlers always see a usable sink — the
 // assign-before-traffic contract every conn hook in this repo follows.
 type agentAdapter struct {
-	h    Handlers
-	sink UpdateSink
+	h Handlers
+
+	// sink is the connection-bound update sink, held as an atomic pointer
+	// (04-REVIEW WR-02, batched with this file's seam touch per the D-04
+	// disposition): the publish (bindSink) and every prompt-time load
+	// (sinkForPrompt) are synchronized, so a binding that lands while
+	// traffic flows can never tear the func value.
+	sink atomic.Pointer[UpdateSink]
 }
 
 // sinkBinder is the hook NewAgentSideConnection uses to hand the
@@ -83,17 +90,43 @@ func NewAgentSideConnection(
 // wrapper only translates the neutral ask onto the wire request and
 // decodes the outcome union back into the neutral vocabulary).
 //
-// SKELETON (plan 05-02 Task 1 RED): the translation lands with GREEN —
-// the stub answers the coded not-wired error so a caller cannot mistake
-// an unimplemented round-trip for a cancelled or selected outcome.
+// Options pass through verbatim (kind/name/optionId — the backend ask's
+// mapping already happened ask-side; these are ACP kind strings here), the
+// ToolCall patch carries the backend toolCallId (clients render the ask on
+// the tool card), and the outcome union decodes both arms: cancelled →
+// neutral Cancelled, selected → neutral Selected{OptionID}. An outcome
+// carrying neither arm is an SDK contract violation — it fails loud, never
+// silently reads as cancelled (a synthesized cancel would answer the
+// backend's pending ask with -32021 the client never sent).
 func newPermissionSender(conn *acp.AgentSideConnection) PermissionSender {
-	_ = conn
-
 	return func(ctx context.Context, ask PermissionAsk) (PermissionOutcome, error) {
-		_ = ctx
-		_ = ask
+		options := make([]acp.PermissionOption, 0, len(ask.Options))
+		for _, opt := range ask.Options {
+			options = append(options, acp.PermissionOption{
+				Kind:     acp.PermissionOptionKind(opt.Kind),
+				Name:     opt.Name,
+				OptionId: acp.PermissionOptionId(opt.OptionID),
+			})
+		}
 
-		return PermissionOutcome{}, NewInternal("acpport: permission sender not wired (skeleton)")
+		resp, err := conn.RequestPermission(ctx, acp.RequestPermissionRequest{
+			SessionId: acp.SessionId(ask.SessionID),
+			Options:   options,
+			ToolCall:  acp.ToolCallUpdate{ToolCallId: acp.ToolCallId(ask.ToolCallID)},
+		})
+		if err != nil {
+			return PermissionOutcome{}, err
+		}
+
+		switch {
+		case resp.Outcome.Cancelled != nil:
+			return PermissionOutcome{Cancelled: true}, nil
+		case resp.Outcome.Selected != nil:
+			return PermissionOutcome{OptionID: string(resp.Outcome.Selected.OptionId)}, nil
+		default:
+			return PermissionOutcome{}, NewInternal(
+				"acpport: session/request_permission outcome carried neither cancelled nor selected arm")
+		}
 	}
 }
 
@@ -303,10 +336,11 @@ func (a *agentAdapter) SetSessionMode(
 	return acp.SetSessionModeResponse{}, unadvertised(acp.AgentMethodSessionSetMode)
 }
 
-// bindSink attaches the connection-bound update sink; called once by
-// NewAgentSideConnection during construction.
+// bindSink attaches the connection-bound update sink (WR-02: the publish
+// is an atomic store); called once by NewAgentSideConnection during
+// construction.
 func (a *agentAdapter) bindSink(sink UpdateSink) {
-	a.sink = sink
+	a.sink.Store(&sink)
 }
 
 // bindPermissionSender forwards the connection-bound sender into the
@@ -318,12 +352,13 @@ func (a *agentAdapter) bindPermissionSender(sender PermissionSender) {
 	}
 }
 
-// sinkForPrompt returns the bound connection sink; the construction
+// sinkForPrompt returns the bound connection sink (WR-02: an atomic load —
+// always the complete func value or nil, never torn); the construction
 // discipline makes the bound path the only real path, but a direct
 // NewAgent misuse gets a loud error instead of a nil-deref panic.
 func (a *agentAdapter) sinkForPrompt() UpdateSink {
-	if a.sink != nil {
-		return a.sink
+	if bound := a.sink.Load(); bound != nil {
+		return *bound
 	}
 
 	return func(ctx context.Context, note SessionNote) error {
