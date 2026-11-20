@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/acp-go-sdk"
+
+	"github.com/Djarvur/zcode-acp/internal/acpfront"
+	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/interact"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
@@ -203,6 +208,7 @@ func goldenDrivers() map[string]driverFunc {
 		"send-refused-32010":         driveSendRefused32010,
 		"complete-then-cancel":       driveCompleteThenCancel,
 		"reannounce-dedupe":          driveReannounceDedupe,
+		"permission-allow":           drivePermissionAllow,
 	}
 }
 
@@ -670,6 +676,164 @@ func driveReannounceDedupe(ctx context.Context, d *exchangeDriver) {
 	h.send(ctx)
 
 	time.Sleep(reannounceSettle)
+}
+
+// drivePermissionAllow: the TOOL-02 tracer corpus row (plan 05-02) — the
+// front preamble (copied verbatim from setmodel-followup), then send whose
+// rule emits one tool.updated scheduled event and fires the
+// interaction/requestPermission reverse (requestId perm-1, the canonical
+// allow_once/deny options with embedded responses, reannounce count 2
+// interval 40) expecting the allow answer. The OnRequest hook carries the
+// FULL composition the plan pins: the Responder whose PermissionForwarder
+// is the real front bridge (acpfront bridge over the acpport sender bound
+// at acpport construction), with a scripted SDK client (permissionClient)
+// answering selected allow_once on the ACP leg — the client's decision
+// rides the option's own embedded response back to the reverse. The
+// scripted answer lands in milliseconds, so the re-announce schedule stops
+// before its first envelope (the done close in runReannounce) — the
+// golden byte-locks the answered round-trip: the reverse line, the reply
+// carrying the option's embedded response bytes verbatim, tool.updated,
+// turn.completed, and the send ack.
+func drivePermissionAllow(ctx context.Context, d *exchangeDriver) {
+	t := d.t
+
+	// ACP leg pipes: the agent (acpport) side reads toAgent and writes
+	// toClient; the scripted client reads toClient and writes toAgent.
+	toAgentR, toAgentW := io.Pipe()
+	toClientR, toClientW := io.Pipe()
+
+	t.Cleanup(func() {
+		for _, c := range []io.Closer{toAgentR, toAgentW, toClientR, toClientW} {
+			_ = c.Close()
+		}
+	})
+
+	front := acpfront.New(d.conn)
+
+	// Hook contract: the responder (whose PermissionForwarder is the real
+	// front bridge) is assigned before any frame flows — the first server
+	// frame only moves when the preamble's create runs below.
+	responder := interact.NewResponder(interact.WithPermissionForwarder(
+		interact.NewPermissionBridge(front.PermissionForward()).Forward,
+	))
+	d.conn.OnRequest = responder.Serve
+
+	client := &permissionClient{}
+
+	// The construction order completes both bindings (sink + sender) before
+	// any frame flows: the sender binds into the front's bridge here, the
+	// client only ever sees the request_permission frames the bridge sends.
+	// Client-side wiring mirrors the agent side: peerInput is where the
+	// client writes (toAgentW), peerOutput what it reads (toClientR).
+	_, _, _ = acpport.NewAgentSideConnection(acpport.NewAgent(front), toAgentW, toClientR)
+	_ = acp.NewClientSideConnection(client, toAgentW, toClientR)
+
+	driveFrontPreamble(ctx, d)
+}
+
+// permissionClient is the fake_test-local SDK Client double the corpus
+// replay sits on the ACP leg: it answers every session/request_permission
+// with the canonical allow decision (selected allow_once — the option the
+// row's expect_answer locks) and records the asks it received.
+type permissionClient struct {
+	mu   sync.Mutex
+	asks []acp.RequestPermissionRequest
+}
+
+// RequestPermission records the ask and answers selected allow_once.
+func (c *permissionClient) RequestPermission(
+	ctx context.Context,
+	params acp.RequestPermissionRequest,
+) (acp.RequestPermissionResponse, error) {
+	c.mu.Lock()
+	c.asks = append(c.asks, params)
+	c.mu.Unlock()
+
+	return acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{
+			Selected: &acp.RequestPermissionOutcomeSelected{
+				Outcome:  "selected",
+				OptionId: "allow_once",
+			},
+		},
+	}, nil
+}
+
+// SessionUpdate accepts streamed updates (none flow on this leg).
+func (c *permissionClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
+	return nil
+}
+
+// CompleteElicitation is a no-op (elicitation is Phase 7).
+func (c *permissionClient) CompleteElicitation(
+	ctx context.Context,
+	params acp.CompleteElicitationNotification,
+) error {
+	return nil
+}
+
+// CreateElicitation is a no-op (elicitation is Phase 7).
+func (c *permissionClient) CreateElicitation(
+	ctx context.Context,
+	params acp.CreateElicitationRequest,
+) (acp.CreateElicitationResponse, error) {
+	return acp.CreateElicitationResponse{}, nil
+}
+
+// ReadTextFile is a no-op (fs surfaces are never advertised).
+func (c *permissionClient) ReadTextFile(
+	ctx context.Context,
+	params acp.ReadTextFileRequest,
+) (acp.ReadTextFileResponse, error) {
+	return acp.ReadTextFileResponse{}, nil
+}
+
+// WriteTextFile is a no-op (fs surfaces are never advertised).
+func (c *permissionClient) WriteTextFile(
+	ctx context.Context,
+	params acp.WriteTextFileRequest,
+) (acp.WriteTextFileResponse, error) {
+	return acp.WriteTextFileResponse{}, nil
+}
+
+// CreateTerminal is a no-op (terminal surfaces are never advertised).
+func (c *permissionClient) CreateTerminal(
+	ctx context.Context,
+	params acp.CreateTerminalRequest,
+) (acp.CreateTerminalResponse, error) {
+	return acp.CreateTerminalResponse{}, nil
+}
+
+// KillTerminal is a no-op (terminal surfaces are never advertised).
+func (c *permissionClient) KillTerminal(
+	ctx context.Context,
+	params acp.KillTerminalRequest,
+) (acp.KillTerminalResponse, error) {
+	return acp.KillTerminalResponse{}, nil
+}
+
+// TerminalOutput is a no-op (terminal surfaces are never advertised).
+func (c *permissionClient) TerminalOutput(
+	ctx context.Context,
+	params acp.TerminalOutputRequest,
+) (acp.TerminalOutputResponse, error) {
+	return acp.TerminalOutputResponse{}, nil
+}
+
+// ReleaseTerminal is a no-op (terminal surfaces are never advertised).
+func (c *permissionClient) ReleaseTerminal(
+	ctx context.Context,
+	params acp.ReleaseTerminalRequest,
+) (acp.ReleaseTerminalResponse, error) {
+	return acp.ReleaseTerminalResponse{}, nil
+}
+
+// WaitForTerminalExit is a no-op (terminal surfaces are never advertised).
+func (c *permissionClient) WaitForTerminalExit(
+	ctx context.Context,
+	params acp.WaitForTerminalExitRequest,
+) (acp.WaitForTerminalExitResponse, error) {
+	return acp.WaitForTerminalExitResponse{}, nil
 }
 
 // assertReannounceDedupeTranscript asserts the dedupe semantics on the

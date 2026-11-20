@@ -51,6 +51,11 @@ type Front struct {
 	// contexts never live in struct fields, conn.go captures the same way).
 	newTurnCtx func() (context.Context, context.CancelFunc)
 
+	// perm is the TOOL-02 permission bridge (plan 05-02): the pending table
+	// for in-flight client round-trips plus the connection-bound sender
+	// bound at acpport construction (permission.go).
+	perm *permissionBridge
+
 	// turnMu guards the front-wide turn slot (the single-active-turn
 	// invariant) and the active turn's tap-facing emitter — the closure
 	// binding the turn's sink, session id, and context into one call the
@@ -103,6 +108,7 @@ func New(conn *zcode.Conn, opts ...Option) *Front {
 		conn:     conn,
 		registry: core.NewSessionRegistry(),
 		version:  "0.0.0-dev",
+		perm:     newPermissionBridge(),
 		newTurnCtx: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(baseCtx)
 		},

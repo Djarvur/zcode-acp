@@ -1,0 +1,82 @@
+{
+  "name": "permission-allow",
+  "on_request": [
+    {
+      "method": "session/create",
+      "reply": {"result": {"session": {"sessionId": "sess_fix1"}, "protocol": {"name": "ZCode Protocol", "version": 1}}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {"sessionId": "sess_fix1", "scope": "runtime-materialization"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"nativeSearchEnhancementsEnabled": false, "memoryEnabled": false}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {"result": {"sessionId": "sess_fix1", "eventSeq": 0, "events": []}}
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {}}
+    },
+    {
+      "method": "session/send",
+      "reply": {"result": {"accepted": true, "sessionId": "sess_fix1", "stateRevision": 1}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "running"}, "reason": "prompt_started", "revision": 1, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"type": "tool.updated", "seq": 1, "turnId": "turn_fix1", "payload": {"kind": "scheduled", "toolCallId": "tc1", "toolName": "Bash", "input": {"command": "echo hi"}}}
+          }
+        },
+        {
+          "reverse": {
+            "method": "interaction/requestPermission",
+            "params": {"requestId": "perm-1", "sessionId": "sess_fix1", "turnId": "turn_fix1",
+                       "toolCallId": "tc1", "toolName": "Bash", "reason": "run echo",
+                       "riskLevel": "medium", "input": {"command": "echo hi"},
+                       "options": [
+                         {"optionId": "allow_once", "kind": "allow_once", "name": "Allow once",
+                          "response": {"decision": "allow", "reason": "Approved once"}},
+                         {"optionId": "deny", "kind": "deny", "name": "Deny",
+                          "response": {"decision": "deny", "reason": "denied"}}
+                       ]},
+            "timeout_ms": 500,
+            "reannounce": {"count": 2, "interval_ms": 40},
+            "expect_answer": {"result": {"decision": "allow", "reason": "Approved once"}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"type": "turn.completed", "seq": 2, "turnId": "turn_fix1", "deliveryKind": "desktop-continuous"}
+          }
+        }
+      ]
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

@@ -132,14 +132,48 @@ type ACPUpdate struct {
 	Update    acp.SessionUpdate
 }
 
+// PermissionScript configures the outcome every session/request_permission
+// gets answered with (plan 05-02 TOOL-02 harness): the selected option's
+// id, the cancelled arm, and an optional hold before answering (the expiry
+// arm's unanswered-client shape). Cancelled wins when both are set.
+type PermissionScript struct {
+	SelectedOptionID string
+	Cancelled        bool
+	Delay            time.Duration
+}
+
 // RecordingClient implements the SDK's Client interface for tests:
-// SessionUpdate collects (sessionId, update) pairs under a mutex
-// (drained by assertions); every client-side request/notification
-// callback is a no-op returning zero values — Phase 4 bridges no client
-// surfaces (permission/elicitation/fs/terminal are Phases 5+).
+// SessionUpdate collects (sessionId, update) pairs under a mutex (drained
+// by assertions); RequestPermission records every received ask and answers
+// the scripted outcome (plan 05-02 — the TOOL-02 client counterparty);
+// every other client-side request/notification callback is a no-op
+// returning zero values — Phase 5 bridges no further client surfaces
+// (elicitation/fs/terminal stay Phases 6+).
 type RecordingClient struct {
-	mu      sync.Mutex
-	updates []ACPUpdate
+	mu          sync.Mutex
+	updates     []ACPUpdate
+	permScript  PermissionScript
+	permAsks    []acp.RequestPermissionRequest
+}
+
+// SetPermissionScript installs the scripted request_permission outcome.
+func (c *RecordingClient) SetPermissionScript(script PermissionScript) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.permScript = script
+}
+
+// PermissionAsks snapshots every received session/request_permission in
+// arrival order.
+func (c *RecordingClient) PermissionAsks() []acp.RequestPermissionRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	asks := make([]acp.RequestPermissionRequest, len(c.permAsks))
+	copy(asks, c.permAsks)
+
+	return asks
 }
 
 // SessionUpdate collects one streamed update.
@@ -195,12 +229,44 @@ func (c *RecordingClient) WriteTextFile(
 	return acp.WriteTextFileResponse{}, nil
 }
 
-// RequestPermission is a no-op (permission bridging is Phase 5, TOOL-02).
+// RequestPermission records the received ask and answers the scripted
+// outcome: the selected arm ({outcome:selected, optionId}) or the
+// cancelled arm ({outcome:cancelled} — the ACP v1 MUST on turn cancel);
+// the optional Delay holds the answer open (the expiry arm's unanswered
+// client) and honors the request context while held.
 func (c *RecordingClient) RequestPermission(
 	ctx context.Context,
 	params acp.RequestPermissionRequest,
 ) (acp.RequestPermissionResponse, error) {
-	return acp.RequestPermissionResponse{}, nil
+	c.mu.Lock()
+	c.permAsks = append(c.permAsks, params)
+	script := c.permScript
+	c.mu.Unlock()
+
+	if script.Delay > 0 {
+		select {
+		case <-time.After(script.Delay):
+		case <-ctx.Done():
+			return acp.RequestPermissionResponse{}, ctx.Err()
+		}
+	}
+
+	if script.Cancelled {
+		return acp.RequestPermissionResponse{
+			Outcome: acp.RequestPermissionOutcome{
+				Cancelled: &acp.RequestPermissionOutcomeCancelled{Outcome: "cancelled"},
+			},
+		}, nil
+	}
+
+	return acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{
+			Selected: &acp.RequestPermissionOutcomeSelected{
+				Outcome:  "selected",
+				OptionId: acp.PermissionOptionId(script.SelectedOptionID),
+			},
+		},
+	}, nil
 }
 
 // CreateTerminal is a no-op (terminal surfaces are never advertised).
