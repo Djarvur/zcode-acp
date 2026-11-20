@@ -307,32 +307,9 @@ func driveHappyTurnCorpus(ctx context.Context, d *exchangeDriver) {
 // doubles as the wire-level sync signal that the fake processed the stop
 // frame before the exchange closes.
 func driveCancelMidTurn(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
 	h := happyTurnHarness{t: d.t, conn: d.conn}
-	h.create(ctx)
-
-	subParams := map[string]any{
-		wireKeySessionID: fixSessionID,
-		"deliveryKind":   "desktop-continuous",
-	}
-
-	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
-		d.t.Fatalf("session/subscribe: %v", err)
-	}
-
-	setModelParams := map[string]any{
-		wireKeySessionID: fixSessionID,
-		"model": map[string]any{
-			"providerId": "zai-api",
-			"modelId":    "GLM-5.3-Flash",
-			"options":    map[string]any{"reasoningLevel": "high"},
-		},
-		"persistAsWorkspaceLastUsed": false,
-	}
-
-	if _, err := d.call(ctx, zcode.MethodSessionSetModel, setModelParams); err != nil {
-		d.t.Fatalf("session/setModel: %v", err)
-	}
-
 	h.send(ctx)
 
 	if err := d.conn.Stop(fixSessionID); err != nil {
@@ -465,42 +442,23 @@ func driveCredentialCipherScripted(ctx context.Context, d *exchangeDriver) {
 // Open Question 3 resolution), then send whose scripted stream emits the
 // two part.delta text rows the prompt leg consumes. The golden
 // byte-asserts the setModel request payload verbatim — the wire acceptance
-// of the scripted rule is the golden's job, not the scenario's.
+// of the scripted rule is the golden's job, not the scenario's. The
+// preamble itself is the shared driveFrontPreamble helper (one source of
+// truth for the identical front-tier preamble every corpus row locks).
 func driveSetModelFollowup(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
 	h := happyTurnHarness{t: d.t, conn: d.conn}
-	h.create(ctx)
-
-	subParams := map[string]any{
-		wireKeySessionID: fixSessionID,
-		"deliveryKind":   "desktop-continuous",
-	}
-
-	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
-		d.t.Fatalf("session/subscribe: %v", err)
-	}
-
-	setModelParams := map[string]any{
-		wireKeySessionID: fixSessionID,
-		"model": map[string]any{
-			"providerId": "zai-api",
-			"modelId":    "GLM-5.3-Flash",
-			"options":    map[string]any{"reasoningLevel": "high"},
-		},
-		"persistAsWorkspaceLastUsed": false,
-	}
-
-	if _, err := d.call(ctx, zcode.MethodSessionSetModel, setModelParams); err != nil {
-		d.t.Fatalf("session/setModel: %v", err)
-	}
-
 	h.send(ctx)
 }
 
 // driveFrontPreamble drives the front-tier session/new contract calls
-// verbatim (plan 04-04: the part-delta-streaming / no-reasoning rows ride
-// the identical preamble the cancel-mid-turn row byte-locked in 04-06) —
-// bare create, subscribe (the session/event push gate), the setModel
-// follow-up with the corpus-locked synthetic selection.
+// verbatim — bare create, subscribe (the session/event push gate), the
+// setModel follow-up with the corpus-locked synthetic selection. It is the
+// ONE source of truth for the identical front-tier preamble the corpus
+// rows byte-lock (setmodel-followup and cancel-mid-turn since 04-06;
+// part-delta-streaming and no-reasoning since 04-04; completion-quiet-window
+// since 04-04's Rule-3 extension).
 func driveFrontPreamble(ctx context.Context, d *exchangeDriver) {
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.create(ctx)

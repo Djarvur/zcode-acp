@@ -56,7 +56,8 @@ func testThoughtChunksPositive(t *testing.T) {
 
 	updates := h.Updates()
 	if len(updates) != 3 {
-		t.Fatalf("client collected %d updates, want exactly 3 (one chunk per part.delta envelope, never merged or split)", len(updates))
+		t.Fatalf("client collected %d updates, want exactly 3 "+
+			"(one chunk per part.delta envelope, never merged or split)", len(updates))
 	}
 
 	// CORE-04 positive: every field-reasoning delta becomes exactly ONE
@@ -64,13 +65,24 @@ func testThoughtChunksPositive(t *testing.T) {
 	// zero arrived before the mapping landed).
 	thoughts := thoughtUpdates(updates)
 	if len(thoughts) != 1 {
-		t.Fatalf("collected %d agent_thought_chunk updates, want exactly 1 (one per field-reasoning delta, never synthesized)", len(thoughts))
+		t.Fatalf("collected %d agent_thought_chunk updates, want exactly 1 "+
+			"(one per field-reasoning delta, never synthesized)", len(thoughts))
 	}
 
 	if thoughts[0].SessionID != sid || chunkText(thoughts[0].Update) != "Thinking about it" {
 		t.Fatalf("thought chunk = (%s, %q), want (%s, %q)",
 			thoughts[0].SessionID, chunkText(thoughts[0].Update), sid, "Thinking about it")
 	}
+
+	assertTextChunksIntact(t, updates)
+	assertThoughtChunkWire(t, h, sid)
+}
+
+// assertTextChunksIntact checks the message chunks (exactly the two corpus
+// text deltas) and the cross-kind arrival order (message → thought →
+// message) on the collected updates.
+func assertTextChunksIntact(t *testing.T, updates []ACPUpdate) {
+	t.Helper()
 
 	// Text chunks unaffected: exactly the two corpus text deltas.
 	messages := messageUpdates(updates)
@@ -89,11 +101,10 @@ func testThoughtChunksPositive(t *testing.T) {
 	wantThought := []bool{false, true, false}
 	for i, want := range wantThought {
 		if got := updates[i].Update.AgentThoughtChunk != nil; got != want {
-			t.Fatalf("update[%d] thought=%v, want thought=%v (arrival order must mirror the envelope stream)", i, got, want)
+			t.Fatalf("update[%d] thought=%v, want thought=%v (arrival order must mirror the envelope stream)",
+				i, got, want)
 		}
 	}
-
-	assertThoughtChunkWire(t, h, sid)
 }
 
 // testThoughtChunksNegative drives the no-reasoning corpus (two text
@@ -126,7 +137,8 @@ func testThoughtChunksNegative(t *testing.T) {
 
 	updates := h.Updates()
 	if got := len(thoughtUpdates(updates)); got != 0 {
-		t.Fatalf("no-reasoning turn produced %d agent_thought_chunk updates — thought chunks must be backend-sourced ONLY, never synthesized", got)
+		t.Fatalf("no-reasoning turn produced %d agent_thought_chunk updates — "+
+			"thought chunks must be backend-sourced ONLY, never synthesized", got)
 	}
 
 	messages := messageUpdates(updates)
@@ -164,9 +176,9 @@ func messageUpdates(updates []ACPUpdate) []ACPUpdate {
 // kindUpdates returns the updates matching keep, in arrival order.
 func kindUpdates(updates []ACPUpdate, keep func(acp.SessionUpdate) bool) []ACPUpdate {
 	out := []ACPUpdate{}
-	for _, u := range updates {
-		if keep(u.Update) {
-			out = append(out, u)
+	for i := range updates {
+		if keep(updates[i].Update) {
+			out = append(out, updates[i])
 		}
 	}
 
@@ -193,7 +205,8 @@ func assertThoughtChunkWire(t *testing.T, h *FrontHarness, sid string) {
 	}
 
 	if msgIdxs[0] >= thoughtIdxs[0] || thoughtIdxs[0] >= msgIdxs[1] {
-		t.Fatalf("thought frame (line %d) not interleaved between the message frames (%v) — arrival order violated", thoughtIdxs[0], msgIdxs)
+		t.Fatalf("thought frame (line %d) not interleaved between the message frames (%v) — arrival order violated",
+			thoughtIdxs[0], msgIdxs)
 	}
 
 	raw := lines[thoughtIdxs[0]].JSON
