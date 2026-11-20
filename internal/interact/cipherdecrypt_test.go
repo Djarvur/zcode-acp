@@ -35,9 +35,13 @@ import (
 const cipherTestTimeout = 2 * time.Second
 
 // syntheticCipherPlaintext is the in-test plaintext payload (fixture data —
-// never a real credential; long enough that substring-absence assertions
-// are meaningful).
-const syntheticCipherPlaintext = `{"token":"zced-fixture-not-a-real-credential","scopes":["read"]}`
+// never a real credential; its synthetic marker stays under the scan gate's
+// 20-char token-value class the way every corpus fixture does).
+const syntheticCipherPlaintext = `{"token":"zc-fix-not-real","scopes":["read"]}`
+
+// cipherFixRequestID is the arms' fixed params.requestId (the reply echo
+// assertion's expected value).
+const cipherFixRequestID = "cred-cipher-fix1"
 
 // errKeyringLocked is the test loader's failure sentinel (the D-06
 // keyring-locked degradation arm).
@@ -73,6 +77,14 @@ func kidFor(key []byte) string {
 	sum := sha256.Sum256(key)
 
 	return hex.EncodeToString(sum[:])[:24]
+}
+
+// cipherSha256 hashes one string (the shared hash helper the argv
+// assertions use for the username derivation).
+func cipherSha256(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+
+	return sum[:]
 }
 
 // sealTestBlob builds an enc:v2:os credential blob in the field-verified
@@ -136,7 +148,7 @@ func cipherEnvelope(t *testing.T, operation, value string) (interact.Request, zc
 	t.Helper()
 
 	params, err := json.Marshal(map[string]any{
-		"requestId": "cred-cipher-fix1",
+		"requestId": cipherFixRequestID,
 		"operation": operation,
 		"value":     value,
 	})
@@ -148,7 +160,7 @@ func cipherEnvelope(t *testing.T, operation, value string) (interact.Request, zc
 		Method: zcode.MethodRequestCredentialCipher,
 		ID:     &zcode.ID{Str: "server-cipher-1"},
 		Params: params,
-		ReqID:  "cred-cipher-fix1",
+		ReqID:  cipherFixRequestID,
 	}
 
 	return req, zcode.Envelope{ID: req.ID, Method: req.Method, Params: params}
@@ -193,7 +205,7 @@ func serveCipherAnswer(
 func assertCipherReplyShape(t *testing.T, got map[string]any) {
 	t.Helper()
 
-	if got["requestId"] != "cred-cipher-fix1" {
+	if got["requestId"] != cipherFixRequestID {
 		t.Fatalf("reply requestId = %v, want the params.requestId echo", got["requestId"])
 	}
 
@@ -263,7 +275,10 @@ func TestCredentialDecryptDecrypt(t *testing.T) {
 
 	got := serveCipherAnswer(t, svc, interact.CipherOpDecrypt, sealTestBlob(t, key, syntheticCipherPlaintext))
 
-	result := got["result"].(map[string]any)
+	result, isMap := got["result"].(map[string]any)
+	if !isMap {
+		t.Fatalf("result = %v, want the union object", got["result"])
+	}
 
 	if okFlag, _ := result["ok"].(bool); !okFlag {
 		t.Fatalf("decrypt arm answered the decline %v — want the {ok:true, value} success arm", result)
@@ -416,7 +431,8 @@ func TestCredentialDecryptLogHygiene(t *testing.T) {
 
 	logged := buf.String()
 	if logged == "" {
-		t.Fatal("the seam answered no structural log line — the answer must be observably recorded (shapes/lengths only)")
+		t.Fatal("the seam answered no structural log line " +
+			"(the answer must be observably recorded: shapes/lengths only)")
 	}
 
 	forbidden := []string{
@@ -439,78 +455,75 @@ func TestCredentialDecryptLogHygiene(t *testing.T) {
 // material — the loader holds no key yet), and the env is exactly the
 // caller-provided scrubbed set.
 func TestSecretToolLoaderHygiene(t *testing.T) {
-	t.Run("argv is the field-verified lookup over the resolved path", func(t *testing.T) {
-		target := filepath.Join(t.TempDir(), "v2", "credentials.json")
-		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-			t.Fatalf("mkdir: %v", err)
+	target := filepath.Join(t.TempDir(), "v2", "credentials.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	link := filepath.Join(t.TempDir(), "link-credentials.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink fixture: %v", err)
+	}
+
+	scrubbed := []string{"PATH=/usr/bin", "HOME=/home/u"}
+	loader := interact.NewSecretToolKeyLoader("secret-tool", link, scrubbed)
+
+	argv, env, err := loader.LookupCommand()
+	if err != nil {
+		t.Fatalf("LookupCommand: %v", err)
+	}
+
+	if len(argv) < 2 || argv[0] != "secret-tool" || argv[1] != "lookup" {
+		t.Fatalf("argv = %v, want the secret-tool lookup invocation", argv)
+	}
+
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "service") || !strings.Contains(joined, "ZCode Credential Encryption") {
+		t.Fatalf("argv %q lacks the field-verified service attribute", joined)
+	}
+
+	// The username derivation hashes the RESOLVED (realpath) path string:
+	// the symlinked fixture must hash the target, not the link.
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatalf("resolve fixture: %v", err)
+	}
+
+	wantUsername := hex.EncodeToString(cipherSha256(resolved))
+	wantArgv := "secret-tool lookup service ZCode Credential Encryption username " + wantUsername
+
+	if joined != wantArgv {
+		t.Fatalf("argv = %q, want the exact field-verified lookup shape %q", joined, wantArgv)
+	}
+
+	if len(env) != len(scrubbed) {
+		t.Fatalf("env = %v, want exactly the caller-provided scrubbed set %v", env, scrubbed)
+	}
+
+	for i, kv := range scrubbed {
+		if env[i] != kv {
+			t.Fatalf("env[%d] = %q, want %q (the scrubbed set passes through verbatim)", i, env[i], kv)
 		}
+	}
+}
 
-		if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
-			t.Fatalf("write fixture: %v", err)
-		}
+// TestSecretToolLoaderEmptyPath locks the loader's fail-loud input
+// validation: an empty credentials path answers an error at both the
+// command build and the load — never a phantom-path lookup.
+func TestSecretToolLoaderEmptyPath(t *testing.T) {
+	loader := interact.NewSecretToolKeyLoader("secret-tool", "", nil)
 
-		link := filepath.Join(t.TempDir(), "link-credentials.json")
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatalf("symlink fixture: %v", err)
-		}
+	if _, _, err := loader.LookupCommand(); err == nil {
+		t.Fatal("empty credentials path must fail loud, got nil error")
+	}
 
-		scrubbed := []string{"PATH=/usr/bin", "HOME=/home/u"}
-		loader := interact.NewSecretToolKeyLoader("secret-tool", link, scrubbed)
-
-		argv, env, err := loader.LookupCommand()
-		if err != nil {
-			t.Fatalf("LookupCommand: %v", err)
-		}
-
-		if len(argv) < 2 || argv[0] != "secret-tool" || argv[1] != "lookup" {
-			t.Fatalf("argv = %v, want the secret-tool lookup invocation", argv)
-		}
-
-		joined := strings.Join(argv, " ")
-		if !strings.Contains(joined, "service") || !strings.Contains(joined, "ZCode Credential Encryption") {
-			t.Fatalf("argv %q lacks the field-verified service attribute", joined)
-		}
-
-		// The username derivation hashes the RESOLVED (realpath) path
-		// string: the symlinked fixture must hash the target, not the link.
-		resolved, err := filepath.EvalSymlinks(target)
-		if err != nil {
-			t.Fatalf("resolve fixture: %v", err)
-		}
-
-		sum := sha256.Sum256([]byte(resolved))
-		wantUsername := hex.EncodeToString(sum[:])
-
-		if !strings.Contains(joined, wantUsername) {
-			t.Fatalf("argv %q lacks the sha256 username derivation %q (the realpath form)", joined, wantUsername)
-		}
-
-		if joined != "secret-tool lookup service ZCode Credential Encryption username "+wantUsername {
-			t.Fatalf("argv = %q, want the exact field-verified lookup shape", joined)
-		}
-
-		if len(env) != len(scrubbed) {
-			t.Fatalf("env = %v, want exactly the caller-provided scrubbed set %v", env, scrubbed)
-		}
-
-		for i, kv := range scrubbed {
-			if env[i] != kv {
-				t.Fatalf("env[%d] = %q, want %q (the scrubbed set passes through verbatim)", i, env[i], kv)
-			}
-		}
-	})
-
-	t.Run("empty credentials path fails loud", func(t *testing.T) {
-		loader := interact.NewSecretToolKeyLoader("secret-tool", "", nil)
-
-		if _, _, err := loader.LookupCommand(); err == nil {
-			t.Fatal("empty credentials path must fail loud, got nil error")
-		}
-
-		if _, err := loader.LoadKey(context.Background()); err == nil {
-			t.Fatal("empty credentials path must fail loud at LoadKey, got nil error")
-		}
-	})
+	if _, err := loader.LoadKey(context.Background()); err == nil {
+		t.Fatal("empty credentials path must fail loud at LoadKey, got nil error")
+	}
 }
 
 // TestResponderCredentialCipherSeam locks the D-06 injection at the
@@ -558,7 +571,11 @@ func TestResponderCredentialCipherSeam(t *testing.T) {
 
 		assertCipherReplyShape(t, got)
 
-		resultMap := got["result"].(map[string]any)
+		resultMap, isMap := got["result"].(map[string]any)
+		if !isMap {
+			t.Fatalf("result = %v, want the union object", got["result"])
+		}
+
 		if okFlag, _ := resultMap["ok"].(bool); !okFlag || resultMap["value"] != syntheticCipherPlaintext {
 			t.Fatalf("wired reply = %v, want the {ok:true, value} success arm", resultMap)
 		}

@@ -1,8 +1,20 @@
 package interact
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
@@ -22,8 +34,11 @@ import (
 // Key-material hygiene (T-5-17, test-locked): key bytes and decrypted
 // plaintext live in-memory only, in the reply-construction scope — never
 // persisted, never logged (log fields carry shapes and lengths, never
-// values), never on the loader subprocess's argv, and the subprocess runs
-// on the caller-provided scrubbed env with its stdout captured and drained.
+// values), never on the loader subprocess's argv (the username argument is
+// the sha256 hex derivation over the RESOLVED credentials path), and the
+// subprocess runs on the caller-provided scrubbed env with its stdout
+// captured and drained. The GCM auth failure's decline carries a generic
+// message — the crypto error text is never echoed into the reply.
 
 // EncV2OSPrefix is the field-verified credential-blob layout prefix
 // (enc:v2:os:<kid>:<iv>.<tag>.<ct>; segments iv/tag/ct base64url).
@@ -51,13 +66,48 @@ const (
 	CipherCodeDecryptFailed        = "decrypt-failed"
 )
 
+// secretToolService is the field-verified Secret Service attribute value
+// the login-keyring credential entry is keyed under (a lookup key, never a
+// credential — gosec's hardcoded-credentials shape match is a false hit).
+//
+//nolint:gosec // a Secret Service lookup key string, not a credential value
+const secretToolService = "ZCode Credential Encryption"
+
+// loaderKeyLen is the keyring key's decoded length: the field-verified
+// 43-char base64url form decodes to exactly 32 AES-256 bytes.
+const loaderKeyLen = 32
+
+// kidHexLen is the blob kid's length: the first 24 hex chars of sha256(key).
+const kidHexLen = 24
+
+// cipherSegmentCount is the blob's dot-separated segment count: iv.tag.ct.
+const cipherSegmentCount = 3
+
+// loaderEnvAllowlist is the scrubbed-env allowlist posture for the loader
+// subprocess (the supervisor.ChildEnv discipline): only these keys cross
+// from the parent env — the D-Bus session address the keyring lives on,
+// plus PATH/HOME for the binary and its config resolution. Everything else
+// (proxies, tokens, caller-specific env) never crosses. A fresh slice per
+// call keeps the contract immutable.
+func loaderEnvAllowlist() []string {
+	return []string{"PATH", "HOME", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}
+}
+
 // Hygiene sentinels — wrapped with %w context at the failure site, never
 // constructed dynamically (err113).
 var (
 	errEmptyCredentialsPath = errors.New("credentials path is empty")
 	errLoaderKeyShape       = errors.New("keyring key is not 32 bytes of base64url")
-	errCipherNotAssembled   = errors.New("credential decrypt unavailable: the seam is not assembled in this build")
+	errLoaderLookup         = errors.New("secret-tool lookup failed")
 )
+
+// cipherFailure is one decline arm's coded payload: the stable code plus a
+// generic message. Failure detail never rides the reply — loader and GCM
+// errors carry no key/plaintext material into any message or log (T-5-17).
+type cipherFailure struct {
+	code    string
+	message string
+}
 
 // KeyLoader loads the 32-byte login-keyring credential key. The production
 // implementation shells the field-verified secret-tool lookup
@@ -81,19 +131,177 @@ func NewCredentialDecrypt(loader KeyLoader) *CredentialDecrypt {
 }
 
 // Handle answers one interaction/requestCredentialCipher ask (the
-// interact.Handler signature). The reply result is the field-verified
-// discriminated union {requestId, result:{ok...}}.
-//
-// Skeleton posture (RED floor): the seam answers the honest decline for
-// every ask — never a fabricated success — while the layout engine, loader
-// and hygiene contract land in GREEN.
-func (s *CredentialDecrypt) Handle(_ context.Context, req Request) (Answer, error) {
-	return Answer{Result: cipherDecline(req, CipherCodeInvalidValue, errCipherNotAssembled.Error())}, nil
+// interact.Handler signature): every arm — success included — answers
+// inside the field-verified reply union {requestId, result:{ok...}}; the
+// handler never errors (a decline IS the answer, never a transport
+// failure).
+func (s *CredentialDecrypt) Handle(ctx context.Context, req Request) (Answer, error) {
+	var params struct {
+		Operation string `json:"operation"`
+		Value     string `json:"value"`
+	}
+
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		slog.Warn("interact: credential cipher declined (undecodable params)",
+			"requestId", req.ReqID, "params_len", len(req.Params), "code", CipherCodeInvalidValue)
+
+		//nolint:nilerr // the decline IS the answer: every arm — malformed
+		// params included — rides the reply result union, never the error lane.
+		return Answer{Result: cipherDecline(req, CipherCodeInvalidValue,
+			"credential cipher params are malformed")}, nil
+	}
+
+	switch params.Operation {
+	case CipherOpDecrypt:
+		value, fail := s.decryptOne(ctx, params.Value)
+		if fail != nil {
+			slog.Warn("interact: credential cipher decrypt declined",
+				"requestId", req.ReqID, "value_len", len(params.Value),
+				"code", fail.code)
+
+			return Answer{Result: cipherDecline(req, fail.code, fail.message)}, nil
+		}
+
+		slog.Info("interact: credential cipher decrypt answered",
+			"requestId", req.ReqID, "value_len", len(params.Value), "plaintext_len", len(value))
+
+		return Answer{Result: cipherSuccess(req, value)}, nil
+
+	case CipherOpEncrypt:
+		slog.Warn("interact: credential cipher encrypt declined",
+			"requestId", req.ReqID, "value_len", len(params.Value), "code", CipherCodeUnsupportedOperation)
+
+		return Answer{Result: cipherDecline(req, CipherCodeUnsupportedOperation,
+			`operation "encrypt" is not supported: the wrapper decrypts `+
+				`the desktop's credential blobs but never encrypts`)}, nil
+
+	default:
+		slog.Warn("interact: credential cipher declined (unknown operation)",
+			"requestId", req.ReqID, "value_len", len(params.Value), "code", CipherCodeInvalidValue)
+
+		return Answer{Result: cipherDecline(req, CipherCodeInvalidValue,
+			"credential cipher operation must be decrypt or encrypt")}, nil
+	}
 }
 
-// cipherDecline renders the {ok:false} arm: the requestId echo plus the
-// coded error union, keyed verbatim per the field-verified reply schema
-// (credentialCipherReplySchema = {requestId, result: discriminatedUnion("ok")}).
+// decryptOne runs one decrypt: layout parse → key load → kid verification →
+// stdlib AES-256-GCM open. Every failure renders as a coded decline; the
+// plaintext exists only inside this call's reply-construction scope.
+func (s *CredentialDecrypt) decryptOne(ctx context.Context, value string) (string, *cipherFailure) {
+	kid, iv, tag, ct, fail := parseEncV2OS(value)
+	if fail != nil {
+		return "", fail
+	}
+
+	if s.loader == nil {
+		return "", &cipherFailure{code: CipherCodeKeyUnavailable, message: "no key loader configured"}
+	}
+
+	key, err := s.loader.LoadKey(ctx)
+	if err != nil {
+		// The loader's failure detail (exec noise, keyring state) never
+		// rides the reply or the log — the generic coded message is the
+		// honest degradation arm (D-06 keyring-locked posture, T-5-17).
+		return "", &cipherFailure{code: CipherCodeKeyUnavailable,
+			message: "the credential key is unavailable (keyring locked or missing)"}
+	}
+
+	if len(key) != loaderKeyLen {
+		return "", &cipherFailure{code: CipherCodeKeyUnavailable,
+			message: "the credential key has the wrong length"}
+	}
+
+	if kid != kidFor(key) {
+		return "", &cipherFailure{code: CipherCodeKeyMismatch,
+			message: "credential blob kid does not match the keyring key"}
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", &cipherFailure{code: CipherCodeDecryptFailed,
+			message: "credential cipher cannot be constructed"}
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", &cipherFailure{code: CipherCodeDecryptFailed,
+			message: "credential cipher cannot be constructed"}
+	}
+
+	sealed := make([]byte, 0, len(ct)+len(tag))
+	sealed = append(sealed, ct...)
+	sealed = append(sealed, tag...)
+
+	plaintext, err := gcm.Open(nil, iv, sealed, nil)
+	if err != nil {
+		// The crypto error text is generic, but the decline never echoes it
+		// — the auth-failure arm is the coded generic message (hygiene).
+		return "", &cipherFailure{code: CipherCodeDecryptFailed,
+			message: "credential blob failed AES-256-GCM authentication"}
+	}
+
+	return string(plaintext), nil
+}
+
+// parseEncV2OS parses the field-verified layout: the enc:v2:os prefix, the
+// kid segment (colon-separated), then the base64url iv.tag.ct segments.
+// Malformed shapes answer the coded invalid-value decline — never a panic.
+func parseEncV2OS(value string) (kid string, iv, tag, ct []byte, fail *cipherFailure) {
+	if !strings.HasPrefix(value, EncV2OSPrefix) {
+		return "", nil, nil, nil, &cipherFailure{code: CipherCodeInvalidValue,
+			message: "credential value is not an enc:v2:os blob"}
+	}
+
+	body := strings.TrimPrefix(value, EncV2OSPrefix)
+
+	kid, rest, ok := strings.Cut(body, ":")
+	if !ok || kid == "" {
+		return "", nil, nil, nil, &cipherFailure{code: CipherCodeInvalidValue,
+			message: "credential blob carries no kid segment"}
+	}
+
+	segs := strings.Split(rest, ".")
+	if len(segs) != cipherSegmentCount {
+		return "", nil, nil, nil, &cipherFailure{code: CipherCodeInvalidValue,
+			message: "credential blob layout is malformed (want iv.tag.ct)"}
+	}
+
+	iv, errIV := base64.RawURLEncoding.DecodeString(segs[0])
+	tag, errTag := base64.RawURLEncoding.DecodeString(segs[1])
+	ct, errCT := base64.RawURLEncoding.DecodeString(segs[2])
+
+	if errIV != nil || errTag != nil || errCT != nil {
+		return "", nil, nil, nil, &cipherFailure{code: CipherCodeInvalidValue,
+			message: "credential blob segments are not base64url"}
+	}
+
+	return kid, iv, tag, ct, nil
+}
+
+// kidFor renders the field-verified kid: the first 24 hex chars of
+// sha256(key) — the same derivation the desktop uses to bind a blob to its
+// keyring key.
+func kidFor(key []byte) string {
+	sum := sha256.Sum256(key)
+
+	return hex.EncodeToString(sum[:])[:kidHexLen]
+}
+
+// cipherSuccess renders the {ok:true, value} arm: the requestId echo plus
+// the decrypted plaintext, keyed verbatim per the field-verified reply
+// schema (credentialCipherReplySchema = {requestId, result:
+// discriminatedUnion("ok")}).
+func cipherSuccess(req Request, value string) map[string]any {
+	return map[string]any{
+		"requestId": req.ReqID,
+		"result": map[string]any{
+			"ok":    true,
+			"value": value,
+		},
+	}
+}
+
+// cipherDecline renders the {ok:false, error{code, message}} arm.
 func cipherDecline(req Request, code, message string) map[string]any {
 	return map[string]any{
 		"requestId": req.ReqID,
@@ -107,11 +315,10 @@ func cipherDecline(req Request, code, message string) map[string]any {
 // SecretToolKeyLoader is the production KeyLoader: it shells the
 // field-verified lookup `secret-tool lookup service "ZCode Credential
 // Encryption" username <sha256(resolved credentials path)>` on the
-// caller-provided scrubbed env (ChildEnv-style allowlist posture — no key
-// material can cross; the argv carries the path derivation, never key
-// bytes), captures the stdout (the 43-char base64url key), and releases it
-// into the reply scope. Real tier only: CI never constructs nor executes it
-// against a keyring (D-06).
+// caller-provided scrubbed env, captures the stdout (the 43-char base64url
+// key), and releases it into the reply scope. Real tier only: CI never
+// constructs nor executes it against a keyring (D-06) — the loader runs
+// only when a cipher ask actually arrives on a wired binary.
 type SecretToolKeyLoader struct {
 	bin      string
 	credPath string
@@ -120,29 +327,118 @@ type SecretToolKeyLoader struct {
 
 // NewSecretToolKeyLoader returns the loader over the secret-tool binary
 // name, the desktop credentials.json path (resolved at lookup time), and
-// the scrubbed subprocess env.
+// the scrubbed subprocess env (see ScrubbedEnv).
 func NewSecretToolKeyLoader(bin, credentialsPath string, env []string) *SecretToolKeyLoader {
 	return &SecretToolKeyLoader{bin: bin, credPath: credentialsPath, env: env}
 }
 
 // LookupCommand builds the lookup subprocess contract the loader executes:
-// the argv (secret-tool lookup service <name> username <hash>) and the env
-// it runs under. Exported for the hygiene locks — tests inspect the
-// contract without executing the binary. The username argument is the
-// sha256 hex derivation over the RESOLVED credentials path (EvalSymlinks +
-// Abs — the realpath discipline), derived from a PATH STRING, never key
-// material.
-//
-// Skeleton posture (RED floor): returns the not-assembled error.
-func (l *SecretToolKeyLoader) LookupCommand() ([]string, []string, error) {
-	return nil, nil, errEmptyCredentialsPath
+// the argv and the env it runs under. Exported for the hygiene locks —
+// tests inspect the contract without executing the binary. The username
+// argument is the sha256 hex derivation over the RESOLVED credentials path
+// (EvalSymlinks + Abs — the realpath discipline), derived from a PATH
+// STRING, never key material: the loader holds no key at argv-build time.
+func (l *SecretToolKeyLoader) LookupCommand() (argv, env []string, err error) {
+	if l.bin == "" || l.credPath == "" {
+		return nil, nil, errEmptyCredentialsPath
+	}
+
+	link, err := resolveRealPath(l.credPath)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	sum := sha256.Sum256([]byte(link))
+	username := hex.EncodeToString(sum[:])
+
+	argv = []string{l.bin, "lookup", "service", secretToolService, "username", username}
+
+	return argv, l.env, nil
+}
+
+// resolveRealPath resolves one path the realpath discipline: EvalSymlinks +
+// Abs over the PATH STRING (the supervisor.BuiltinRevision formula's input
+// contract). A missing file fails loud — a lookup hashed against a phantom
+// path would answer a wrong key silently.
+func resolveRealPath(path string) (string, error) {
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve credentials path %q: %w", path, err)
+	}
+
+	link, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", fmt.Errorf("resolve credentials path %q: %w", path, err)
+	}
+
+	return link, nil
 }
 
 // LoadKey shells the lookup and decodes the captured stdout: trimmed
-// base64url, exactly 32 bytes. The captured stderr rides the exec error
-// and is never logged (hygiene: the key never appears in any log path).
-//
-// Skeleton posture (RED floor): returns the not-assembled error.
-func (l *SecretToolKeyLoader) LoadKey(_ context.Context) ([]byte, error) {
-	return nil, errLoaderKeyShape
+// base64url, exactly 32 bytes. cmd.Output captures and drains stdout (the
+// key never touches a pipe the process doesn't own) and carries stderr on
+// the exec error — which this package wraps and never logs (hygiene: the
+// failure detail rides nowhere; the decline's generic message is the wire
+// surface).
+func (l *SecretToolKeyLoader) LoadKey(ctx context.Context) ([]byte, error) {
+	argv, env, err := l.LookupCommand()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errLoaderLookup, err)
+	}
+
+	//nolint:gosec // the argv is the built field-verified contract, not user input
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = env
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errLoaderLookup, err)
+	}
+
+	key, err := decodeLoaderKey(out)
+	if err != nil {
+		return nil, err
+	}
+
+	return key, nil
+}
+
+// decodeLoaderKey decodes the captured stdout: surrounding whitespace
+// trimmed, base64url, exactly 32 bytes.
+func decodeLoaderKey(raw []byte) ([]byte, error) {
+	key, err := base64.RawURLEncoding.DecodeString(string(bytes.TrimSpace(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errLoaderKeyShape, err)
+	}
+
+	if len(key) != loaderKeyLen {
+		return nil, fmt.Errorf("%w: got %d bytes", errLoaderKeyShape, len(key))
+	}
+
+	return key, nil
+}
+
+// ScrubbedEnv builds the loader subprocess env from a parent env via the
+// allowlist (the ChildEnv posture): only the allowlisted keys cross, in
+// allowlist order, each at most once. The cmd wiring passes
+// ScrubbedEnv(os.Environ()) — the loader subprocess never sees a proxy
+// var, a token, or any other ambient secret.
+func ScrubbedEnv(parentEnv []string) []string {
+	parent := make(map[string]string, len(parentEnv))
+	for _, kv := range parentEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			parent[k] = v
+		}
+	}
+
+	allow := loaderEnvAllowlist()
+
+	env := make([]string, 0, len(allow))
+	for _, key := range allow {
+		if v, ok := parent[key]; ok {
+			env = append(env, key+"="+v)
+		}
+	}
+
+	return env
 }
