@@ -168,6 +168,8 @@ func goldenDrivers() map[string]driverFunc {
 		"envelope-negatives":         driveEnvelopeNegatives,
 		"credential-cipher-scripted": driveCredentialCipherScripted,
 		"setmodel-followup":          driveSetModelFollowup,
+		"part-delta-streaming":       drivePartDeltaStreaming,
+		"no-reasoning":               driveNoReasoning,
 	}
 }
 
@@ -486,5 +488,61 @@ func driveSetModelFollowup(ctx context.Context, d *exchangeDriver) {
 		d.t.Fatalf("session/setModel: %v", err)
 	}
 
+	h.send(ctx)
+}
+
+// driveFrontPreamble drives the front-tier session/new contract calls
+// verbatim (plan 04-04: the part-delta-streaming / no-reasoning rows ride
+// the identical preamble the cancel-mid-turn row byte-locked in 04-06) —
+// bare create, subscribe (the session/event push gate), the setModel
+// follow-up with the corpus-locked synthetic selection.
+func driveFrontPreamble(ctx context.Context, d *exchangeDriver) {
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.create(ctx)
+
+	subParams := map[string]any{
+		wireKeySessionID: fixSessionID,
+		"deliveryKind":   "desktop-continuous",
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
+		d.t.Fatalf("session/subscribe: %v", err)
+	}
+
+	setModelParams := map[string]any{
+		wireKeySessionID: fixSessionID,
+		"model": map[string]any{
+			"providerId": "zai-api",
+			"modelId":    "GLM-5.3-Flash",
+			"options":    map[string]any{"reasoningLevel": "high"},
+		},
+		"persistAsWorkspaceLastUsed": false,
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSetModel, setModelParams); err != nil {
+		d.t.Fatalf("session/setModel: %v", err)
+	}
+}
+
+// drivePartDeltaStreaming: the CORE-04 positive corpus row (plan 04-04) —
+// the front preamble, then send whose scripted stream interleaves text and
+// reasoning part.delta rows (text "Answer:", reasoning "Thinking about it",
+// text " done") before turn.completed. The golden byte-locks the
+// interleaved emit order the front's tap consumes in arrival order.
+func drivePartDeltaStreaming(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx)
+}
+
+// driveNoReasoning: the CORE-04 negative corpus row (plan 04-04) — the
+// front preamble, then send whose scripted stream carries TEXT deltas only
+// (zero field-reasoning envelopes): a client-side thought chunk here would
+// be synthesized, never backend-sourced.
+func driveNoReasoning(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.send(ctx)
 }
