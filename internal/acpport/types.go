@@ -122,6 +122,7 @@ const (
 // 04-05 sharpens the concurrency mapping (-32010) on top of these.
 const (
 	CodeInvalidRequest = -32600
+	CodeInvalidParams  = -32602
 	CodeInternal       = -32603
 )
 
@@ -138,6 +139,13 @@ type Error struct {
 // concurrency mapping).
 func NewInvalidRequest(format string, args ...any) *Error {
 	return &Error{Code: CodeInvalidRequest, Message: fmt.Sprintf(format, args...)}
+}
+
+// NewInvalidParams builds a -32602 front error (the request's params are
+// malformed — e.g. the session/new relative-cwd rejection, T-4-01: the
+// spec's session-setup contract makes cwd MUST-be-absolute).
+func NewInvalidParams(format string, args ...any) *Error {
+	return &Error{Code: CodeInvalidParams, Message: fmt.Sprintf(format, args...)}
 }
 
 // NewInternal builds a -32603 front error (backend failure surfaced

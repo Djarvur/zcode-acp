@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"path/filepath"
 	"sync"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
@@ -147,8 +148,14 @@ func (f *Front) Initialize(ctx context.Context) (acpport.InitReport, error) {
 // session's turn machine registers in the core registry before the id
 // returns. mcpServers are accepted and ignored (D-03).
 func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams) (string, error) {
-	if params.Cwd == "" {
-		return "", acpport.NewInvalidRequest("session/new: cwd required (spec MUST)")
+	// Spec input validation (RESEARCH Security Domain V5, T-4-01): the ACP
+	// session-setup contract makes cwd MUST-be-absolute — validate BEFORE
+	// any backend call so a rejected session/new never touches the back-leg
+	// wire (the fake transcript must show no session/create frame). The
+	// empty-cwd case folds in: an empty string is not absolute either.
+	if !filepath.IsAbs(params.Cwd) {
+		return "", acpport.NewInvalidParams(
+			"session/new: cwd must be absolute (spec session-setup MUST), got %q", params.Cwd)
 	}
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
