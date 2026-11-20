@@ -21,10 +21,10 @@ import (
 // the neutral vocabulary, the five remaining unadvertised stable methods
 // answer acp.NewMethodNotFound (-32601, Pitfall 6) — matching the SDK's
 // own optional-interface behavior — and authenticate (advertised per
-// D-02 but not yet functional) answers the honest not-available error, the
-// one deliberate non-(-32601) exception (RESEARCH Open Question 2 / A2).
-// Capability omission stops legitimate clients; the dispatcher still routes
-// here, so the defaults must be clean.
+// D-02) delegates through Handlers: the front's honest chain (AUTH-01,
+// plan 05-07) is the only success path, and its errors code through
+// wireError (D-02 honesty). Capability omission stops legitimate clients;
+// the dispatcher still routes here, so the defaults must be clean.
 //
 // Construction discipline: NewAgentSideConnection binds the update sink
 // before it returns, and no frame can flow before that (the pipes are
@@ -312,24 +312,23 @@ func (a *agentAdapter) Cancel(ctx context.Context, params acp.CancelNotification
 	return wireError(a.h.Cancel(ctx, string(params.SessionId)))
 }
 
-// Authenticate answers the honest not-available error (plan 04-03, the
-// deliberate non-(-32601) exception): both z.ai auth methods are ADVERTISED
-// per D-02 — advertising is honest, so a client may legitimately call
-// authenticate — but no auth flow exists in this build (Phases 5-6). A fake
-// success would acknowledge an auth that did not happen (prohibition), and
-// the generic -32601 default would mislead a client into thinking the
-// method is absent; the -32603-class not-available error with a stable
-// readable message is the honest answer (RESEARCH Open Question 2 /
-// Assumption A2, D-02 honesty).
+// Authenticate delegates the advertised auth method through the neutral
+// Handlers surface (AUTH-01, plan 05-07 — the Phase-4 not-available stub is
+// replaced by the front's honest chain: record key → push snapshot →
+// refresh registry → read-back → {}). Success answers the empty result;
+// every front error is coded via wireError — never a fake success, never
+// the misleading -32601 default (D-02 honesty). The client-supplied method
+// id passes through verbatim; its validation against the advertised set
+// lives in the front.
 func (a *agentAdapter) Authenticate(
 	ctx context.Context,
 	params acp.AuthenticateRequest,
 ) (acp.AuthenticateResponse, error) {
-	return acp.AuthenticateResponse{}, acp.NewRequestError(
-		CodeInternal,
-		"authentication is not available in this build yet (z.ai auth flows land in Phases 5-6)",
-		nil,
-	)
+	if err := a.h.Authenticate(ctx, string(params.MethodId)); err != nil {
+		return acp.AuthenticateResponse{}, wireError(err)
+	}
+
+	return acp.AuthenticateResponse{}, nil
 }
 
 // Logout is unadvertised in Phase 4 — clean -32601 default (Pitfall 6).

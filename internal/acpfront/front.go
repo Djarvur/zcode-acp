@@ -98,6 +98,12 @@ type Front struct {
 	// streamCeiling is the configured per-turn stream queue byte ceiling
 	// (WithStreamCeiling; zero → the documented default at pump build).
 	streamCeiling int
+
+	// auth is the injected authenticate machinery (plan 05-07, WithAuth):
+	// the configured key binding, the resolved install, and the read-back
+	// want list. Nil until wired — authenticate answers the honest no-key
+	// coded error.
+	auth *AuthConfig
 }
 
 // ModelSelection is the configured backend model the session/new leg binds
@@ -172,21 +178,19 @@ func New(conn *zcode.Conn, opts ...Option) *Front {
 }
 
 // Initialize returns the honest D-02 report: real agent identity and the
-// two advertised auth methods (zai-api-key and zai-individual-coding-plan —
-// functional in Phases 5-6). Wire capabilities are assembled by the adapter
+// two advertised auth methods (zai-api-key functional in Phase 5, the
+// coding plan in Phase 6). Wire capabilities are assembled by the adapter
 // as the SDK zero value — honesty by construction, nothing to suppress
-// (RESEARCH Code Examples: executed-probe shape).
+// (RESEARCH Code Examples: executed-probe shape). The advertised list is
+// the single source the authenticate validation reads (auth.go).
 func (f *Front) Initialize(ctx context.Context) (acpport.InitReport, error) {
 	_ = ctx
 
 	return acpport.InitReport{
-		Name:    "zcode-acp",
-		Title:   "zcode-acp agent",
-		Version: f.version,
-		AuthMethods: []acpport.AuthMethodDef{
-			{ID: "zai-api-key", Name: "z.ai API key"},
-			{ID: "zai-individual-coding-plan", Name: "z.ai Individual Coding Plan"},
-		},
+		Name:        "zcode-acp",
+		Title:       "zcode-acp agent",
+		Version:     f.version,
+		AuthMethods: advertisedAuthMethods(),
 	}, nil
 }
 

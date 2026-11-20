@@ -56,6 +56,10 @@ const (
 // coded -32603, never raw (A5).
 var errRawFront = errors.New("raw front failure")
 
+// errAuthScriptedFailure is the authenticate delegation test's canned
+// Handlers failure (the scripted counterparty's sentinel).
+var errAuthScriptedFailure = errors.New("scripted auth failure")
+
 // TestSDKImportBoundary walks every non-test .go file in the repo and
 // fails if any file outside internal/acpport imports the SDK — the D-01
 // seam lock, enforced structurally (T-4-SC containment).
@@ -267,7 +271,8 @@ func assertHonestFrame(t *testing.T, resp acp.InitializeResponse) {
 // the method (Pitfall 6) — and that the Handlers fake was never touched
 // (the defaults are adapter-side). Authenticate is NOT in this table: it is
 // advertised per D-02 and answers the deliberate honest exception, locked
-// by TestAuthenticateHonestError (plan 04-03). SessionResume/SessionClose
+// by TestAuthenticateDelegation (plan 05-07, superseding plan 04-03's
+// TestAuthenticateHonestError). SessionResume/SessionClose
 // left the table with plan 05-05: the SESS-01 lifecycle pair became real
 // delegates (TestLifecycleDelegation locks the delegation contract).
 func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
@@ -572,7 +577,7 @@ func jsonRPCErrorFrame(t *testing.T, raw, method string) *struct {
 // stops legitimate clients, but the dispatcher still routes), and the
 // Handlers impl must never be touched (the defaults are adapter-side).
 // Authenticate is NOT in this table: it is advertised per D-02 and answers
-// the deliberate honest exception (TestAuthenticateHonestError).
+// the authenticate delegation (TestAuthenticateDelegation, plan 05-07).
 // SessionResume/SessionClose left the table with plan 05-05 (the SESS-01
 // delegates; TestLifecycleDelegationWire locks the wire shape).
 func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
@@ -617,46 +622,124 @@ func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
 	}
 }
 
-// TestAuthenticateHonestError (plan 04-03 RED target): authenticate is
-// ADVERTISED per D-02 (both z.ai auth methods ride the initialize report),
-// so a client may legitimately call it — but no auth flow exists in this
-// build (Phases 5-6). It must answer a JSON-RPC ERROR in the -32603
-// internal class with a stable readable message naming that authentication
-// is not available in this build (RESEARCH Open Question 2 / Assumption
-// A2): NEVER a fake success and NEVER the misleading -32601 MethodNotFound
-// default (D-02 honesty — fake success acknowledges an auth that did not
-// happen; MethodNotFound tells the client the method is absent).
-func TestAuthenticateHonestError(t *testing.T) {
-	h := newScriptedHandlers()
+// TestAuthenticateDelegation (plan 05-07, superseding plan 04-03's
+// TestAuthenticateHonestError lock): authenticate is ADVERTISED per D-02
+// (both z.ai auth methods ride the initialize report), and the adapter now
+// DELEGATES through the neutral Handlers surface — the front's honest chain
+// (AUTH-01: record key → push snapshot → refresh registry → read-back) is
+// the only success path. The lock keeps plan 04-03's honesty floor and adds
+// the delegation contract: every Handlers error codes through wireError on
+// the actual wire (never raw, never the misleading -32601 default, never a
+// fake success), a seam-carried code rides verbatim, and success answers
+// the empty result {}.
+func TestAuthenticateDelegation(t *testing.T) {
+	t.Run("handlers error codes as the internal-class wire error", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.authErr = errAuthScriptedFailure
 
-	probe := newConnectionProbe(t, h)
+		probe := newConnectionProbe(t, h)
 
-	raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-api-key"}`)
+		raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-api-key"}`)
 
-	errObj := jsonRPCErrorFrame(t, raw, acp.AgentMethodAuthenticate)
+		errObj := authErrorFrame(t, raw)
 
-	if errObj == nil {
-		t.Fatalf("authenticate must answer a JSON-RPC ERROR (never fake success), got result frame: %s", raw)
+		if errObj == nil {
+			t.Fatalf("authenticate must answer a JSON-RPC ERROR (never fake success), got result frame: %s", raw)
+		}
+
+		if errObj.Code == -32601 {
+			t.Fatalf("authenticate answers the misleading MethodNotFound default (-32601): %s", raw)
+		}
+
+		if errObj.Code != acpport.CodeInternal {
+			t.Fatalf("authenticate error code = %d, want %d (a plain error codes internal): %s",
+				errObj.Code, acpport.CodeInternal, raw)
+		}
+
+		if !strings.Contains(string(errObj.Data), "scripted auth failure") {
+			t.Fatalf("error data %s must carry the Handlers error text (the A5 internal mapping): %s",
+				string(errObj.Data), raw)
+		}
+
+		if len(h.authCalls) != 1 || h.authCalls[0] != "zai-api-key" {
+			t.Fatalf("authCalls = %v, want exactly the client's methodId verbatim", h.authCalls)
+		}
+	})
+
+	t.Run("seam-carried code rides the wire verbatim", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.authErr = acpport.NewInvalidParams("authenticate: unknown methodId %q", "zai-nope")
+
+		probe := newConnectionProbe(t, h)
+
+		raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-nope"}`)
+
+		errObj := authErrorFrame(t, raw)
+
+		if errObj == nil {
+			t.Fatalf("seam error must answer a JSON-RPC ERROR, got result frame: %s", raw)
+		}
+
+		if errObj.Code != acpport.CodeInvalidParams {
+			t.Fatalf("error code = %d, want the seam's %d riding verbatim: %s",
+				errObj.Code, acpport.CodeInvalidParams, raw)
+		}
+
+		if !strings.Contains(errObj.Message, "zai-nope") {
+			t.Fatalf("error message %q must carry the seam text verbatim (the RequestError stays unwrapped): %s",
+				errObj.Message, raw)
+		}
+	})
+
+	t.Run("success answers the empty result", func(t *testing.T) {
+		h := newScriptedHandlers()
+
+		probe := newConnectionProbe(t, h)
+
+		raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-api-key"}`)
+
+		errObj := authErrorFrame(t, raw)
+		if errObj != nil {
+			t.Fatalf("authenticated authenticate must answer a result, got error frame: %s", raw)
+		}
+
+		var frame struct {
+			Result json.RawMessage `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+			t.Fatalf("decode result frame: %v (%s)", err, raw)
+		}
+
+		if trimmed := strings.TrimSpace(string(frame.Result)); trimmed != "{}" {
+			t.Fatalf("authenticate result = %s, want the empty result {}", trimmed)
+		}
+	})
+}
+
+// authErrorFrame decodes the error object of one raw authenticate response
+// with a raw Data payload — the SDK's internal mapping carries the Handlers
+// detail as a JSON string in data (never the strict {method} shape the
+// unadvertised defaults carry).
+func authErrorFrame(t *testing.T, raw string) *struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
+} {
+	t.Helper()
+
+	var frame struct {
+		Error *struct {
+			Code    int             `json:"code"`
+			Message string          `json:"message"`
+			Data    json.RawMessage `json:"data"`
+		} `json:"error"`
 	}
 
-	if errObj.Code == -32601 {
-		t.Fatalf("authenticate answers the misleading MethodNotFound default (-32601) — "+
-			"must be the honest not-available error: %s", raw)
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("decode authenticate response frame: %v (%s)", err, raw)
 	}
 
-	if errObj.Code != acpport.CodeInternal {
-		t.Fatalf("authenticate error code = %d, want %d (-32603 internal class, A2): %s",
-			errObj.Code, acpport.CodeInternal, raw)
-	}
-
-	if !strings.Contains(errObj.Message, "authentication is not available") {
-		t.Fatalf("authenticate error message %q must name that authentication is not available in this build: %s",
-			errObj.Message, raw)
-	}
-
-	if calls := h.totalCalls(); calls != 0 {
-		t.Fatalf("authenticate reached Handlers %d times, want 0 (no auth flow exists in this build)", calls)
-	}
+	return frame.Error
 }
 
 // promptJoinProbe is the prompt request the content-join assertions ride:
@@ -1546,6 +1629,7 @@ type scriptedHandlers struct {
 	resumeID      string
 	resumeErr     error
 	closeErr      error
+	authErr       error
 
 	initCalls       int
 	newSessionCalls []acpport.NewSessionParams
@@ -1555,6 +1639,7 @@ type scriptedHandlers struct {
 	cancelCalls     []string
 	resumeCalls     []string
 	closeCalls      []string
+	authCalls       []string
 }
 
 // newScriptedHandlers returns the fake with the canned backend session id.
@@ -1651,10 +1736,23 @@ func (s *scriptedHandlers) CloseSession(ctx context.Context, sessionID string) e
 	return s.closeErr
 }
 
+// Authenticate records the method id and replays the canned auth outcome
+// (AUTH-01, plan 05-07 — the adapter delegates; the honest chain lives in
+// the front, this fake is its scripted counterparty).
+func (s *scriptedHandlers) Authenticate(_ context.Context, methodID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.authCalls = append(s.authCalls, methodID)
+
+	return s.authErr
+}
+
 // totalCalls reports the number of Handlers invocations recorded.
 func (s *scriptedHandlers) totalCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.initCalls + len(s.newSessionCalls) + len(s.promptCalls) + len(s.cancelCalls)
+	return s.initCalls + len(s.newSessionCalls) + len(s.promptCalls) + len(s.cancelCalls) +
+		len(s.resumeCalls) + len(s.closeCalls) + len(s.authCalls)
 }

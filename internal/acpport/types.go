@@ -50,6 +50,14 @@ type Handlers interface {
 	// cancel-then-close-then-release, best-effort on the backend leg —
 	// the ordered contract lives in the front.
 	CloseSession(ctx context.Context, sessionID string) error
+
+	// Authenticate runs one advertised auth method (AUTH-01, plan 05-07):
+	// the front validates the method id against the advertised set and
+	// runs the honest chain (record key → push snapshot → refresh registry
+	// → registry read-back) — the read-back verdict is the only success.
+	// No credentials ride the wire (the key enters via the wrapper's own
+	// config); every non-success answers a coded error.
+	Authenticate(ctx context.Context, methodID string) error
 }
 
 // InitReport is the honest initialize payload (D-02): agent identity plus
