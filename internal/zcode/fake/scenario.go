@@ -66,12 +66,26 @@ type Emit struct {
 
 // Reverse issues one server→host request and blocks until the host answers
 // or timeout_ms elapses (recorded honestly as unanswered, never normalized
-// away).
+// away). Reannounce, when present, scripts the broker's re-announce
+// mechanics (05-RESEARCH.md Pattern 2): the same method and params
+// re-issued under NEW wire ids while the first envelope keeps the
+// registered expect_answer.
 type Reverse struct {
 	Method       string          `json:"method"`
 	Params       json.RawMessage `json:"params"`
 	TimeoutMs    int             `json:"timeout_ms"`
 	ExpectAnswer *Reply          `json:"expect_answer,omitempty"`
+	Reannounce   *Reannounce     `json:"reannounce,omitempty"`
+}
+
+// Reannounce scripts a reverse request's re-announce schedule: the same
+// method and params re-issued count times, spaced interval_ms apart, each
+// under a NEW wire id (the server allocates a fresh id per send). The first
+// envelope owns the declared expect_answer; re-announce envelopes carry no
+// expectation of their own.
+type Reannounce struct {
+	Count      int `json:"count"`
+	IntervalMs int `json:"interval_ms"`
 }
 
 // LoadScenario reads and validates a scenario JSON file. Decoding is strict
@@ -270,6 +284,27 @@ func (r *Reverse) validate(where string) error {
 		if err := r.ExpectAnswer.validate(where + ".expect_answer"); err != nil {
 			return err
 		}
+	}
+
+	if r.Reannounce != nil {
+		if err := r.Reannounce.validate(where + ".reannounce"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validate checks one re-announce schedule: a positive count (a zero count
+// scripts nothing) and a non-negative interval (a negative delay is
+// meaningless) — fail loud naming the field.
+func (ra *Reannounce) validate(where string) error {
+	if ra.Count <= 0 {
+		return fmt.Errorf("%w: %s.count must be > 0", errInvalidScenario, where)
+	}
+
+	if ra.IntervalMs < 0 {
+		return fmt.Errorf("%w: %s.interval_ms must be >= 0", errInvalidScenario, where)
 	}
 
 	return nil

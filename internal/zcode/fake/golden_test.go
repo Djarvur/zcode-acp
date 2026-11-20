@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,6 +46,34 @@ const (
 	// wireKeySessionID is the dialect's camelCase session-id params key
 	// (replayed wire payloads keep the capture-verbatim spelling).
 	wireKeySessionID = "sessionId"
+
+	// reannounceAnswerDelay is how long the OnRequest stub waits before
+	// answering the permission reverse: long enough that both scripted
+	// re-announce envelopes (interval 40 ms, count 2) are on the wire first —
+	// they join the same pending ask and earn no reply — but well inside the
+	// reverse's 500 ms timeout window.
+	reannounceAnswerDelay = 300 * time.Millisecond
+
+	// reannounceSettle lets the re-announce envelopes' honest timeout notes
+	// (interval 40 ms + 500 ms timeout ≈ 580 ms after the reverse fires) land
+	// before stdin closes — the deterministic-golden bounded quiet window
+	// (stopSettle pattern).
+	reannounceSettle = 650 * time.Millisecond
+
+	// requestPermissionMethod is the dialect's interaction/requestPermission
+	// method string (the corpus row's scripted reverse).
+	requestPermissionMethod = "interaction/requestPermission"
+
+	// reannounceRegisterID is the deterministic wire id of the permission
+	// reverse's first envelope (the fake-N counter: fake-1 goes to the
+	// create rule's runtime-preferences reverse); fake-3/fake-4 are its two
+	// re-announces.
+	reannounceRegisterID = "fake-2"
+
+	// reannounceJoinID1/reannounceJoinID2 are the deterministic wire ids of
+	// the two re-announce envelopes.
+	reannounceJoinID1 = "fake-3"
+	reannounceJoinID2 = "fake-4"
 )
 
 // errZeroFrameExchange is the exit-0-with-zero-lines failure signature
@@ -172,6 +201,16 @@ func goldenDrivers() map[string]driverFunc {
 		"no-reasoning":               driveNoReasoning,
 		"send-refused-32010":         driveSendRefused32010,
 		"complete-then-cancel":       driveCompleteThenCancel,
+		"reannounce-dedupe":          driveReannounceDedupe,
+	}
+}
+
+// goldenPostAsserts maps corpus rows to post-replay transcript assertions —
+// semantic locks that ride the recorded conversation beyond the byte-golden
+// (the fake records both directions, so reply addressing is assertable).
+func goldenPostAsserts() map[string]func(t *testing.T, tr fake.Transcript) {
+	return map[string]func(t *testing.T, tr fake.Transcript){
+		"reannounce-dedupe": assertReannounceDedupeTranscript,
 	}
 }
 
@@ -199,6 +238,11 @@ func TestGolden(t *testing.T) {
 			}
 
 			tr := replayScenario(t, name, drive)
+
+			if post, ok := goldenPostAsserts()[name]; ok {
+				post(t, tr)
+			}
+
 			fake.CompareGolden(t, "testdata/golden/"+name+".golden", goldenBytes(tr))
 		})
 	}
@@ -562,4 +606,107 @@ func driveCompleteThenCancel(ctx context.Context, d *exchangeDriver) {
 	// wire by microseconds; settle so the ack is always recorded before the
 	// host closes stdin.
 	time.Sleep(stopSettle)
+}
+
+// driveReannounceDedupe: the CORE-06 dedupe corpus row (plan 05-01) — the
+// create framing (its runtime-preferences reverse falls through the stub to
+// the conn's built-in router), then send whose rule fires ONE
+// interaction/requestPermission reverse carrying params.requestId perm-1
+// with reannounce {count:2, interval_ms:40}. The OnRequest stub — a
+// scripted in-test double, the real bridge being plan 05-02 — answers the
+// permission reverse EXACTLY ONCE with the allow decision (the first
+// envelope; first-reply-wins) after a fixed delay long enough that both
+// re-announce envelopes are on the wire first. Join envelopes are HELD
+// without framing anything until the conn closes: the wire must carry no
+// reply for a re-announce (a reply envelope to a still-pending set would
+// reject it server-side — 05-RESEARCH.md Pattern 2), and the fake's honest
+// timeout notes are the fixture's point. The bounded settle window then
+// lets those notes land before stdin closes (deterministic golden).
+func driveReannounceDedupe(ctx context.Context, d *exchangeDriver) {
+	var (
+		reqMu    sync.Mutex
+		answered bool
+	)
+
+	// Hook contract: assigned before any frame flows — the first server
+	// frame only moves when create() below runs.
+	d.conn.OnRequest = func(reqCtx context.Context, env zcode.Envelope) (any, *zcode.WireError, bool) {
+		if env.Method != requestPermissionMethod {
+			return nil, nil, false // fall through to the built-in router
+		}
+
+		reqMu.Lock()
+
+		if answered {
+			reqMu.Unlock()
+
+			// Join envelope: hold without framing — releasing early would
+			// let the conn write a reply envelope to a re-announce id.
+			<-reqCtx.Done()
+
+			return nil, nil, true
+		}
+
+		answered = true
+
+		reqMu.Unlock()
+
+		time.Sleep(reannounceAnswerDelay)
+
+		return map[string]any{"decision": "allow", "reason": "Approved once"}, nil, true
+	}
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.create(ctx)
+	h.send(ctx)
+
+	time.Sleep(reannounceSettle)
+}
+
+// assertReannounceDedupeTranscript asserts the dedupe semantics on the
+// recorded wire conversation (the fake records both directions; the
+// fake-N ids are deterministic): exactly one reply envelope exists for the
+// reverse set, addressed to the registering wire id — never to a
+// re-announce id (first-reply-wins; Pitfall 1's redundant-bytes window).
+// Reply envelopes travel host→fake (DirIn); a reply envelope carries a
+// result or error payload — bare id-echo frames are not replies
+// (dialect §1).
+func assertReannounceDedupeTranscript(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	replies := 0
+
+	for _, line := range tr.Lines {
+		if line.Dir != fake.DirIn {
+			continue
+		}
+
+		probe := probeLine(line.JSON)
+		if probe == nil {
+			continue
+		}
+
+		id, _ := probe["id"].(string)
+
+		if _, hasMethod := probe["method"]; hasMethod || id == "" {
+			continue
+		}
+
+		_, hasPayload := probe["result"]
+		if _, hasErr := probe["error"]; !hasPayload && !hasErr {
+			continue
+		}
+
+		switch id {
+		case reannounceRegisterID:
+			replies++
+		case reannounceJoinID1, reannounceJoinID2:
+			t.Fatalf("re-announce envelope %s earned a reply (first-reply-wins violated): %s", id, line.JSON)
+		}
+	}
+
+	if replies != 1 {
+		t.Fatalf("permission reverse set earned %d reply envelopes, want exactly 1 addressed to %s",
+			replies, reannounceRegisterID)
+	}
 }

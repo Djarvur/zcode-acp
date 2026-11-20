@@ -1,0 +1,14 @@
+in	{"id":1,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/happy-turn-ws","workspacePath":"/tmp/happy-turn-ws"}}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"starting","generation":1,"revision":1,"lastError":null}}
+out	{"id":"fake-1","method":"session/requestRuntimePreferences","params":{"sessionId":"sess_fix1","scope":"runtime-materialization"}}
+in	{"id":"fake-1","result":{"memoryEnabled":false,"nativeSearchEnhancementsEnabled":false}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"ready","generation":1,"revision":2,"lastError":null}}
+out	{"id":1,"result":{"session":{"sessionId":"sess_fix1"},"protocol":{"name":"ZCode Protocol","version":1}}}
+in	{"id":2,"method":"session/send","params":{"content":"Reply with exactly: OK","sessionId":"sess_fix1"}}
+out	{"id":"fake-2","method":"interaction/requestPermission","params":{"requestId":"perm-1","sessionId":"sess_fix1","turnId":"turn_fix1","toolCallId":"tc1","toolName":"Bash","reason":"run echo","riskLevel":"medium","input":{"command":"echo hi"},"options":[{"optionId":"allow_once","kind":"allow_once","name":"Allow once","response":{"decision":"allow","reason":"Approved once"}},{"optionId":"deny","kind":"deny","name":"Deny","response":{"decision":"deny","reason":"denied"}}]}}
+out	{"id":"fake-3","method":"interaction/requestPermission","params":{"requestId":"perm-1","sessionId":"sess_fix1","turnId":"turn_fix1","toolCallId":"tc1","toolName":"Bash","reason":"run echo","riskLevel":"medium","input":{"command":"echo hi"},"options":[{"optionId":"allow_once","kind":"allow_once","name":"Allow once","response":{"decision":"allow","reason":"Approved once"}},{"optionId":"deny","kind":"deny","name":"Deny","response":{"decision":"deny","reason":"denied"}}]}}
+out	{"id":"fake-4","method":"interaction/requestPermission","params":{"requestId":"perm-1","sessionId":"sess_fix1","turnId":"turn_fix1","toolCallId":"tc1","toolName":"Bash","reason":"run echo","riskLevel":"medium","input":{"command":"echo hi"},"options":[{"optionId":"allow_once","kind":"allow_once","name":"Allow once","response":{"decision":"allow","reason":"Approved once"}},{"optionId":"deny","kind":"deny","name":"Deny","response":{"decision":"deny","reason":"denied"}}]}}
+in	{"id":"fake-2","result":{"decision":"allow","reason":"Approved once"}}
+out	{"id":2,"result":{"accepted":true,"sessionId":"sess_fix1","stateRevision":1}}
+note	reverse interaction/requestPermission s:fake-3 unanswered at 500ms timeout
+note	reverse interaction/requestPermission s:fake-4 unanswered at 500ms timeout

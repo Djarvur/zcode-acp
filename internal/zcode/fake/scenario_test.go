@@ -251,3 +251,100 @@ func TestLoadScenarioAcceptsRuleTimes(t *testing.T) {
 		t.Fatalf("on_request rules = %d, want 2", len(sc.OnRequest))
 	}
 }
+
+// TestLoadScenarioRejectsInvalidReannounceZeroCount: a re-announce schedule
+// with a zero count scripts nothing — rejected, naming the
+// reannounce.count field.
+func TestLoadScenarioRejectsInvalidReannounceZeroCount(t *testing.T) {
+	path := writeInvalidScenario(t, `{
+	  "name": "reannounce-zero-count",
+	  "on_request": [{
+	    "method": "session/create",
+	    "reply": {"result": {}},
+	    "side_effects": [{
+	      "reverse": {"method": "session/requestRuntimePreferences",
+	                  "params": {"sessionId": "sess_fix1"}, "timeout_ms": 100,
+	                  "reannounce": {"count": 0, "interval_ms": 40}}
+	    }]
+	  }],
+	  "eof_drain_ms": 100
+	}`)
+
+	assertScenarioRejected(t, path, "reannounce.count")
+}
+
+// TestLoadScenarioRejectsInvalidReannounceNegativeInterval: a negative
+// re-announce interval is meaningless — rejected, naming the
+// reannounce.interval_ms field.
+func TestLoadScenarioRejectsInvalidReannounceNegativeInterval(t *testing.T) {
+	path := writeInvalidScenario(t, `{
+	  "name": "reannounce-negative-interval",
+	  "on_request": [{
+	    "method": "session/create",
+	    "reply": {"result": {}},
+	    "side_effects": [{
+	      "reverse": {"method": "session/requestRuntimePreferences",
+	                  "params": {"sessionId": "sess_fix1"}, "timeout_ms": 100,
+	                  "reannounce": {"count": 1, "interval_ms": -5}}
+	    }]
+	  }],
+	  "eof_drain_ms": 100
+	}`)
+
+	assertScenarioRejected(t, path, "reannounce.interval_ms")
+}
+
+// TestLoadScenarioRejectsInvalidReannounceUnknownKey: a re-announce schedule
+// carrying an unknown key (a typo'd schema field) is rejected naming the
+// key — the strict-decode rule extends into the nested reannounce object.
+func TestLoadScenarioRejectsInvalidReannounceUnknownKey(t *testing.T) {
+	path := writeInvalidScenario(t, `{
+	  "name": "reannounce-unknown-key",
+	  "on_request": [{
+	    "method": "session/create",
+	    "reply": {"result": {}},
+	    "side_effects": [{
+	      "reverse": {"method": "session/requestRuntimePreferences",
+	                  "params": {"sessionId": "sess_fix1"}, "timeout_ms": 100,
+	                  "reannounce": {"count": 1, "interval_ms": 40, "interval": 40}}
+	    }]
+	  }],
+	  "eof_drain_ms": 100
+	}`)
+
+	assertScenarioRejected(t, path, "interval")
+}
+
+// TestLoadScenarioAcceptsReannounce: a well-formed re-announce schedule
+// (positive count, non-negative interval) parses — the reannounce-dedupe
+// corpus row's scripting shape.
+func TestLoadScenarioAcceptsReannounce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reannounce.json")
+	content := `{
+	  "name": "reannounce-ok",
+	  "on_request": [{
+	    "method": "session/create",
+	    "reply": {"result": {}},
+	    "side_effects": [{
+	      "reverse": {"method": "session/requestRuntimePreferences",
+	                  "params": {"sessionId": "sess_fix1"}, "timeout_ms": 500,
+	                  "reannounce": {"count": 2, "interval_ms": 40}}
+	    }]
+	  }],
+	  "eof_drain_ms": 100
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write scenario: %v", err)
+	}
+
+	sc, err := fake.LoadScenario(path)
+	if err != nil {
+		t.Fatalf("scenario with a well-formed reannounce must load: %v", err)
+	}
+
+	reverse := sc.OnRequest[0].SideEffects[0].Reverse
+
+	if reverse.Reannounce == nil || reverse.Reannounce.Count != 2 || reverse.Reannounce.IntervalMs != 40 {
+		t.Fatalf("reannounce = %+v, want {count:2, interval_ms:40}", reverse.Reannounce)
+	}
+}

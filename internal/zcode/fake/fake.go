@@ -237,7 +237,10 @@ func (s *server) runSideEffects(effects []SideEffect) {
 // answer arrives, timeout_ms elapses, or the stream closes — whichever is
 // first. An answered reverse whose payload mismatches the declared
 // expect_answer fails the run; an unanswered one is recorded honestly as a
-// transcript note.
+// transcript note. A declared reannounce schedule re-issues the same method
+// and params under NEW wire ids while this first envelope stays the
+// registered one (05-RESEARCH.md Pattern 2 — the broker allocates a fresh
+// wire id per re-announce and the first reply resolves the pending set).
 func (s *server) runReverse(r *Reverse) {
 	id := &zcode.ID{Str: fmt.Sprintf("fake-%d", s.nextRev.Add(1))}
 
@@ -249,6 +252,23 @@ func (s *server) runReverse(r *Reverse) {
 
 	s.write(&zcode.Envelope{ID: id, Method: r.Method, Params: r.Params})
 
+	if r.Reannounce != nil {
+		done := make(chan struct{})
+		defer close(done)
+
+		s.wg.Add(1)
+
+		go s.runReannounce(r, done)
+	}
+
+	s.awaitReverse(r, id, answer)
+}
+
+// awaitReverse blocks until the answer for id arrives, the reverse's
+// timeout_ms elapses, or the stream closes — whichever is first. An answered
+// reverse whose payload mismatches the declared expect_answer fails the run;
+// an unanswered one is recorded honestly as a transcript note.
+func (s *server) awaitReverse(r *Reverse, id *zcode.ID, answer chan zcode.Envelope) {
 	timer := time.NewTimer(time.Duration(r.TimeoutMs) * time.Millisecond)
 	defer timer.Stop()
 
@@ -264,6 +284,51 @@ func (s *server) runReverse(r *Reverse) {
 	case <-s.closed:
 		s.forgetReverse(id)
 		s.drainOrphan(r, id, answer)
+	}
+}
+
+// runReannounce re-issues the reverse's same method and params under NEW
+// wire ids (the existing fake-N counter — never a reuse of the first id,
+// mirroring the server's fresh-id-per-send mechanics) ra.Count times,
+// spaced ra.IntervalMs apart. Re-announce envelopes carry no expect_answer
+// of their own — the first envelope owns the declared one — and each is
+// awaited like any reverse: an unanswered one records its honest timeout
+// note. The schedule stops when the first envelope's answer arrives (done —
+// the server cancels the re-announce timer on resolve) or the stream
+// closes. Goroutine accounting: this goroutine is tracked by the server wg,
+// so every watcher it spawns is Add'ed while the counter is positive and
+// wg.Wait stays race-free.
+func (s *server) runReannounce(r *Reverse, done <-chan struct{}) {
+	defer s.wg.Done()
+
+	ra := r.Reannounce
+
+	for range ra.Count {
+		select {
+		case <-time.After(time.Duration(ra.IntervalMs) * time.Millisecond):
+		case <-done:
+			return
+
+		case <-s.closed:
+			return
+		}
+
+		id := &zcode.ID{Str: fmt.Sprintf("fake-%d", s.nextRev.Add(1))}
+
+		answer := make(chan zcode.Envelope, 1)
+
+		s.revMu.Lock()
+		s.reverse[id.Key()] = answer
+		s.revMu.Unlock()
+
+		s.wg.Add(1)
+
+		go func() {
+			defer s.wg.Done()
+			s.awaitReverse(r, id, answer)
+		}()
+
+		s.write(&zcode.Envelope{ID: id, Method: r.Method, Params: r.Params})
 	}
 }
 
