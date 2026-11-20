@@ -100,23 +100,16 @@ type Conn struct {
 	// hooks.
 	RouterDeadline func(method string) time.Duration
 
-	// OnRouterEvent, when non-nil, receives one RouterEvent per router
-	// policy decision (answered / deadline-expired) as it happens — the
-	// observable face of the D-05 record-honesty contract. Invoked on the
-	// request or tracker goroutine; must not block.
-	//
-	// Single slot by design in Phase 4 (one active turn per front; CORE-06
-	// revisits). Reads are guarded by routerMu so a registration may also
-	// arrive mid-traffic via SetOnRouterEvent — the front tier constructs
-	// one machine per session DURING the session/new exchange (the create's
-	// runtime-preferences reverse exchange is concurrently routing), so the
-	// Phase-3 assign-before-traffic contract cannot hold for this hook.
-	// Direct field assignment stays supported for pre-traffic test wiring.
-	OnRouterEvent func(ev RouterEvent)
+	// routerObservers is the ordered router-event fan-out (WR-01): every
+	// registered machine keeps its own policy-event path — a later machine's
+	// construction no longer steals an earlier machine's degraded-resolution
+	// hook. Delivery is registration order under routerObsMu; mid-traffic
+	// registration is memory-safe (new observers see only subsequent events —
+	// the contract is delivery ORDERING, not replay).
+	routerObservers []*routerObserverEntry
 
-	// routerMu guards OnRouterEvent reads (recordRouterEvent) against the
-	// synchronized SetOnRouterEvent registration.
-	routerMu sync.RWMutex
+	// routerObsMu guards routerObservers registration and delivery.
+	routerObsMu sync.Mutex
 }
 
 // NewConn returns a Conn over rw and starts its writer and read-loop
@@ -149,26 +142,33 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 	return c
 }
 
-// SetOnRouterEvent installs the router-event hook under the router lock —
-// the synchronized registration form for hooks that arrive mid-traffic
-// (the front tier's per-session machines, constructed during the
-// session/new exchange while a reverse request routes concurrently).
-// Semantics unchanged: single slot, last registration wins.
-func (c *Conn) SetOnRouterEvent(fn func(ev RouterEvent)) {
-	c.routerMu.Lock()
-	defer c.routerMu.Unlock()
-
-	c.OnRouterEvent = fn
-}
-
-// AddRouterObserver is the 05-03 RED stub over the single router-event
-// slot: registration installs fn via SetOnRouterEvent (last registration
-// wins — the WR-01 defect this plan fixes) and the remove func is a no-op.
-// The GREEN commit replaces this with the ordered entry-pointer fan-out.
+// AddRouterObserver registers fn on the ordered router-event fan-out and
+// returns its remove func. Registration is memory-safe mid-traffic under
+// routerObsMu; the delivery contract is ORDERING — a new observer sees
+// only subsequent events (no replay of earlier policy observations), and
+// every registered observer receives each event in registration order
+// (IN-01: the mid-traffic-registration sentence in the old single-slot doc
+// overstated the contract; the mutex made registration data-race-free,
+// which is the weaker claim this doc now states precisely).
 func (c *Conn) AddRouterObserver(fn func(ev RouterEvent)) (remove func()) {
-	c.SetOnRouterEvent(fn)
+	entry := &routerObserverEntry{fn: fn}
 
-	return func() {}
+	c.routerObsMu.Lock()
+	c.routerObservers = append(c.routerObservers, entry)
+	c.routerObsMu.Unlock()
+
+	return func() {
+		c.routerObsMu.Lock()
+		defer c.routerObsMu.Unlock()
+
+		for i, obs := range c.routerObservers {
+			if obs == entry {
+				c.routerObservers = slices.Delete(c.routerObservers, i, i+1)
+
+				return
+			}
+		}
+	}
 }
 
 // Close stops the stream and the writer, in that order: the peer sees EOF
@@ -232,6 +232,12 @@ func (c *Conn) AddObserver(fn func(Envelope)) (remove func()) {
 // (function values are not comparable in Go).
 type observerEntry struct {
 	fn func(Envelope)
+}
+
+// routerObserverEntry is the router-event twin of observerEntry — the
+// carrier type differs (RouterEvent policy observations, not envelopes).
+type routerObserverEntry struct {
+	fn func(ev RouterEvent)
 }
 
 // readLoop scans wire lines until EOF, demuxing each decoded envelope
@@ -459,17 +465,18 @@ func (c *Conn) recordDeadlineExpired(env Envelope, deadline time.Duration, err e
 	)
 }
 
-// recordRouterEvent delivers one policy observation to the OnRouterEvent
-// hook when installed. The hook is read under the router lock so a
-// mid-traffic SetOnRouterEvent registration cannot race the routing
-// goroutine.
+// recordRouterEvent delivers one policy observation through the ordered
+// router-event fan-out under routerObsMu — one mechanism (WR-01: the
+// single-slot read discipline folded into the fan-out mutex; no
+// double-lock, no mid-traffic registration race). The snapshot-then-call
+// shape keeps callbacks free to register or remove observers mid-delivery.
 func (c *Conn) recordRouterEvent(ev RouterEvent) {
-	c.routerMu.RLock()
-	hook := c.OnRouterEvent
-	c.routerMu.RUnlock()
+	c.routerObsMu.Lock()
+	observers := slices.Clone(c.routerObservers)
+	c.routerObsMu.Unlock()
 
-	if hook != nil {
-		hook(ev)
+	for _, obs := range observers {
+		obs.fn(ev)
 	}
 }
 

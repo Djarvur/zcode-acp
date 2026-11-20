@@ -723,15 +723,15 @@ func TestRouterUnknownMethodAnswered32601(t *testing.T) {
 	}
 }
 
-// collectRouterEvents hooks Conn.OnRouterEvent to deliver router policy
-// observations on the returned channel (buffered; the hook runs on the
-// request or tracker goroutine).
+// collectRouterEvents registers on Conn's router-event fan-out to deliver
+// router policy observations on the returned channel (buffered; the
+// observer runs on the request or tracker goroutine).
 func collectRouterEvents(conn *zcode.Conn) <-chan zcode.RouterEvent {
 	ch := make(chan zcode.RouterEvent, 16)
 
-	conn.OnRouterEvent = func(ev zcode.RouterEvent) {
+	conn.AddRouterObserver(func(ev zcode.RouterEvent) {
 		ch <- ev
-	}
+	})
 
 	return ch
 }

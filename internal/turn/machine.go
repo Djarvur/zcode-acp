@@ -168,17 +168,22 @@ type Machine struct {
 	resolution  Resolution
 	resolvedCh  chan struct{}
 	ackAt       time.Time
+
+	// removeRouterObserver deregisters the machine from the conn's ordered
+	// router-event fan-out (WR-07: exposed for session/close teardown —
+	// plan 05-05 calls it). Set by NewMachine; nil without a conn.
+	removeRouterObserver func()
 }
 
 // NewMachine returns a machine bound to sessionID on conn with the given
 // watcher, and wires the machine's one observation surface: every inbound
-// notification envelope funnels into it via conn.AddObserver (the ordered
-// observer fan-out — a second machine no longer steals the first's
-// notifications), and the machine takes over conn's OnRouterEvent hook for
-// reverse-request router policy events. OnRouterEvent stays a single slot
-// by design in Phase 4 — one active turn per front; Phase 5 (CORE-06)
-// revisits. Registration happens before any frame flows (the Conn hook
-// contract).
+// notification envelope funnels into it via conn.AddObserver and
+// reverse-request router policy events via conn.AddRouterObserver — both
+// ordered fan-outs (WR-01: a second machine no longer steals the first's
+// router hook). NewMachine keeps BOTH remove funcs on the Machine; plan
+// 05-05's session/close teardown calls them (WR-07: teardown can finally
+// release observers). Registration happens before any frame flows (the
+// Conn hook contract).
 func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machine {
 	m := &Machine{
 		conn:       conn,
@@ -190,7 +195,8 @@ func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machin
 
 	if conn != nil {
 		conn.AddObserver(m.ObserveEnvelope)
-		conn.SetOnRouterEvent(m.observeRouterEvent)
+
+		m.removeRouterObserver = conn.AddRouterObserver(m.observeRouterEvent)
 	}
 
 	return m
