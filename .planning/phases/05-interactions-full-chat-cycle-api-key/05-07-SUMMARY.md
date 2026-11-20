@@ -203,3 +203,7 @@ Ready for 05-08. The composition surface 05-09's real tier consumes is complete:
 ---
 *Phase: 05-interactions-full-chat-cycle-api-key*
 *Completed: 2026-11-20*
+
+## Self-Check: PASSED
+
+All 8 created files verified present on disk; all 8 task/deviation/metadata commits verified ancestors of HEAD (`b1860f4`, `7bb2946`, `78ab036`, `f4481d6`, `a8f1b93`, `67efd36`, `aa6e008`, `6afce43`). `requirements.ready-ids` returned an empty ready list for AUTH-01 (the sibling plan 05-09 shares the ID and lacks a SUMMARY) — the requirement stays open by contract, not omission.
