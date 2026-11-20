@@ -36,14 +36,21 @@ patterns=(
 rc=0
 for p in "${patterns[@]}"; do
   out=$(git grep -nE "$p" -- . ':(exclude).planning' 2>/dev/null || true)
-  # Allowlist: Phase-3 golden-corpus fixtures (fake/testdata) deliberately carry
-  # a self-declaring synthetic credential marker (the "enc:v2:os:"-prefixed
-  # string whose body ends in "-synthetic-not-a-real-credential") — capture-
-  # verbatim credential SHAPE is the fixture's point. Drop only lines containing
-  # that EXACT string, before classification; the patterns themselves are
+  # Allowlist: corpus fixtures deliberately carry self-declaring synthetic
+  # credential markers — capture-verbatim credential SHAPE is the fixture's
+  # point (plan 03-03 / plan 05-06). Drop only lines containing one of these
+  # EXACT strings, before classification; the patterns themselves are
   # untouched and every other match still fails the gate.
+  #   - Phase-3: the "enc:v2:os:"-prefixed blob whose body ends in
+  #     "-synthetic-not-a-real-credential".
+  #   - Phase-5 plan 05-06: the runtime-headers fixture key value
+  #     "zc-synthetic-fixture-not-a-real-key" (self-declaring; the golden
+  #     byte-locks it, so the gate allowlists the marker instead of
+  #     churning the corpus).
   if [ -n "$out" ]; then
-    out=$(printf '%s\n' "$out" | grep -vF 'enc:v2:os:fix1-synthetic-not-a-real-credential' || true)
+    out=$(printf '%s\n' "$out" |
+      grep -vF -e 'enc:v2:os:fix1-synthetic-not-a-real-credential' \
+        -e 'zc-synthetic-fixture-not-a-real-key' || true)
   fi
   if [ -n "$out" ]; then
     printf '%s\n' "$out" | head -5
