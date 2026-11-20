@@ -11,7 +11,8 @@
 // tidy-stable by the blank import in pin_test.go and asserted by the mise
 // tidy-diff gate (T-4-SC pin discipline).
 //
-// This file lands with the dependency (plan 04-01) so the require line is
-// tidy-stable from day one; the adapter surface (types.go, agent.go,
-// sink.go) arrives with plan 04-02.
+// This file landed with the dependency (plan 04-01) so the require line
+// was tidy-stable from day one; the adapter surface (types.go, agent.go,
+// sink.go) landed with plan 04-02, together with TestSDKImportBoundary —
+// the structural seam lock (no non-test SDK import outside this package).
 package acpport

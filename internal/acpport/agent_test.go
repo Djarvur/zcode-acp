@@ -503,8 +503,11 @@ func TestUpdateSinkEmitsChunkShapes(t *testing.T) {
 		t.Fatalf("sink(thought): %v", err)
 	}
 
-	wantMessage := `{"sessionId":"sess_1","update":{"content":{"text":"hello","type":"text"},"sessionUpdate":"agent_message_chunk"}}`
-	wantThought := `{"sessionId":"sess_1","update":{"content":{"text":"thinking","type":"text"},"sessionUpdate":"agent_thought_chunk"}}`
+	// The full wire frame: the SDK wraps the notification in the JSON-RPC
+	// envelope — the probe shapes (RESEARCH Code Examples) are the params
+	// payload inside it.
+	wantMessage := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"content":{"text":"hello","type":"text"},"sessionUpdate":"agent_message_chunk"}}}`
+	wantThought := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"content":{"text":"thinking","type":"text"},"sessionUpdate":"agent_thought_chunk"}}}`
 
 	if got := readFrame(t, lines); got != wantMessage {
 		t.Fatalf("message chunk frame drift:\n got: %s\nwant: %s", got, wantMessage)
