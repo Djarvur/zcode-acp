@@ -1231,32 +1231,67 @@ func TestRouterFanout(t *testing.T) {
 	conn := zcode.NewConn(connEnd)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	const deadline = 60 * time.Millisecond
-
-	conn.RouterDeadline = func(string) time.Duration { return deadline }
+	conn.RouterDeadline = func(string) time.Duration { return 60 * time.Millisecond }
 
 	peerLines := drainPeer(t, peerEnd)
 
 	var recMu sync.Mutex
 	var order []string
 
-	removeA := conn.AddRouterObserver(func(zcode.RouterEvent) {
+	record := func(tag string) {
 		recMu.Lock()
 		defer recMu.Unlock()
 
-		order = append(order, "A")
-	})
+		order = append(order, tag)
+	}
 
-	_ = conn.AddRouterObserver(func(zcode.RouterEvent) {
-		recMu.Lock()
-		defer recMu.Unlock()
+	removeA := conn.AddRouterObserver(func(zcode.RouterEvent) { record("A") })
+	_ = conn.AddRouterObserver(func(zcode.RouterEvent) { record("B") })
 
-		order = append(order, "B")
-	})
+	fireCipherExpiry(t, peerEnd, 60*time.Millisecond, peerLines)
 
-	injectLine(t, peerEnd,
-		`{"id":"server-1","method":"interaction/requestCredentialCipher",`+
-			`"params":{"requestId":"req-1","operation":"decrypt","value":"enc:v2:os:c2VjcmV0"}}`)
+	got := snapshotRouterOrder(t, &recMu, &order)
+
+	if len(got) != 2 || got[0] != "A" || got[1] != "B" {
+		t.Fatalf("first event delivery order = %v, want [A B] (registration order)", got)
+	}
+
+	removeA()
+
+	fireCipherExpiry(t, peerEnd, 60*time.Millisecond, peerLines)
+
+	got = snapshotRouterOrder(t, &recMu, &order)
+
+	if len(got) != 1 || got[0] != "B" {
+		t.Fatalf("post-removal delivery = %v, want [B] only (A was removed)", got)
+	}
+}
+
+// snapshotRouterOrder drains the delivery-order log (reset included — the
+// next window starts empty) and returns the copy.
+func snapshotRouterOrder(t *testing.T, mu *sync.Mutex, order *[]string) []string {
+	t.Helper()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	got := slices.Clone(*order)
+	*order = (*order)[:0]
+
+	return got
+}
+
+// fireCipherExpiry injects one credential-cipher reverse request (fresh
+// wire id) and waits past its expiry window, draining any reply attempt
+// (the D-05 never-answer contract is asserted at the call sites).
+func fireCipherExpiry(t *testing.T, peerEnd *pipeEnd, deadline time.Duration, peerLines <-chan string) {
+	t.Helper()
+
+	nonce := time.Now().UnixNano() % 1_000_000
+
+	injectLine(t, peerEnd, fmt.Sprintf(
+		`{"id":"server-%d","method":"interaction/requestCredentialCipher",`+
+			`"params":{"requestId":"req-%d","operation":"decrypt","value":"enc:v2:os:c2VjcmV0"}}`, nonce, nonce))
 
 	time.Sleep(deadline + graceWindow)
 
@@ -1265,29 +1300,6 @@ func TestRouterFanout(t *testing.T) {
 		t.Fatalf("credential-cipher request drew a reply — D-05 violation: %s", line)
 	default:
 	}
-
-	recMu.Lock()
-	gotOrder := slices.Clone(order)
-	order = order[:0]
-	recMu.Unlock()
-
-	if len(gotOrder) != 2 || gotOrder[0] != "A" || gotOrder[1] != "B" {
-		t.Fatalf("first event delivery order = %v, want [A B] (registration order, both observers)", gotOrder)
-	}
-
-	removeA()
-
-	injectLine(t, peerEnd,
-		`{"id":"server-2","method":"interaction/requestCredentialCipher",`+
-			`"params":{"requestId":"req-2","operation":"decrypt","value":"enc:v2:os:c2VjcmV0"}}`)
-
-	time.Sleep(deadline + graceWindow)
-
-	recMu.Lock()
-	gotAfterRemove := slices.Clone(order)
-	recMu.Unlock()
-
-	if len(gotAfterRemove) != 1 || gotAfterRemove[0] != "B" {
-		t.Fatalf("post-removal delivery = %v, want [B] only (A was removed)", gotAfterRemove)
-	}
 }
+
+// snapshotRouterOrder returns a copy of the delivery-order log.
