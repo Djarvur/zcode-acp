@@ -237,7 +237,7 @@ type observerEntry struct {
 
 // ObserverCounts returns the live notification and router observer counts
 // (diagnostics and the teardown-baseline test seam).
-func (c *Conn) ObserverCounts() (notification int, router int) {
+func (c *Conn) ObserverCounts() (notification, router int) {
 	return len(c.observers), len(c.routerObservers)
 }
 

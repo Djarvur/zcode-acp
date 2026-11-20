@@ -746,10 +746,38 @@ func TestTerminalCarrierTolerance(t *testing.T) {
 // construction. RED: NewMachine's SetOnRouterEvent registration is
 // last-wins — machine2's construction steals the hook and turn 2 on
 // machine 1 never resolves (assertion failure at the bound).
+
+// driveCipherTurn runs one machine turn against the cipher-expiry exchange
+// (the shared tail of the two-machines test: bounded Run + degraded lock).
+func driveCipherTurn(t *testing.T, m *turn.Machine, spy *resolutionSpy, prompt string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), turnTestTimeout)
+	defer cancel()
+
+	reason, err := m.Run(ctx, prompt)
+
+	if err != nil {
+		t.Fatalf("%s Run: %v", prompt, err)
+	}
+
+	if reason != turn.StopError {
+		t.Fatalf("%s reason = %q, want %q (degraded expiry)", prompt, reason, turn.StopError)
+	}
+
+	res := spy.snapshot()
+
+	if len(res) == 0 || res[len(res)-1].Signal != turn.SignalDegraded {
+		t.Fatalf("%s resolutions = %+v, want the last one degraded", prompt, res)
+	}
+}
+
 func TestTwoMachinesDegradedSignalNotStolen(t *testing.T) {
 	cipherReverse := fake.SideEffect{Reverse: &fake.Reverse{
-		Method:    "interaction/requestCredentialCipher",
-		Params:    rawOf(t, map[string]any{"requestId": "req-x", "operation": "decrypt", "value": "enc:v2:os:c2VjcmV0"}),
+		Method: "interaction/requestCredentialCipher",
+		Params: rawOf(t, map[string]any{
+			"requestId": "req-x", "operation": "decrypt", "value": "enc:v2:os:c2VjcmV0",
+		}),
 		TimeoutMs: 200,
 	}}
 
@@ -785,24 +813,7 @@ func TestTwoMachinesDegradedSignalNotStolen(t *testing.T) {
 	machine1.OnResolve = spy1.record
 
 	// Turn 1: the expiry reaches machine 1 — degraded, exactly once.
-	ctx1, cancel1 := context.WithTimeout(context.Background(), turnTestTimeout)
-	defer cancel1()
-
-	reason1, err1 := machine1.Run(ctx1, "prompt one")
-
-	if err1 != nil {
-		t.Fatalf("turn 1 Run: %v", err1)
-	}
-
-	if reason1 != turn.StopError {
-		t.Fatalf("turn 1 reason = %q, want %q (degraded expiry)", reason1, turn.StopError)
-	}
-
-	res1 := spy1.snapshot()
-
-	if len(res1) != 1 || res1[0].Signal != turn.SignalDegraded {
-		t.Fatalf("turn 1 resolutions = %+v, want exactly one degraded", res1)
-	}
+	driveCipherTurn(t, machine1, spy1, "prompt one")
 
 	// The defect shape: a second session's machine construction steals the
 	// single router-event slot.
@@ -818,23 +829,10 @@ func TestTwoMachinesDegradedSignalNotStolen(t *testing.T) {
 	// Turn 2 on machine 1: GREEN delivers the expiry through the fan-out —
 	// machine 1 resolves degraded again, machine 2 early-returns (idle).
 	// RED: the slot holds machine 2's observer, so machine 1 hangs.
-	ctx2, cancel2 := context.WithTimeout(context.Background(), turnTestTimeout)
-	defer cancel2()
+	driveCipherTurn(t, machine1, spy1, "prompt two")
 
-	reason2, err2 := machine1.Run(ctx2, "prompt two")
-
-	if err2 != nil {
-		t.Fatalf("turn 2 Run: %v", err2)
-	}
-
-	if reason2 != turn.StopError {
-		t.Fatalf("turn 2 reason = %q, want %q — the first machine's degraded-resolution path was stolen (WR-01)", reason2, turn.StopError)
-	}
-
-	res2 := spy2.snapshot()
-
-	if len(res2) != 0 {
-		t.Fatalf("machine 2 recorded %+v, want zero (idle early-return)", res2)
+	if got := spy2.snapshot(); len(got) != 0 {
+		t.Fatalf("machine 2 recorded %+v, want zero (idle early-return)", got)
 	}
 }
 
@@ -861,7 +859,8 @@ func TestMachineCloseObserversReturnsToBaseline(t *testing.T) {
 	notifNow, routerNow := conn.ObserverCounts()
 
 	if notifNow != notifBase+1 || routerNow != routerBase+1 {
-		t.Fatalf("post-construction counts = (%d, %d), want baseline+1 each (%d, %d)", notifNow, routerNow, notifBase, routerBase)
+		t.Fatalf("post-construction counts = (%d, %d), want baseline+1 (%d, %d)",
+			notifNow, routerNow, notifBase, routerBase)
 	}
 
 	m.CloseObservers()
@@ -870,6 +869,7 @@ func TestMachineCloseObserversReturnsToBaseline(t *testing.T) {
 	notifAfter, routerAfter := conn.ObserverCounts()
 
 	if notifAfter != notifBase || routerAfter != routerBase {
-		t.Fatalf("post-teardown counts = (%d, %d), want the (%d, %d) baseline", notifAfter, routerAfter, notifBase, routerBase)
+		t.Fatalf("post-teardown counts = (%d, %d), want baseline (%d, %d)",
+			notifAfter, routerAfter, notifBase, routerBase)
 	}
 }
