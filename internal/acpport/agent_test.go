@@ -260,10 +260,12 @@ func assertHonestFrame(t *testing.T, resp acp.InitializeResponse) {
 	}
 }
 
-// TestUnadvertisedMethodsAnswerMethodNotFound drives the eight
-// unadvertised stable methods and asserts each answers the clean
-// -32601 default naming the method (Pitfall 6) — and that the Handlers
-// fake was never touched (the defaults are adapter-side).
+// TestUnadvertisedMethodsAnswerMethodNotFound drives the seven unadvertised
+// stable methods and asserts each answers the clean -32601 default naming
+// the method (Pitfall 6) — and that the Handlers fake was never touched
+// (the defaults are adapter-side). Authenticate is NOT in this table: it is
+// advertised per D-02 and answers the deliberate honest exception, locked
+// by TestAuthenticateHonestError (plan 04-03).
 func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 	h := newScriptedHandlers()
 	adapter := acpport.NewAgent(h)
@@ -273,11 +275,6 @@ func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 		method string
 		call   func() error
 	}{
-		{acp.AgentMethodAuthenticate, func() error {
-			_, err := adapter.Authenticate(ctx, acp.AuthenticateRequest{})
-
-			return err
-		}},
 		{acp.AgentMethodLogout, func() error {
 			_, err := adapter.Logout(ctx, acp.LogoutRequest{})
 

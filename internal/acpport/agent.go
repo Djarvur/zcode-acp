@@ -12,11 +12,13 @@ import (
 
 // agentAdapter implements the SDK's 12-method acp.Agent surface over a
 // Handlers impl (RESEARCH Pattern 1, the D-01 seam): the four advertised
-// methods translate the neutral vocabulary, and the eight unadvertised
-// stable methods answer acp.NewMethodNotFound (-32601, Pitfall 6) —
-// matching the SDK's own optional-interface behavior. Capability omission
-// stops legitimate clients; the dispatcher still routes here, so the
-// defaults must be clean.
+// methods translate the neutral vocabulary, the seven unadvertised stable
+// methods answer acp.NewMethodNotFound (-32601, Pitfall 6) — matching the
+// SDK's own optional-interface behavior — and authenticate (advertised per
+// D-02 but not yet functional) answers the honest not-available error, the
+// one deliberate non-(-32601) exception (RESEARCH Open Question 2 / A2).
+// Capability omission stops legitimate clients; the dispatcher still routes
+// here, so the defaults must be clean.
 //
 // Construction discipline: NewAgentSideConnection binds the update sink
 // before it returns, and no frame can flow before that (the pipes are
@@ -193,15 +195,24 @@ func (a *agentAdapter) Cancel(ctx context.Context, params acp.CancelNotification
 	return wireError(a.h.Cancel(ctx, string(params.SessionId)))
 }
 
-// Authenticate answers the generic unadvertised default in Phase 4
-// (deliberate -32601 exception, Open Question 2 — authMethods are
-// advertised per D-02, the flow lands in Phases 5-6); plan 04-03 flips it
-// to the honest not-available error.
+// Authenticate answers the honest not-available error (plan 04-03, the
+// deliberate non-(-32601) exception): both z.ai auth methods are ADVERTISED
+// per D-02 — advertising is honest, so a client may legitimately call
+// authenticate — but no auth flow exists in this build (Phases 5-6). A fake
+// success would acknowledge an auth that did not happen (prohibition), and
+// the generic -32601 default would mislead a client into thinking the
+// method is absent; the -32603-class not-available error with a stable
+// readable message is the honest answer (RESEARCH Open Question 2 /
+// Assumption A2, D-02 honesty).
 func (a *agentAdapter) Authenticate(
 	ctx context.Context,
 	params acp.AuthenticateRequest,
 ) (acp.AuthenticateResponse, error) {
-	return acp.AuthenticateResponse{}, unadvertised(acp.AgentMethodAuthenticate)
+	return acp.AuthenticateResponse{}, acp.NewRequestError(
+		CodeInternal,
+		"authentication is not available in this build yet (z.ai auth flows land in Phases 5-6)",
+		nil,
+	)
 }
 
 // Logout is unadvertised in Phase 4 — clean -32601 default (Pitfall 6).
