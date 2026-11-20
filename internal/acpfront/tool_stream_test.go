@@ -2,10 +2,20 @@ package acpfront_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
+
+	"github.com/Djarvur/zcode-acp/internal/acpfront"
+	"github.com/Djarvur/zcode-acp/internal/acpport"
+	"github.com/Djarvur/zcode-acp/internal/zcode"
+	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
 
 // TOOL-01 composed-tier locks (plan 05-04): the tool-lifecycle corpus row
@@ -358,4 +368,283 @@ func updateKinds(updates []ACPUpdate) string {
 	}
 
 	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// WR-03 backpressure locks (plan 05-04 Task 3): the per-turn pump's three
+// legs, driven through a back-leg-only composition (fake ⇄ conn ⇄ Front)
+// with the adversarial client pace injected AT the Front.Prompt sink
+// boundary — a stalled sink is exactly the condition the pump design must
+// survive without wedging the backend leg.
+//
+//	backpressureSettle bounds the fake's scripted exchange (milliseconds in
+//	practice) — everything the scenario emits is enqueued behind a parked
+//	drain before the leg's next step runs.
+//	backpressureWait bounds the prompt's resolution: with the pump, a
+//	stalled sink cannot hold the turn past release's bounded drain; an
+//	inline emitter (the WR-03 defect) parks the read loop forever.
+const (
+	backpressureSettle = 500 * time.Millisecond
+	backpressureWait   = 8 * time.Second
+)
+
+// backLegHarness composes the back leg only: fake.Serve ⇄ zcode.Conn ⇄
+// acpfront.Front — no ACP leg (the WR-03 legs own the sink).
+type backLegHarness struct {
+	front  *acpfront.Front
+	conn   *zcode.Conn
+	served <-chan fakeServeResult
+}
+
+// composeBackLeg wires the back leg with the corpus scenario and optional
+// Front options; everything tears down via t.Cleanup.
+func composeBackLeg(t *testing.T, scenario string, opts ...acpfront.Option) *backLegHarness {
+	t.Helper()
+
+	sc := mustLoadScenario(t, scenario)
+
+	h := &backLegHarness{}
+
+	toFakeR, toFakeW := io.Pipe()
+	toHostR, toHostW := io.Pipe()
+
+	hostEnd := &rwCloser{r: toHostR, w: toFakeW}
+	fakeEnd := &rwCloser{r: toFakeR, w: toHostW}
+
+	t.Cleanup(func() { _ = fakeEnd.Close() })
+
+	serveDone := make(chan fakeServeResult, 1)
+
+	go func() {
+		tr, serveErr := fake.Serve(fakeEnd, sc)
+		serveDone <- fakeServeResult{transcript: tr, err: serveErr}
+	}()
+
+	h.conn = zcode.NewConn(hostEnd)
+	t.Cleanup(func() { _ = h.conn.Close() })
+
+	h.served = serveDone
+	h.front = acpfront.New(h.conn, opts...)
+
+	return h
+}
+
+// openSession runs the D-03 contract on the back leg and returns the id.
+func (h *backLegHarness) openSession(ctx context.Context, t *testing.T) string {
+	t.Helper()
+
+	sid, err := h.front.NewSession(ctx, acpport.NewSessionParams{Cwd: toolLifecycleCwd})
+	if err != nil {
+		t.Fatalf("front.NewSession: %v", err)
+	}
+
+	return sid
+}
+
+// TestStreamBackpressure locks the WR-03 designed policy (the OQ3
+// disposition):
+//
+//	stalled sink: with the sink parked on a gate, the BACKEND read loop
+//	  keeps consuming envelopes — the machine resolves and Prompt returns
+//	  end_turn WHILE the gate is still closed (the WR-03 defect — the
+//	  inline ACP write on the read goroutine — parks the read loop and the
+//	  turn never resolves).
+//	coalescing: tool_call_update patches for the SAME toolCallId coalesce
+//	  keep-latest while the drain is parked — no intermediate update frame
+//	  for that toolCallId reaches the client.
+//	ceiling: a tiny injectable byte ceiling makes the first oversized delta
+//	  FAIL THE TURN LOUD — Prompt returns the coded prompt error naming the
+//	  cause; nothing partial reaches the client, nothing hangs.
+func TestStreamBackpressure(t *testing.T) {
+	t.Run("stalled sink: the backend read loop keeps consuming", testBackpressureReadLoopLive)
+	t.Run("same-tool updates coalesce keep-latest behind a parked drain", testBackpressureCoalesce)
+	t.Run("byte ceiling fails the turn loud", testBackpressureCeiling)
+}
+
+// testBackpressureReadLoopLive parks the sink on a gate BEFORE the prompt
+// and asserts the prompt resolves end_turn while the gate is still closed
+// — the machine saw the terminal event, so the read loop never parked on
+// the stalled ACP write.
+func testBackpressureReadLoopLive(t *testing.T) {
+	h := composeBackLeg(t, "part-delta-streaming")
+
+	ctx, cancel := context.WithTimeout(context.Background(), backpressureWait)
+	defer cancel()
+
+	sid := h.openSession(ctx, t)
+
+	gate := make(chan struct{})
+	defer close(gate) // unwind the parked emit at leg end
+
+	var invoked atomic.Int32
+
+	sink := func(_ context.Context, _ acpport.SessionNote) error {
+		invoked.Add(1)
+		<-gate // the adversarial stalled client: the first write parks here
+
+		return nil
+	}
+
+	type promptResult struct {
+		reason acpport.StopReason
+		err    error
+	}
+
+	done := make(chan promptResult, 1)
+
+	go func() {
+		reason, err := h.front.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "hi"}, sink)
+		done <- promptResult{reason: reason, err: err}
+	}()
+
+	time.Sleep(backpressureSettle) // the whole scripted exchange enqueues behind the park
+
+	var res promptResult
+
+	select {
+	case res = <-done:
+		// The proof: resolved while the gate is still closed.
+	case <-time.After(backpressureWait):
+		t.Fatal("prompt never resolved while the sink gate stayed closed — "+
+			"the backend read loop parked on the stalled ACP write (the WR-03 defect)")
+	}
+
+	if res.err != nil {
+		t.Fatalf("stalled-sink turn errored: %v", res.err)
+	}
+
+	if res.reason != acpport.StopEndTurn {
+		t.Fatalf("stalled-sink turn resolved %q, want end_turn (the machine consumed the terminal event)", res.reason)
+	}
+
+	if got := invoked.Load(); got != 1 {
+		t.Fatalf("sink invoked %d times while parked, want exactly 1 (the drain holds at the park)", got)
+	}
+}
+
+// testBackpressureCoalesce parks the drain on the tc1 start card, lets the
+// full Edit lifecycle enqueue behind it, then releases: of tc1's three
+// patches (in_progress, in_progress, completed) only the LAST reaches the
+// client — keep-latest, no intermediate update frame for that toolCallId.
+func testBackpressureCoalesce(t *testing.T) {
+	h := composeBackLeg(t, "tool-lifecycle")
+
+	ctx, cancel := context.WithTimeout(context.Background(), backpressureWait)
+	defer cancel()
+
+	sid := h.openSession(ctx, t)
+
+	gate := make(chan struct{})
+
+	var (
+		mu   sync.Mutex
+		seen []acpport.SessionNote
+	)
+
+	sink := func(_ context.Context, note acpport.SessionNote) error {
+		mu.Lock()
+		seen = append(seen, note)
+		mu.Unlock()
+
+		if note.Kind == acpport.NoteTool && note.Tool != nil && note.Tool.IsStart {
+			<-gate // park the drain on the start card: everything else queues
+		}
+
+		return nil
+	}
+
+	type promptResult struct {
+		reason acpport.StopReason
+		err    error
+	}
+
+	done := make(chan promptResult, 1)
+
+	go func() {
+		reason, err := h.front.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "hi"}, sink)
+		done <- promptResult{reason: reason, err: err}
+	}()
+
+	time.Sleep(backpressureSettle) // scheduled + started + progress + result all enqueue
+	close(gate)                    // release the drain: keep-latest delivers
+
+	var res promptResult
+
+	select {
+	case res = <-done:
+	case <-time.After(backpressureWait):
+		t.Fatal("prompt never resolved after the gate opened")
+	}
+
+	if res.err != nil {
+		t.Fatalf("coalescing turn errored: %v", res.err)
+	}
+
+	if res.reason != acpport.StopEndTurn {
+		t.Fatalf("coalescing turn resolved %q, want end_turn", res.reason)
+	}
+
+	mu.Lock()
+	seenCopy := seen
+	mu.Unlock()
+
+	var patches []string
+
+	for _, note := range seenCopy {
+		if note.Kind == acpport.NoteTool && note.Tool != nil && !note.Tool.IsStart && note.Tool.ToolCallID == "tc1" {
+			patches = append(patches, note.Tool.Status)
+		}
+	}
+
+	if len(patches) != 1 {
+		t.Fatalf("tc1 delivered %d tool_call_update frames (%v), want exactly 1 — "+
+			"intermediate same-toolCallId updates must coalesce keep-latest behind a parked drain", len(patches), patches)
+	}
+
+	if patches[0] != acpport.ToolStatusCompleted {
+		t.Fatalf("the surviving tc1 patch status = %q, want completed (the last update wins)", patches[0])
+	}
+}
+
+// testBackpressureCeiling configures a tiny injectable ceiling; the first
+// oversized delta ("Answer:", 7 bytes > 4) must fail the turn LOUD — a
+// coded -32603 prompt error naming the ceiling cause, nothing delivered,
+// nothing hanging.
+func testBackpressureCeiling(t *testing.T) {
+	h := composeBackLeg(t, "part-delta-streaming", acpfront.WithStreamCeiling(4))
+
+	ctx, cancel := context.WithTimeout(context.Background(), backpressureWait)
+	defer cancel()
+
+	sid := h.openSession(ctx, t)
+
+	var delivered atomic.Int32
+
+	sink := func(_ context.Context, _ acpport.SessionNote) error {
+		delivered.Add(1)
+
+		return nil
+	}
+
+	reason, err := h.front.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "hi"}, sink)
+	if err == nil {
+		t.Fatalf("ceiling breach resolved %q with nil error — the breach must FAIL THE TURN LOUD", reason)
+	}
+
+	var seamErr *acpport.Error
+	if !errors.As(err, &seamErr) {
+		t.Fatalf("ceiling breach error = %T (%v), want a coded *acpport.Error", err, err)
+	}
+
+	if seamErr.Code != acpport.CodeInternal {
+		t.Fatalf("ceiling breach error code = %d, want %d (-32603 internal)", seamErr.Code, acpport.CodeInternal)
+	}
+
+	if !strings.Contains(seamErr.Message, "ceiling") {
+		t.Fatalf("ceiling breach error must name the cause, got %q", seamErr.Message)
+	}
+
+	if got := delivered.Load(); got != 0 {
+		t.Fatalf("%d notes were delivered past a breached ceiling — the breach must fail the turn, "+
+			"never stream a partial", got)
+	}
 }

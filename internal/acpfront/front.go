@@ -80,6 +80,10 @@ type Front struct {
 	// session's cwd into the turn slot.
 	cwdMu sync.Mutex
 	cwds  map[string]string
+
+	// streamCeiling is the configured per-turn stream queue byte ceiling
+	// (WithStreamCeiling; zero → the documented default at pump build).
+	streamCeiling int
 }
 
 // ModelSelection is the configured backend model the session/new leg binds
@@ -105,6 +109,15 @@ func WithVersion(version string) Option {
 // setModel follow-up (D-03, Open Question 4 resolution).
 func WithModel(sel ModelSelection) Option {
 	return func(f *Front) { f.model = &sel }
+}
+
+// WithStreamCeiling sets the per-turn stream queue's byte ceiling (the WR-03
+// OQ3 disposition: a per-turn MiB-scale memory ceiling). Zero (unset) uses
+// the documented default. The ceiling is enforced by the per-turn pump
+// (turnctx.go): a breach fails the turn loud with a coded prompt error —
+// never a hang, never a silent drop.
+func WithStreamCeiling(bytes int) Option {
+	return func(f *Front) { f.streamCeiling = bytes }
 }
 
 // New returns a Front owning conn and registers the delta tap on the
