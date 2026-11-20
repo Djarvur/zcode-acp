@@ -48,13 +48,38 @@ func NewSessionRegistry() *SessionRegistry {
 	return &SessionRegistry{}
 }
 
-// RED stub (04-02 TDD): the map lands in the GREEN step.
-func (r *SessionRegistry) Register(s Session) {}
+// Register stores (or last-wins replaces) one session's machinery.
+func (r *SessionRegistry) Register(s Session) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-// RED stub (04-02 TDD): answers the sentinel session until GREEN.
-func (r *SessionRegistry) Get(sessionID string) (Session, error) {
-	return Session{ID: "stub"}, nil
+	if r.sessions == nil {
+		r.sessions = make(map[string]Session)
+	}
+
+	r.sessions[s.ID] = s
 }
 
-// RED stub (04-02 TDD): Remove is a no-op until GREEN.
-func (r *SessionRegistry) Remove(sessionID string) {}
+// Get resolves one session's machinery, failing loud with ErrNoSession
+// on a lookup miss — a prompt or cancel for an unknown id is an error
+// the caller must surface, never an anonymous zero Session.
+func (r *SessionRegistry) Get(sessionID string) (Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	s, ok := r.sessions[sessionID]
+	if !ok {
+		return Session{}, ErrNoSession
+	}
+
+	return s, nil
+}
+
+// Remove drops one session's machinery; removing an unknown id is a
+// no-op (cancel-after-complete symmetry — repeats never panic).
+func (r *SessionRegistry) Remove(sessionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.sessions, sessionID)
+}
