@@ -39,10 +39,102 @@ func noteToNotification(note SessionNote) (acp.SessionNotification, error) {
 			Update:    acp.UpdateAgentThoughtText(note.Delta),
 		}, nil
 	case NoteTool:
-		// RED skeleton (plan 05-04 Task 1): the tool arms are not wired yet —
-		// fail loud, never emit a frame, never read as a delivered note.
-		return acp.SessionNotification{}, NewInternal("acpport: tool note translation not wired")
+		if note.Tool == nil {
+			return acp.SessionNotification{}, NewInternal("acpport: tool note carries no ToolNote payload")
+		}
+
+		return acp.SessionNotification{
+			SessionId: acp.SessionId(note.SessionID),
+			Update:    toolUpdate(note.Tool),
+		}, nil
 	default:
 		return acp.SessionNotification{}, NewInternal("acpport: unknown session note kind %q", note.Kind)
 	}
+}
+
+// toolUpdate translates one neutral ToolNote onto the SDK's tool
+// vocabulary (TOOL-01, Don't-Hand-Roll: the SDK helpers set the
+// sessionUpdate discriminants and the patch semantics).
+//
+//   - IsStart → acp.StartToolCall: the tool_call frame carrying
+//     title (required), plus Name/Kind/Status/RawInput/Content(diff)/
+//     Locations set from the note whenever populated. Option order is
+//     load-bearing: locations are appended BEFORE the raw input so the
+//     SDK helper's rawInput.path backfill (WithStartLocations) is wholly
+//     overwritten by the note's own RawInput — the input rides verbatim,
+//     never augmented (the D-04 honesty carry-over).
+//   - !IsStart → acp.UpdateToolCall: the tool_call_update patch carrying
+//     ONLY the populated fields (patch semantics per the ACP spec — no
+//     empty patch objects on the wire). The diff rides via content when
+//     the note re-emits it (the result leg), and RawOutput maps the
+//     backend result object verbatim.
+//
+// The diff renders through acp.ToolDiffContent with oldText omitted when
+// empty (the new-file Write shape per the ACP tool-calls spec).
+func toolUpdate(t *ToolNote) acp.SessionUpdate {
+	if t.IsStart {
+		opts := make([]acp.ToolCallStartOpt, 0, 6)
+
+		if t.Kind != "" {
+			opts = append(opts, acp.WithStartKind(acp.ToolKind(t.Kind)))
+		}
+
+		if t.Status != "" {
+			opts = append(opts, acp.WithStartStatus(acp.ToolCallStatus(t.Status)))
+		}
+
+		if len(t.Locations) > 0 {
+			locations := make([]acp.ToolCallLocation, len(t.Locations))
+			for i, loc := range t.Locations {
+				locations[i] = acp.ToolCallLocation{Path: loc.Path}
+			}
+
+			opts = append(opts, acp.WithStartLocations(locations))
+		}
+
+		if content := toolContent(t.Diff); content != nil {
+			opts = append(opts, acp.WithStartContent(content))
+		}
+
+		if t.RawInput != nil {
+			opts = append(opts, acp.WithStartRawInput(t.RawInput))
+		}
+
+		if t.Name != "" {
+			opts = append(opts, acp.WithStartName(t.Name))
+		}
+
+		return acp.StartToolCall(acp.ToolCallId(t.ToolCallID), t.Title, opts...)
+	}
+
+	var opts []acp.ToolCallUpdateOpt
+
+	if t.Status != "" {
+		opts = append(opts, acp.WithUpdateStatus(acp.ToolCallStatus(t.Status)))
+	}
+
+	if content := toolContent(t.Diff); content != nil {
+		opts = append(opts, acp.WithUpdateContent(content))
+	}
+
+	if t.RawOutput != nil {
+		opts = append(opts, acp.WithUpdateRawOutput(t.RawOutput))
+	}
+
+	return acp.UpdateToolCall(acp.ToolCallId(t.ToolCallID), opts...)
+}
+
+// toolContent renders the note's diff as the SDK's diff tool-call content
+// ([]ToolCallContent for the WithStart*/WithUpdate* content opts); a nil
+// diff yields nil so the content field stays unset on the wire.
+func toolContent(d *ToolDiff) []acp.ToolCallContent {
+	if d == nil {
+		return nil
+	}
+
+	if d.OldText == "" {
+		return []acp.ToolCallContent{acp.ToolDiffContent(d.Path, d.NewText)}
+	}
+
+	return []acp.ToolCallContent{acp.ToolDiffContent(d.Path, d.NewText, d.OldText)}
 }

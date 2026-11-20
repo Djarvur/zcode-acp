@@ -887,7 +887,7 @@ func TestToolNote(t *testing.T) {
 				},
 			},
 			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
-				`","update":{"content":[{"diff":{"newText":"b","oldText":"a","path":"/w/main.go","type":"diff"}}],` +
+				`","update":{"content":[{"newText":"b","oldText":"a","path":"/w/main.go","type":"diff"}],` +
 				`"kind":"edit","locations":[{"path":"/w/main.go"}],"name":"Edit",` +
 				`"rawInput":{"file_path":"/w/main.go","old_string":"a","new_string":"b"},` +
 				`"sessionUpdate":"tool_call","status":"pending","title":"Edit main.go","toolCallId":"tc1"}}}`,
@@ -918,7 +918,7 @@ func TestToolNote(t *testing.T) {
 				},
 			},
 			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
-				`","update":{"content":[{"diff":{"newText":"b","oldText":"a","path":"/w/main.go","type":"diff"}}],` +
+				`","update":{"content":[{"newText":"b","oldText":"a","path":"/w/main.go","type":"diff"}],` +
 				`"rawOutput":{"ok":true},"sessionUpdate":"tool_call_update","status":"completed","toolCallId":"tc1"}}}`,
 		},
 		{
@@ -938,7 +938,7 @@ func TestToolNote(t *testing.T) {
 				},
 			},
 			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
-				`","update":{"content":[{"diff":{"newText":"file body","path":"/w/new.go","type":"diff"}}],` +
+				`","update":{"content":[{"newText":"file body","path":"/w/new.go","type":"diff"}],` +
 				`"kind":"edit","name":"Write","rawInput":{"content":"file body","file_path":"/w/new.go"},` +
 				`"sessionUpdate":"tool_call","status":"pending","title":"Write new.go","toolCallId":"tc2"}}}`,
 		},
