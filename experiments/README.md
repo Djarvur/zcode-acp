@@ -192,3 +192,19 @@ config at run time; write the raw capture outside the repo; scrub into
   the turn requires answering `interaction/requestCredentialCipher`, which Phase 1
   does not do). Plan 01-01 spent nothing (registry-level only). No key was ever
   minted; nothing here may ever run from CI.
+- **Phase-5 guarded full-cycle run (plan 05-09, EXP-APIKEY-CYCLE-01) — PENDING**
+  (planned 2026-11-20; this row records the PLANNED spend — the end-of-phase
+  verification run appends the actuals + verdict line beneath it)
+  — planned spend (the D-05 minimum): one registry read-back (no turn) + two tiny
+  turns (one tool-less, one exercising a file-read tool on a scratch file under the
+  workspace) + the resume/close calls (no model spend). Tier: the guarded
+  `test/realdesktop/apicycle_test.go` (`TestAPIKeyFullCycle`) — canonical command in
+  its file header; NEVER from CI: the realdesktop build tag + `ZCODE_ACP_REAL_E2E=1`
+  double guard is the contract, and the default suite never builds the file (the
+  standing no-CI rule restated for the guarded tier — the account and the login
+  keyring are manual-only). Evidence pointer format for the run's entry: scrubbed
+  capture `experiments/captures/EXP-APIKEY-CYCLE-01.jsonl` (the raw capture from
+  `ZCODE_ACP_RAW_CAPTURE` passes `scrub-capture.mjs` BEFORE any commit) + the V-EXP
+  id + the actual spend. Credentials live only in the local ZCode desktop config
+  (`ZCODE_ACP_API_KEY`, export into the manual-run shell only); the ledger records
+  spend and V-EXP ids, never credentials.
