@@ -779,7 +779,7 @@ func TestUpdateSinkEmitsChunkShapes(t *testing.T) {
 	})
 
 	h := newScriptedHandlers()
-	conn, _ := acpport.NewAgentSideConnection(acpport.NewAgent(h), agentToClientW, clientToAgentR)
+	conn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(h), agentToClientW, clientToAgentR)
 	sink := acpport.NewUpdateSink(conn)
 
 	lines := make(chan string, 16)
@@ -822,6 +822,178 @@ func TestUpdateSinkEmitsChunkShapes(t *testing.T) {
 	}
 
 	expectNoFrame(t, lines, "unknown note kind must not emit a frame")
+}
+
+// TestPermissionSender (plan 05-02 Task 1 RED target) drives the bound
+// PermissionSender over a real agent-side connection and asserts the wire
+// round-trip on the recorded frame: the outgoing session/request_permission
+// carries the ask's options verbatim (kind/name/optionId — the sender never
+// rewrites them; the mapping happens ask-side), the toolCall patch carries
+// the backend toolCallId, and the client's outcome union decodes both arms
+// into the neutral vocabulary — {outcome:{outcome:selected, optionId}}
+// becomes Selected{OptionID} and {outcome:{outcome:cancelled}} becomes
+// Cancelled (TOOL-02; Don't-Hand-Roll: the SDK owns framing and pending,
+// the sender only translates).
+func TestPermissionSender(t *testing.T) {
+	t.Run("selected outcome decodes neutral", func(t *testing.T) {
+		outcome := drivePermissionOutcome(t, `{"outcome":{"outcome":"selected","optionId":"allow_once"}}`)
+		assertPermissionOutcome(t, outcome, acpport.PermissionOutcome{OptionID: "allow_once"})
+	})
+
+	t.Run("cancelled outcome decodes neutral", func(t *testing.T) {
+		outcome := drivePermissionOutcome(t, `{"outcome":{"outcome":"cancelled"}}`)
+		assertPermissionOutcome(t, outcome, acpport.PermissionOutcome{Cancelled: true})
+	})
+}
+
+// permissionAsk is the canonical scripted ask the sender drives: two
+// options with the mapped ACP kinds (allow_once stays allow_once; deny
+// arrives as reject_once after the ask-side mapping), names and optionIds
+// verbatim from the backend.
+func permissionAsk() acpport.PermissionAsk {
+	return acpport.PermissionAsk{
+		SessionID:  "sess_p1",
+		RequestID:  "perm-1",
+		ToolCallID: "tc1",
+		ToolName:   "Bash",
+		Options: []acpport.PermissionOptionDef{
+			{Kind: acpport.PermKindAllowOnce, Name: "Allow once", OptionID: "allow_once"},
+			{Kind: acpport.PermKindRejectOnce, Name: "Deny", OptionID: "deny"},
+		},
+	}
+}
+
+// drivePermissionOutcome composes the connection, drives the bound sender
+// with the canonical ask, plays the client for the request_permission
+// frame (asserting its wire shape), answers with the rawClientOutcome
+// result payload, and returns the decoded neutral outcome.
+func drivePermissionOutcome(t *testing.T, rawClientOutcome string) acpport.PermissionOutcome {
+	t.Helper()
+
+	toAgentR, toAgentW := io.Pipe()
+	fromAgentR, fromAgentW := io.Pipe()
+
+	t.Cleanup(func() {
+		for _, c := range []io.Closer{toAgentR, toAgentW, fromAgentR, fromAgentW} {
+			_ = c.Close()
+		}
+	})
+
+	_, _, sender := acpport.NewAgentSideConnection(acpport.NewAgent(newScriptedHandlers()), fromAgentW, toAgentR)
+
+	lines := make(chan string, 16)
+
+	go drainFrames(fromAgentR, lines)
+
+	type result struct {
+		outcome acpport.PermissionOutcome
+		err     error
+	}
+
+	done := make(chan result, 1)
+
+	go func() {
+		outcome, err := sender(context.Background(), permissionAsk())
+		done <- result{outcome: outcome, err: err}
+	}()
+
+	raw := readFrame(t, lines)
+	assertRequestPermissionFrame(t, raw)
+
+	// The client's answer: echo the request's id verbatim so the SDK's
+	// pending correlation resolves (the id type is SDK-internal — replay
+	// the decoded raw token).
+	var frame struct {
+		ID json.RawMessage `json:"id"`
+	}
+
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("decode request_permission frame id: %v (%s)", err, raw)
+	}
+
+	resp := fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":%s}`+"\n", frame.ID, rawClientOutcome)
+
+	if _, err := toAgentW.Write([]byte(resp)); err != nil {
+		t.Fatalf("write request_permission response: %v", err)
+	}
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("sender round-trip: %v", r.err)
+		}
+
+		return r.outcome
+	case <-time.After(frameWaitTimeout):
+		t.Fatal("sender round-trip never resolved after the client answered")
+	}
+
+	return acpport.PermissionOutcome{} // unreachable
+}
+
+// assertRequestPermissionFrame byte-asserts the outgoing session/
+// request_permission params on the recorded frame: the mapped options
+// verbatim in ask order and the toolCall patch carrying the backend
+// toolCallId.
+func assertRequestPermissionFrame(t *testing.T, raw string) {
+	t.Helper()
+
+	var frame struct {
+		Method string `json:"method"`
+		Params struct {
+			SessionId string `json:"sessionId"`
+			Options   []struct {
+				Kind     string `json:"kind"`
+				Name     string `json:"name"`
+				OptionId string `json:"optionId"`
+			} `json:"options"`
+			ToolCall struct {
+				ToolCallId string `json:"toolCallId"`
+			} `json:"toolCall"`
+		} `json:"params"`
+	}
+
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("decode outgoing frame: %v (%s)", err, raw)
+	}
+
+	if frame.Method != acp.ClientMethodSessionRequestPermission {
+		t.Fatalf("outgoing method = %q, want session/request_permission", frame.Method)
+	}
+
+	ask := permissionAsk()
+
+	if frame.Params.SessionId != ask.SessionID {
+		t.Fatalf("request_permission sessionId = %q, want %q", frame.Params.SessionId, ask.SessionID)
+	}
+
+	if frame.Params.ToolCall.ToolCallId != ask.ToolCallID {
+		t.Fatalf("request_permission toolCall.toolCallId = %q, want %q (the backend toolCallId must ride the ToolCall patch)",
+			frame.Params.ToolCall.ToolCallId, ask.ToolCallID)
+	}
+
+	if len(frame.Params.Options) != len(ask.Options) {
+		t.Fatalf("request_permission options = %d entries, want %d (verbatim, in ask order)",
+			len(frame.Params.Options), len(ask.Options))
+	}
+
+	for i, want := range ask.Options {
+		got := frame.Params.Options[i]
+
+		if got.Kind != want.Kind || got.Name != want.Name || got.OptionId != want.OptionID {
+			t.Fatalf("request_permission options[%d] = %+v, want kind %q name %q optionId %q (verbatim passthrough)",
+				i, got, want.Kind, want.Name, want.OptionID)
+		}
+	}
+}
+
+// assertPermissionOutcome compares the decoded neutral outcome.
+func assertPermissionOutcome(t *testing.T, got, want acpport.PermissionOutcome) {
+	t.Helper()
+
+	if got != want {
+		t.Fatalf("decoded outcome = %+v, want %+v", got, want)
+	}
 }
 
 // drainFrames reads newline-delimited frames into lines until EOF.

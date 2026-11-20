@@ -106,6 +106,58 @@ type SessionNote struct {
 // a connection-bound sink into Handlers.Prompt.
 type UpdateSink func(ctx context.Context, note SessionNote) error
 
+// ACP permission-option kinds the backend bridge's mapping produces
+// (05-RESEARCH.md Pattern 3 table): the neutral permission vocabulary
+// carries whatever kind string the ask builder supplied — the sender
+// passes it verbatim onto the SDK — and these constants name the mapped
+// ACP values (the backend's deny kind surfaces as the ACP reject_once UI
+// hint; kind is a UI hint only per the ACP v1 spec).
+const (
+	PermKindAllowOnce   = "allow_once"
+	PermKindAllowAlways = "allow_always"
+	PermKindRejectOnce  = "reject_once"
+)
+
+// PermissionOptionDef is one option of a backend permission ask, verbatim
+// from the interaction/requestPermission params (TOOL-02): the backend's
+// kind string, the human-readable name, and the option id the client's
+// selected outcome echoes back. Nothing here is ever rewritten by the
+// adapter — the mapping (allow_project→allow_always, deny→reject_once)
+// happens ask-side, before the neutral vocabulary is built.
+type PermissionOptionDef struct {
+	Kind     string
+	Name     string
+	OptionID string
+}
+
+// PermissionAsk is one normalized backend permission ask on the neutral
+// vocabulary: the ACP session the ask belongs to, the backend's
+// correlation id (params.requestId — the front bridge's pending-table
+// key), the tool call the ask renders on, and the verbatim options.
+type PermissionAsk struct {
+	SessionID  string
+	RequestID  string
+	ToolCallID string
+	ToolName   string
+	Options    []PermissionOptionDef
+}
+
+// PermissionOutcome is one decoded ACP client decision (the SDK's outcome
+// union decoded into the neutral vocabulary): either the prompt turn was
+// cancelled while the ask was pending — the client MUST answer cancelled
+// on turn cancel (ACP v1 tool-calls cancellation) — or the user selected
+// one of the ask's options, by its verbatim OptionID.
+type PermissionOutcome struct {
+	Cancelled bool
+	OptionID  string
+}
+
+// PermissionSender forwards one permission ask to the ACP client as
+// session/request_permission and returns the client's decoded outcome;
+// the adapter binds it at construction (sinkBinder discipline — before
+// any frame flows) and the front bridge calls it per ask.
+type PermissionSender func(ctx context.Context, ask PermissionAsk) (PermissionOutcome, error)
+
 // StopReason is the neutral terminal outcome of one prompt turn; the
 // values are the ACP stop-reason strings the adapter maps onto the SDK
 // constants. The minimal loop has exactly two: a completed turn and a

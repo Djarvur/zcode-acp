@@ -193,7 +193,7 @@ func run(cfg config) error {
 	// The ACP agent connection owns os.Stdin/os.Stdout from here: the SDK
 	// reads requests and writes every response frame — nothing else touches
 	// stdout.
-	agentConn, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), os.Stdout, os.Stdin)
+	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), os.Stdout, os.Stdin)
 
 	slog.Info("zcode-acp: serving ACP v1 over stdio", "version", version)
 

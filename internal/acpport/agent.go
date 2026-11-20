@@ -35,6 +35,14 @@ type sinkBinder interface {
 	bindSink(sink UpdateSink)
 }
 
+// permissionBinder is the second one-shot construction hook: it hands the
+// connection-bound PermissionSender to the adapter, which forwards it into
+// the Handlers impl when it opts in (the front's bridge — bind-at-
+// construction, before any frame flows, the same discipline as bindSink).
+type permissionBinder interface {
+	bindPermissionSender(sender PermissionSender)
+}
+
 // NewAgent wraps a Handlers impl as the acp.Agent implementation — the
 // D-01 translation point (RESEARCH Pattern 1): production wiring passes
 // the result to NewAgentSideConnection; the adapter carries no state
@@ -45,13 +53,15 @@ func NewAgent(h Handlers) *agentAdapter {
 
 // NewAgentSideConnection wires any acp.Agent implementation (typically
 // acpport.NewAgent over a Handlers impl) into an agent-side connection
-// and returns the update sink bound to it. The SDK owns framing and
-// dispatch; this wrapper owns nothing but the sink binding.
+// and returns the update sink and the permission sender bound to it. The
+// SDK owns framing and dispatch; this wrapper owns nothing but the two
+// bindings — both complete before the call returns, so no frame can flow
+// before they exist (the pipes are empty at construction).
 func NewAgentSideConnection(
 	agent acp.Agent,
 	peerInput io.Writer,
 	peerOutput io.Reader,
-) (*acp.AgentSideConnection, UpdateSink) {
+) (*acp.AgentSideConnection, UpdateSink, PermissionSender) {
 	conn := acp.NewAgentSideConnection(agent, peerInput, peerOutput)
 
 	sink := NewUpdateSink(conn)
@@ -59,7 +69,32 @@ func NewAgentSideConnection(
 		binder.bindSink(sink)
 	}
 
-	return conn, sink
+	sender := newPermissionSender(conn)
+	if binder, ok := agent.(permissionBinder); ok {
+		binder.bindPermissionSender(sender)
+	}
+
+	return conn, sink, sender
+}
+
+// newPermissionSender builds the connection-bound PermissionSender over
+// the SDK's AgentSideConnection.RequestPermission (Don't-Hand-Roll: the
+// SDK owns the request_permission round-trip and its pending table — this
+// wrapper only translates the neutral ask onto the wire request and
+// decodes the outcome union back into the neutral vocabulary).
+//
+// SKELETON (plan 05-02 Task 1 RED): the translation lands with GREEN —
+// the stub answers the coded not-wired error so a caller cannot mistake
+// an unimplemented round-trip for a cancelled or selected outcome.
+func newPermissionSender(conn *acp.AgentSideConnection) PermissionSender {
+	_ = conn
+
+	return func(ctx context.Context, ask PermissionAsk) (PermissionOutcome, error) {
+		_ = ctx
+		_ = ask
+
+		return PermissionOutcome{}, NewInternal("acpport: permission sender not wired (skeleton)")
+	}
 }
 
 // Initialize translates the neutral InitReport onto the honest D-02 wire
@@ -272,6 +307,15 @@ func (a *agentAdapter) SetSessionMode(
 // NewAgentSideConnection during construction.
 func (a *agentAdapter) bindSink(sink UpdateSink) {
 	a.sink = sink
+}
+
+// bindPermissionSender forwards the connection-bound sender into the
+// Handlers impl when it opts in (the front's bridge); called once by
+// NewAgentSideConnection during construction.
+func (a *agentAdapter) bindPermissionSender(sender PermissionSender) {
+	if binder, ok := a.h.(permissionBinder); ok {
+		binder.bindPermissionSender(sender)
+	}
 }
 
 // sinkForPrompt returns the bound connection sink; the construction
