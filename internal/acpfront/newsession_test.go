@@ -1,11 +1,16 @@
 package acpfront_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
+
+	"github.com/Djarvur/zcode-acp/internal/acpfront"
+	"github.com/Djarvur/zcode-acp/internal/acpport"
+	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
 // Front-tier session/new contract locks (plan 04-03, CORE-02/D-03/V5): each
@@ -23,6 +28,9 @@ import (
 //   - TestNewSessionCreatesAndSetsModel locks the CORE-02 payload sequence:
 //     create bare → subscribe desktop-continuous → setModel carrying
 //     model.options.reasoningLevel + persistAsWorkspaceLastUsed:false.
+//   - TestSetModelOmitsOptionsWithoutLevel locks the IN-04 omit-shape
+//     (plan 05-05): a level-less model selection emits the documented wire
+//     shape — model.providerId/modelId with NO options key at all.
 
 // TestNewSessionRejectsRelativeCwd — the relative-cwd rejection (T-4-01):
 // the back-leg transcript shows NO session/create frame and the client gets
@@ -158,4 +166,72 @@ func TestNewSessionCreatesAndSetsModel(t *testing.T) {
 	assertCreateFrame(t, tr.Lines[createIdx].JSON)      // bare create — no model key (Pitfall 4)
 	assertSubscribeFrame(t, tr.Lines[subIdx].JSON, sid) // desktop-continuous, this session
 	assertSetModelFrame(t, tr.Lines[setModelIdx].JSON)  // reasoningLevel + persist:false
+}
+
+// TestSetModelOmitsOptionsWithoutLevel locks the IN-04 omit-shape (plan
+// 05-05): a model selection configured WITHOUT a reasoning level emits the
+// documented setModel shape — providerId/modelId ride, and the options
+// object is OMITTED entirely (never `"options":{"reasoningLevel":""}`, the
+// shape that is neither the documented omit-shape nor a valid level). The
+// backend's own actionable refusal then surfaces for level-strict
+// providers. The configured-WITH-level preamble stays byte-locked by the
+// corpus (TestGolden/setmodel rows assert those bytes at the fake tier;
+// TestNewSessionCreatesAndSetsModel asserts the same payload here).
+func TestSetModelOmitsOptionsWithoutLevel(t *testing.T) {
+	sc := mustLoadScenario(t, setModelScenario)
+
+	var front *acpfront.Front
+
+	h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
+		front = acpfront.New(conn, acpfront.WithModel(acpfront.ModelSelection{
+			ProviderID: corpusProviderID,
+			ModelID:    corpusModelID,
+			// ReasoningLevel deliberately empty — the omit-shape arm.
+		}))
+
+		return acpport.NewAgent(front)
+	})
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	if _, err := h.client.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir()}); err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	setModelIdx := transcriptIndex(t, tr, "in", `"method":"session/setModel"`, "setModel request")
+
+	var frame struct {
+		Params struct {
+			Model struct {
+				ProviderID string          `json:"providerId"`
+				ModelID    string          `json:"modelId"`
+				Options    json.RawMessage `json:"options"`
+			} `json:"model"`
+		} `json:"params"`
+	}
+
+	raw := tr.Lines[setModelIdx].JSON
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("decode setModel frame: %v (%s)", err, raw)
+	}
+
+	if len(frame.Params.Model.Options) != 0 {
+		t.Fatalf("level-less setModel carries an options object (IN-04: the omit-shape is the contract): %s", raw)
+	}
+
+	model := frame.Params.Model
+	if model.ProviderID != corpusProviderID || model.ModelID != corpusModelID {
+		t.Fatalf("setModel model = %s/%s, want %s/%s (the selection rides without options)",
+			model.ProviderID, model.ModelID, corpusProviderID, corpusModelID)
+	}
 }

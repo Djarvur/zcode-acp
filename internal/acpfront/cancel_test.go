@@ -42,7 +42,10 @@ const (
 	// turnActiveMessage is the ONE stable rejection surface the
 	// second-prompt guard answers with, whatever guard layer fires (the
 	// front-wide slot or the machine's ErrTurnActive) — asserted verbatim.
-	turnActiveMessage = "a prompt is already running for this session"
+	// The WR-05 scope-accurate text (plan 05-05): the slot is front-wide,
+	// and the message says so. The constant change and the lock change land
+	// in the same commit (the message is a deliberate stable surface).
+	turnActiveMessage = "another prompt is already running (this agent runs one turn at a time)"
 
 	// cancelSettle bounds the absence window that proves
 	// cancel-after-complete stays silent: no response frame exists to await,

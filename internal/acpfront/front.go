@@ -142,8 +142,11 @@ func WithStreamCeiling(bytes int) Option {
 // Prompt hands back into the front's turn slot.
 func New(conn *zcode.Conn, opts ...Option) *Front {
 	// The front's base context — the parent of every front-owned turn
-	// context. A process-lifetime context; the cmd wiring derives a
-	// cancellable one when the supervisor lifecycle joins (plan 04-05).
+	// context. Deliberately process-lifetime (IN-03 truth refresh): turn
+	// contexts are cancelled by release (turnctx.go), and an SDK
+	// disconnect reaches the turn through the cancel fan-in
+	// → machine.Cancel — so there is no cancellable-base override seam
+	// for the cmd wiring to derive.
 	baseCtx := context.Background()
 
 	f := &Front{
@@ -234,13 +237,23 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 	}
 
 	if f.model != nil {
+		// IN-04 (plan 05-05): the options object rides ONLY when a level is
+		// configured — an empty level emits the documented omit-shape (never
+		// `"options":{"reasoningLevel":""}`), so the backend's own actionable
+		// refusal surfaces for level-strict providers. The configured-with-
+		// level preamble stays byte-locked by the corpus.
+		model := map[string]any{
+			"providerId": f.model.ProviderID,
+			"modelId":    f.model.ModelID,
+		}
+
+		if f.model.ReasoningLevel != "" {
+			model["options"] = map[string]any{"reasoningLevel": f.model.ReasoningLevel}
+		}
+
 		if _, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
-			wireKeySessionID: sid,
-			"model": map[string]any{
-				"providerId": f.model.ProviderID,
-				"modelId":    f.model.ModelID,
-				"options":    map[string]any{"reasoningLevel": f.model.ReasoningLevel},
-			},
+			wireKeySessionID:             sid,
+			"model":                      model,
 			"persistAsWorkspaceLastUsed": false,
 		}); err != nil {
 			// WR-04: same orphan discipline for the setModel refusal —
@@ -274,7 +287,10 @@ const wireKeySessionID = "sessionId"
 // is the machine's numeric -32010 mapping, message text never matched) — the
 // client sees the same invalid-request class carrying this message. No
 // internal locations or content ever ride the error (the machine-path rule).
-const turnActiveMessage = "a prompt is already running for this session"
+// The text names the FRONT-WIDE scope accurately (WR-05, plan 05-05): the
+// slot spans every session of this agent, so the message must not send a
+// cross-session prompt hunting for a stuck turn in the wrong conversation.
+const turnActiveMessage = "another prompt is already running (this agent runs one turn at a time)"
 
 // Prompt runs one prompt turn (D-04/D-05): the front-wide turn slot is
 // acquired for the turn's whole lifetime (the single-active-turn
