@@ -23,6 +23,8 @@ import (
 
 	"github.com/Djarvur/zcode-acp/internal/acpfront"
 	"github.com/Djarvur/zcode-acp/internal/acpport"
+	"github.com/Djarvur/zcode-acp/internal/hostsvc"
+	"github.com/Djarvur/zcode-acp/internal/interact"
 	"github.com/Djarvur/zcode-acp/internal/supervisor"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
@@ -39,8 +41,17 @@ const (
 	envModel          = "ZCODE_ACP_MODEL"
 	envReasoningLevel = "ZCODE_ACP_REASONING_LEVEL"
 
+	//nolint:gosec // an env-var NAME (the OQ4 disposition names it in the
+	// honest error), never a credential value.
+	envAPIKey = "ZCODE_ACP_API_KEY"
+
 	// optDir is the package-family discovery root (the deb layout, /opt/ZCode).
 	optDir = "/opt/ZCode"
+
+	// secretToolBin is the libsecret CLI the D-06 credential loader shells
+	// (a system binary on the guarded real tier — never a Go module, the
+	// T-5-SC zero-new-dependency posture).
+	secretToolBin = "secret-tool"
 
 	// spawnWait bounds the wait for the supervisor's first spawned child.
 	spawnWait = 10 * time.Second
@@ -72,6 +83,8 @@ func main() {
 		"path to a ZCode install root (or app-server binary) overriding discovery — also "+envAppServer)
 	modelFlag := flag.String("model", "", "backend model selection as providerId/modelId — also "+envModel)
 	reasoningFlag := flag.String("reasoning-level", "", "reasoning level for --model — also "+envReasoningLevel)
+	apiKeyFlag := flag.String("api-key", "",
+		"z.ai API key for authenticate{zai-api-key} — also "+envAPIKey)
 	flag.Parse()
 
 	if *showVersion {
@@ -85,7 +98,7 @@ func main() {
 	// supervisor's) stays off the protocol stream.
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	cfg, err := parseConfig(*appServerFlag, *modelFlag, *reasoningFlag)
+	cfg, err := parseConfig(*appServerFlag, *modelFlag, *reasoningFlag, *apiKeyFlag)
 	if err != nil {
 		slog.Error("zcode-acp: invalid configuration", "err", err)
 
@@ -100,18 +113,29 @@ func main() {
 }
 
 // config is the resolved launch configuration: the app-server override path
-// ("" = production discovery) and the optional model selection (nil = the
-// session/new leg skips the setModel follow-up — setModel iff configured).
+// ("" = production discovery), the optional model selection (nil = the
+// session/new leg skips the setModel follow-up — setModel iff configured),
+// and the resolved api key ("" = the authenticate{zai-api-key} arm answers
+// the honest coded error naming ZCODE_ACP_API_KEY — never a fallback read
+// of the desktop's config store, OQ4).
 type config struct {
 	appServer string
 	model     *acpfront.ModelSelection
+	apiKey    string
 }
 
 // parseConfig resolves flags over their env fallbacks (flags win) and
 // validates the combination: a model selection must parse providerId/modelId,
-// and a reasoning level without a model is a configuration error.
-func parseConfig(appServerFlag, modelFlag, reasoningFlag string) (config, error) {
-	cfg := config{appServer: firstNonEmpty(appServerFlag, os.Getenv(envAppServer))}
+// and a reasoning level without a model is a configuration error. A
+// configured model WITHOUT a reasoning level keeps parsing — the IN-04
+// omit-shape handles the wire (the setModel follow-up omits the options
+// object so the backend's own actionable refusal surfaces for
+// level-strict providers).
+func parseConfig(appServerFlag, modelFlag, reasoningFlag, apiKeyFlag string) (config, error) {
+	cfg := config{
+		appServer: firstNonEmpty(appServerFlag, os.Getenv(envAppServer)),
+		apiKey:    firstNonEmpty(apiKeyFlag, os.Getenv(envAPIKey)),
+	}
 
 	level := firstNonEmpty(reasoningFlag, os.Getenv(envReasoningLevel))
 	selection := firstNonEmpty(modelFlag, os.Getenv(envModel))
@@ -149,6 +173,85 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// defaultReadbackModels is the authenticate read-back want list when no
+// model is configured: the z.ai personal-layer catalog pair the corpus rows
+// lock (zai-api/GLM-5.3-Flash, zai-api/GLM-5.3). A catalog drift fails
+// authenticate HONESTLY — the read-back negative names the actionable check
+// (verify basedOnZCodeBuiltinRevision against the active builtin) — never a
+// fabricated success. A fresh slice per call keeps the contract immutable.
+func defaultReadbackModels() []string {
+	return []string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3"}
+}
+
+// readbackModels derives the authenticate read-back want list: the
+// configured model selection when present (the personal layer must carry
+// the model the wrapper binds), the documented catalog pair otherwise.
+func readbackModels(model *acpfront.ModelSelection) []string {
+	if model == nil {
+		return defaultReadbackModels()
+	}
+
+	return []string{model.ProviderID + "/" + model.ModelID}
+}
+
+// credentialsPath is the desktop credentials file the login-keyring key is
+// bound to (the field-verified secret-tool lookup's username derivation
+// input: sha256 over the resolved path string). Missing home resolution
+// yields an empty path — the loader fails loud at command build and the
+// cipher ask degrades honestly (D-06), never a phantom-path lookup.
+func credentialsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	return filepath.Join(home, ".zcode", "v2", "credentials.json")
+}
+
+// buildFront constructs the Front over the resolved config and install:
+// the agentInfo version, the optional model selection, and the AUTH-01
+// authenticate machinery (the key binding, the install for the snapshot
+// formula, the derived read-back want list). The delta tap registers on
+// the conn's ordered fan-out here — before any machine exists.
+func buildFront(
+	conn *zcode.Conn, cfg config, inst supervisor.Install, keys hostsvc.KeySource,
+) *acpfront.Front {
+	opts := []acpfront.Option{acpfront.WithVersion(version)}
+	if cfg.model != nil {
+		opts = append(opts, acpfront.WithModel(*cfg.model))
+	}
+
+	opts = append(opts, acpfront.WithAuth(acpfront.AuthConfig{
+		Keys:       keys,
+		Install:    inst,
+		WantModels: readbackModels(cfg.model),
+	}))
+
+	return acpfront.New(conn, opts...)
+}
+
+// wireResponder builds the D-01 responder over the full policy table (plan
+// 05-07 wiring) and assigns conn.OnRequest before the ACP connection
+// exists and before any traffic starts — the Conn hook contract (frames
+// flow only after the client speaks first; the app-server itself sends
+// nothing unprompted at boot). The policy table carries the whole phase
+// stack: the 05-02 permission bridge forwards interaction/requestPermission
+// to the ACP client, the 05-06 key source serves the runtime-headers answer
+// from the recorded key, and the D-06 decrypt seam answers real cipher asks
+// from the login keyring — the loader EXECUTES only when a cipher ask
+// actually arrives (CI never runs this binary against a keyring;
+// keyring-locked machines degrade to the honest {ok:false} decline).
+func wireResponder(conn *zcode.Conn, front *acpfront.Front, keys hostsvc.KeySource) {
+	responder := interact.NewResponder(
+		interact.WithPermissionForwarder(interact.NewPermissionBridge(front.PermissionForward()).Forward),
+		interact.WithRuntimeHeadersKeySource(hostsvc.RuntimeHeadersHandler(keys)),
+		interact.WithCredentialDecrypt(interact.NewCredentialDecrypt(
+			interact.NewSecretToolKeyLoader(secretToolBin, credentialsPath(), interact.ScrubbedEnv(os.Environ())))),
+	)
+
+	conn.OnRequest = responder.Serve
+}
+
 // run composes the minimal chat loop over the production lifecycle: discover,
 // supervise, connect the back leg, serve ACP over os.Stdin/os.Stdout, and
 // stage-shut-down when the client disconnects or the child exits.
@@ -183,12 +286,16 @@ func run(cfg config) error {
 	conn := zcode.NewConn(childDuplex{reader: child.Stdout, writer: child.Stdin})
 	defer func() { _ = conn.Close() }()
 
-	opts := []acpfront.Option{acpfront.WithVersion(version)}
-	if cfg.model != nil {
-		opts = append(opts, acpfront.WithModel(*cfg.model))
-	}
+	// One key, one source (AUTH-01): the resolved config binding feeds the
+	// authenticate machinery, the runtime-headers answer, and the snapshot
+	// builder alike — in-memory only, never logged, never committed (D-05);
+	// an empty key answers authenticate's honest coded error naming
+	// ZCODE_ACP_API_KEY (OQ4).
+	keys := hostsvc.NewStaticKey(cfg.apiKey, "")
 
-	front := acpfront.New(conn, opts...)
+	front := buildFront(conn, cfg, inst, keys)
+
+	wireResponder(conn, front, keys)
 
 	// The ACP agent connection owns os.Stdin/os.Stdout from here: the SDK
 	// reads requests and writes every response frame — nothing else touches

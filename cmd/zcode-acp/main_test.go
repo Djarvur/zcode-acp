@@ -52,6 +52,15 @@ const (
 	// golden corpus pins (path relative to this test's dir).
 	e2eScenario = "../../internal/zcode/fake/testdata/scenarios/complete-then-cancel.json"
 
+	// The responder leg's scenario (path relative to this test's dir): the
+	// create fires ONE interaction reverse mid-create whose expect
+	// semantics the built binary must satisfy. interaction/requestUserInput
+	// is the deliberate discriminator — the conn's built-in router answers
+	// it -32601 (an expect mismatch or an unanswered timeout notes the
+	// transcript), while the wired D-01 responder answers the schema-valid
+	// decline. Both binaries ride the build-once seam; no second build path.
+	e2eResponderScenario = "testdata/responder-e2e.json"
+
 	// The model selection the --model/--reasoning-level flags carry; the
 	// fake-transcript assert locks the setModel payload verbatim.
 	e2eProvider = "zai-api"
@@ -87,6 +96,10 @@ func TestAgentBinaryEndToEnd(t *testing.T) {
 
 	t.Run("two prompt loops over real stdio", func(t *testing.T) {
 		e2eRunTwoLoopRide(t, agentBin, fakeBin)
+	})
+
+	t.Run("wired responder answers a scripted reverse", func(t *testing.T) {
+		e2eRunResponderLeg(t, agentBin, fakeBin)
 	})
 }
 
@@ -177,6 +190,112 @@ func e2eRunTwoLoopRide(t *testing.T, agentBin, fakeBin string) {
 
 	e2eWaitExit(t, wrapper)
 	e2eAssertFakeTranscript(t, transcriptPath)
+}
+
+// e2eRunResponderLeg is the plan 05-07 wiring proof at the binary tier:
+// the BUILT binary's wired responder answers a scripted interaction
+// reverse through production stdio. The create fires one
+// interaction/requestUserInput reverse mid-create; the leg passes only
+// when the fake's transcript records the schema-valid decline reply and no
+// unanswered-reverse note (the differential discriminator: the conn's
+// built-in router would answer -32601, failing the expect semantics).
+func e2eRunResponderLeg(t *testing.T, agentBin, fakeBin string) {
+	t.Helper()
+
+	scenarioAbs, err := filepath.Abs(e2eResponderScenario)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", e2eResponderScenario, err)
+	}
+
+	transcriptPath := filepath.Join(t.TempDir(), "fake-transcript.txt")
+	installRoot := t.TempDir()
+	e2eWriteFakeInstallRoot(t, installRoot, fakeBin, scenarioAbs, transcriptPath)
+
+	rideCtx, rideCancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+	defer rideCancel()
+
+	wrapper := exec.CommandContext(rideCtx, agentBin, "--app-server", installRoot)
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stderrBuf := &e2eSyncBuffer{}
+	wrapper.Stderr = stderrBuf
+
+	stdin, err := wrapper.StdinPipe()
+	if err != nil {
+		t.Fatalf("wrapper stdin pipe: %v", err)
+	}
+
+	stdout, err := wrapper.StdoutPipe()
+	if err != nil {
+		t.Fatalf("wrapper stdout pipe: %v", err)
+	}
+
+	if err := wrapper.Start(); err != nil {
+		t.Fatalf("spawn %s: %v", agentBin, err)
+	}
+
+	t.Cleanup(e2eKillGroup(t, wrapper, stderrBuf))
+
+	updates := &e2eCollector{}
+	client := acp.NewClientSideConnection(updates, stdin, stdout)
+
+	e2eInitialize(rideCtx, t, client)
+
+	// session/new: the create fires the reverse mid-create — the wired
+	// responder must answer it for the leg to complete inside the cycle
+	// deadline (an unanswered reverse holds the create's side-effect chain
+	// for the reverse's own timeout first).
+	e2eNewSession(rideCtx, t, client)
+
+	if err := stdin.Close(); err != nil {
+		t.Logf("close wrapper stdin: %v", err)
+	}
+
+	e2eWaitExit(t, wrapper)
+	e2eAssertResponderTranscript(t, transcriptPath)
+}
+
+// e2eAssertResponderTranscript asserts the responder leg's transcript: the
+// requestUserInput reverse was asked, a decline reply answered it AFTER the
+// ask, and no unanswered-reverse note was recorded (record-honesty: the
+// wiring proof never normalizes a missing answer away).
+func e2eAssertResponderTranscript(t *testing.T, path string) {
+	t.Helper()
+
+	lines := e2eWaitTranscript(t, path)
+
+	reqIdx := -1
+	for i, line := range lines {
+		if line.dir == "out" && strings.Contains(line.json, `"method":"interaction/requestUserInput"`) {
+			reqIdx = i
+
+			break
+		}
+	}
+
+	if reqIdx < 0 {
+		t.Fatal("fake transcript records no requestUserInput reverse — the scripted ask never fired")
+	}
+
+	replyIdx := -1
+	for i := reqIdx + 1; i < len(lines); i++ {
+		if lines[i].dir == "in" && strings.Contains(lines[i].json, `"action":"decline"`) {
+			replyIdx = i
+
+			break
+		}
+	}
+
+	if replyIdx < 0 {
+		t.Fatalf("no decline reply after the requestUserInput reverse (ask at %d) — "+
+			"the wired responder did not answer through production stdio", reqIdx)
+	}
+
+	for _, line := range lines {
+		if line.dir == "note" && strings.Contains(line.json, "requestUserInput") {
+			t.Fatalf("unanswered-reverse note recorded for requestUserInput: %s", line.json)
+		}
+	}
 }
 
 // e2eInitialize runs the initialize leg and asserts the agent identity: the
