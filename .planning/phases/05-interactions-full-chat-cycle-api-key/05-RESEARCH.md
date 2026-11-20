@@ -910,7 +910,15 @@ method strings ×1; `allow_*` literals present; `18e4` ×5).
 | A5 | 300 s is an acceptable requestPermission host deadline default | OQ-2 | Too short → user-visible auto-denies; too long → cancelled-by-other-means; configurable knob contains it |
 | A6 | GLM-5.3-Flash keeps `high` as a valid reasoning level for the corpus-locked setModel preamble (carried from Phase-3 locks, unchanged bundle) | Validation | Real tier setModel refusal → use the documented refusal to re-lock levels |
 
-## Open Questions
+## Open Questions (RESOLVED 2026-11-20)
+
+> **RESOLVED 2026-11-20** — all five adjudicated in 05-CONTEXT.md and implemented across plans:
+> - OQ-1 requestCredentialCipher strategy → **D-06**: CredentialDecrypt seam answered via secret-tool + AES-256-GCM (godbus stays Phase 6). Adopted by 05-07 (seam + hygiene locks) / 05-09 (real tier).
+> - OQ-2 requestPermission deadline → 300 s configurable, expiry → deny. Adopted by 05-02.
+> - OQ-3 WR-03 backpressure → bounded per-turn queue + fail-loud memory ceiling. Adopted by 05-04.
+> - OQ-4 authenticate without key → honest error naming ZCODE_ACP_API_KEY. Adopted by 05-07.
+> - OQ-5 dead registry fields CancelTurn/Subscribed → deleted. Adopted by 05-03.
+
 
 1. **requestCredentialCipher strategy on the real tier** (Pattern 6, P0)
    - What we know: the ask fires mid-turn on real runs (V-EXP), the turn cannot

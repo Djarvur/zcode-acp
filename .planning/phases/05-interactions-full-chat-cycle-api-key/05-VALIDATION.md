@@ -68,7 +68,7 @@ Supplementary rows (plan-specific locks beyond the 17-row contract):
 | S02 | 05-07 T2 | AUTH-01 | `go test -race -count=1 -run 'TestAuthenticate' ./internal/acpfront/` | honest chain, no-key error, interruptibility probe |
 | S03 | 05-07 T3 | AUTH-01 (wiring) | `go test -race -count=1 -run 'TestAgentBinaryEndToEnd' ./cmd/zcode-acp/` | binary-level responder wiring through real stdio |
 | S04 | 05-04 T3 | TOOL-01 (WR-03) | `go test -race -count=1 -run 'TestStreamBackpressure' ./internal/acpfront/` | bounded pump, coalescing, ceiling fail-loud |
-| S05 | 05-06/05-01 | CORE-06 | `go test -race -count=1 -run 'TestGolden/user-input-decline' ./internal/zcode/fake/` | requestUserInput decline on the wire |
+| S05 | 05-02 T3 | CORE-06 | `go test -race -count=1 -run 'TestGolden/user-input-decline' ./internal/zcode/fake/` | requestUserInput decline on the wire |
 
 ---
 
