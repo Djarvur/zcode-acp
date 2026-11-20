@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Djarvur/zcode-acp/internal/interact"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
@@ -406,7 +407,15 @@ func driveUnknownHostMethod(ctx context.Context, d *exchangeDriver) {
 // driveRuntimePreferences: create fires the runtime-materialization scope
 // reverse and send fires the user-execution scope — both answered with the
 // minimal defaults (EXP-WORKSPACEKEY-01.jsonl:8-9, EXP-TURN-01.jsonl:33-34).
+// Plan 05-01 re-points this row at the D-01 responder (D-01 migration): the
+// responder's static answer serves both asks through the OnRequest seam —
+// byte-identical to the built-in router's, which is why the recorded
+// golden bytes are unchanged; the golden staying green IS the migration's
+// byte-identity proof at the corpus tier. (The params carry no requestId,
+// so the responder answers per envelope — the empty-input posture.)
 func driveRuntimePreferences(ctx context.Context, d *exchangeDriver) {
+	d.conn.OnRequest = interact.NewResponder().Serve // hook contract: before any frame flows
+
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.create(ctx)
 	h.send(ctx)

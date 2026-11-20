@@ -17,6 +17,9 @@ package interact
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/zcode"
@@ -39,6 +42,13 @@ const (
 	// requestPermission deadline default — settable via WithMethodDeadline
 	// — whose expiry answers deny (the turn continues honestly).
 	DefaultPermissionDeadline = 300 * time.Second
+
+	// DefaultRuntimeHeadersDeadline is the D-01 requestProviderRuntimeHeaders
+	// deadline — the server holds the same 180 s window (dialect §3).
+	DefaultRuntimeHeadersDeadline = 180 * time.Second
+
+	// DefaultUserInputDeadline is the host policy for requestUserInput.
+	DefaultUserInputDeadline = 15 * time.Second
 )
 
 // Answer is one handler's reply payload: Result marshals into the reply
@@ -89,49 +99,409 @@ type Option func(*Responder)
 // WithMethodDeadline overrides a policy-table method's deadline (0 = no
 // deadline) — the injectable knob tests shorten to exercise expiry;
 // requestPermission's 300 s default is settable per the OQ-2 disposition.
-func WithMethodDeadline(_ string, _ time.Duration) Option {
-	return func(*Responder) {}
+// Unknown methods (no policy entry) keep the -32601 floor regardless.
+func WithMethodDeadline(method string, d time.Duration) Option {
+	return func(r *Responder) {
+		if pol, ok := r.methods[method]; ok {
+			pol.Deadline = d
+			r.methods[method] = pol
+		}
+	}
 }
 
-// WithPermissionForwarder injects the PermissionForwarder seam.
-func WithPermissionForwarder(_ PermissionForwarder) Option {
-	return func(*Responder) {}
+// WithPermissionForwarder injects the PermissionForwarder seam (plan 05-02
+// implements the bridge; the nil default answers a coded not-wired error).
+func WithPermissionForwarder(f PermissionForwarder) Option {
+	return func(r *Responder) {
+		r.permission = f
+	}
 }
 
-// WithRuntimeHeadersKeySource injects the RuntimeHeadersKeySource seam.
-func WithRuntimeHeadersKeySource(_ RuntimeHeadersKeySource) Option {
-	return func(*Responder) {}
+// WithRuntimeHeadersKeySource injects the RuntimeHeadersKeySource seam
+// (plan 05-06 injects the real api-key source).
+func WithRuntimeHeadersKeySource(src RuntimeHeadersKeySource) Option {
+	return func(r *Responder) {
+		r.keySource = src
+	}
 }
 
-// WithRouterEvent installs the RouterEvent hook (deadline expiries are
-// recorded through it, mirroring the conn's record-honesty contract).
-func WithRouterEvent(_ func(zcode.RouterEvent)) Option {
-	return func(*Responder) {}
+// WithRouterEvent installs the RouterEvent hook — deadline expiries are
+// recorded through it, mirroring the conn's record-honesty contract
+// (conn.go:436-450).
+func WithRouterEvent(fn func(zcode.RouterEvent)) Option {
+	return func(r *Responder) {
+		r.onEvent = fn
+	}
 }
 
 // Responder is the D-01 policy object: one handler per server→host method,
 // per-method deadlines, and the re-announce dedupe table. Constructed once
-// via NewResponder; Serve is safe for concurrent use.
-type Responder struct{}
+// via NewResponder and immutable afterwards; Serve is safe for concurrent
+// use.
+type Responder struct {
+	methods    map[string]MethodPolicy
+	dedupe     *dedupeTable
+	permission PermissionForwarder
+	keySource  RuntimeHeadersKeySource
+	onEvent    func(zcode.RouterEvent)
+}
 
 // NewResponder builds a Responder with the default D-01 policy table and
-// applies the options.
-func NewResponder(_ ...Option) *Responder {
-	return &Responder{}
+// applies the options (seams, deadline overrides, event hook).
+func NewResponder(opts ...Option) *Responder {
+	r := &Responder{dedupe: newDedupeTable()}
+	r.methods = r.defaultPolicyTable()
+
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	return r
 }
 
 // PendingRequests reports the dedupe table's pending entry count — the
 // bounded map's growth ceiling is one entry per distinct (method,
 // params.requestId), evicted on answer and per-entry TTL (T-5-01).
 func (r *Responder) PendingRequests() int {
-	return 0
+	return r.dedupe.len()
 }
 
 // Serve answers one server→host request envelope (the conn.OnRequest
-// signature): (result, wire error, handled).
-func (r *Responder) Serve(_ context.Context, _ zcode.Envelope) (any, *zcode.WireError, bool) {
-	// RED skeleton: zero values so the contract test compiles and fails on
-	// its first unmet assertion (never a build failure) — handled=false
-	// falls through to the conn's built-in router.
-	return nil, nil, false
+// signature): (result, wire error, handled). It returns handled=true for
+// everything it routes — the unknown -32601 floor included — so the
+// built-in router is never consulted behind it; the one exception is
+// interaction/requestCredentialCipher, which falls through to the conn's
+// tracked-no-answer tracker (D-05).
+func (r *Responder) Serve(ctx context.Context, env zcode.Envelope) (any, *zcode.WireError, bool) {
+	req := normalize(env)
+
+	// D-05 posture (Phase-3 locked): credential-cipher is tracked and
+	// never answered — replying at all (result, error, or bare id-echo)
+	// would claim an answer the wrapper cannot give while the server holds
+	// the turn on it. The seam's fall-through composes with the conn's
+	// base-context tracker.
+	if req.Method == zcode.MethodRequestCredentialCipher {
+		return nil, nil, false
+	}
+
+	pol, known := r.methods[req.Method]
+
+	if !known {
+		// CORE-06 floor (conn.go:352-357 posture verbatim): -32601 naming
+		// the method — never a crash, never a fabricated success.
+		slog.Warn("interact: unsupported host request", "method", req.Method, "id", idKey(req))
+
+		return nil, &zcode.WireError{
+			Code:    zcode.CodeMethodNotFound,
+			Message: "unsupported host request: " + req.Method,
+		}, true
+	}
+
+	// Re-announce dedupe (05-RESEARCH.md Pattern 2): the first envelope of
+	// a (method, params.requestId) set claims the entry; re-announces carry
+	// NEW wire ids and the SAME requestId, so they join. Requests without a
+	// requestId claim nothing — answered per envelope (empty-input probe).
+	if req.ReqID != "" {
+		if r.dedupe.claim(req.Method, req.ReqID, dedupeTTL(pol.Deadline)) {
+			slog.Warn("interact: re-announce joined a pending entry",
+				"method", req.Method, "requestId", req.ReqID, "id", idKey(req))
+
+			// Park without framing anything until the conn closes: the
+			// first reply resolves the whole pending set server-side
+			// (cleanup deletes every wire id of the set), and a frame of
+			// ANY shape to a still-registered id would reject the pending
+			// ask — the server result-schema-parses reply payloads
+			// (server.ts resolveClientRequest; a payload-less frame fails
+			// parse → "Invalid response"). No post-release frame can be
+			// ordered after the primary's reply through the OnRequest
+			// seam (the conn writes the reply after Serve returns, so the
+			// release-before-reply ordering race is unwinnable from
+			// here), and a parked goroutine adds no per-frame state the
+			// conn has not already spent (the demux spawns one goroutine
+			// per request frame regardless). Silence is the only safe
+			// join posture: the server silently drops replies to
+			// already-cleaned ids — we simply never send them.
+			<-ctx.Done()
+
+			return nil, nil, true
+		}
+
+		defer r.dedupe.release(req.Method, req.ReqID)
+	}
+
+	result, werr := r.dispatch(ctx, pol, req)
+
+	return result, werr, true
+}
+
+// defaultPolicyTable is the D-01 per-method policy table
+// (05-RESEARCH.md Pattern 1): the migrated runtime-preferences static
+// answer (byte-identical to conn.go:384-387 — the conn's built-in router
+// keeps serving it only while the responder is unwired), the seam-backed
+// permission and runtime-headers policies, the decline posture for
+// requestUserInput, and the -32601 floor for officialMcpAuthHeaders and
+// the browser* pair (field-verified harmless — EXP-SUBSCRIBE-01: 6-7 asks
+// per create answered -32601 without breaking the flow).
+//
+// interaction/requestCredentialCipher is deliberately ABSENT: Serve falls
+// it through (handled=false) to the conn's built-in tracked-no-answer
+// tracker — the Phase-3 locked D-05 posture (a reply of ANY shape would
+// claim an answer the wrapper cannot give and the server holds the turn on
+// it). The D-06 decrypt seam (plan 05-07) replaces this delegation with a
+// policy entry.
+func (r *Responder) defaultPolicyTable() map[string]MethodPolicy {
+	return map[string]MethodPolicy{
+		zcode.MethodRequestRuntimePreferences: {
+			Deadline: zcode.RouterDefaultDeadline,
+			Handler:  answerRuntimePreferences,
+		},
+		MethodRequestPermission: {
+			Deadline: DefaultPermissionDeadline,
+			Handler:  r.handlePermission,
+		},
+		MethodRequestProviderRuntimeHeaders: {
+			Deadline: DefaultRuntimeHeadersDeadline,
+			Handler:  r.handleRuntimeHeaders,
+		},
+		MethodRequestUserInput: {
+			Deadline: DefaultUserInputDeadline,
+			Handler:  answerUserInput,
+		},
+		MethodRequestOfficialMcpAuthHeaders: {
+			Handler: unsupportedHostMethod,
+		},
+		MethodBrowserList: {
+			Handler: unsupportedHostMethod,
+		},
+		MethodBrowserExecute: {
+			Handler: unsupportedHostMethod,
+		},
+	}
+}
+
+// dispatch runs the handler under the policy deadline (0 = none) and
+// answers the method's expiry answer when the deadline elapses with the
+// handler unanswered — the conn.go:365-395 deadline mechanics mirrored:
+// errors.Is(ctx.Err(), context.DeadlineExceeded) distinguishes genuine
+// expiry from conn shutdown, and every expiry is recorded via a RouterEvent
+// plus a structural slog (method/id key/duration only — never params,
+// T-5-03). A handler that answers past the expiry loses: the conn replies
+// once, the late delivery lands in the buffered channel unread.
+func (r *Responder) dispatch(ctx context.Context, pol MethodPolicy, req Request) (any, *zcode.WireError) {
+	if pol.Deadline <= 0 {
+		d := deliver(pol.Handler(ctx, req))
+
+		return d.result, d.werr
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, pol.Deadline)
+	defer cancel()
+
+	delivered := make(chan answerDelivery, 1)
+
+	go func() {
+		delivered <- deliver(pol.Handler(ctx, req))
+	}()
+
+	select {
+	case d := <-delivered:
+		return d.result, d.werr
+
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// Conn shutdown owes nothing on the wire (the writer is
+			// stopping; nothing lands).
+			return nil, nil
+		}
+
+		r.recordDeadlineExpired(req, pol.Deadline, ctx.Err())
+
+		return expiryAnswer(req.Method)
+	}
+}
+
+// answerDelivery is the handler outcome reduced to the conn's reply
+// vocabulary.
+type answerDelivery struct {
+	result any
+	werr   *zcode.WireError
+}
+
+// deliver reduces a handler's (Answer, error) to the reply payload: an
+// explicit Answer.Err wins; a bare error wraps as the -32603 internal
+// code (numeric-code matching — dialect §6).
+func deliver(ans Answer, err error) answerDelivery {
+	if err != nil && ans.Err == nil {
+		return answerDelivery{werr: &zcode.WireError{Code: zcode.CodeInternalError, Message: err.Error()}}
+	}
+
+	return answerDelivery{result: ans.Result, werr: ans.Err}
+}
+
+// expiryAnswer is the per-method answer when a deadline elapsed with the
+// handler unanswered: requestPermission expiry answers deny (the OQ-2
+// disposition — the turn continues honestly), every other deadline
+// answers the coded -32022 timeout error (consumers match the code, never
+// the message — dialect §6).
+func expiryAnswer(method string) (any, *zcode.WireError) {
+	if method == MethodRequestPermission {
+		return map[string]any{"decision": "deny"}, nil
+	}
+
+	return nil, &zcode.WireError{
+		Code:    zcode.CodeHostRequestTimedOut,
+		Message: "Client request timed out: " + method,
+	}
+}
+
+// recordDeadlineExpired records a deadline expiry observably — the
+// injected RouterEvent hook when installed, plus a structural slog warning
+// (record-honesty, mirroring conn.go:436-450). Method names, canonical id
+// keys and durations only — never params (T-5-03).
+func (r *Responder) recordDeadlineExpired(req Request, deadline time.Duration, err error) {
+	if r.onEvent != nil {
+		r.onEvent(zcode.RouterEvent{
+			Kind:     zcode.RouterDeadlineExpired,
+			Method:   req.Method,
+			IDKey:    idKey(req),
+			Deadline: deadline,
+			Err:      err,
+		})
+	}
+
+	slog.Warn("interact: reverse-request deadline expired without an answer",
+		"method", req.Method,
+		"id", idKey(req),
+		"deadline", deadline.String(),
+	)
+}
+
+// handlePermission forwards the ask to the ACP client via the injected
+// PermissionForwarder (plan 05-02 implements the bridge). The nil default
+// answers a coded not-wired error — never a fabricated allow, never
+// silence (CORE-06: every ask is answered exactly once).
+func (r *Responder) handlePermission(ctx context.Context, req Request) (Answer, error) {
+	if r.permission == nil {
+		return Answer{Err: &zcode.WireError{
+			Code:    zcode.CodeInternalError,
+			Message: "interaction/requestPermission not wired: no permission forwarder configured",
+		}}, nil
+	}
+
+	return r.permission(ctx, req)
+}
+
+// handleRuntimeHeaders answers the account-provider credential delegation
+// from the injected RuntimeHeadersKeySource (plan 05-06 injects the real
+// source). The nil default answers a coded internal error naming the
+// unconfigured key state — NEVER the failure-shaped success arm
+// (headersApplied:false is a guaranteed turn death for account providers,
+// PITFALL 3); on any failure the coded ERROR envelope is the honest arm.
+func (r *Responder) handleRuntimeHeaders(ctx context.Context, req Request) (Answer, error) {
+	if r.keySource == nil {
+		return Answer{Err: &zcode.WireError{
+			Code:    zcode.CodeInternalError,
+			Message: "interaction/requestProviderRuntimeHeaders unavailable: no api-key source configured",
+		}}, nil
+	}
+
+	apiKey, apiKeyID, keyErr := r.keySource(ctx, req)
+	if keyErr != nil {
+		// A bare handler error wraps as the coded -32603 internal error at
+		// the deliver seam — the honest coded-ERROR arm, never
+		// headersApplied:false (PITFALL 3).
+		return Answer{}, fmt.Errorf("interaction/requestProviderRuntimeHeaders: %w", keyErr)
+	}
+
+	auth := map[string]any{"apiKey": apiKey}
+
+	if apiKeyID != "" {
+		auth["apiKeyId"] = apiKeyID
+	}
+
+	// The success arm verbatim (dialect §3; the server zod-parses the
+	// discriminatedUnion("headersApplied") reply schema — Pitfall 4).
+	return Answer{Result: map[string]any{
+		"headersApplied": true,
+		"requestAuth":    auth,
+	}}, nil
+}
+
+// answerRuntimePreferences replies with the static runtime-preference
+// defaults — the D-01 migration of conn.go:384-387's answer into the
+// policy table, byte-identical (the same map literal marshals to the same
+// wire bytes; the existing runtime-preferences corpus row re-pointed at
+// the responder stays green).
+func answerRuntimePreferences(_ context.Context, _ Request) (Answer, error) {
+	return Answer{Result: map[string]any{
+		"nativeSearchEnhancementsEnabled": false,
+		"memoryEnabled":                   false,
+	}}, nil
+}
+
+// answerUserInput declines the ask-the-user channel (dialect §3 response
+// {action:"accept"|"decline"|"cancel"}): the wrapper has no UI channel for
+// elicitation in v1 — the schema-valid decline keeps the turn alive
+// (elicitation deferred to Phase 7, locked decision). Structural log:
+// id keys only, never params (T-5-03).
+func answerUserInput(_ context.Context, req Request) (Answer, error) {
+	slog.Info("interact: requestUserInput declined (no UI channel; elicitation deferred to Phase 7)",
+		"method", req.Method,
+		"requestId", req.ReqID,
+		"id", idKey(req),
+	)
+
+	return Answer{Result: map[string]any{"action": "decline"}}, nil
+}
+
+// unsupportedHostMethod is the -32601 floor for known-but-unanswered
+// methods (officialMcpAuthHeaders, browser*): the same verbatim posture
+// as the unknown default — a protocol error naming the method, never a
+// fabricated success.
+func unsupportedHostMethod(_ context.Context, req Request) (Answer, error) {
+	return Answer{Err: &zcode.WireError{
+		Code:    zcode.CodeMethodNotFound,
+		Message: "unsupported host request: " + req.Method,
+	}}, nil
+}
+
+// normalize digs the dedupe/session correlation keys out of params once,
+// at serve time (the camelCase wire-key dig-out — machine.go paramsString
+// discipline, tagliatelle-safe).
+func normalize(env zcode.Envelope) Request {
+	return Request{
+		Method:    env.Method,
+		ID:        env.ID,
+		Params:    env.Params,
+		ReqID:     paramsString(env.Params, "requestId"),
+		SessionID: paramsString(env.Params, "sessionId"),
+	}
+}
+
+// paramsString digs one top-level string value out of a params payload;
+// undecodable params classify as absent.
+func paramsString(raw json.RawMessage, key string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+
+	s, _ := obj[key].(string)
+
+	return s
+}
+
+// idKey renders the request's canonical id key; a nil id (never produced
+// by the conn's demux) renders empty rather than panicking — CORE-06's
+// never-crash floor extends to malformed envelopes.
+func idKey(req Request) string {
+	if req.ID == nil {
+		return ""
+	}
+
+	return req.ID.Key()
 }

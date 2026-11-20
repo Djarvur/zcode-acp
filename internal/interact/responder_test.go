@@ -50,6 +50,9 @@ const (
 	// — the same map literal conn.go:384-387 marshals (codec map keys are
 	// sorted), so the bytes are the byte-identity proof.
 	migratedRuntimePrefsJSON = `{"memoryEnabled":false,"nativeSearchEnhancementsEnabled":false}`
+
+	// wireKeyDecision is the permission-response decision key.
+	wireKeyDecision = "decision"
 )
 
 // pipeEnd joins one io.Pipe half-pair into an io.ReadWriteCloser end.
@@ -202,9 +205,61 @@ func TestResponderContract(t *testing.T) {
 		t.Fatalf("migrated runtime-prefs answer = %s, want byte-identical %s", reply.Result, migratedRuntimePrefsJSON)
 	}
 
-	// Stage 3 — re-announce dedupe end-to-end: the reannounce-dedupe corpus
-	// row through a real Conn with the Responder wired and a scripted
-	// forwarder answering allow (the real bridge is plan 05-02).
+	// Stage 3 — re-announce dedupe end-to-end (the corpus row replay +
+	// the adjacency probes).
+	assertReannounceDedupeStage(t)
+
+	// Stage 4 — empty-input probe + post-answer eviction.
+	assertEmptyInputAndEviction(contractCtx, t)
+
+	// Stages 7-8 — the decline posture and the harmless -32601 default.
+	assertDeclineAndFloor(contractCtx, t, defaultResp)
+}
+
+// assertDeclineAndFloor is contract stages 7-8: requestUserInput declines
+// (the honest no-UI-channel posture; elicitation deferred to Phase 7) and
+// interaction/requestOfficialMcpAuthHeaders keeps the field-verified
+// harmless -32601 default (EXP-SUBSCRIBE-01).
+func assertDeclineAndFloor(ctx context.Context, t *testing.T, resp *interact.Responder) {
+	t.Helper()
+
+	res, werr, handled := resp.Serve(ctx, zcode.Envelope{
+		ID:     &zcode.ID{Str: "s-7"},
+		Method: interact.MethodRequestUserInput,
+		Params: json.RawMessage(`{"requestId":"ui-1","sessionId":"sess_fix1"}`),
+	})
+
+	if !handled || werr != nil {
+		t.Fatalf("requestUserInput must be answered with a result (handled=%v werr=%v)", handled, werr)
+	}
+
+	decline, ok := res.(map[string]any)
+
+	if !ok || decline["action"] != "decline" {
+		t.Fatalf("requestUserInput result = %v, want {action:decline}", res)
+	}
+
+	_, werr, handled = resp.Serve(ctx, zcode.Envelope{
+		ID:     &zcode.ID{Str: "s-8"},
+		Method: interact.MethodRequestOfficialMcpAuthHeaders,
+	})
+
+	if !handled || werr == nil || werr.Code != zcode.CodeMethodNotFound {
+		t.Fatalf("requestOfficialMcpAuthHeaders must answer -32601 (handled=%v werr=%v)", handled, werr)
+	}
+}
+
+// assertReannounceDedupeStage is contract stage 3 — re-announce dedupe
+// end-to-end: the reannounce-dedupe corpus row through a real Conn with
+// the Responder wired and a scripted forwarder answering allow (the real
+// bridge is plan 05-02), then the adjacency probes: equal merges (the
+// corpus row's re-announces join the one pending entry — one forwarder
+// run, zero replies to the join ids) and touching separates (two reverses
+// with DISTINCT requestIds through the same responder answered
+// independently).
+func assertReannounceDedupeStage(t *testing.T) {
+	t.Helper()
+
 	var forwardCalls atomic.Int64
 
 	dedupeResp := interact.NewResponder(interact.WithPermissionForwarder(
@@ -213,7 +268,7 @@ func TestResponderContract(t *testing.T) {
 
 			time.Sleep(corpusAnswerDelay)
 
-			return interact.Answer{Result: map[string]any{"decision": "allow", "reason": "Approved once"}}, nil
+			return interact.Answer{Result: map[string]any{wireKeyDecision: "allow", "reason": "Approved once"}}, nil
 		},
 	))
 
@@ -222,28 +277,66 @@ func TestResponderContract(t *testing.T) {
 		t.Fatalf("load corpus scenario: %v", err)
 	}
 
+	conn, serveDone := startCorpusFake(t, dedupeResp, sc)
+
+	exchangeCtx, cancel := context.WithTimeout(context.Background(), contractTimeout)
+	defer cancel()
+
+	driveCorpusCalls(exchangeCtx, t, conn)
+
+	assertCorpusDedupe(t, awaitFakeServe(t, serveDone).transcript)
+
+	if n := forwardCalls.Load(); n != 1 {
+		t.Fatalf("permission forwarder ran %d times, want exactly 1 (first-reply-wins)", n)
+	}
+
+	// Adjacency probe — touching separates.
+	assertDistinctRequestIDs(exchangeCtx, t, dedupeResp)
+}
+
+// startCorpusFake wires the corpus exchange: fake.Serve on one io.Pipe end,
+// a fresh zcode.Conn with resp assigned to OnRequest on the other (the
+// hook contract: before any frame flows). Returns the conn and the fake's
+// completion channel.
+func startCorpusFake(
+	t *testing.T, resp *interact.Responder, sc *fake.Scenario,
+) (conn *zcode.Conn, serveDone <-chan fakeServeResult) {
+	t.Helper()
+
 	hostEnd, peerEnd := pipePair(t)
 	t.Cleanup(func() { _ = peerEnd.Close() })
 
-	serveDone := make(chan fakeServeResult, 1)
+	done := make(chan fakeServeResult, 1)
 
 	go func() {
 		tr, serveErr := fake.Serve(peerEnd, sc)
-		serveDone <- fakeServeResult{transcript: tr, err: serveErr}
+		done <- fakeServeResult{transcript: tr, err: serveErr}
 	}()
 
-	conn := zcode.NewConn(hostEnd)
+	conn = zcode.NewConn(hostEnd)
+
 	t.Cleanup(func() { _ = conn.Close() })
 
-	conn.OnRequest = dedupeResp.Serve // the hook contract: before any frame flows
+	conn.OnRequest = resp.Serve
 
-	if _, err := conn.Call(contractCtx, zcode.MethodSessionCreate, map[string]any{
+	serveDone = done
+
+	return conn, serveDone
+}
+
+// driveCorpusCalls drives the corpus framing: create then send (the
+// happy-turn call sequence the row scripts), then conn close — the fake
+// sees stdin EOF and drains (dialect §1 EOF facts).
+func driveCorpusCalls(ctx context.Context, t *testing.T, conn *zcode.Conn) {
+	t.Helper()
+
+	if _, err := conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
 		"workspace": map[string]any{"workspacePath": "/tmp/happy-turn-ws", "workspaceKey": "/tmp/happy-turn-ws"},
 	}); err != nil {
 		t.Fatalf("corpus create: %v", err)
 	}
 
-	if _, err := conn.Call(contractCtx, zcode.MethodSessionSend, map[string]any{
+	if _, err := conn.Call(ctx, zcode.MethodSessionSend, map[string]any{
 		"sessionId": "sess_fix1",
 		"content":   "Reply with exactly: OK",
 	}); err != nil {
@@ -253,6 +346,13 @@ func TestResponderContract(t *testing.T) {
 	if err := conn.Close(); err != nil {
 		t.Logf("conn close: %v", err)
 	}
+}
+
+// awaitFakeServe waits for the fake's Serve to return and requires a clean
+// run — expect_answer satisfied (a mismatch or an unanswered registering
+// envelope fails the run).
+func awaitFakeServe(t *testing.T, serveDone <-chan fakeServeResult) fakeServeResult {
+	t.Helper()
 
 	var served fakeServeResult
 
@@ -262,26 +362,21 @@ func TestResponderContract(t *testing.T) {
 		t.Fatal("fake.Serve did not return after stdin EOF")
 	}
 
-	// expect_answer satisfied: the fake's semantic compare accepted the one
-	// reply (a mismatch or an unanswered registering envelope fails the
-	// run).
 	if served.err != nil {
 		t.Fatalf("corpus replay: fake.Serve error (expect_answer must be satisfied): %v", served.err)
 	}
 
-	assertCorpusDedupe(t, served.transcript)
+	return served
+}
 
-	if n := forwardCalls.Load(); n != 1 {
-		t.Fatalf("permission forwarder ran %d times, want exactly 1 (first-reply-wins)", n)
-	}
+// assertDistinctRequestIds is the touching-separates adjacency probe: two
+// reverses with DISTINCT requestIds through the same responder are
+// answered independently.
+func assertDistinctRequestIDs(ctx context.Context, t *testing.T, resp *interact.Responder) {
+	t.Helper()
 
-	// Adjacency probe — equal merges: the corpus row's re-announces joined
-	// the one pending entry (asserted above: one forwarder run, zero
-	// replies to the join ids). Adjacency probe — touching separates: two
-	// reverses with DISTINCT requestIds through the same responder are
-	// answered independently.
 	for _, rid := range []string{"perm-a", "perm-b"} {
-		res, werr, handled := dedupeResp.Serve(contractCtx, zcode.Envelope{
+		res, werr, handled := resp.Serve(ctx, zcode.Envelope{
 			ID:     &zcode.ID{Str: "adj-" + rid},
 			Method: interact.MethodRequestPermission,
 			Params: json.RawMessage(`{"requestId":"` + rid + `","sessionId":"sess_fix1"}`),
@@ -292,22 +387,27 @@ func TestResponderContract(t *testing.T) {
 				rid, handled, werr, res)
 		}
 	}
+}
 
-	// Stage 4 — empty-input probe: a reverse whose params carry NO
-	// requestId claims no dedupe entry and is answered per envelope, twice
-	// in a row.
+// assertEmptyInputAndEviction is contract stage 4: a reverse whose params
+// carry NO requestId claims no dedupe entry and is answered per envelope,
+// twice in a row (empty-input probe); an answered requestId entry releases
+// — the bounded map's answer eviction (T-5-01).
+func assertEmptyInputAndEviction(ctx context.Context, t *testing.T) {
+	t.Helper()
+
 	var noReqCalls atomic.Int64
 
 	emptyResp := interact.NewResponder(interact.WithPermissionForwarder(
 		func(_ context.Context, _ interact.Request) (interact.Answer, error) {
 			noReqCalls.Add(1)
 
-			return interact.Answer{Result: map[string]any{"decision": "allow"}}, nil
+			return interact.Answer{Result: map[string]any{wireKeyDecision: "allow"}}, nil
 		},
 	))
 
 	for i := range 2 {
-		res, werr, handled := emptyResp.Serve(contractCtx, zcode.Envelope{
+		res, werr, handled := emptyResp.Serve(ctx, zcode.Envelope{
 			ID:     &zcode.ID{Str: fmt.Sprintf("e-%d", i)},
 			Method: interact.MethodRequestPermission,
 			Params: json.RawMessage(`{"sessionId":"sess_fix1"}`),
@@ -327,9 +427,7 @@ func TestResponderContract(t *testing.T) {
 		t.Fatalf("no-requestId reverses claimed %d dedupe entries, want 0 (empty-input probe)", n)
 	}
 
-	// Post-answer eviction: an answered requestId entry releases — the
-	// bounded map's answer eviction (T-5-01).
-	if _, werr, handled := emptyResp.Serve(contractCtx, zcode.Envelope{
+	if _, werr, handled := emptyResp.Serve(ctx, zcode.Envelope{
 		ID:     &zcode.ID{Str: "e-evict"},
 		Method: interact.MethodRequestPermission,
 		Params: json.RawMessage(`{"requestId":"perm-evict","sessionId":"sess_fix1"}`),
@@ -339,35 +437,6 @@ func TestResponderContract(t *testing.T) {
 
 	if n := emptyResp.PendingRequests(); n != 0 {
 		t.Fatalf("pending dedupe entries after answer = %d, want 0 (answer eviction)", n)
-	}
-
-	// Stage 7 — requestUserInput declines (the honest no-UI-channel
-	// posture; elicitation deferred to Phase 7).
-	res, werr, handled := defaultResp.Serve(contractCtx, zcode.Envelope{
-		ID:     &zcode.ID{Str: "s-7"},
-		Method: interact.MethodRequestUserInput,
-		Params: json.RawMessage(`{"requestId":"ui-1","sessionId":"sess_fix1"}`),
-	})
-
-	if !handled || werr != nil {
-		t.Fatalf("requestUserInput must be answered with a result (handled=%v werr=%v)", handled, werr)
-	}
-
-	decline, ok := res.(map[string]any)
-
-	if !ok || decline["action"] != "decline" {
-		t.Fatalf("requestUserInput result = %v, want {action:decline}", res)
-	}
-
-	// Stage 8 — interaction/requestOfficialMcpAuthHeaders: the
-	// field-verified harmless -32601 default (EXP-SUBSCRIBE-01).
-	_, werr, handled = defaultResp.Serve(contractCtx, zcode.Envelope{
-		ID:     &zcode.ID{Str: "s-8"},
-		Method: interact.MethodRequestOfficialMcpAuthHeaders,
-	})
-
-	if !handled || werr == nil || werr.Code != zcode.CodeMethodNotFound {
-		t.Fatalf("requestOfficialMcpAuthHeaders must answer -32601 (handled=%v werr=%v)", handled, werr)
 	}
 }
 
@@ -389,31 +458,10 @@ func assertCorpusDedupe(t *testing.T, tr fake.Transcript) {
 
 		switch line.Dir {
 		case fake.DirOut:
-			if m, _ := probe["method"].(string); m == interact.MethodRequestPermission {
-				if id, _ := probe["id"].(string); id == corpusJoinID1 || id == corpusJoinID2 {
-					announced[id]++
-				}
-			}
+			countReannounce(probe, announced)
 		case fake.DirIn:
-			id, _ := probe["id"].(string)
-
-			if _, hasMethod := probe["method"]; hasMethod || id == "" {
-				continue
-			}
-
-			_, hasPayload := probe["result"]
-			_, hasErr := probe["error"]
-
-			if !hasPayload && !hasErr {
-				continue
-			}
-
-			switch id {
-			case corpusRegisterID:
-				replies++
-			case corpusJoinID1, corpusJoinID2:
-				t.Fatalf("re-announce envelope %s earned a reply (first-reply-wins violated): %s", id, line.JSON)
-			}
+			replies += classifyReply(t, probe, line.JSON)
+		case fake.DirNote:
 		}
 	}
 
@@ -429,12 +477,63 @@ func assertCorpusDedupe(t *testing.T, tr fake.Transcript) {
 	}
 }
 
+// countReannounce counts one outbound permission envelope under its wire
+// id when it is one of the scripted join ids.
+func countReannounce(probe map[string]any, announced map[string]int) {
+	if m, _ := probe["method"].(string); m == interact.MethodRequestPermission {
+		if id, _ := probe["id"].(string); id == corpusJoinID1 || id == corpusJoinID2 {
+			announced[id]++
+		}
+	}
+}
+
+// classifyReply asserts no reply envelope addresses a join id (fail-loud)
+// and reports whether the line is a reply envelope addressed to the
+// registering wire id.
+func classifyReply(t *testing.T, probe map[string]any, line string) int {
+	t.Helper()
+
+	id, _ := probe["id"].(string)
+
+	if _, hasMethod := probe["method"]; hasMethod || id == "" {
+		return 0
+	}
+
+	_, hasPayload := probe["result"]
+	_, hasErr := probe["error"]
+
+	if !hasPayload && !hasErr {
+		return 0
+	}
+
+	if id == corpusJoinID1 || id == corpusJoinID2 {
+		t.Fatalf("re-announce envelope %s earned a reply (first-reply-wins violated): %s", id, line)
+	}
+
+	if id == corpusRegisterID {
+		return 1
+	}
+
+	return 0
+}
+
 // TestResponderDeadlineExpiry: with a policy deadline shortened via the
 // injectable knob, an unanswered handler expiry produces the method's
 // expiry answer (deny for requestPermission; coded error for
 // requestProviderRuntimeHeaders) and a RouterEvent recording the expiry —
 // method/id key/duration only, never params (structural-logging rule).
 func TestResponderDeadlineExpiry(t *testing.T) {
+	assertPermissionExpiry(t)
+	assertHeadersExpiry(t)
+}
+
+// assertPermissionExpiry: the permission deadline expiry answers deny
+// (OQ-2 disposition) and records the expiry on the RouterEvent hook; the
+// 300 s default is settable via WithMethodDeadline (the 50 ms override
+// governs the run).
+func assertPermissionExpiry(t *testing.T) {
+	t.Helper()
+
 	events := make(chan zcode.RouterEvent, 8)
 
 	resp := interact.NewResponder(
@@ -462,7 +561,7 @@ func TestResponderDeadlineExpiry(t *testing.T) {
 
 	deny, ok := res.(map[string]any)
 
-	if !ok || deny["decision"] != "deny" {
+	if !ok || deny[wireKeyDecision] != "deny" {
 		t.Fatalf("permission expiry answer = %v, want {decision:deny} (OQ-2 disposition)", res)
 	}
 
@@ -485,9 +584,14 @@ func TestResponderDeadlineExpiry(t *testing.T) {
 	if interact.DefaultPermissionDeadline != 300*time.Second {
 		t.Fatalf("DefaultPermissionDeadline = %v, want 300s (OQ-2 disposition)", interact.DefaultPermissionDeadline)
 	}
+}
 
-	// Runtime-headers expiry answers the coded -32022 timeout error —
-	// never the failure-shaped success arm (PITFALL 3).
+// assertHeadersExpiry: the runtime-headers deadline expiry answers the
+// coded -32022 timeout error — never the failure-shaped success arm
+// (PITFALL 3).
+func assertHeadersExpiry(t *testing.T) {
+	t.Helper()
+
 	headers := interact.NewResponder(
 		interact.WithMethodDeadline(interact.MethodRequestProviderRuntimeHeaders, 50*time.Millisecond),
 		interact.WithRuntimeHeadersKeySource(func(ctx context.Context, _ interact.Request) (string, string, error) {
@@ -497,7 +601,10 @@ func TestResponderDeadlineExpiry(t *testing.T) {
 		}),
 	)
 
-	_, werr, handled = headers.Serve(ctx, zcode.Envelope{
+	ctx, cancel := context.WithTimeout(context.Background(), contractTimeout)
+	defer cancel()
+
+	_, werr, handled := headers.Serve(ctx, zcode.Envelope{
 		ID:     &zcode.ID{Str: "exp-2"},
 		Method: interact.MethodRequestProviderRuntimeHeaders,
 		Params: json.RawMessage(`{"requestId":"rh-exp","sessionId":"sess_fix1"}`),
@@ -506,6 +613,13 @@ func TestResponderDeadlineExpiry(t *testing.T) {
 	if !handled || werr == nil || werr.Code != zcode.CodeHostRequestTimedOut {
 		t.Fatalf("runtime-headers expiry must answer the coded timeout error (handled=%v werr=%v)", handled, werr)
 	}
+}
+
+// served is one racer's Serve outcome.
+type served struct {
+	res     any
+	werr    *zcode.WireError
+	handled bool
 }
 
 // TestResponderDedupeRace fires the same (method, params.requestId)
@@ -521,7 +635,7 @@ func TestResponderDedupeRace(t *testing.T) {
 
 			time.Sleep(20 * time.Millisecond) // widen the claim race window
 
-			return interact.Answer{Result: map[string]any{"decision": "deny"}}, nil
+			return interact.Answer{Result: map[string]any{wireKeyDecision: "deny"}}, nil
 		},
 	))
 
@@ -529,12 +643,6 @@ func TestResponderDedupeRace(t *testing.T) {
 	defer cancel()
 
 	const racers = 8
-
-	type served struct {
-		res     any
-		werr    *zcode.WireError
-		handled bool
-	}
 
 	results := make(chan served, racers)
 
@@ -571,6 +679,16 @@ func TestResponderDedupeRace(t *testing.T) {
 
 	cancel() // release the parked joiners
 
+	if replies := collectRacers(t, results, racers); replies != 1 {
+		t.Fatalf("concurrent same-key envelopes produced %d replies, want exactly 1", replies)
+	}
+}
+
+// collectRacers waits out every racer after ctx cancellation and counts
+// how many produced a reply payload.
+func collectRacers(t *testing.T, results <-chan served, racers int) int {
+	t.Helper()
+
 	replies := 0
 
 	for range racers {
@@ -584,7 +702,5 @@ func TestResponderDedupeRace(t *testing.T) {
 		}
 	}
 
-	if replies != 1 {
-		t.Fatalf("concurrent same-key envelopes produced %d replies, want exactly 1", replies)
-	}
+	return replies
 }
