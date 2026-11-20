@@ -122,7 +122,7 @@ Plans:
   3. `session/prompt` streams `agent_message_chunk` deltas live while the turn runs and returns `stopReason` only after all pending updates have flushed
   4. When the backend emits reasoning events the client receives `agent_thought_chunk` updates; none are synthesized when it does not
   5. `session/cancel` during a turn stops it and the prompt call is answered exactly once with `stopReason: "cancelled"`
-**Plans**: 3/6 plans executed
+**Plans**: 4/6 plans executed
 
 Plans:
 **Wave 1**
@@ -135,7 +135,7 @@ Plans:
 - [x] 04-06-PLAN.md — Tracer (TDD): minimal chat loop end-to-end — SDK test client ↔ acpport ↔ acpfront ↔ machine ↔ fake over pipes (honest initialize, create→subscribe→setModel on wire, live text streaming, cancelled exactly-once) + cancel-mid-turn front-preamble corpus
 
 **Wave 4** *(blocked on Wave 3; 04-03 and 04-04 run in parallel)*
-- [ ] 04-03-PLAN.md — CORE-01/CORE-02 contract locks: initialize honesty exact-shape lock, authenticate honest error (RED), unadvertised -32601 defaults, relative-cwd validation (RED), mcpServers accept-and-ignored, setModel payload verbatim
+- [x] 04-03-PLAN.md — CORE-01/CORE-02 contract locks: initialize honesty exact-shape lock, authenticate honest error (RED), unadvertised -32601 defaults, relative-cwd validation (RED), mcpServers accept-and-ignored, setModel payload verbatim
 - [ ] 04-04-PLAN.md — CORE-03/CORE-04 streaming locks: reasoning→thought chunks (RED) + never-synthesized negative, flush-before-stopReason ordering proof across both completion variants, zero-delta turn honesty
 
 **Wave 5** *(blocked on Wave 4 — shares front.go with 04-03)*
@@ -190,7 +190,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
-| 4. ACP Front — Minimal Chat Loop | 3/6 | In Progress | - |
+| 4. ACP Front — Minimal Chat Loop | 4/6 | In Progress | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
