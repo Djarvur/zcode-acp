@@ -266,6 +266,7 @@ func goldenDrivers() map[string]driverFunc {
 		"newsession-orphan-close":    driveNewSessionOrphanClose,
 		"auth-apikey":                driveAuthApikey,
 		"runtime-headers-answer":     driveRuntimeHeadersAnswer,
+		"full-cycle":                 driveFullCycle,
 	}
 }
 
@@ -1092,6 +1093,157 @@ func driveRuntimeHeadersAnswer(ctx context.Context, d *exchangeDriver) {
 
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.send(ctx)
+}
+
+// driveFullCycle: the full-cycle corpus row (plan 05-08) — the ONE-scenario
+// composition of the four leg rows' call sequences: authenticate (the
+// driveAuthApikey push → refresh → read-back verdict over the injected
+// fixed revision), the front preamble (driveFrontPreamble verbatim), the
+// prompt leg (send rule 1: the Edit tool stream with the permission reverse
+// fired BETWEEN the started and progress emits, answered by the scripted
+// client through the FULL bridge chain — the drivePermissionAllow
+// composition), then the SESS-01 legs (session/resume answered with the
+// create-shaped snapshot + the re-issued subscribe, session/close answered
+// {closed:true}) — the driveSessionLifecycle resume/close sequence. The
+// golden byte-locks the whole interleaved wire order; the composed-tier
+// locks live in acpfront's TestFullCycle (the same row through the
+// harness).
+func driveFullCycle(ctx context.Context, d *exchangeDriver) {
+	t := d.t
+
+	// ACP leg pipes: the drivePermissionAllow composition — the responder
+	// (whose PermissionForwarder is the real front bridge) answers the
+	// create framing's runtime-preferences reverse AND the mid-turn
+	// permission reverse; the scripted SDK client answers allow_once on the
+	// ACP leg.
+	toAgentR, toAgentW := io.Pipe()
+	toClientR, toClientW := io.Pipe()
+
+	t.Cleanup(func() {
+		for _, c := range []io.Closer{toAgentR, toAgentW, toClientR, toClientW} {
+			_ = c.Close()
+		}
+	})
+
+	//nolint:contextcheck // the Front derives its own process-lifetime base
+	// context by design (front.go New — the containedctx rule); the driver's
+	// ctx bounds only the back-leg calls.
+	front := acpfront.New(d.conn)
+
+	// Hook contract: assigned before any frame flows — the first server
+	// frame only moves when the auth chain's push runs below.
+	responder := interact.NewResponder(interact.WithPermissionForwarder(
+		interact.NewPermissionBridge(front.PermissionForward()).Forward,
+	))
+	d.conn.OnRequest = responder.Serve
+
+	client := &permissionClient{}
+
+	// Pipe ownership mirrors drivePermissionAllow: the agent writes
+	// toClientW and reads toAgentR; the client writes toAgentW, reads
+	// toClientR.
+	//
+	//nolint:dogsled // the front carries all three bindings; none is needed here
+	_, _, _ = acpport.NewAgentSideConnection(acpport.NewAgent(front), toClientW, toAgentR)
+	_ = acp.NewClientSideConnection(client, toAgentW, toClientR)
+
+	// AUTH leg (the driveAuthApikey sequence): watcher registered BEFORE
+	// any traffic, push the strict snapshot, refresh, read-back verdict.
+	fullCycleAuthLeg(ctx, d)
+
+	// PREAMBLE leg (driveFrontPreamble verbatim): create + subscribe +
+	// setModel — the corpus-locked front-tier contract.
+	driveFrontPreamble(ctx, d)
+
+	// PROMPT leg: the send fires the row's composed exchange — tool.updated
+	// scheduled/started, the permission reverse (answered by the scripted
+	// client through the full bridge chain), progress, result, the
+	// same-turn text delta, turn.completed, then the ack.
+	h := happyTurnHarness{t: t, conn: d.conn}
+	h.send(ctx)
+
+	// RESUME leg (the driveSessionLifecycle sequence): reattach via the
+	// create-shaped snapshot, then the re-issued subscribe (no setModel).
+	res, err := d.call(ctx, zcode.MethodSessionResume, map[string]any{
+		wireKeySessionID: fixSessionID,
+	})
+	if err != nil {
+		t.Fatalf("session/resume: %v", err)
+	}
+
+	assertResumeSnapshot(t, res)
+
+	subParams := map[string]any{
+		wireKeySessionID:    fixSessionID,
+		wireKeyDeliveryKind: deliveryDesktopContinuous,
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
+		t.Fatalf("session/subscribe (resume leg): %v", err)
+	}
+
+	// CLOSE leg: the teardown close, answered {closed:true}.
+	closeRes, err := d.call(ctx, zcode.MethodSessionClose, map[string]any{
+		wireKeySessionID: fixSessionID,
+	})
+	if err != nil {
+		t.Fatalf("session/close: %v", err)
+	}
+
+	assertCloseResult(t, closeRes)
+}
+
+// fullCycleAuthLeg is the driveAuthApikey auth sequence the full-cycle row's
+// authenticate leg composes: watcher registered BEFORE any traffic (the
+// refresh rule's side-effect emit precedes its reply), push the strict
+// snapshot over the synthetic fixture install (the injected fixed revision
+// — the fake's static ack echoes it verbatim), refresh, then the read-back
+// verdict (PITFALL 1 — never the ack).
+func fullCycleAuthLeg(ctx context.Context, d *exchangeDriver) {
+	t := d.t
+
+	watcher, _ := hostsvc.WatchRegistry(d.conn, corpusAuthModels())
+
+	install := supervisor.Install{
+		Root:        "/zcode-acp-corpus-fixture",
+		Binary:      "/zcode-acp-corpus-fixture/zcode",
+		Entrypoint:  "/zcode-acp-corpus-fixture/resources/glm/zcode.cjs",
+		BuiltinFile: corpusAuthBuiltinPath,
+		Layout:      "explicit",
+	}
+
+	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return corpusAuthRevision }))
+	snap := b.BuildRevision(install, corpusAuthBuiltinRev)
+
+	ack, err := hostsvc.PushEnvelope(ctx, d.conn, snap.Params)
+	if err != nil {
+		t.Fatalf("provider/updateAccountConfig: %v", err)
+	}
+
+	if ack.ReceivedRevision != corpusAuthRevision {
+		t.Fatalf("ack receivedRevision = %q, want the pushed revision %q echoed",
+			ack.ReceivedRevision, corpusAuthRevision)
+	}
+
+	if ack.Status != "received" {
+		t.Fatalf("ack status = %q, want %q", ack.Status, "received")
+	}
+
+	if err := hostsvc.RefreshRegistry(ctx, d.conn); err != nil {
+		t.Fatalf("provider/refreshRegistry: %v", err)
+	}
+
+	readbackCtx, cancel := context.WithTimeout(ctx, authReadbackWait)
+	defer cancel()
+
+	rb, err := watcher.Await(readbackCtx)
+	if err != nil {
+		t.Fatalf("registry read-back: %v", err)
+	}
+
+	if !rb.Applied {
+		t.Fatalf("read-back verdict applied = false (revision %q) — the ack is never the verdict", rb.Revision)
+	}
 }
 
 // assertResumeSnapshot digs result.session.sessionId out of the resume

@@ -1,0 +1,33 @@
+in	{"id":1,"method":"provider/updateAccountConfig","params":{"basedOnZCodeBuiltinRevision":"zcode-builtin:44:17a5ba97f090b6ea3b979cb793f404b51aaf27763d8e3a4f20ce067b7866424f","providers":{},"revision":"account-bridge:corpus-fix1","states":{}}}
+out	{"id":1,"result":{"receivedRevision":"account-bridge:corpus-fix1","providerCount":0,"status":"received"}}
+in	{"id":2,"method":"provider/refreshRegistry","params":{"reason":"account-config-sync"}}
+out	{"method":"state.updated","params":{"scope":"registry","reason":"registry_refresh","revision":2,"patch":{"providers":{"zai-api":{"models":["GLM-5.3-Flash","GLM-5.3"]}}}}}
+out	{"id":2,"result":{"refreshed":true}}
+in	{"id":3,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/happy-turn-ws","workspacePath":"/tmp/happy-turn-ws"}}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"starting","generation":1,"revision":1,"lastError":null}}
+out	{"id":"fake-1","method":"session/requestRuntimePreferences","params":{"sessionId":"sess_fix1","scope":"runtime-materialization"}}
+in	{"id":"fake-1","result":{"memoryEnabled":false,"nativeSearchEnhancementsEnabled":false}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"ready","generation":1,"revision":2,"lastError":null}}
+out	{"id":3,"result":{"session":{"sessionId":"sess_fix1"},"protocol":{"name":"ZCode Protocol","version":1}}}
+in	{"id":4,"method":"session/subscribe","params":{"deliveryKind":"desktop-continuous","sessionId":"sess_fix1"}}
+out	{"id":4,"result":{"sessionId":"sess_fix1","eventSeq":0,"events":[]}}
+in	{"id":5,"method":"session/setModel","params":{"model":{"modelId":"GLM-5.3-Flash","options":{"reasoningLevel":"high"},"providerId":"zai-api"},"persistAsWorkspaceLastUsed":false,"sessionId":"sess_fix1"}}
+out	{"id":5,"result":{}}
+in	{"id":6,"method":"session/send","params":{"content":"Reply with exactly: OK","sessionId":"sess_fix1"}}
+out	{"method":"state.updated","params":{"patch":{"status":"running"},"reason":"prompt_started","revision":1,"scope":"session","sessionId":"sess_fix1","type":"state.updated"}}
+out	{"method":"session/event","params":{"type":"turn.started","seq":1,"turnId":"turn_fix1","deliveryKind":"desktop-continuous"}}
+out	{"method":"session/event","params":{"type":"tool.updated","seq":2,"turnId":"turn_fix1","payload":{"kind":"scheduled","toolCallId":"tc1","toolName":"Edit","description":"Edit main.go","input":{"file_path":"src/main.go","old_string":"old body","new_string":"new body"}}}}
+out	{"method":"session/event","params":{"type":"tool.updated","seq":3,"turnId":"turn_fix1","payload":{"kind":"started","toolCallId":"tc1","startedAt":"2026-01-01T00:00:00Z"}}}
+out	{"id":"fake-2","method":"interaction/requestPermission","params":{"requestId":"perm-1","sessionId":"sess_fix1","turnId":"turn_fix1","toolCallId":"tc1","toolName":"Bash","reason":"run echo","riskLevel":"medium","input":{"command":"echo hi"},"options":[{"optionId":"allow_once","kind":"allow_once","name":"Allow once","response":{"decision":"allow","reason":"Approved once"}},{"optionId":"deny","kind":"deny","name":"Deny","response":{"decision":"deny","reason":"denied"}}]}}
+in	{"id":"fake-2","result":{"decision":"allow","reason":"Approved once"}}
+out	{"method":"session/event","params":{"type":"tool.updated","seq":4,"turnId":"turn_fix1","payload":{"kind":"progress","toolCallId":"tc1","elapsedMs":12,"stdoutTail":"tail-bytes"}}}
+out	{"method":"session/event","params":{"type":"tool.updated","seq":5,"turnId":"turn_fix1","payload":{"kind":"result","toolCallId":"tc1","result":{"ok":true,"display":{"kind":"diff"}},"duration":15}}}
+out	{"method":"session/event","params":{"type":"part.delta","seq":6,"turnId":"turn_fix1","messageId":"msg_1","partId":"part_1","field":"text","delta":"done text"}}
+out	{"method":"session/event","params":{"type":"turn.completed","seq":7,"turnId":"turn_fix1","deliveryKind":"desktop-continuous"}}
+out	{"id":6,"result":{"accepted":true,"sessionId":"sess_fix1","stateRevision":1}}
+in	{"id":7,"method":"session/resume","params":{"sessionId":"sess_fix1"}}
+out	{"id":7,"result":{"session":{"sessionId":"sess_fix1"},"protocol":{"name":"ZCode Protocol","version":1}}}
+in	{"id":8,"method":"session/subscribe","params":{"deliveryKind":"desktop-continuous","sessionId":"sess_fix1"}}
+out	{"id":8,"result":{"sessionId":"sess_fix1","eventSeq":0,"events":[]}}
+in	{"id":9,"method":"session/close","params":{"sessionId":"sess_fix1"}}
+out	{"id":9,"result":{"closed":true}}
