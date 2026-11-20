@@ -53,6 +53,14 @@ const (
 	// (replayed wire payloads keep the capture-verbatim spelling).
 	wireKeySessionID = "sessionId"
 
+	// wireKeyDeliveryKind is the subscribe gate's camelCase params key and
+	// deliveryDesktopContinuous its record value (the session/event push
+	// gate — dialect §4).
+	wireKeyDeliveryKind = "deliveryKind"
+
+	// deliveryDesktopContinuous is the subscribe delivery kind value.
+	deliveryDesktopContinuous = "desktop-continuous"
+
 	// reannounceAnswerDelay is how long the OnRequest stub waits before
 	// answering the permission reverse: long enough that both scripted
 	// re-announce envelopes (interval 40 ms, count 2) are on the wire first —
@@ -219,6 +227,7 @@ func goldenDrivers() map[string]driverFunc {
 		"user-input-decline":         driveUserInputDecline,
 		"tool-lifecycle":             driveToolLifecycle,
 		"session-lifecycle":          driveSessionLifecycle,
+		"newsession-orphan-close":    driveNewSessionOrphanClose,
 	}
 }
 
@@ -535,8 +544,8 @@ func driveFrontPreamble(ctx context.Context, d *exchangeDriver) {
 	h.create(ctx)
 
 	subParams := map[string]any{
-		wireKeySessionID: fixSessionID,
-		"deliveryKind":   "desktop-continuous",
+		wireKeySessionID:    fixSessionID,
+		wireKeyDeliveryKind: deliveryDesktopContinuous,
 	}
 
 	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
@@ -890,8 +899,8 @@ func driveSessionLifecycle(ctx context.Context, d *exchangeDriver) {
 	assertResumeSnapshot(d.t, res)
 
 	subParams := map[string]any{
-		wireKeySessionID: fixSessionID,
-		"deliveryKind":   "desktop-continuous",
+		wireKeySessionID:    fixSessionID,
+		wireKeyDeliveryKind: deliveryDesktopContinuous,
 	}
 
 	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
@@ -901,6 +910,38 @@ func driveSessionLifecycle(ctx context.Context, d *exchangeDriver) {
 	closeRes, err := d.call(ctx, zcode.MethodSessionClose, map[string]any{
 		wireKeySessionID: fixSessionID,
 	})
+	if err != nil {
+		d.t.Fatalf("session/close: %v", err)
+	}
+
+	assertCloseResult(d.t, closeRes)
+}
+
+// driveNewSessionOrphanClose: the WR-04 corpus row (plan 05-05) — create
+// succeeds, the subscribe leg refuses (the times-1 -32603 rule), and the
+// best-effort orphan close lands (session/close answered {closed:true}).
+// The golden byte-locks the orphan-close wire shape at the corpus tier;
+// the composed-tier lock lives in acpfront's TestNewSessionOrphanClosed
+// (the front's actual WR-04 error path over the same row).
+func driveNewSessionOrphanClose(ctx context.Context, d *exchangeDriver) {
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.create(ctx)
+
+	_, err := d.call(ctx, zcode.MethodSessionSubscribe, map[string]any{
+		wireKeySessionID:    fixSessionID,
+		wireKeyDeliveryKind: deliveryDesktopContinuous,
+	})
+
+	var callErr *zcode.CallError
+	if !errors.As(err, &callErr) {
+		d.t.Fatalf("the refused session/subscribe must answer a wire error, got %v", err)
+	}
+
+	if callErr.Err.Code != zcode.CodeInternalError {
+		d.t.Fatalf("session/subscribe error code = %d, want %d (-32603)", callErr.Err.Code, zcode.CodeInternalError)
+	}
+
+	closeRes, err := d.call(ctx, zcode.MethodSessionClose, map[string]any{wireKeySessionID: fixSessionID})
 	if err != nil {
 		d.t.Fatalf("session/close: %v", err)
 	}

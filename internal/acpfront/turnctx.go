@@ -277,15 +277,26 @@ func noteBytes(note acpport.SessionNote) int {
 // single-active-turn invariant). It returns the front-owned turn context
 // and the slot release func; release is nil when the slot is already held
 // — a second prompt while a turn is active, the D-05 guard surface (the
-// exact error class is plan 04-05's RED target). The tap-facing emitter is
-// the WR-03 pump's enqueue; the pump publishes under the same lock, so the
-// stream.go tap observes either the complete turn state or none.
-func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (turnCtx context.Context, release func()) {
+// exact error class is plan 04-05's RED target). A non-nil error means the
+// session is mid-teardown (SESS-01 closing gate): the caller surfaces the
+// pre-validated ErrNoSession-class rejection — a prompt never acquires the
+// slot while close tears its session down (T-5-12). The tap-facing emitter
+// is the WR-03 pump's enqueue; the pump publishes under the same lock, so
+// the stream.go tap observes either the complete turn state or none.
+func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (context.Context, func(), error) {
 	f.turnMu.Lock()
 	defer f.turnMu.Unlock()
 
+	// The SESS-01 closing gate under the slot lock: once close marks the
+	// session, no mid-teardown acquisition can slip past the prompt's own
+	// pre-check. (lifecycle.go — the T-5-12 race gate.)
+	if f.isClosing(sessionID) {
+		return nil, nil, acpport.NewInvalidRequest(
+			"session/prompt: %s: the session is closing or closed", sessionID)
+	}
+
 	if f.turnActive {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Front-owned: derived from the front's base context, NOT the SDK
@@ -307,7 +318,14 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (turnCtx 
 		return sink(turnCtx, note)
 	}, turnCancel, ceiling)
 
+	// The SESS-01 close teardown's wait surface: done closes when release
+	// has fully unwound the turn (flush included), so close's bounded
+	// cancel-then-drain proceeds only after the turn is off the wire.
+	done := make(chan struct{})
+
 	f.turnActive = true
+	f.turnSession = sessionID
+	f.turnDone = done
 	f.turnEmit = pump.enqueue
 	f.turnPump = pump
 
@@ -319,10 +337,12 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (turnCtx 
 	f.turnCwd = f.sessionCwdLocked(sessionID)
 	f.turnDiffs = make(map[string]acpport.ToolDiff)
 
-	release = func() {
+	release := func() {
 		f.turnMu.Lock()
 
 		f.turnActive = false
+		f.turnSession = ""
+		f.turnDone = nil
 		f.turnEmit = nil
 		f.turnID = ""
 		f.turnCwd = ""
@@ -340,9 +360,13 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (turnCtx 
 		// abandons the drain so Prompt can never hang on the ACP wire.
 		turnCancel()
 		pump.wait(pumpReleaseWait)
+
+		// The teardown's drain signal — after the flush, never before, so
+		// close's backend session/close cannot outrun the turn's last write.
+		close(done)
 	}
 
-	return turnCtx, release
+	return turnCtx, release, nil
 }
 
 // sessionCwdLocked reads the session-cwd registry; the caller holds turnMu

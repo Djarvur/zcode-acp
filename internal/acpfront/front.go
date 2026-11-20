@@ -61,20 +61,33 @@ type Front struct {
 	// binding the turn's sink, session id, and context into one call the
 	// stream.go tap makes per delta envelope. Nil when no turn is active.
 	// The slot is held for the turn's whole lifetime: from Prompt entry to
-	// its return. The remaining slot fields are the tap's turn-scoped
-	// classification state (plan 05-04): turnID is the active turn's
-	// backend turnId (IN-05 — record-on-first-sight, foreign-turnId deltas
-	// are skipped), turnCwd the session cwd the diff/location paths resolve
-	// absolute against (Pitfall 5), turnDiffs the scheduled diffs the
-	// result arm re-emits (clients render early; update content merges per
-	// spec).
-	turnMu     sync.Mutex
-	turnActive bool
-	turnEmit   func(note acpport.SessionNote) error
-	turnID     string
-	turnCwd    string
-	turnDiffs  map[string]acpport.ToolDiff
-	turnPump   *turnPump
+	// its return. turnSession/turnDone carry the active turn's session id
+	// and its lifecycle done channel (closed by release after the flush) —
+	// the SESS-01 close teardown waits on them for its bounded
+	// cancel-then-drain (lifecycle.go). The remaining slot fields are the
+	// tap's turn-scoped classification state (plan 05-04): turnID is the
+	// active turn's backend turnId (IN-05 — record-on-first-sight,
+	// foreign-turnId deltas are skipped), turnCwd the session cwd the
+	// diff/location paths resolve absolute against (Pitfall 5), turnDiffs
+	// the scheduled diffs the result arm re-emits (clients render early;
+	// update content merges per spec).
+	turnMu      sync.Mutex
+	turnActive  bool
+	turnSession string
+	turnDone    chan struct{}
+	turnEmit    func(note acpport.SessionNote) error
+	turnID      string
+	turnCwd     string
+	turnDiffs   map[string]acpport.ToolDiff
+	turnPump    *turnPump
+
+	// closingMu guards the closing set (SESS-01, lifecycle.go): the session
+	// ids mid-teardown. The gate makes the close-vs-prompt race
+	// deterministic (T-5-12): once close marks an id, a prompt for it can
+	// never acquire the slot mid-teardown — it lands exactly one clean
+	// coded rejection instead of racing the release steps.
+	closingMu sync.Mutex
+	closing   map[string]bool
 
 	// cwdMu guards the session-cwd registry (session id → the validated
 	// absolute cwd from session/new) — acquireTurn copies the active
@@ -202,7 +215,7 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 		return "", acpport.NewInternal("session/create: %v", err)
 	}
 
-	sid, err := createSessionID(res)
+	sid, err := createSessionID(res, "session/create")
 	if err != nil {
 		return "", err
 	}
@@ -210,15 +223,19 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 	f.recordCwd(sid, params.Cwd)
 
 	if _, err := f.conn.Call(ctx, zcode.MethodSessionSubscribe, map[string]any{
-		"sessionId":    sid,
-		"deliveryKind": "desktop-continuous",
+		wireKeySessionID: sid,
+		"deliveryKind":   "desktop-continuous",
 	}); err != nil {
+		// WR-04 (plan 05-05): the create succeeded — tear the backend
+		// session down best-effort instead of orphaning it (T-5-12).
+		f.closeOrphan(ctx, sid, "subscribe", err)
+
 		return "", acpport.NewInternal("session/subscribe: %v", err)
 	}
 
 	if f.model != nil {
 		if _, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
-			"sessionId": sid,
+			wireKeySessionID: sid,
 			"model": map[string]any{
 				"providerId": f.model.ProviderID,
 				"modelId":    f.model.ModelID,
@@ -226,6 +243,10 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 			},
 			"persistAsWorkspaceLastUsed": false,
 		}); err != nil {
+			// WR-04: same orphan discipline for the setModel refusal —
+			// every post-create failure closes the backend session.
+			f.closeOrphan(ctx, sid, "setModel", err)
+
 			return "", acpport.NewInternal("session/setModel: %v", err)
 		}
 	}
@@ -241,6 +262,11 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 
 	return sid, nil
 }
+
+// wireKeySessionID is the dialect's camelCase session-id params key (the
+// capture-verbatim wire spelling — the corpus discipline's
+// wireKeySessionID twin on the production side).
+const wireKeySessionID = "sessionId"
 
 // turnActiveMessage is the ONE stable rejection surface for concurrent
 // prompts (D-05, CORE-05): whatever guard layer fires — the front-wide turn
@@ -266,7 +292,18 @@ func (f *Front) Prompt(
 		return "", acpport.NewInvalidRequest("session/prompt: %v: %s", err, params.SessionID)
 	}
 
-	turnCtx, release := f.acquireTurn(params.SessionID, sink)
+	// SESS-01 gate (lifecycle.go): a session mid-teardown takes prompts as
+	// the clean ErrNoSession-class rejection — never a mid-close slot
+	// acquisition racing the release steps (T-5-12).
+	if f.isClosing(params.SessionID) {
+		return "", acpport.NewInvalidRequest("session/prompt: %s: the session is closing or closed", params.SessionID)
+	}
+
+	turnCtx, release, err := f.acquireTurn(params.SessionID, sink)
+	if err != nil {
+		return "", err // the pre-validated closing rejection (acquireTurn gate)
+	}
+
 	if release == nil {
 		return "", acpport.NewInvalidRequest(turnActiveMessage)
 	}
@@ -357,6 +394,41 @@ func (f *Front) recordCwd(sessionID, cwd string) {
 	f.cwds[sessionID] = cwd
 }
 
+// dropCwd removes one session's cwd entry (SESS-01 teardown — the map
+// stays bounded with the registry, the WR-07 discipline).
+func (f *Front) dropCwd(sessionID string) {
+	f.cwdMu.Lock()
+	defer f.cwdMu.Unlock()
+
+	delete(f.cwds, sessionID)
+}
+
+// isClosing reports whether the session is mid-teardown (the SESS-01
+// close-vs-prompt race gate, lifecycle.go).
+func (f *Front) isClosing(sessionID string) bool {
+	f.closingMu.Lock()
+	defer f.closingMu.Unlock()
+
+	return f.closing[sessionID]
+}
+
+// closeOrphan is the WR-04 error-path close (plan 05-05): a session/new
+// failure after session/create succeeded tears the just-created backend
+// session down best-effort and logs structurally. It is the wire-level
+// close — NOT Front.CloseSession: the orphan deliberately holds no
+// registry entry (nothing to release; the machine was never constructed).
+func (f *Front) closeOrphan(ctx context.Context, sessionID, stage string, cause error) {
+	if _, err := f.conn.Call(ctx, zcode.MethodSessionClose, map[string]any{"sessionId": sessionID}); err != nil {
+		slog.Warn("acpfront: orphan backend session close failed",
+			"session", sessionID, "stage", stage, "err", err)
+
+		return
+	}
+
+	slog.Warn("acpfront: closed the error-path backend session",
+		"session", sessionID, "stage", stage, "cause", cause)
+}
+
 // turnScope copies the active turn's emitter out under the slot lock and
 // applies the IN-05 turn-id guard (record-on-first-sight; a foreign-turnId
 // envelope is not scoped). The emit call itself happens OUTSIDE the lock —
@@ -434,28 +506,31 @@ func (f *Front) turnBreach() error {
 	return f.turnPump.breachErr()
 }
 
-// createSessionID digs result.session.sessionId out of the create reply
-// (the happy-turn.json corpus shape); a reply without the id fails loud —
-// the session registry must never hold an empty key. The id digs out
-// through a map because the wire key is the dialect's camelCase (the
-// tagliatelle contract: production decode structs stay snake-safe).
-func createSessionID(res json.RawMessage) (string, error) {
+// createSessionID digs result.session.sessionId out of a session/setup
+// reply (the happy-turn.json corpus shape — session/create and the SESS-01
+// session/resume carry the SAME full snapshot shape, 05-RESEARCH.md
+// Pattern 7); a reply without the id fails loud — the session registry
+// must never hold an empty key. The id digs out through a map because the
+// wire key is the dialect's camelCase (the tagliatelle contract:
+// production decode structs stay snake-safe). method names the calling
+// wire method in the error surface.
+func createSessionID(res json.RawMessage, method string) (string, error) {
 	var result struct {
 		Session json.RawMessage `json:"session"`
 	}
 
 	if err := json.Unmarshal(res, &result); err != nil {
-		return "", acpport.NewInternal("session/create: decode reply: %v", err)
+		return "", acpport.NewInternal("%s: decode reply: %v", method, err)
 	}
 
 	var session map[string]any
 	if err := json.Unmarshal(result.Session, &session); err != nil {
-		return "", acpport.NewInternal("session/create: decode session: %v", err)
+		return "", acpport.NewInternal("%s: decode session: %v", method, err)
 	}
 
 	sid, _ := session["sessionId"].(string)
 	if sid == "" {
-		return "", acpport.NewInternal("session/create: reply carries no session.sessionId")
+		return "", acpport.NewInternal("%s: reply carries no session.sessionId", method)
 	}
 
 	return sid, nil

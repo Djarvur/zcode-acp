@@ -190,21 +190,26 @@ func assertResumeLegOrder(t *testing.T, tr fake.Transcript, sid string) {
 	}
 }
 
-// lifecycleStage is the close-probe prelude: capture the observer
-// baseline, open the session (+1/+1 on both fan-outs), run the completing
-// stage turn (consumes send rule 1), and start the ACTIVE turn (send rule
-// 2 — no terminal until cancel). Returns the session id, the baseline,
-// and the active prompt's resolution channel.
-func lifecycleStage(ctx context.Context, t *testing.T, h *FrontHarness) (string, int, int, <-chan promptOutcome) {
+// lifecycleStage is the close-probe prelude: open the session (+1/+1 on
+// both fan-outs over the tap-only baseline), run the completing stage
+// turn (consumes send rule 1), and start the ACTIVE turn (send rule 2 —
+// no terminal until cancel). Returns the session id and the active
+// prompt's resolution channel; the close tests capture their own
+// pre-close observer snapshot (the WR-07 lock asserts exactly the
+// machine's (1,1) removed).
+func lifecycleStage(
+	ctx context.Context, t *testing.T, h *FrontHarness,
+) (sid string, promptDone <-chan promptOutcome) {
 	t.Helper()
 
-	notifBase, routerBase := h.conn.ObserverCounts()
+	notifTap, routerTap := h.conn.ObserverCounts()
 
-	sid := newLifecycleSession(ctx, t, h)
+	sid = newLifecycleSession(ctx, t, h)
 
-	if notif, router := h.conn.ObserverCounts(); notif != notifBase+1 || router != routerBase+1 {
-		t.Fatalf("post-open observer counts = (%d, %d), want baseline+1 (%d, %d)",
-			notif, router, notifBase, routerBase)
+	notifOpen, routerOpen := h.conn.ObserverCounts()
+	if notifOpen != notifTap+1 || routerOpen != routerTap+1 {
+		t.Fatalf("post-open observer counts = (%d, %d), want tap+1 (%d, %d)",
+			notifOpen, routerOpen, notifTap, routerTap)
 	}
 
 	// Stage 1: a completing turn consumes send rule 1 (times 1) — the
@@ -214,9 +219,9 @@ func lifecycleStage(ctx context.Context, t *testing.T, h *FrontHarness) (string,
 	}
 
 	// Stage 2: an ACTIVE turn (send rule 2 — no terminal until cancel).
-	promptDone := startActiveTurn(ctx, t, h, sid)
+	promptDone = startActiveTurn(ctx, t, h, sid)
 
-	return sid, notifBase, routerBase, promptDone
+	return sid, promptDone
 }
 
 // assertTeardownWire locks the post-close back-leg shape: the active
@@ -225,17 +230,7 @@ func lifecycleStage(ctx context.Context, t *testing.T, h *FrontHarness) (string,
 func assertTeardownWire(t *testing.T, tr fake.Transcript, wantSends int) {
 	t.Helper()
 
-	stopIdx := transcriptIndex(t, tr, "in", `"method":"session/stop"`, "stop request")
-	closeIdxs := transcriptIndexes(tr, "in", `"method":"session/close"`)
-
-	if len(closeIdxs) != 1 {
-		t.Fatalf("back leg records %d session/close frames, want exactly 1 (repeats never touch the wire)",
-			len(closeIdxs))
-	}
-
-	if stopIdx > closeIdxs[0] {
-		t.Fatalf("wire order violated: session/stop at %d must precede session/close at %d", stopIdx, closeIdxs[0])
-	}
+	assertCloseAfterStop(t, tr)
 
 	if sends := len(transcriptIndexes(tr, "in", `"method":"session/send"`)); sends != wantSends {
 		t.Fatalf("back leg records %d session/send frames, want exactly %d (rejected prompts never reach the wire)",
@@ -255,7 +250,11 @@ func TestCloseTeardown(t *testing.T) {
 
 	mustInitialize(ctx, t, h)
 
-	sid, notifBase, routerBase, promptDone := lifecycleStage(ctx, t, h)
+	sid, promptDone := lifecycleStage(ctx, t, h)
+
+	// The pre-close observer snapshot: everything registered so far (the
+	// tap, the machine, the stage's own turn.started observer).
+	notifPre, routerPre := h.conn.ObserverCounts()
 
 	// Close while the turn runs: cancel fires first, the bounded wait
 	// drains the turn, THEN the backend close lands.
@@ -282,11 +281,12 @@ func TestCloseTeardown(t *testing.T) {
 	_, err = h.client.CloseSession(ctx, acp.CloseSessionRequest{SessionId: acp.SessionId(sid)})
 	assertCodedInvalidRequest(t, err)
 
-	// Both conn observer counts return to baseline (WR-07: the plan 05-03
-	// exposed removes — CloseObservers drives both fan-outs).
-	if notif, router := h.conn.ObserverCounts(); notif != notifBase || router != routerBase {
-		t.Fatalf("post-close observer counts = (%d, %d), want baseline (%d, %d)",
-			notif, router, notifBase, routerBase)
+	// Exactly the machine's (notification + router) entries removed — the
+	// WR-07 lock: the plan 05-03 exposed CloseObservers drives both
+	// fan-outs, and nothing else leaks or lingers.
+	if notif, router := h.conn.ObserverCounts(); notif != notifPre-1 || router != routerPre-1 {
+		t.Fatalf("post-close observer counts = (%d, %d), want exactly the machine's entries removed (%d, %d)",
+			notif, router, notifPre-1, routerPre-1)
 	}
 
 	tr, trErr := h.Transcript(t)
@@ -313,7 +313,7 @@ func TestCloseWhileTurnActiveRace(t *testing.T) {
 
 	mustInitialize(ctx, t, h)
 
-	sid, _, _, promptDone := lifecycleStage(ctx, t, h)
+	sid, promptDone := lifecycleStage(ctx, t, h)
 
 	// The race: a second prompt fired WHILE close tears the session down.
 	raceDone := make(chan promptOutcome, 1)
@@ -343,18 +343,49 @@ func TestCloseWhileTurnActiveRace(t *testing.T) {
 	}
 
 	// Exactly-once at the composed tier: three prompts ran (stage, active,
-	// racing) — the wire carries exactly three outcome frames (stopReason
-	// responses or error rejections), never a duplicate or a lost
-	// resolution (a machine resolve after removal would show up as a
-	// missing or duplicated frame here).
-	outcomes := len(transcriptIndexes(tr, "in", `"stopReason"`)) +
-		len(transcriptIndexes(tr, "in", `"error"`))
+	// racing) — the ACP tee carries exactly three outcome frames (the
+	// prompt responses' stopReason or the rejections' error), never a
+	// duplicate or a lost resolution (a machine resolve after removal
+	// would show up as a missing or duplicated frame here).
+	lines := h.ACPLines()
+	outcomes := len(teeLineIndexes(lines, "in", `"stopReason"`)) +
+		len(teeLineIndexes(lines, "in", `"error"`))
 	if want := 3; outcomes != want {
-		t.Fatalf("wire records %d outcome frames for 3 prompts, want exactly %d (resolved exactly once, never after removal)",
-			outcomes, want)
+		t.Fatalf("ACP tee records %d outcome frames for 3 prompts, want exactly %d "+
+			"(resolved exactly once, never after removal)", outcomes, want)
 	}
 
-	assertTeardownWire(t, tr, 3)
+	// The racing prompt lands one clean outcome BEFORE any send (the
+	// common arm: the slot/closing gate rejects it) or after running (the
+	// drain cancels it) — so the back leg carries the stage + active sends
+	// plus at most the racing send.
+	sends := len(transcriptIndexes(tr, "in", `"method":"session/send"`))
+	if sends != 2 && sends != 3 {
+		t.Fatalf("back leg records %d session/send frames, want 2 (racer rejected pre-send) "+
+			"or 3 (racer cancelled mid-turn)", sends)
+	}
+
+	// The teardown wire shape with the observed racer arm: the stop
+	// precedes the ONE close; the racer's send, when it ran, precedes them.
+	assertCloseAfterStop(t, tr)
+}
+
+// assertCloseAfterStop locks the teardown wire order: exactly one
+// session/close, preceded by exactly one session/stop.
+func assertCloseAfterStop(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	stopIdx := transcriptIndex(t, tr, "in", `"method":"session/stop"`, "stop request")
+	closeIdxs := transcriptIndexes(tr, "in", `"method":"session/close"`)
+
+	if len(closeIdxs) != 1 {
+		t.Fatalf("back leg records %d session/close frames, want exactly 1 (repeats never touch the wire)",
+			len(closeIdxs))
+	}
+
+	if stopIdx > closeIdxs[0] {
+		t.Fatalf("wire order violated: session/stop at %d must precede session/close at %d", stopIdx, closeIdxs[0])
+	}
 }
 
 // assertRaceOutcome requires the racing prompt's exactly-one clean
