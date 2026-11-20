@@ -256,3 +256,7 @@ None - no external service configuration required.
 ---
 *Phase: 05-interactions-full-chat-cycle-api-key*
 *Completed: 2026-11-20*
+
+## Self-Check: PASSED
+
+All 7 created/modified key files verified present on disk; all 5 commit hashes (b93a23d, 0d9410f, 541a5ab, 23925e7, 819b6c6) verified ancestors of HEAD. Commits measured from the persisted ledger: `git rev-list --count f389643..HEAD` = 4 production commits, matching the frontmatter actuals.
