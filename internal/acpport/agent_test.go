@@ -60,6 +60,10 @@ var errRawFront = errors.New("raw front failure")
 // Handlers failure (the scripted counterparty's sentinel).
 var errAuthScriptedFailure = errors.New("scripted auth failure")
 
+// authDelegationMethodID is the delegation tests' method id (the
+// advertised zai-api-key string, verbatim on the wire).
+const authDelegationMethodID = "zai-api-key"
+
 // TestSDKImportBoundary walks every non-test .go file in the repo and
 // fails if any file outside internal/acpport imports the SDK — the D-01
 // seam lock, enforced structurally (T-4-SC containment).
@@ -633,87 +637,98 @@ func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
 // fake success), a seam-carried code rides verbatim, and success answers
 // the empty result {}.
 func TestAuthenticateDelegation(t *testing.T) {
-	t.Run("handlers error codes as the internal-class wire error", func(t *testing.T) {
-		h := newScriptedHandlers()
-		h.authErr = errAuthScriptedFailure
+	t.Run("handlers error codes as the internal-class wire error", testAuthDelegationPlainError)
+	t.Run("seam-carried code rides the wire verbatim", testAuthDelegationSeamCode)
+	t.Run("success answers the empty result", testAuthDelegationSuccess)
+}
 
-		probe := newConnectionProbe(t, h)
+// testAuthDelegationPlainError is the A5 floor arm: a plain Handlers error
+// codes internal on the wire — detail in data, never raw, never -32601,
+// never a fake success — and the client's methodId reached Handlers
+// verbatim.
+func testAuthDelegationPlainError(t *testing.T) {
+	h := newScriptedHandlers()
+	h.authErr = errAuthScriptedFailure
 
-		raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-api-key"}`)
+	probe := newConnectionProbe(t, h)
 
-		errObj := authErrorFrame(t, raw)
+	raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"`+authDelegationMethodID+`"}`)
 
-		if errObj == nil {
-			t.Fatalf("authenticate must answer a JSON-RPC ERROR (never fake success), got result frame: %s", raw)
-		}
+	errObj := authErrorFrame(t, raw)
 
-		if errObj.Code == -32601 {
-			t.Fatalf("authenticate answers the misleading MethodNotFound default (-32601): %s", raw)
-		}
+	if errObj == nil {
+		t.Fatalf("authenticate must answer a JSON-RPC ERROR (never fake success), got result frame: %s", raw)
+	}
 
-		if errObj.Code != acpport.CodeInternal {
-			t.Fatalf("authenticate error code = %d, want %d (a plain error codes internal): %s",
-				errObj.Code, acpport.CodeInternal, raw)
-		}
+	if errObj.Code == -32601 {
+		t.Fatalf("authenticate answers the misleading MethodNotFound default (-32601): %s", raw)
+	}
 
-		if !strings.Contains(string(errObj.Data), "scripted auth failure") {
-			t.Fatalf("error data %s must carry the Handlers error text (the A5 internal mapping): %s",
-				string(errObj.Data), raw)
-		}
+	if errObj.Code != acpport.CodeInternal {
+		t.Fatalf("authenticate error code = %d, want %d (a plain error codes internal): %s",
+			errObj.Code, acpport.CodeInternal, raw)
+	}
 
-		if len(h.authCalls) != 1 || h.authCalls[0] != "zai-api-key" {
-			t.Fatalf("authCalls = %v, want exactly the client's methodId verbatim", h.authCalls)
-		}
-	})
+	if !strings.Contains(string(errObj.Data), "scripted auth failure") {
+		t.Fatalf("error data %s must carry the Handlers error text (the A5 internal mapping): %s",
+			string(errObj.Data), raw)
+	}
 
-	t.Run("seam-carried code rides the wire verbatim", func(t *testing.T) {
-		h := newScriptedHandlers()
-		h.authErr = acpport.NewInvalidParams("authenticate: unknown methodId %q", "zai-nope")
+	if len(h.authCalls) != 1 || h.authCalls[0] != authDelegationMethodID {
+		t.Fatalf("authCalls = %v, want exactly the client's methodId verbatim", h.authCalls)
+	}
+}
 
-		probe := newConnectionProbe(t, h)
+// testAuthDelegationSeamCode is the seam arm: a seam-carried code and
+// message ride the wire verbatim (the RequestError stays unwrapped).
+func testAuthDelegationSeamCode(t *testing.T) {
+	h := newScriptedHandlers()
+	h.authErr = acpport.NewInvalidParams("authenticate: unknown methodId %q", "zai-nope")
 
-		raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-nope"}`)
+	probe := newConnectionProbe(t, h)
 
-		errObj := authErrorFrame(t, raw)
+	raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-nope"}`)
 
-		if errObj == nil {
-			t.Fatalf("seam error must answer a JSON-RPC ERROR, got result frame: %s", raw)
-		}
+	errObj := authErrorFrame(t, raw)
 
-		if errObj.Code != acpport.CodeInvalidParams {
-			t.Fatalf("error code = %d, want the seam's %d riding verbatim: %s",
-				errObj.Code, acpport.CodeInvalidParams, raw)
-		}
+	if errObj == nil {
+		t.Fatalf("seam error must answer a JSON-RPC ERROR, got result frame: %s", raw)
+	}
 
-		if !strings.Contains(errObj.Message, "zai-nope") {
-			t.Fatalf("error message %q must carry the seam text verbatim (the RequestError stays unwrapped): %s",
-				errObj.Message, raw)
-		}
-	})
+	if errObj.Code != acpport.CodeInvalidParams {
+		t.Fatalf("error code = %d, want the seam's %d riding verbatim: %s",
+			errObj.Code, acpport.CodeInvalidParams, raw)
+	}
 
-	t.Run("success answers the empty result", func(t *testing.T) {
-		h := newScriptedHandlers()
+	if !strings.Contains(errObj.Message, "zai-nope") {
+		t.Fatalf("error message %q must carry the seam text verbatim (the RequestError stays unwrapped): %s",
+			errObj.Message, raw)
+	}
+}
 
-		probe := newConnectionProbe(t, h)
+// testAuthDelegationSuccess is the success arm: the empty result {}.
+func testAuthDelegationSuccess(t *testing.T) {
+	h := newScriptedHandlers()
 
-		raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-api-key"}`)
+	probe := newConnectionProbe(t, h)
 
-		errObj := authErrorFrame(t, raw)
-		if errObj != nil {
-			t.Fatalf("authenticated authenticate must answer a result, got error frame: %s", raw)
-		}
+	raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"`+authDelegationMethodID+`"}`)
 
-		var frame struct {
-			Result json.RawMessage `json:"result"`
-		}
-		if err := json.Unmarshal([]byte(raw), &frame); err != nil {
-			t.Fatalf("decode result frame: %v (%s)", err, raw)
-		}
+	errObj := authErrorFrame(t, raw)
+	if errObj != nil {
+		t.Fatalf("authenticated authenticate must answer a result, got error frame: %s", raw)
+	}
 
-		if trimmed := strings.TrimSpace(string(frame.Result)); trimmed != "{}" {
-			t.Fatalf("authenticate result = %s, want the empty result {}", trimmed)
-		}
-	})
+	var frame struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("decode result frame: %v (%s)", err, raw)
+	}
+
+	if trimmed := strings.TrimSpace(string(frame.Result)); trimmed != "{}" {
+		t.Fatalf("authenticate result = %s, want the empty result {}", trimmed)
+	}
 }
 
 // authErrorFrame decodes the error object of one raw authenticate response
