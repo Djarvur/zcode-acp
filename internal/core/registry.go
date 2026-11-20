@@ -11,7 +11,6 @@
 package core
 
 import (
-	"context"
 	"errors"
 	"sync"
 
@@ -25,13 +24,13 @@ var ErrNoSession = errors.New("core: no session registered under id")
 
 // Session is one ACP session's machinery: the backend-side turn machine
 // and the per-turn cancel func the front owns (Pattern 5 turn-context
-// ownership). Subscribed records whether session/subscribe has been
-// issued — session/event pushes are gated on it (RESEARCH Pitfall 1).
+// ownership). The subscribe-before-any-turn gate is enforced by the
+// D-03 sequence in acpfront.NewSession (front.go) — the registry carries
+// no subscription flag (IN-02: a dead field is an API lie; delete unless
+// a consumer reads it — Phase 5's resume path reads neither).
 type Session struct {
-	ID         string
-	Machine    *turn.Machine
-	CancelTurn context.CancelFunc
-	Subscribed bool
+	ID      string
+	Machine *turn.Machine
 }
 
 // SessionRegistry is the mutex-guarded session map (ARCHITECTURE

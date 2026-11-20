@@ -200,12 +200,13 @@ func (c *Conn) Close() error {
 // delivered to ALL registered observers — synchronously, in registration
 // order, on the read goroutine (wire order preserved). The hook contract
 // from the single slot carries over: deliveries run on the read goroutine,
-// so an observer must not block, and observers must be registered before
-// any frame flows — registering (or removing) while traffic is in flight is
-// a data race. An empty observer list is a silent drop, like the nil single
-// slot this fan-out replaces (RESEARCH Pattern 4 — a second machine could
-// silently steal that slot, leaving the first session's turns hanging,
-// PITFALL 3).
+// so an observer must not block. Mid-traffic registration and removal are
+// memory-safe under the fan-out mutex; the real contract is delivery
+// ORDERING — a newly registered observer sees only subsequent envelopes,
+// never a replay of earlier ones. An empty observer list is a silent
+// drop, like the nil single slot this fan-out replaces (RESEARCH
+// Pattern 4 — a second machine could silently steal that slot, leaving
+// the first session's turns hanging, PITFALL 3).
 func (c *Conn) AddObserver(fn func(Envelope)) (remove func()) {
 	entry := &observerEntry{fn: fn}
 
@@ -232,6 +233,12 @@ func (c *Conn) AddObserver(fn func(Envelope)) (remove func()) {
 // (function values are not comparable in Go).
 type observerEntry struct {
 	fn func(Envelope)
+}
+
+// ObserverCounts returns the live notification and router observer counts
+// (diagnostics and the teardown-baseline test seam).
+func (c *Conn) ObserverCounts() (notification int, router int) {
+	return len(c.observers), len(c.routerObservers)
 }
 
 // routerObserverEntry is the router-event twin of observerEntry — the

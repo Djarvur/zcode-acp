@@ -169,10 +169,12 @@ type Machine struct {
 	resolvedCh  chan struct{}
 	ackAt       time.Time
 
-	// removeRouterObserver deregisters the machine from the conn's ordered
-	// router-event fan-out (WR-07: exposed for session/close teardown —
-	// plan 05-05 calls it). Set by NewMachine; nil without a conn.
-	removeRouterObserver func()
+	// removeNotificationObserver / removeRouterObserver deregister the
+	// machine from the conn's two ordered fan-outs (WR-07: exposed for
+	// session/close teardown — plan 05-05 calls them). Set by NewMachine;
+	// nil without a conn. CloseObservers drives both, idempotently.
+	removeNotificationObserver func()
+	removeRouterObserver       func()
 }
 
 // NewMachine returns a machine bound to sessionID on conn with the given
@@ -194,12 +196,26 @@ func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machin
 	}
 
 	if conn != nil {
-		conn.AddObserver(m.ObserveEnvelope)
-
+		m.removeNotificationObserver = conn.AddObserver(m.ObserveEnvelope)
 		m.removeRouterObserver = conn.AddRouterObserver(m.observeRouterEvent)
 	}
 
 	return m
+}
+
+// CloseObservers deregisters the machine from both conn fan-outs
+// (WR-07 teardown). Idempotent: repeated or double calls are no-ops, so
+// the teardown owner can call it without owning the only reference.
+func (m *Machine) CloseObservers() {
+	if m.removeNotificationObserver != nil {
+		m.removeNotificationObserver()
+		m.removeNotificationObserver = nil
+	}
+
+	if m.removeRouterObserver != nil {
+		m.removeRouterObserver()
+		m.removeRouterObserver = nil
+	}
 }
 
 // Run lifts one fire-and-forget session/send into a synchronous turn: it

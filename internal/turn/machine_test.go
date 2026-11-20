@@ -837,3 +837,39 @@ func TestTwoMachinesDegradedSignalNotStolen(t *testing.T) {
 		t.Fatalf("machine 2 recorded %+v, want zero (idle early-return)", res2)
 	}
 }
+
+// WR-07 teardown baseline (05-03 Task 2): constructing a machine registers
+// two conn observers; CloseObservers must release both back to baseline —
+// idempotently — so session/close teardown can finally release observers.
+func TestMachineCloseObserversReturnsToBaseline(t *testing.T) {
+	hostEnd, fakeEnd := roundTripPipes()
+	t.Cleanup(func() { _ = fakeEnd.Close() })
+
+	startFake(fakeEnd, &fake.Scenario{Name: "teardown-baseline"})
+
+	conn := zcode.NewConn(hostEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	notifBase, routerBase := conn.ObserverCounts()
+
+	m := turn.NewMachine(conn, fixSessionID, turn.NewPollWatcher(conn, turn.PollConfig{
+		QuietMs:        40,
+		FloorMultiple:  2,
+		PollIntervalMs: 10,
+	}))
+
+	notifNow, routerNow := conn.ObserverCounts()
+
+	if notifNow != notifBase+1 || routerNow != routerBase+1 {
+		t.Fatalf("post-construction counts = (%d, %d), want baseline+1 each (%d, %d)", notifNow, routerNow, notifBase, routerBase)
+	}
+
+	m.CloseObservers()
+	m.CloseObservers() // idempotent
+
+	notifAfter, routerAfter := conn.ObserverCounts()
+
+	if notifAfter != notifBase || routerAfter != routerBase {
+		t.Fatalf("post-teardown counts = (%d, %d), want the (%d, %d) baseline", notifAfter, routerAfter, notifBase, routerBase)
+	}
+}

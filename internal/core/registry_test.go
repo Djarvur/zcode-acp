@@ -38,15 +38,15 @@ func TestRegistryRegisterGetRemove(t *testing.T) {
 	r := core.NewSessionRegistry()
 
 	m1 := newMachine(fixedSessionID)
-	r.Register(core.Session{ID: fixedSessionID, Machine: m1, Subscribed: true})
+	r.Register(core.Session{ID: fixedSessionID, Machine: m1})
 
 	got, err := r.Get(fixedSessionID)
 	if err != nil {
 		t.Fatalf("Get(sess_1): %v", err)
 	}
 
-	if got.ID != fixedSessionID || got.Machine != m1 || !got.Subscribed {
-		t.Fatalf("Get(%s) = %+v, want the registered session (same machine pointer, subscribed)", fixedSessionID, got)
+	if got.ID != fixedSessionID || got.Machine != m1 {
+		t.Fatalf("Get(%s) = %+v, want the registered session (same machine pointer)", fixedSessionID, got)
 	}
 
 	m1b := newMachine(fixedSessionID)

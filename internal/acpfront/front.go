@@ -203,7 +203,7 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 	// order. Phase-3 watcher defaults; corpus-grade terminal/cancel signals
 	// resolve turns well inside the quiet-window gates.
 	machine := turn.NewMachine(f.conn, sid, turn.NewPollWatcher(f.conn, turn.PollConfig{}))
-	f.registry.Register(core.Session{ID: sid, Machine: machine, Subscribed: true})
+	f.registry.Register(core.Session{ID: sid, Machine: machine})
 
 	slog.Info("acpfront: session opened", "session", sid)
 
