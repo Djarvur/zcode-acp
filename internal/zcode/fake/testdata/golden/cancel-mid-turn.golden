@@ -1,7 +1,17 @@
-in	{"id":1,"method":"session/send","params":{"content":"Reply with exactly: OK","sessionId":"sess_fix1"}}
+in	{"id":1,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/happy-turn-ws","workspacePath":"/tmp/happy-turn-ws"}}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"starting","generation":1,"revision":1,"lastError":null}}
+out	{"id":"fake-1","method":"session/requestRuntimePreferences","params":{"sessionId":"sess_fix1","scope":"runtime-materialization"}}
+in	{"id":"fake-1","result":{"memoryEnabled":false,"nativeSearchEnhancementsEnabled":false}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"ready","generation":1,"revision":2,"lastError":null}}
+out	{"id":1,"result":{"session":{"sessionId":"sess_fix1"},"protocol":{"name":"ZCode Protocol","version":1}}}
+in	{"id":2,"method":"session/subscribe","params":{"deliveryKind":"desktop-continuous","sessionId":"sess_fix1"}}
+out	{"id":2,"result":{"sessionId":"sess_fix1","eventSeq":0,"events":[]}}
+in	{"id":3,"method":"session/setModel","params":{"model":{"modelId":"GLM-5.3-Flash","options":{"reasoningLevel":"high"},"providerId":"zai-api"},"persistAsWorkspaceLastUsed":false,"sessionId":"sess_fix1"}}
+out	{"id":3,"result":{}}
+in	{"id":4,"method":"session/send","params":{"content":"Reply with exactly: OK","sessionId":"sess_fix1"}}
 out	{"method":"state.updated","params":{"patch":{"status":"running"},"reason":"prompt_started","revision":1,"scope":"session","sessionId":"sess_fix1","type":"state.updated"}}
 out	{"method":"session/event","params":{"type":"turn.started","seq":4,"turnId":"turn_fix1","deliveryKind":"desktop-continuous"}}
-out	{"id":1,"result":{"accepted":true,"sessionId":"sess_fix1","stateRevision":1}}
-in	{"id":2,"method":"session/stop","params":{"sessionId":"sess_fix1"}}
+out	{"id":4,"result":{"accepted":true,"sessionId":"sess_fix1","stateRevision":1}}
+in	{"id":5,"method":"session/stop","params":{"sessionId":"sess_fix1"}}
 out	{"method":"state.updated","params":{"patch":{"status":"cancelled"},"reason":"session_stopped","revision":2,"scope":"session","sessionId":"sess_fix1","type":"state.updated"}}
-out	{"id":2,"result":{}}
+out	{"id":5,"result":{}}
