@@ -3,6 +3,7 @@ package acpfront
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -203,14 +204,22 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 	return sid, nil
 }
 
+// turnActiveMessage is the ONE stable rejection surface for concurrent
+// prompts (D-05, CORE-05): whatever guard layer fires — the front-wide turn
+// slot here, or the machine's ErrTurnActive below (whose backend-refusal leg
+// is the machine's numeric -32010 mapping, message text never matched) — the
+// client sees the same invalid-request class carrying this message. No
+// internal locations or content ever ride the error (the machine-path rule).
+const turnActiveMessage = "a prompt is already running for this session"
+
 // Prompt runs one prompt turn (D-04/D-05): the front-wide turn slot is
 // acquired for the turn's whole lifetime (the single-active-turn
 // invariant — the delta-routing precondition, see the type doc), the turn
 // context is front-owned (NOT the SDK request ctx — turnctx.go), and the
 // machine's outcome maps onto the neutral stop reasons. Cancelled resolves
-// as a SUCCESS stopReason exactly once; errors surface as coded -32603
-// internal errors (A5 — the ErrTurnActive → invalid-request sharpening is
-// plan 04-05's RED target).
+// as a SUCCESS stopReason exactly once; the concurrency guard fires as ONE
+// invalid-request rejection (both the slot and the machine's ErrTurnActive);
+// other backend failures surface as coded -32603 internal errors (A5).
 func (f *Front) Prompt(
 	sdkCtx context.Context, params acpport.PromptParams, sink acpport.UpdateSink,
 ) (acpport.StopReason, error) {
@@ -221,7 +230,7 @@ func (f *Front) Prompt(
 
 	turnCtx, release := f.acquireTurn(params.SessionID, sink)
 	if release == nil {
-		return "", acpport.NewInvalidRequest("a prompt is already running for this session")
+		return "", acpport.NewInvalidRequest(turnActiveMessage)
 	}
 
 	defer release()
@@ -239,6 +248,15 @@ func (f *Front) Prompt(
 	// error instead of the cancelled success stopReason.
 	reason, runErr := st.Machine.Run(turnCtx, params.Text)
 	if runErr != nil {
+		// The concurrency guard (CORE-05): the machine's ErrTurnActive — its
+		// backend-refusal leg being the numeric -32010 mapping — is the same
+		// rejection the front-wide slot answers, so both surfaces share the
+		// one invalid-request constructor and message (never the wrapped
+		// transport noise, which carries the server's wire error verbatim).
+		if errors.Is(runErr, turn.ErrTurnActive) {
+			return "", acpport.NewInvalidRequest(turnActiveMessage)
+		}
+
 		return "", acpport.NewInternal("session/prompt: %v", runErr)
 	}
 
