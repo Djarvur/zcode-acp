@@ -112,6 +112,17 @@ const (
 	// corpusAuthRevision is the injected fixed push revision (the corpus
 	// fixture's synthetic value; the fake's static ack echoes it verbatim).
 	corpusAuthRevision = "account-bridge:corpus-fix1"
+
+	// syntheticFixtureKey/syntheticFixtureKeyID are the runtime-headers-answer
+	// row's synthetic KeySource material — fixture data only, never a real
+	// credential (T-5-15; the scan-secrets gate stays green).
+	syntheticFixtureKey = "zc-synthetic-fixture-not-a-real-key"
+
+	syntheticFixtureKeyID = "key_fixture_1"
+
+	// authReadbackWait bounds the auth-apikey row's read-back Await (the
+	// surfaces are already on the wire when the driver awaits).
+	authReadbackWait = 5 * time.Second
 )
 
 // corpusAuthModels returns the personal zai-api models the auth-apikey
@@ -254,6 +265,7 @@ func goldenDrivers() map[string]driverFunc {
 		"session-lifecycle":          driveSessionLifecycle,
 		"newsession-orphan-close":    driveNewSessionOrphanClose,
 		"auth-apikey":                driveAuthApikey,
+		"runtime-headers-answer":     driveRuntimeHeadersAnswer,
 	}
 }
 
@@ -976,20 +988,26 @@ func driveNewSessionOrphanClose(ctx context.Context, d *exchangeDriver) {
 }
 
 // driveAuthApikey: the AUTH-01 corpus row (plan 05-06) — the push →
-// refreshRegistry → read-back sequence against the fake. The driver pushes
-// the strict snapshot envelope built by hostsvc over the synthetic fixture
-// install (injected fixed revision — the fake's static ack echoes it
-// verbatim, the pairing the unit tier cannot show), asserts the ack echo
-// pairing, refreshes the registry, and asserts BOTH read-back surfaces: the
-// refresh rule's side-effect state.updated (the emit precedes the rule's
-// reply on the wire, so the notice is already buffered) and the fresh
-// session/create reply's settings.model.available. The golden locks the
+// refreshRegistry → read-back sequence against the fake, with the verdict
+// driven by the hostsvc read-back helper (the PITFALL-1 discipline: the ack
+// is receipt evidence, the registry is the verdict). The driver registers
+// the watcher BEFORE any traffic (the hook contract — the refresh rule's
+// side-effect emit precedes its reply on the wire), pushes the strict
+// snapshot envelope built by hostsvc over the synthetic fixture install
+// (injected fixed revision — the fake's static ack echoes it verbatim, the
+// pairing the unit tier cannot show), asserts the ack echo pairing,
+// refreshes the registry, and awaits the helper's applied verdict; then a
+// fresh session/create whose reply is offered to the watcher explicitly
+// (the dialect §8 create-reply read-back surface). The golden locks the
 // push envelope bytes — the exact formula revision string computed at
 // runtime over the fixture path — and the whole read-back sequence.
 func driveAuthApikey(ctx context.Context, d *exchangeDriver) {
 	// D-01 posture: the responder answers the create framing's
 	// runtime-preferences reverse (byte-identical to the built-in router).
 	d.conn.OnRequest = interact.NewResponder().Serve
+
+	// Hook contract: registration before traffic.
+	watcher, _ := hostsvc.WatchRegistry(d.conn, corpusAuthModels())
 
 	install := supervisor.Install{
 		Root:        "/zcode-acp-corpus-fixture",
@@ -1027,112 +1045,53 @@ func driveAuthApikey(ctx context.Context, d *exchangeDriver) {
 		d.t.Fatalf("provider/refreshRegistry: %v", err)
 	}
 
-	// Read-back surface 1: the registry patch the refresh emitted.
-	waitRegistryModels(d, corpusAuthModels())
+	// The read-back verdict: applied ONLY when the registry surface carried
+	// the personal zai-api models intact.
+	readbackCtx, cancel := context.WithTimeout(ctx, authReadbackWait)
+	defer cancel()
 
-	// Read-back surface 2: a fresh create reply's settings.model.available.
+	rb, err := watcher.Await(readbackCtx)
+	if err != nil {
+		d.t.Fatalf("registry read-back: %v", err)
+	}
+
+	if !rb.Applied {
+		d.t.Fatalf("read-back verdict applied = false (revision %q) — the ack is never the verdict", rb.Revision)
+	}
+
+	// The fresh create-reply surface: a bare session/create whose reply is
+	// offered to the watcher explicitly; the verdict stays applied.
 	h := happyTurnHarness{t: d.t, conn: d.conn}
-	res := h.create(ctx)
+	watcher.OfferCreateReply(h.create(ctx))
 
-	if got := digCreateReplyModels(res); !containsAll(got, corpusAuthModels()) {
-		d.t.Fatalf("create reply models = %v, want the personal zai-api models intact %v",
-			got, corpusAuthModels())
+	if _, err := watcher.Await(readbackCtx); err != nil {
+		d.t.Fatalf("create-reply read-back: %v", err)
 	}
 }
 
-// waitRegistryModels waits for a buffered state.updated whose dug registry
-// model set contains want (the registry read-back surface 1).
-func waitRegistryModels(d *exchangeDriver, want []string) {
-	d.t.Helper()
+// driveRuntimeHeadersAnswer: the AUTH-01 reply-vector corpus row (plan
+// 05-06 Task 2) — the front preamble, then send whose rule fires ONE
+// interaction/requestProviderRuntimeHeaders reverse (params per the
+// research's request shape with a synthetic workspace/modelSelection; the
+// 180 s-scale window configured small at timeout_ms 500; reannounce count 1
+// — the dedupe key carries params.requestId, and the instant answer closes
+// the schedule before its first envelope, which the golden locks: an
+// answered ask earns no re-announce). The OnRequest hook carries the FULL
+// composition the plan pins: the Responder whose RuntimeHeadersKeySource is
+// the hostsvc handler over a synthetic StaticKey. The expect_answer locks
+// the EXACT strict reply {headersApplied:true, requestAuth:{apiKey,
+// apiKeyId}} (Pitfall 4: an invalid reply REJECTS the pending server-side
+// request, so the shape is byte-load-bearing). The synthetic key material
+// is fixture data only — never a real credential (T-5-15).
+func driveRuntimeHeadersAnswer(ctx context.Context, d *exchangeDriver) {
+	responder := interact.NewResponder(interact.WithRuntimeHeadersKeySource(
+		hostsvc.RuntimeHeadersHandler(hostsvc.NewStaticKey(syntheticFixtureKey, syntheticFixtureKeyID))))
+	d.conn.OnRequest = responder.Serve // hook contract: before any frame flows
 
-	deadline := time.After(noticeWaitTimeout)
+	driveFrontPreamble(ctx, d)
 
-	for {
-		select {
-		case env := <-d.notices:
-			if env.Method != zcode.MethodStateUpdated {
-				continue
-			}
-
-			if got := digRegistryPatchModels(env.Params); containsAll(got, want) {
-				return
-			}
-		case <-deadline:
-			d.t.Fatalf("no state.updated registry patch carrying %v within %v "+
-				"(the read-back verdict is the registry's, never the ack's)", want, noticeWaitTimeout)
-		}
-	}
-}
-
-// digRegistryPatchModels digs patch.providers.<id>.models[] out of a
-// state.updated params payload, normalized to providerId/modelId strings.
-func digRegistryPatchModels(raw json.RawMessage) []string {
-	var params struct {
-		Patch struct {
-			Providers map[string]struct {
-				Models []string `json:"models"`
-			} `json:"providers"`
-		} `json:"patch"`
-	}
-
-	if err := json.Unmarshal(raw, &params); err != nil {
-		return nil
-	}
-
-	out := make([]string, 0, len(params.Patch.Providers))
-
-	for pid, entry := range params.Patch.Providers {
-		for _, m := range entry.Models {
-			out = append(out, pid+"/"+m)
-		}
-	}
-
-	return out
-}
-
-// digCreateReplyModels digs settings.model.available[].ref out of a create
-// reply result, normalized to providerId/modelId strings.
-func digCreateReplyModels(res json.RawMessage) []string {
-	var result struct {
-		Settings struct {
-			Model struct {
-				Available []struct {
-					Ref struct {
-						ProviderID string `json:"providerId"`
-						ModelID    string `json:"modelId"`
-					} `json:"ref"`
-				} `json:"available"`
-			} `json:"model"`
-		} `json:"settings"`
-	}
-
-	if err := json.Unmarshal(res, &result); err != nil {
-		return nil
-	}
-
-	out := make([]string, 0, len(result.Settings.Model.Available))
-
-	for _, m := range result.Settings.Model.Available {
-		out = append(out, m.Ref.ProviderID+"/"+m.Ref.ModelID)
-	}
-
-	return out
-}
-
-// containsAll reports whether got carries every want string.
-func containsAll(got, want []string) bool {
-	set := make(map[string]struct{}, len(got))
-	for _, g := range got {
-		set[g] = struct{}{}
-	}
-
-	for _, w := range want {
-		if _, ok := set[w]; !ok {
-			return false
-		}
-	}
-
-	return true
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx)
 }
 
 // assertResumeSnapshot digs result.session.sessionId out of the resume

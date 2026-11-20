@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
+
+// readbackPollInterval is the Await poll cadence — the surface check is a
+// cheap mutex-guarded read of the latched verdict.
+const readbackPollInterval = 2 * time.Millisecond
 
 // DefaultReadbackDeadline bounds the registry read-back when the caller's
 // context carries no deadline (poll-with-deadline; tests inject shorter
@@ -38,7 +43,11 @@ func WithReadbackDeadline(d time.Duration) WatchOption {
 	return func(w *RegistryWatcher) { w.deadline = d }
 }
 
-// RegistryWatcher awaits the registry read-back surfaces (PITFALL 1).
+// RegistryWatcher awaits the registry read-back surfaces (PITFALL 1): the
+// state.updated notification stream and, explicitly offered, fresh
+// session/create replies (dialect §8's read-back surface). The verdict is
+// the registry's — a received provider/updateAccountConfig ack is never
+// consulted.
 type RegistryWatcher struct {
 	conn     *zcode.Conn
 	want     []string
@@ -53,8 +62,8 @@ type RegistryWatcher struct {
 // watcher with its observer-remove func (transient observer; defer the
 // remove when the auth flow completes). Registration must precede the
 // traffic whose surfaces it awaits (the conn hook contract).
-func WatchRegistry(conn *zcode.Conn, want []string, opts ...WatchOption) (*RegistryWatcher, func()) {
-	w := &RegistryWatcher{conn: conn, want: want, deadline: DefaultReadbackDeadline}
+func WatchRegistry(conn *zcode.Conn, want []string, opts ...WatchOption) (w *RegistryWatcher, remove func()) {
+	w = &RegistryWatcher{conn: conn, want: want, deadline: DefaultReadbackDeadline}
 
 	for _, opt := range opts {
 		opt(w)
@@ -63,18 +72,54 @@ func WatchRegistry(conn *zcode.Conn, want []string, opts ...WatchOption) (*Regis
 	return w, conn.AddObserver(w.observe)
 }
 
-// observe is the conn-notification face — runs on the read goroutine and
-// must not block (the machine.go observer discipline).
-func (w *RegistryWatcher) observe(env zcode.Envelope) {
-	w.considerSurface(env.Params)
-}
-
 // OfferCreateReply feeds one explicit create-reply surface: a fresh
 // session/create result the caller already holds — the dialect §8 read-back
 // surface (settings.model.available) which the conn's notification stream
 // does not carry.
 func (w *RegistryWatcher) OfferCreateReply(res json.RawMessage) {
 	w.considerSurface(res)
+}
+
+// Await polls the latched verdict with a deadline: the effective window is
+// the shorter of the watcher deadline and the context's (injectable,
+// test-short). Applied true the moment any surface matched; the coded
+// ErrRegistryNotConfirmed error otherwise — never an ack-derived verdict.
+func (w *RegistryWatcher) Await(ctx context.Context) (Readback, error) {
+	if rb, ok := w.latched(); ok {
+		return rb, nil
+	}
+
+	deadline := w.deadline
+	if dl, ok := ctx.Deadline(); ok {
+		if until := time.Until(dl); until < deadline {
+			deadline = until
+		}
+	}
+
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+
+	tick := time.NewTicker(readbackPollInterval)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return Readback{}, w.notConfirmed(ctx.Err())
+		case <-timer.C:
+			return Readback{}, w.notConfirmed(context.DeadlineExceeded)
+		case <-tick.C:
+			if rb, ok := w.latched(); ok {
+				return rb, nil
+			}
+		}
+	}
+}
+
+// observe is the conn-notification face — runs on the read goroutine and
+// must not block (the machine.go observer discipline).
+func (w *RegistryWatcher) observe(env zcode.Envelope) {
+	w.considerSurface(env.Params)
 }
 
 // considerSurface checks one registry-surface payload; the first surface
@@ -95,12 +140,27 @@ func (w *RegistryWatcher) considerSurface(raw json.RawMessage) {
 	w.revision = surfaceRevision(raw)
 }
 
-// Await polls the latched verdict with a deadline: the effective window is
-// the shorter of the watcher deadline and the context's (injectable,
-// test-short). Applied true the moment any surface matched; the coded
-// ErrRegistryNotConfirmed error otherwise — never an ack-derived verdict.
-func (w *RegistryWatcher) Await(ctx context.Context) (Readback, error) {
-	return Readback{}, fmt.Errorf("%w: skeleton Await never confirms (RED stub)", ErrRegistryNotConfirmed)
+// latched snapshots the verdict under the mutex.
+func (w *RegistryWatcher) latched() (Readback, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.applied {
+		return Readback{}, false
+	}
+
+	return Readback{Applied: true, Revision: w.revision}, true
+}
+
+// notConfirmed renders the coded, actionable negative: what was awaited,
+// the cause, and the PITFALL-1 discipline (the received ack is not
+// application — check the snapshot's basedOn revision against the active
+// builtin, the silent-discard shape dialect §8 records).
+func (w *RegistryWatcher) notConfirmed(cause error) error {
+	return fmt.Errorf("%w: models %v not observed within the read-back window (%v) — "+
+		"the received ack is not application; verify the snapshot's "+
+		"basedOnZCodeBuiltinRevision matches the active builtin revision",
+		ErrRegistryNotConfirmed, w.want, cause)
 }
 
 // AwaitRegistryContains is the one-shot convenience: register a transient
@@ -108,7 +168,12 @@ func (w *RegistryWatcher) Await(ctx context.Context) (Readback, error) {
 // Callers driving traffic through the same conn should WatchRegistry FIRST
 // (registration before traffic — the hook contract): a surface emitted
 // between the last request's reply and this call's registration is missed.
-func AwaitRegistryContains(ctx context.Context, conn *zcode.Conn, want []string, opts ...WatchOption) (Readback, error) {
+func AwaitRegistryContains(
+	ctx context.Context,
+	conn *zcode.Conn,
+	want []string,
+	opts ...WatchOption,
+) (Readback, error) {
 	w, remove := WatchRegistry(conn, want, opts...)
 	defer remove()
 
@@ -130,29 +195,42 @@ func registryModels(raw json.RawMessage) []string {
 }
 
 // digCreateAvailable digs settings.model.available[].ref out of a create
-// reply result.
+// reply result (the map dig-out keeps the capture-verbatim camelCase wire
+// keys — the tagliatelle contract).
 func digCreateAvailable(raw json.RawMessage) []string {
-	var result struct {
-		Settings struct {
-			Model struct {
-				Available []struct {
-					Ref struct {
-						ProviderID string `json:"providerId"`
-						ModelID    string `json:"modelId"`
-					} `json:"ref"`
-				} `json:"available"`
-			} `json:"model"`
-		} `json:"settings"`
-	}
-
-	if err := json.Unmarshal(raw, &result); err != nil || len(result.Settings.Model.Available) == 0 {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil
 	}
 
-	out := make([]string, 0, len(result.Settings.Model.Available))
+	settings, _ := obj["settings"].(map[string]any)
 
-	for _, m := range result.Settings.Model.Available {
-		out = append(out, m.Ref.ProviderID+"/"+m.Ref.ModelID)
+	model, _ := settings["model"].(map[string]any)
+
+	available, _ := model["available"].([]any)
+	if len(available) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(available))
+
+	for _, entry := range available {
+		avail, _ := entry.(map[string]any)
+
+		ref, _ := avail["ref"].(map[string]any)
+
+		pid, _ := ref["providerId"].(string)
+		mid, _ := ref["modelId"].(string)
+
+		if pid == "" && mid == "" {
+			continue
+		}
+
+		out = append(out, pid+"/"+mid)
+	}
+
+	if len(out) == 0 {
+		return nil
 	}
 
 	return out
@@ -197,7 +275,7 @@ func surfaceRevision(raw json.RawMessage) string {
 	case string:
 		return v
 	case float64:
-		return fmt.Sprint(int64(v))
+		return strconv.FormatInt(int64(v), 10)
 	}
 
 	return ""

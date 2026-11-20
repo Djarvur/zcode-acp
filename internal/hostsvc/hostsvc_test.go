@@ -462,110 +462,144 @@ func TestAuthReadback(t *testing.T) {
 	want := readbackWant()
 
 	t.Run("happy registry surface", func(t *testing.T) {
-		rules := map[string]peerRule{
-			zcode.MethodProviderUpdateAccountConfig: {result: json.RawMessage(
-				`{"receivedRevision":"account-bridge:peer-fix1","providerCount":0,"status":"received"}`)},
-			zcode.MethodProviderRefreshRegistry: {
-				result:      json.RawMessage(`{"refreshed":true}`),
-				emitAfterMs: 30,
-				emitMethod:  zcode.MethodStateUpdated,
-				emitParams: json.RawMessage(`{"scope":"registry","reason":"registry_refresh","revision":2,` +
-					`"patch":{"providers":{"zai-api":{"models":["GLM-5.3-Flash","GLM-5.3"]}}}}`),
-			},
-		}
-
-		conn, _, _ := newPeerConn(t, rules)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		if _, err := hostsvc.PushSnapshot(ctx, conn, fixtureInstall(t, 44)); err != nil {
-			t.Fatalf("push: %v", err)
-		}
-
-		if err := hostsvc.RefreshRegistry(ctx, conn); err != nil {
-			t.Fatalf("refresh: %v", err)
-		}
-
-		rb, err := hostsvc.AwaitRegistryContains(ctx, conn, want)
-		if err != nil {
-			t.Fatalf("read-back: %v", err)
-		}
-
-		if !rb.Applied {
-			t.Fatal("read-back verdict applied = false, want true (the registry surface carried the models)")
-		}
-
-		if rb.Revision != "2" {
-			t.Fatalf("observed revision = %q, want the surface's revision echo %q", rb.Revision, "2")
-		}
+		assertReadbackHappy(t, want)
 	})
 
 	t.Run("ack without registry confirmation is not application", func(t *testing.T) {
-		rules := map[string]peerRule{
-			zcode.MethodProviderUpdateAccountConfig: {result: json.RawMessage(
-				`{"receivedRevision":"account-bridge:peer-fix1","providerCount":0,"status":"received"}`)},
-			zcode.MethodProviderRefreshRegistry: {result: json.RawMessage(`{"refreshed":true}`)},
-		}
-
-		conn, _, _ := newPeerConn(t, rules)
-		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-		defer cancel()
-
-		ack, err := hostsvc.PushSnapshot(ctx, conn, fixtureInstall(t, 44))
-		if err != nil {
-			t.Fatalf("push: %v", err)
-		}
-
-		if ack.Status != "received" {
-			t.Fatalf("ack status = %q, want received (the ack SAYS received — the negative's point)", ack.Status)
-		}
-
-		if err := hostsvc.RefreshRegistry(ctx, conn); err != nil {
-			t.Fatalf("refresh: %v", err)
-		}
-
-		rb, err := hostsvc.AwaitRegistryContains(ctx, conn, want)
-		if rb.Applied {
-			t.Fatal("applied = true on ack-only evidence — the verdict must be the registry's, never the ack's")
-		}
-
-		if !errors.Is(err, hostsvc.ErrRegistryNotConfirmed) {
-			t.Fatalf("error = %v, want the coded ErrRegistryNotConfirmed sentinel", err)
-		}
+		assertReadbackAckNegative(t, want)
 	})
 
 	t.Run("create-reply surface", func(t *testing.T) {
-		rules := map[string]peerRule{
-			zcode.MethodSessionCreate: {result: json.RawMessage(
-				`{"session":{"sessionId":"sess_fix1"},` +
-					`"settings":{"model":{"available":[` +
-					`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"}},` +
-					`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"}}]}}}`)},
-		}
-
-		conn, _, _ := newPeerConn(t, rules)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		w, remove := hostsvc.WatchRegistry(conn, want)
-		defer remove()
-
-		res, err := conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
-			"workspace": map[string]any{"workspacePath": "/tmp/readback-ws", "workspaceKey": "/tmp/readback-ws"},
-		})
-		if err != nil {
-			t.Fatalf("session/create: %v", err)
-		}
-
-		w.OfferCreateReply(res)
-
-		rb, err := w.Await(ctx)
-		if err != nil {
-			t.Fatalf("read-back: %v", err)
-		}
-
-		if !rb.Applied {
-			t.Fatal("read-back verdict applied = false, want true (the create-reply surface carried the models)")
-		}
+		assertReadbackCreateReply(t, want)
 	})
+}
+
+// peerAckRule is the canned provider/updateAccountConfig ack the read-back
+// arms push against (receipt evidence only).
+func peerAckRule() peerRule {
+	return peerRule{result: json.RawMessage(
+		`{"receivedRevision":"account-bridge:peer-fix1","providerCount":0,"status":"received"}`)}
+}
+
+// assertReadbackHappy is arm (a): PushSnapshot → RefreshRegistry →
+// AwaitRegistryContains, the peer emitting the registry patch 30ms after
+// the refresh reply (strictly after the helper registers) — applied=true
+// with the observed revision echo.
+func assertReadbackHappy(t *testing.T, want []string) {
+	t.Helper()
+
+	rules := map[string]peerRule{
+		zcode.MethodProviderUpdateAccountConfig: peerAckRule(),
+		zcode.MethodProviderRefreshRegistry: {
+			result:      json.RawMessage(`{"refreshed":true}`),
+			emitAfterMs: 30,
+			emitMethod:  zcode.MethodStateUpdated,
+			emitParams: json.RawMessage(`{"scope":"registry","reason":"registry_refresh","revision":2,` +
+				`"patch":{"providers":{"zai-api":{"models":["GLM-5.3-Flash","GLM-5.3"]}}}}`),
+		},
+	}
+
+	conn, _, _ := newPeerConn(t, rules)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, err := hostsvc.PushSnapshot(ctx, conn, fixtureInstall(t, 44)); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	if err := hostsvc.RefreshRegistry(ctx, conn); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	rb, err := hostsvc.AwaitRegistryContains(ctx, conn, want)
+	if err != nil {
+		t.Fatalf("read-back: %v", err)
+	}
+
+	if !rb.Applied {
+		t.Fatal("read-back verdict applied = false, want true (the registry surface carried the models)")
+	}
+
+	if rb.Revision != "2" {
+		t.Fatalf("observed revision = %q, want the surface's revision echo %q", rb.Revision, "2")
+	}
+}
+
+// assertReadbackAckNegative is arm (b): the ack says received but the
+// registry never carries the models within the deadline — applied=false
+// with the coded actionable error (the PITFALL-1 discipline: the verdict is
+// the registry's, not the ack's).
+func assertReadbackAckNegative(t *testing.T, want []string) {
+	t.Helper()
+
+	rules := map[string]peerRule{
+		zcode.MethodProviderUpdateAccountConfig: peerAckRule(),
+		zcode.MethodProviderRefreshRegistry:     {result: json.RawMessage(`{"refreshed":true}`)},
+	}
+
+	conn, _, _ := newPeerConn(t, rules)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	ack, err := hostsvc.PushSnapshot(ctx, conn, fixtureInstall(t, 44))
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	if ack.Status != "received" {
+		t.Fatalf("ack status = %q, want received (the ack SAYS received — the negative's point)", ack.Status)
+	}
+
+	if err := hostsvc.RefreshRegistry(ctx, conn); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	rb, err := hostsvc.AwaitRegistryContains(ctx, conn, want)
+	if rb.Applied {
+		t.Fatal("applied = true on ack-only evidence — the verdict must be the registry's, never the ack's")
+	}
+
+	if !errors.Is(err, hostsvc.ErrRegistryNotConfirmed) {
+		t.Fatalf("error = %v, want the coded ErrRegistryNotConfirmed sentinel", err)
+	}
+}
+
+// assertReadbackCreateReply is arm (c): a bare session/create whose reply
+// is offered to the watcher explicitly — the settings.model.available
+// dig-out.
+func assertReadbackCreateReply(t *testing.T, want []string) {
+	t.Helper()
+
+	rules := map[string]peerRule{
+		zcode.MethodSessionCreate: {result: json.RawMessage(
+			`{"session":{"sessionId":"sess_fix1"},` +
+				`"settings":{"model":{"available":[` +
+				`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"}},` +
+				`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"}}]}}}`)},
+	}
+
+	conn, _, _ := newPeerConn(t, rules)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	w, remove := hostsvc.WatchRegistry(conn, want)
+	defer remove()
+
+	res, err := conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
+		"workspace": map[string]any{"workspacePath": "/tmp/readback-ws", "workspaceKey": "/tmp/readback-ws"},
+	})
+	if err != nil {
+		t.Fatalf("session/create: %v", err)
+	}
+
+	w.OfferCreateReply(res)
+
+	rb, err := w.Await(ctx)
+	if err != nil {
+		t.Fatalf("read-back: %v", err)
+	}
+
+	if !rb.Applied {
+		t.Fatal("read-back verdict applied = false, want true (the create-reply surface carried the models)")
+	}
 }
