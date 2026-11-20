@@ -635,7 +635,7 @@ func TestResponderDedupeRace(t *testing.T) {
 
 			time.Sleep(20 * time.Millisecond) // widen the claim race window
 
-			return interact.Answer{Result: map[string]any{wireKeyDecision: "deny"}}, nil
+			return interact.Answer{Result: map[string]any{wireKeyDecision: permSelDeny}}, nil
 		},
 	))
 

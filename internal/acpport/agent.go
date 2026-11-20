@@ -42,12 +42,21 @@ type sinkBinder interface {
 	bindSink(sink UpdateSink)
 }
 
-// permissionBinder is the second one-shot construction hook: it hands the
-// connection-bound PermissionSender to the adapter, which forwards it into
-// the Handlers impl when it opts in (the front's bridge — bind-at-
-// construction, before any frame flows, the same discipline as bindSink).
+// permissionBinder is the adapter-side one-shot construction hook: it
+// hands the connection-bound PermissionSender to the adapter, which
+// forwards it into the Handlers impl when it opts in via the exported
+// PermissionBinder (bind-at-construction, before any frame flows — the
+// sinkBinder discipline).
 type permissionBinder interface {
 	bindPermissionSender(sender PermissionSender)
+}
+
+// PermissionBinder is the Handlers-side opt-in for the sender binding. The
+// method is exported because Go qualifies unexported method names by their
+// declaring package — an unexported-method interface can never be
+// satisfied by another package's type, and the bridge lives in acpfront.
+type PermissionBinder interface {
+	BindPermissionSender(sender PermissionSender)
 }
 
 // NewAgent wraps a Handlers impl as the acp.Agent implementation — the
@@ -344,11 +353,12 @@ func (a *agentAdapter) bindSink(sink UpdateSink) {
 }
 
 // bindPermissionSender forwards the connection-bound sender into the
-// Handlers impl when it opts in (the front's bridge); called once by
-// NewAgentSideConnection during construction.
+// Handlers impl when it opts in via the exported PermissionBinder hook
+// (the front's bridge); called once by NewAgentSideConnection during
+// construction.
 func (a *agentAdapter) bindPermissionSender(sender PermissionSender) {
-	if binder, ok := a.h.(permissionBinder); ok {
-		binder.bindPermissionSender(sender)
+	if binder, ok := a.h.(PermissionBinder); ok {
+		binder.BindPermissionSender(sender)
 	}
 }
 
