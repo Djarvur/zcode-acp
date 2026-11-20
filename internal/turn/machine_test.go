@@ -740,3 +740,100 @@ func TestTerminalCarrierTolerance(t *testing.T) {
 		})
 	}
 }
+
+// WR-01 router-event fan-out (05-03 TDD RED, machine tier): the FIRST
+// machine's degraded-resolution path must survive a second machine's
+// construction. RED: NewMachine's SetOnRouterEvent registration is
+// last-wins — machine2's construction steals the hook and turn 2 on
+// machine 1 never resolves (assertion failure at the bound).
+func TestTwoMachinesDegradedSignalNotStolen(t *testing.T) {
+	cipherReverse := fake.SideEffect{Reverse: &fake.Reverse{
+		Method:    "interaction/requestCredentialCipher",
+		Params:    rawOf(t, map[string]any{"requestId": "req-x", "operation": "decrypt", "value": "enc:v2:os:c2VjcmV0"}),
+		TimeoutMs: 200,
+	}}
+
+	sc := &fake.Scenario{
+		Name: "turn-cipher-expiry-x2",
+		OnRequest: []fake.RequestRule{
+			{
+				Method:      zcode.MethodSessionSend,
+				Reply:       sendRule(t).Reply,
+				SideEffects: []fake.SideEffect{cipherReverse},
+			},
+			messagesRule(t),
+		},
+	}
+
+	hostEnd, fakeEnd := roundTripPipes()
+	t.Cleanup(func() { _ = fakeEnd.Close() })
+
+	startFake(fakeEnd, sc)
+
+	conn := zcode.NewConn(hostEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// The deadline expiry must land well inside the turn bound.
+	conn.RouterDeadline = func(string) time.Duration { return 60 * time.Millisecond }
+
+	spy1 := &resolutionSpy{}
+	machine1 := turn.NewMachine(conn, fixSessionID, turn.NewPollWatcher(conn, turn.PollConfig{
+		QuietMs:        40,
+		FloorMultiple:  2,
+		PollIntervalMs: 10,
+	}))
+	machine1.OnResolve = spy1.record
+
+	// Turn 1: the expiry reaches machine 1 — degraded, exactly once.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), turnTestTimeout)
+	defer cancel1()
+
+	reason1, err1 := machine1.Run(ctx1, "prompt one")
+
+	if err1 != nil {
+		t.Fatalf("turn 1 Run: %v", err1)
+	}
+
+	if reason1 != turn.StopError {
+		t.Fatalf("turn 1 reason = %q, want %q (degraded expiry)", reason1, turn.StopError)
+	}
+
+	res1 := spy1.snapshot()
+
+	if len(res1) != 1 || res1[0].Signal != turn.SignalDegraded {
+		t.Fatalf("turn 1 resolutions = %+v, want exactly one degraded", res1)
+	}
+
+	// The defect shape: a second session's machine construction steals the
+	// single router-event slot.
+	machine2 := turn.NewMachine(conn, "sess_2", turn.NewPollWatcher(conn, turn.PollConfig{
+		QuietMs:        40,
+		FloorMultiple:  2,
+		PollIntervalMs: 10,
+	}))
+
+	spy2 := &resolutionSpy{}
+	machine2.OnResolve = spy2.record
+
+	// Turn 2 on machine 1: GREEN delivers the expiry through the fan-out —
+	// machine 1 resolves degraded again, machine 2 early-returns (idle).
+	// RED: the slot holds machine 2's observer, so machine 1 hangs.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), turnTestTimeout)
+	defer cancel2()
+
+	reason2, err2 := machine1.Run(ctx2, "prompt two")
+
+	if err2 != nil {
+		t.Fatalf("turn 2 Run: %v", err2)
+	}
+
+	if reason2 != turn.StopError {
+		t.Fatalf("turn 2 reason = %q, want %q — the first machine's degraded-resolution path was stolen (WR-01)", reason2, turn.StopError)
+	}
+
+	res2 := spy2.snapshot()
+
+	if len(res2) != 0 {
+		t.Fatalf("machine 2 recorded %+v, want zero (idle early-return)", res2)
+	}
+}

@@ -161,6 +161,16 @@ func (c *Conn) SetOnRouterEvent(fn func(ev RouterEvent)) {
 	c.OnRouterEvent = fn
 }
 
+// AddRouterObserver is the 05-03 RED stub over the single router-event
+// slot: registration installs fn via SetOnRouterEvent (last registration
+// wins — the WR-01 defect this plan fixes) and the remove func is a no-op.
+// The GREEN commit replaces this with the ordered entry-pointer fan-out.
+func (c *Conn) AddRouterObserver(fn func(ev RouterEvent)) (remove func()) {
+	c.SetOnRouterEvent(fn)
+
+	return func() {}
+}
+
 // Close stops the stream and the writer, in that order: the peer sees EOF
 // and runs its drain window (dialect §1 EOF facts), and closing rw first
 // unblocks any writeFrame parked on the stream so the writer goroutine can

@@ -1217,3 +1217,77 @@ func assertFanoutResolution(t *testing.T, spy *fanoutResolutionSpy, n int, what 
 		t.Fatalf("%s resolutions = %d, want %d", what, got, n)
 	}
 }
+
+// WR-01 router-event fan-out (05-03 TDD RED): two router observers
+// registered A then B must receive every router event in registration
+// order, and removing A must stop A's deliveries without affecting B.
+// RED: AddRouterObserver is a compiling stub over the single slot
+// (last-wins, no-op remove) — both subtests fail on their ordering /
+// delivery assertions until the fan-out lands.
+func TestRouterFanout(t *testing.T) {
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
+
+	conn := zcode.NewConn(connEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	const deadline = 60 * time.Millisecond
+
+	conn.RouterDeadline = func(string) time.Duration { return deadline }
+
+	peerLines := drainPeer(t, peerEnd)
+
+	var recMu sync.Mutex
+	var order []string
+
+	removeA := conn.AddRouterObserver(func(zcode.RouterEvent) {
+		recMu.Lock()
+		defer recMu.Unlock()
+
+		order = append(order, "A")
+	})
+
+	_ = conn.AddRouterObserver(func(zcode.RouterEvent) {
+		recMu.Lock()
+		defer recMu.Unlock()
+
+		order = append(order, "B")
+	})
+
+	injectLine(t, peerEnd,
+		`{"id":"server-1","method":"interaction/requestCredentialCipher",`+
+			`"params":{"requestId":"req-1","operation":"decrypt","value":"enc:v2:os:c2VjcmV0"}}`)
+
+	time.Sleep(deadline + graceWindow)
+
+	select {
+	case line := <-peerLines:
+		t.Fatalf("credential-cipher request drew a reply — D-05 violation: %s", line)
+	default:
+	}
+
+	recMu.Lock()
+	gotOrder := slices.Clone(order)
+	order = order[:0]
+	recMu.Unlock()
+
+	if len(gotOrder) != 2 || gotOrder[0] != "A" || gotOrder[1] != "B" {
+		t.Fatalf("first event delivery order = %v, want [A B] (registration order, both observers)", gotOrder)
+	}
+
+	removeA()
+
+	injectLine(t, peerEnd,
+		`{"id":"server-2","method":"interaction/requestCredentialCipher",`+
+			`"params":{"requestId":"req-2","operation":"decrypt","value":"enc:v2:os:c2VjcmV0"}}`)
+
+	time.Sleep(deadline + graceWindow)
+
+	recMu.Lock()
+	gotAfterRemove := slices.Clone(order)
+	recMu.Unlock()
+
+	if len(gotAfterRemove) != 1 || gotAfterRemove[0] != "B" {
+		t.Fatalf("post-removal delivery = %v, want [B] only (A was removed)", gotAfterRemove)
+	}
+}
