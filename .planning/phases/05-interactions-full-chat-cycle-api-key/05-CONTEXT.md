@@ -72,13 +72,20 @@ NewMachine observer remove), WR-05/06 wording + dropped-block logging, IN-01..05
   Phase-4 review items land here by scope: WR-01 (per-session OnRouterEvent via
   fan-out), WR-02 (atomic sink publish), WR-05/06 (wording + dropped-block logging).
 
+### Credential-Cipher Real-Tier Strategy (research P0)
+- **D-06:** A real `session/send` fires `interaction/requestCredentialCipher` mid-turn; tracked-no-answer blocks success criteria 4/5. Adopt the research recommendation: **CredentialDecrypt interface seam answered via `secret-tool lookup` + stdlib AES-256-GCM** (the field-verified predecessor-shim path; the backend asks, we decrypt with the user's own login-keyring key, we answer — exactly what the desktop itself does; godbus CredentialVault remains the Phase 6 transport upgrade). Keyring-locked/headless degrades to tracked-no-answer + honest turn failure (documented, never fabricated). CI tiers never touch the keyring.
+
 ### Real-Account Discipline
 - **D-05:** Real api-key operations follow the Phase-1 AR precedent: minimal turns,
   ledgered in experiments/README quota section, **CI never** runs them (guarded manual
   tier); credentials from local config (never committed); every real-account claim
   gets a scrubbed capture + V-EXP id (evidence discipline unchanged).
 
-### Claude's Discretion
+### Claude's Discretion- requestPermission host deadline: 300 s configurable, expiry → deny (OQ2)
+- WR-03 backpressure: bounded per-turn queue + fail-loud memory ceiling (OQ3)
+- authenticate without configured key → honest error naming ZCODE_ACP_API_KEY (OQ4)
+- dead registry fields CancelTurn/Subscribed → delete (OQ5)
+
 - Policy-object API shape; tool-event mapping details within the dialect taxonomy;
   test design (fake-driven permission/tool scenarios + the real-account smoke tier)
 

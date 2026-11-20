@@ -25,7 +25,7 @@ agents (Phase 7).
 - [x] **Phase 1: Research & Protocol Documentation** - Document the ZCode app-server dialect, the client ACP dialect, install discovery, and workspaceKey semantics from source, with provenance labels (completed 2026-11-19)
 - [x] **Phase 2: Scaffold & CI Bootstrap** - goswitch-style repo scaffold: strict pinned linter, GitHub Actions, protected master (completed 2026-11-19)
 - [x] **Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor** - JSONL codec, scriptable fake app-server with golden transcripts in CI, desktop discovery + process supervisor, turn state machine (completed 2026-11-20)
-- [ ] **Phase 4: ACP Front — Minimal Chat Loop** - initialize, session/new (+ setModel workaround), streamed prompt turns with thoughts and cancel
+- [x] **Phase 4: ACP Front — Minimal Chat Loop** - initialize, session/new (+ setModel workaround), streamed prompt turns with thoughts and cancel (completed 2026-11-20)
 - [ ] **Phase 5: Interactions & Full Chat Cycle (api-key)** - Host-managed interaction responder, tool-call streaming, permission bridging, api-key auth, resume/close
 - [ ] **Phase 6: OAuth Coding-Plan Path & Model Picker** - Official OAuth chain end-to-end (snapshot, cipher, PAT), both auth methods working, registry-driven configOptions
 - [ ] **Phase 7: Hardening, VM & Manual E2E, Documentation** - CI protocol conformance, dialect compatibility no-ops, VM scenario, manual E2E, English docs + preset-agent launch recipe
@@ -122,7 +122,7 @@ Plans:
   3. `session/prompt` streams `agent_message_chunk` deltas live while the turn runs and returns `stopReason` only after all pending updates have flushed
   4. When the backend emits reasoning events the client receives `agent_thought_chunk` updates; none are synthesized when it does not
   5. `session/cancel` during a turn stops it and the prompt call is answered exactly once with `stopReason: "cancelled"`
-**Plans**: 6/6 plans executed
+**Plans**: 6/6 plans complete
 
 Plans:
 **Wave 1**
@@ -152,7 +152,17 @@ Plans:
   3. A backend permission request reaches the client as `session/request_permission` with allow/reject options; the chosen outcome is forwarded to the backend, and an ACP-side cancel resolves pending requests as `cancelled`
   4. `authenticate{zai-api-key}` on a real account enables working turns, with success verified by reading registry state back — not by trusting the `provider/updateAccountConfig` ack
   5. `session/resume` reattaches a session without replay and `session/close` cleans up the child-side session; a full cycle — new → prompt with tool calls and a permission decision → resume → close — runs end-to-end on api-key
-**Plans**: TBD
+**Plans**: 9 plans
+Plans:
+- [ ] 05-01-PLAN.md — CORE-06 interaction responder policy object (deadlines, requestId dedupe, unknown -32601, runtime-prefs migration) + fake re-announce extension
+- [ ] 05-02-PLAN.md — TOOL-02 permission bridge end-to-end (option mapping, outcome forwarding verbatim, cancel → -32021, expiry → deny) + WR-02 atomic sink
+- [ ] 05-03-PLAN.md — WR-01 router-event fan-out + WR-07 exposed observer removes + IN-01/IN-02 (multi-session enablement for teardown)
+- [ ] 05-04-PLAN.md — TOOL-01 tool streaming (tool.updated → tool_call/update, edit/write diffs) + WR-03 bounded pump + WR-06/IN-05
+- [ ] 05-05-PLAN.md — SESS-01 resume/close with teardown (WR-04/WR-05, IN-03/IN-04) + adapter delegates
+- [ ] 05-06-PLAN.md — AUTH-01 backend: hostsvc snapshot push (exact-revision builtin), awaitRegistryContains read-back, runtime-headers answer
+- [ ] 05-07-PLAN.md — AUTH-01 front: authenticate (read-back-proven, no-key honest error) + D-06 CredentialDecrypt seam + cmd wiring (ZCODE_ACP_API_KEY, responder OnRequest)
+- [ ] 05-08-PLAN.md — Full-cycle fake E2E: authenticate → new → prompt(tool+permission) → resume → close
+- [ ] 05-09-PLAN.md — Guarded real tier (TestAPIKeyFullCycle, double guard) + quota ledger; real run = end-of-phase verification
 
 ### Phase 6: OAuth Coding-Plan Path & Model Picker
 **Goal**: Users on an individual coding plan can authenticate through the official OAuth chain end-to-end, and any client can see and switch model and thought level from the live provider registry.
@@ -190,7 +200,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
-| 4. ACP Front — Minimal Chat Loop | 6/6 | In Progress | - |
+| 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
