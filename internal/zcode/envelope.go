@@ -168,3 +168,18 @@ const (
 	CodeProviderHeadersNotApplied       = -32031
 	CodeURLElicitationRequired          = -32042
 )
+
+// Client-request-error codes: the dialect's client-request error namespace
+// (server-types.ts PROTOCOL_CLIENT_REQUEST_ERROR_CODES values verbatim —
+// the guarded-mode codes the interaction broker maps to
+// ConfigurationError / ToolCancelled / PermissionTimeout). The numbers
+// deliberately collide with the header-space constants above
+// (CodeHeaderMismatch -32020, CodeMissingRequiredClientCapability -32021,
+// CodeUnsupportedProtocolVersion -32022): the dialect itself reuses these
+// numbers across namespaces — consumers match the code within their own
+// namespace, never the message text (dialect §6 matching rule).
+const (
+	CodeHostNoClientAttached = -32020
+	CodeHostRequestCancelled = -32021
+	CodeHostRequestTimedOut  = -32022
+)
