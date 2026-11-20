@@ -23,6 +23,7 @@ ACP-клиент может провести с ZCode полный ход end-to
 
 ### Active
 
+✓ ACP Front (Phase 4): минимальный чат-цикл end-to-end на реальной ACP границе (SDK acp-go-sdk v0.20.0 за швом acpport — первая одобренная зависимость; honesty-локи initialize/setModel/cancel; потоковые дельты live; flush-before-stopReason; CORE-01..05 complete) — 6/6 планов, верификация 10/11+backstop разряжен
 ✓ Back leg (Phase 3): JSONL-кодек диалекта, scriptable fake + golden-корпус (10 сценариев в CI), discovery-матрица + супервизор (Setpgid/group-kill/3-60s), машина ходов (exactly-once, cancel, -32010) — internal/{zcode,zcode/fake,supervisor,turn}, ноль зависимостей
 - [ ] Полный чат-цикл ACP v1: initialize, session/new, prompt со стримингом
       (agent_message_chunk + agent_thought_chunk), tool_call события,
@@ -149,4 +150,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-20 after Phase 3*
+*Last updated: 2026-11-20 after Phase 4*
