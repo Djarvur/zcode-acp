@@ -141,13 +141,31 @@ func (b *permissionBridge) cancelPendingForTurn() {
 	}
 }
 
+// permissionAskDrainWait bounds the wire-order barrier the ask barrier
+// waits through before forwarding (a stalled pump must not stall the ask).
+const permissionAskDrainWait = pumpReleaseWait
+
 // PermissionForward returns the front bridge func the interact Responder
 // wiring injects as its PermissionForwarder seam (interact.
-// NewPermissionBridge over this func).
+// NewPermissionBridge over this func). Before the round-trip it barriers
+// on the turn pump: the ask frame must land AFTER the tool frames the
+// backend emitted before its interaction request (the started card precedes
+// the ask — the fullcycle wire-order lock); the pump and the direct
+// permission send are otherwise independent wires with no shared ordering.
 func (f *Front) PermissionForward() func(
 	ctx context.Context, ask acpport.PermissionAsk,
 ) (acpport.PermissionOutcome, error) {
-	return f.perm.forward
+	return func(ctx context.Context, ask acpport.PermissionAsk) (acpport.PermissionOutcome, error) {
+		f.turnMu.Lock()
+		pump := f.turnPump
+		f.turnMu.Unlock()
+
+		if pump != nil {
+			pump.barrier(permissionAskDrainWait)
+		}
+
+		return f.perm.forward(ctx, ask)
+	}
 }
 
 // BindPermissionSender is the acpport.PermissionBinder hook: the adapter

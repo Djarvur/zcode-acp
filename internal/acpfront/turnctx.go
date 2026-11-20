@@ -58,33 +58,73 @@ type turnPump struct {
 	cancel  context.CancelFunc // the turn ctx cancel — a ceiling breach unwinds the turn loud
 	ceiling int
 
-	mu     sync.Mutex
-	queue  []pumpEntry
-	bytes  int
-	breach error // non-nil → the ceiling was hit; every later enqueue is refused
-	notify chan struct{}
-	done   chan struct{}
+	// flushCancel cancels the drain's flush context. The context itself is
+	// DETACHED from the turn context on purpose (captured by the emit
+	// closure, never a struct field — containedctx): release cancels the
+	// turn context to wake the drain goroutine BEFORE the final flush, so a
+	// turn-derived child would already be dead (context canceled cascades to
+	// children instantly) exactly when the flush needs it — the queued
+	// deltas would be silently lost (an SDK sink honors its ctx). The flush
+	// context lives from turn start until release's flush completes:
+	// releaseFlush fires only AFTER the bounded flush wait — never before —
+	// so no sink write survives the teardown and none is refused while the
+	// flush is still legal.
+	flushCancel context.CancelFunc
+
+	mu      sync.Mutex
+	queue   []pumpEntry
+	bytes   int
+	writing bool  // a note is mid-write to the sink (drain goroutine only)
+	breach  error // non-nil → the ceiling was hit; every later enqueue is refused
+	notify  chan struct{}
+	drained chan struct{} // signaled whenever the queue reaches empty
+	done    chan struct{}
 }
 
 // newTurnPump builds the pump for one turn and starts its drain goroutine
-// on the turn context.
-func newTurnPump(
+// on the turn context. The emitter closure it installs writes each note to
+// sink under the pump's detached flush context (alive through the release
+// flush).
+func newTurnPump( //nolint:contextcheck // the flush ctx is detached BY CONTRACT (the
+	// flushCancel field doc): release cancels the TURN context before the
+	// final flush, so deriving the flush context from it would kill the
+	// flush's own writes exactly when they matter — the detached parent is
+	// the fix, bounded by release's flushCancel.
 	turnCtx context.Context,
-	emit func(acpport.SessionNote) error,
+	sessionID string,
+	sink acpport.UpdateSink,
 	cancel context.CancelFunc,
 	ceiling int,
 ) *turnPump {
+	// Detached flush context (see the flushCancel field doc): the parent
+	// cancel at release must not kill the flush's own writes mid-flush. The
+	// context is captured by the emit closure below — never stored on the
+	// pump (containedctx house rule).
+	flushCtx, flushCancel := context.WithCancel(context.Background())
 	p := &turnPump{
-		emit:    emit,
-		cancel:  cancel,
-		ceiling: ceiling,
-		notify:  make(chan struct{}, 1),
-		done:    make(chan struct{}),
+		cancel:      cancel,
+		ceiling:     ceiling,
+		flushCancel: flushCancel,
+		notify:      make(chan struct{}, 1),
+		drained:     make(chan struct{}, 1),
+		done:        make(chan struct{}),
+	}
+
+	p.emit = func(note acpport.SessionNote) error {
+		note.SessionID = sessionID
+
+		return sink(flushCtx, note)
 	}
 
 	go p.run(turnCtx)
 
 	return p
+}
+
+// releaseFlush cancels the flush context — release calls it after the
+// bounded flush wait, so no sink write survives the turn's teardown.
+func (p *turnPump) releaseFlush() {
+	p.flushCancel()
 }
 
 // run drains the queue until the turn context dies (release or breach),
@@ -107,7 +147,9 @@ func (p *turnPump) run(turnCtx context.Context) {
 // drain pops and delivers the queue to the emitter closure, one note at a
 // time. A failed write (a stalled or closing ACP wire) is recorded
 // structurally — never with params/content — and the drain continues; the
-// prompt answer carries the honest outcome.
+// prompt answer carries the honest outcome. The `writing` flag covers each
+// emit so barrier() can't observe an empty queue while a write is still in
+// flight; reaching empty signals `drained` once per drain pass.
 func (p *turnPump) drain() {
 	for {
 		p.mu.Lock()
@@ -115,15 +157,64 @@ func (p *turnPump) drain() {
 		if len(p.queue) == 0 {
 			p.mu.Unlock()
 
+			p.signalDrained()
+
 			return
 		}
 
 		entry := p.queue[0]
 		p.queue = p.queue[1:]
+		p.writing = true
 		p.mu.Unlock()
 
-		if err := p.emit(entry.note); err != nil {
+		// The write rides flushCtx — detached from the turn context and
+		// alive through the release flush (see the field doc). A failed
+		// write (a stalled or closing ACP wire) is recorded structurally —
+		// never with params/content — and the drain continues; the prompt
+		// answer carries the honest outcome.
+		err := p.emit(entry.note)
+
+		p.mu.Lock()
+		p.writing = false
+		p.mu.Unlock()
+
+		if err != nil {
 			slog.Warn("acpfront: session update write failed", "err", err)
+		}
+	}
+}
+
+// signalDrained pokes whoever waits for an empty queue (never blocks —
+// the channel is buffered to one and the waiter re-checks).
+func (p *turnPump) signalDrained() {
+	select {
+	case p.drained <- struct{}{}:
+	default:
+	}
+}
+
+// barrier waits bounded until every note enqueued so far has been handed
+// to the sink — the wire-order handoff for the permission ask: the ask
+// frame must land AFTER the tool frames the backend sent before the
+// interaction request (started card before ask, fullcycle lock). Past the
+// bound the barrier gives up (a stalled sink must not stall the ask) and
+// the ask proceeds with best-effort ordering.
+func (p *turnPump) barrier(bound time.Duration) {
+	deadline := time.After(bound)
+
+	for {
+		p.mu.Lock()
+		quiet := len(p.queue) == 0 && !p.writing
+		p.mu.Unlock()
+
+		if quiet {
+			return
+		}
+
+		select {
+		case <-p.drained:
+		case <-deadline:
+			return
 		}
 	}
 }
@@ -309,14 +400,10 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (context.
 		ceiling = defaultStreamCeiling
 	}
 
-	// The WR-03 pump: the emitter closure (sink + session id + turn ctx)
-	// drains at wire pace on the pump goroutine; the tap's enqueue never
-	// blocks the backend read loop.
-	pump := newTurnPump(turnCtx, func(note acpport.SessionNote) error {
-		note.SessionID = sessionID
-
-		return sink(turnCtx, note)
-	}, turnCancel, ceiling)
+	// The WR-03 pump: the emitter closure (sink + session id, written under
+	// the pump's flushCtx) drains at wire pace on the pump goroutine; the
+	// tap's enqueue never blocks the backend read loop.
+	pump := newTurnPump(turnCtx, sessionID, sink, turnCancel, ceiling)
 
 	// The SESS-01 close teardown's wait surface: done closes when release
 	// has fully unwound the turn (flush included), so close's bounded
@@ -356,10 +443,17 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (context.
 		// the fan-in goroutine's turnCtx.Done arm); the pump's final drain
 		// delivers whatever was legally queued — the flush-before-stopReason
 		// property lives HERE, inside release, before Prompt's stopReason is
-		// returned. The wait is bounded: a sink parked past the bound
-		// abandons the drain so Prompt can never hang on the ACP wire.
+		// returned. The drain's writes ride flushCtx (still alive — that is
+		// the point), so the queued deltas reach the client even though the
+		// turn context itself is already canceled. The wait is bounded: a
+		// sink parked past the bound abandons the drain so Prompt can never
+		// hang on the ACP wire.
 		turnCancel()
 		pump.wait(pumpReleaseWait)
+
+		// Only now kill the flush context — no sink write survives the
+		// turn's teardown, and none is refused before the flush finished.
+		pump.releaseFlush()
 
 		// The teardown's drain signal — after the flush, never before, so
 		// close's backend session/close cannot outrun the turn's last write.
