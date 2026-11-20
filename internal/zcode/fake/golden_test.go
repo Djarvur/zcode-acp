@@ -217,6 +217,7 @@ func goldenDrivers() map[string]driverFunc {
 		"permission-allow":           drivePermissionAllow,
 		"permission-cancel":          drivePermissionCancel,
 		"user-input-decline":         driveUserInputDecline,
+		"tool-lifecycle":             driveToolLifecycle,
 	}
 }
 
@@ -840,6 +841,23 @@ func driveUserInputDecline(ctx context.Context, d *exchangeDriver) {
 
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.send(ctx)
+}
+
+// driveToolLifecycle: the TOOL-01 corpus row (plan 05-04) — the front
+// preamble (copied verbatim from setmodel-followup), then TWO sends: the
+// first (times budget 1) emits the full Edit tool lifecycle
+// (scheduled→started→progress→batch→subagent-mirror→result), a same-turn
+// text delta, and a FOREIGN-turnId delta (IN-05's suppression fixture at
+// the fake tier); the second drives the Write-input scheduled event (the
+// new-file diff shape). The golden byte-locks the ordered emit stream the
+// front's tap consumes; the composed-tier wire-order lock lives in
+// acpfront's TestToolLifecycle (the same corpus row through the harness).
+func driveToolLifecycle(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx) // rule 1 (times 1): the Edit lifecycle + foreign delta
+	h.send(ctx) // rule 2 (unlimited): the Write lifecycle
 }
 
 // waitStopReason blocks for the in-flight prompt's resolution and requires
