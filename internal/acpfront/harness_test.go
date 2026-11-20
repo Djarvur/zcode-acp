@@ -134,12 +134,17 @@ type ACPUpdate struct {
 
 // PermissionScript configures the outcome every session/request_permission
 // gets answered with (plan 05-02 TOOL-02 harness): the selected option's
-// id, the cancelled arm, and an optional hold before answering (the expiry
-// arm's unanswered-client shape). Cancelled wins when both are set.
+// id, the cancelled arm, an optional hold before answering (the expiry
+// arm's unanswered-client shape), and an optional gate the test closes to
+// release the answer at a chosen moment (the cancel-row's deterministic
+// sequencing — the ask stays pending until the gate opens). Cancelled wins
+// when both arms are set; the Delay and Gate holds both honor the request
+// context.
 type PermissionScript struct {
 	SelectedOptionID string
 	Cancelled        bool
 	Delay            time.Duration
+	Gate             <-chan struct{}
 }
 
 // RecordingClient implements the SDK's Client interface for tests:
@@ -232,8 +237,8 @@ func (c *RecordingClient) WriteTextFile(
 // RequestPermission records the received ask and answers the scripted
 // outcome: the selected arm ({outcome:selected, optionId}) or the
 // cancelled arm ({outcome:cancelled} — the ACP v1 MUST on turn cancel);
-// the optional Delay holds the answer open (the expiry arm's unanswered
-// client) and honors the request context while held.
+// the optional Delay/Gate holds the answer open and honors the request
+// context while held.
 func (c *RecordingClient) RequestPermission(
 	ctx context.Context,
 	params acp.RequestPermissionRequest,
@@ -243,9 +248,18 @@ func (c *RecordingClient) RequestPermission(
 	script := c.permScript
 	c.mu.Unlock()
 
-	if script.Delay > 0 {
+	if script.Delay > 0 || script.Gate != nil {
+		// Nil-channel hold semantics: a zero Delay arms no timer (nil fires
+		// never), an absent gate blocks forever — the answer releases on
+		// whichever source fires first, or on the request context dying.
+		var timer <-chan time.Time
+		if script.Delay > 0 {
+			timer = time.After(script.Delay)
+		}
+
 		select {
-		case <-time.After(script.Delay):
+		case <-timer:
+		case <-script.Gate:
 		case <-ctx.Done():
 			return acp.RequestPermissionResponse{}, ctx.Err()
 		}

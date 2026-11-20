@@ -60,6 +60,12 @@ const (
 	// reverse's 500 ms timeout window.
 	reannounceAnswerDelay = 300 * time.Millisecond
 
+	// permCancelSettle lets the cancel row's reverse reply and the send ack
+	// land deterministically AFTER the scripted client's released answer and
+	// BEFORE the driver drives the session cancel — every frame the golden
+	// locks sits in a causally forced position.
+	permCancelSettle = 150 * time.Millisecond
+
 	// reannounceSettle lets the re-announce envelopes' honest timeout notes
 	// (interval 40 ms + 500 ms timeout ≈ 580 ms after the reverse fires) land
 	// before stdin closes — the deterministic-golden bounded quiet window
@@ -209,6 +215,8 @@ func goldenDrivers() map[string]driverFunc {
 		"complete-then-cancel":       driveCompleteThenCancel,
 		"reannounce-dedupe":          driveReannounceDedupe,
 		"permission-allow":           drivePermissionAllow,
+		"permission-cancel":          drivePermissionCancel,
+		"user-input-decline":         driveUserInputDecline,
 	}
 }
 
@@ -744,23 +752,150 @@ func drivePermissionAllow(ctx context.Context, d *exchangeDriver) {
 	h.send(ctx)
 }
 
-// permissionClient is the fake_test-local SDK Client double the corpus
-// replay sits on the ACP leg: it answers every session/request_permission
-// with the canonical allow decision (selected allow_once — the option the
-// row's expect_answer locks) and records the asks it received.
-type permissionClient struct {
-	mu   sync.Mutex
-	asks []acp.RequestPermissionRequest
+// drivePermissionCancel: the TOOL-02 cancel corpus row (plan 05-02) — the
+// full composition (Responder + real front bridge + acpport sender over a
+// real Front session), a REAL prompt turn through the front's machine, and
+// a gated permissionClient scripted with the cancelled outcome arm. The
+// driver releases the gate only after the ask reached the client, settles
+// (the -32021 error reply and the send ack land — the reply rides the
+// bypass lane), then drives the landed Front.Cancel: the stop-bypass
+// session/stop fires while the machine resolves the cancelled patch — the
+// CORE-05 cancel path the plan pins — and the prompt returns. The golden
+// byte-locks the cancel flow: reverse, -32021 reply (expect_answer locks
+// the code AND the bridge's message constant), send ack, stop, cancelled
+// patch, stop ack — every frame causally ordered.
+func drivePermissionCancel(ctx context.Context, d *exchangeDriver) {
+	t := d.t
+
+	toAgentR, toAgentW := io.Pipe()
+	toClientR, toClientW := io.Pipe()
+
+	t.Cleanup(func() {
+		for _, c := range []io.Closer{toAgentR, toAgentW, toClientR, toClientW} {
+			_ = c.Close()
+		}
+	})
+
+	//nolint:contextcheck // the Front derives its own process-lifetime base
+	// context by design (front.go New — the containedctx rule); the driver's
+	// ctx bounds only the back-leg calls.
+	front := acpfront.New(d.conn)
+
+	responder := interact.NewResponder(interact.WithPermissionForwarder(
+		interact.NewPermissionBridge(front.PermissionForward()).Forward,
+	))
+	d.conn.OnRequest = responder.Serve // hook contract: before any frame flows
+
+	client := &permissionClient{gate: make(chan struct{}), cancel: true}
+
+	// Pipe ownership mirrors drivePermissionAllow: the agent writes
+	// toClientW and reads toAgentR; the client writes toAgentW, reads
+	// toClientR.
+	//
+	//nolint:dogsled // the front carries all three bindings; none is needed here
+	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), toClientW, toAgentR)
+	_ = acp.NewClientSideConnection(client, toAgentW, toClientR)
+
+	sid, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: "/tmp/perm-cancel-ws"})
+	if err != nil {
+		t.Fatalf("front.NewSession: %v", err)
+	}
+
+	// The REAL prompt turn: the front's machine runs the send, the reverse
+	// fires, and the ask parks on the client's gate.
+	promptDone := make(chan acpport.StopReason, 1)
+
+	go func() {
+		reason, promptErr := front.Prompt(ctx, acpport.PromptParams{
+			SessionID: sid,
+			Text:      sendContent,
+		}, acpport.NewUpdateSink(agentConn))
+		if promptErr != nil {
+			t.Errorf("front.Prompt: %v", promptErr)
+		}
+
+		promptDone <- reason
+	}()
+
+	client.awaitAsk(t)
+	close(client.gate)           // the cancelled outcome answer releases → -32021 reply
+	time.Sleep(permCancelSettle) // reply + send ack land deterministically
+
+	front.Cancel(ctx, sid) // the landed Front.Cancel: bypass stop + fan-in
+	waitStopReason(t, promptDone, acpport.StopCancelled)
+
+	time.Sleep(stopSettle) // the stop ack lands before stdin closes
 }
 
-// RequestPermission records the ask and answers selected allow_once.
+// driveUserInputDecline: the CORE-06 decline corpus row (plan 05-02) — the
+// front preamble, then send whose rule fires an interaction/requestUserInput
+// reverse expecting {action:decline}. The Responder alone wires the hook
+// (no bridge involvement — the policy handler answers the decline
+// directly, the honest no-UI-channel posture; elicitation stays Phase 7).
+func driveUserInputDecline(ctx context.Context, d *exchangeDriver) {
+	d.conn.OnRequest = interact.NewResponder().Serve // hook contract: before any frame flows
+
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx)
+}
+
+// waitStopReason blocks for the in-flight prompt's resolution and requires
+// the given stop reason.
+func waitStopReason(t *testing.T, done <-chan acpport.StopReason, want acpport.StopReason) {
+	t.Helper()
+
+	select {
+	case got := <-done:
+		if got != want {
+			t.Fatalf("prompt resolved %q, want %q", got, want)
+		}
+	case <-time.After(noticeWaitTimeout):
+		t.Fatal("prompt never resolved within the wait bound")
+	}
+}
+
+// permissionClient is the fake_test-local SDK Client double the corpus
+// replays sit on the ACP leg: it answers every session/request_permission
+// with its scripted mode — the canonical allow decision (selected
+// allow_once) or the cancelled outcome arm (the ACP v1 MUST on turn
+// cancel) — optionally holding the answer behind a gate the driver closes
+// at a chosen moment, and records every ask it received.
+type permissionClient struct {
+	gate chan struct{}
+
+	mu     sync.Mutex
+	cancel bool
+	asks   []acp.RequestPermissionRequest
+}
+
+// RequestPermission records the ask and answers the scripted outcome.
 func (c *permissionClient) RequestPermission(
 	ctx context.Context,
 	params acp.RequestPermissionRequest,
 ) (acp.RequestPermissionResponse, error) {
 	c.mu.Lock()
 	c.asks = append(c.asks, params)
+	cancelled := c.cancel
+	gate := c.gate
 	c.mu.Unlock()
+
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return acp.RequestPermissionResponse{}, ctx.Err()
+		}
+	}
+
+	if cancelled {
+		return acp.RequestPermissionResponse{
+			Outcome: acp.RequestPermissionOutcome{
+				Cancelled: &acp.RequestPermissionOutcomeCancelled{Outcome: "cancelled"},
+			},
+		}, nil
+	}
 
 	return acp.RequestPermissionResponse{
 		Outcome: acp.RequestPermissionOutcome{
@@ -770,6 +905,30 @@ func (c *permissionClient) RequestPermission(
 			},
 		},
 	}, nil
+}
+
+// awaitAsk blocks until the client received its first request_permission
+// ask (bounded) — the wire-level sync signal the drivers gate on.
+func (c *permissionClient) awaitAsk(t *testing.T) {
+	t.Helper()
+
+	deadline := time.After(noticeWaitTimeout)
+
+	for {
+		c.mu.Lock()
+		n := len(c.asks)
+		c.mu.Unlock()
+
+		if n > 0 {
+			return
+		}
+
+		select {
+		case <-time.After(2 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("no request_permission ask reached the scripted client within the wait bound")
+		}
+	}
 }
 
 // SessionUpdate accepts streamed updates (none flow on this leg).
