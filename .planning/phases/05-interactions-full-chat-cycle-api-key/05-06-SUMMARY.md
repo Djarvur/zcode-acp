@@ -198,6 +198,10 @@ None - no external service configuration required (fixtures carry synthetic plac
 
 Ready for 05-07. The front's authenticate composes these step functions (record key → PushSnapshot → RefreshRegistry → WatchRegistry+Await → `{}` success per PITFALL 3) and wires `hostsvc.RuntimeHeadersHandler(hostsvc.NewStaticKey(...))` into `interact.WithRuntimeHeadersKeySource` at the main.go composition; the cancelled-ctx probe (AUTH-01 concurrency) composes the exported step functions. Phase 6 reuses WatchRegistry/AwaitRegistryContains as its read-back asset. AUTH-01's requirements.mark-complete is deferred until sibling plan 05-07 lands its SUMMARY (ready-ids returned empty — correct per the sibling rule).
 
+## Self-Check: PASSED
+
+All 9 created/modified task files exist on disk; commits fc31773, 755faf0, d166797, 4c423c0 verified as ancestors of HEAD; SUMMARY metadata commit 38dd25d present; commit count measured from the plan ledger (gsd-plan-head-before-05-06 = a0a8a7c) is 5 including this self-check amendment.
+
 ---
 *Phase: 05-interactions-full-chat-cycle-api-key*
 *Completed: 2026-11-20*
