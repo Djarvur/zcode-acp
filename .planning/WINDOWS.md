@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 7
+open_count: 9
 waived_count: 0
 fixed_count: 1
-total_count: 8
-last_updated: 2026-11-20T00:22:27.097Z
+total_count: 10
+last_updated: 2026-11-20T15:16:17.803Z
 ---
 
 # Broken Windows Ledger
@@ -23,6 +23,8 @@ last_updated: 2026-11-20T00:22:27.097Z
 | 6 | 03 | unrun-verify | internal/supervisor/realdesktop_test.go | 81 | Real-desktop positive path TestRealDesktop is manual-only (build tag + env guard) — scheduled END-OF-PHASE human verification, never run by CI or this plan | open |  | 2026-11-19T20:32:33.515Z |  |
 | 7 | 03 | deviation | internal/supervisor/e2e_test.go |  | plan-text adaptation: the cancel turn is replayed as a SECOND supervised cycle serving the cancel-mid-turn corpus row, not a second machine on the happy child's Conn — the fake's Times=0 rules are unlimited, so the happy-turn send rule re-fires turn.completed on a second send and a same-Conn cancel would race a completed resolution; both cycles end in the zero-survivors staged shutdown | open |  | 2026-11-19T21:18:34.164Z |  |
 | 8 | 04 | stub | internal/acpport/doc.go | 12 | acpport seam package pre-placed as skeleton (doc.go + pin_test.go) — adapter surface (types/agent/sink) lands with plan 04-02 | fixed |  | 2026-11-19T23:46:45.534Z | 2026-11-20T00:22:27.097Z |
+| 9 | 05 | deviation | experiments/scan-secrets.sh |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:11.286Z |  |
+| 10 | 05 | deviation | experiments/scan-secrets.sh |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:17.803Z |  |
 
 ````json
 [
@@ -128,6 +130,32 @@ last_updated: 2026-11-20T00:22:27.097Z
     "reason": "",
     "recorded_at": "2026-11-19T23:46:45.534Z",
     "resolved_at": "2026-11-20T00:22:27.097Z",
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 9,
+    "kind": "deviation",
+    "phase": "05",
+    "file": "experiments/scan-secrets.sh",
+    "line": null,
+    "description": "[Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-20T15:16:11.286Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 10,
+    "kind": "deviation",
+    "phase": "05",
+    "file": "experiments/scan-secrets.sh",
+    "line": null,
+    "description": "[Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-20T15:16:17.803Z",
+    "resolved_at": null,
     "milestone": "v0.20.0"
   }
 ]
