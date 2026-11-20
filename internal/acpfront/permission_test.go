@@ -61,6 +61,8 @@ const (
 // scripted allow-once client outcome. The connection-bound sender binds at
 // acpport construction (inside ComposeFront, before any frame flows).
 func newPermissionFront(t *testing.T, scenario string) *FrontHarness {
+	t.Helper()
+
 	return newPermissionFrontOpts(t, scenario,
 		PermissionScript{SelectedOptionID: permAllowOptionID}, nil)
 }
@@ -567,7 +569,8 @@ func assertCancelledBackLeg(t *testing.T, tr fake.Transcript) {
 	}
 
 	if joinReplies != 0 {
-		t.Fatalf("tombstone join %s earned %d replies, want 0 (no reply after the error reply)", permCancelJoinID, joinReplies)
+		t.Fatalf("tombstone join %s earned %d replies, want 0 (no reply after the error)",
+			permCancelJoinID, joinReplies)
 	}
 
 	if stops != 1 {
@@ -637,7 +640,8 @@ func assertSingleReply(t *testing.T, tr fake.Transcript) {
 	}
 
 	if replies != 1 {
-		t.Fatalf("race produced %d reply envelopes for the reverse, want exactly 1 (never both, never neither)", replies)
+		t.Fatalf("race produced %d reply envelopes for the reverse, want exactly 1 (never both, never neither)",
+			replies)
 	}
 }
 

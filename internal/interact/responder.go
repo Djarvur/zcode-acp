@@ -339,13 +339,14 @@ func deliver(ans Answer, err error) answerDelivery {
 }
 
 // expiryAnswer is the per-method answer when a deadline elapsed with the
-// handler unanswered: requestPermission expiry answers deny (the OQ-2
-// disposition — the turn continues honestly), every other deadline
-// answers the coded -32022 timeout error (consumers match the code, never
-// the message — dialect §6).
+// handler unanswered: requestPermission expiry answers deny with the
+// denied-by-user reason (the OQ-2 disposition — the turn continues
+// honestly, never hangs, never auto-allows), every other deadline answers
+// the coded -32022 timeout error (consumers match the code, never the
+// message — dialect §6).
 func expiryAnswer(method string) (any, *zcode.WireError) {
 	if method == MethodRequestPermission {
-		return map[string]any{"decision": "deny"}, nil
+		return map[string]any{"decision": decisionDeny, "reason": deniedByUserReason}, nil
 	}
 
 	return nil, &zcode.WireError{

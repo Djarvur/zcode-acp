@@ -791,8 +791,6 @@ func drivePermissionCancel(ctx context.Context, d *exchangeDriver) {
 	// Pipe ownership mirrors drivePermissionAllow: the agent writes
 	// toClientW and reads toAgentR; the client writes toAgentW, reads
 	// toClientR.
-	//
-	//nolint:dogsled // the front carries all three bindings; none is needed here
 	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), toClientW, toAgentR)
 	_ = acp.NewClientSideConnection(client, toAgentW, toClientR)
 
@@ -821,7 +819,10 @@ func drivePermissionCancel(ctx context.Context, d *exchangeDriver) {
 	close(client.gate)           // the cancelled outcome answer releases → -32021 reply
 	time.Sleep(permCancelSettle) // reply + send ack land deterministically
 
-	front.Cancel(ctx, sid) // the landed Front.Cancel: bypass stop + fan-in
+	if cancelErr := front.Cancel(ctx, sid); cancelErr != nil {
+		t.Fatalf("front.Cancel: %v", cancelErr)
+	}
+
 	waitStopReason(t, promptDone, acpport.StopCancelled)
 
 	time.Sleep(stopSettle) // the stop ack lands before stdin closes
@@ -905,30 +906,6 @@ func (c *permissionClient) RequestPermission(
 			},
 		},
 	}, nil
-}
-
-// awaitAsk blocks until the client received its first request_permission
-// ask (bounded) — the wire-level sync signal the drivers gate on.
-func (c *permissionClient) awaitAsk(t *testing.T) {
-	t.Helper()
-
-	deadline := time.After(noticeWaitTimeout)
-
-	for {
-		c.mu.Lock()
-		n := len(c.asks)
-		c.mu.Unlock()
-
-		if n > 0 {
-			return
-		}
-
-		select {
-		case <-time.After(2 * time.Millisecond):
-		case <-deadline:
-			t.Fatal("no request_permission ask reached the scripted client within the wait bound")
-		}
-	}
 }
 
 // SessionUpdate accepts streamed updates (none flow on this leg).
@@ -1053,5 +1030,29 @@ func assertReannounceDedupeTranscript(t *testing.T, tr fake.Transcript) {
 	if replies != 1 {
 		t.Fatalf("permission reverse set earned %d reply envelopes, want exactly 1 addressed to %s",
 			replies, reannounceRegisterID)
+	}
+}
+
+// awaitAsk blocks until the client received its first request_permission
+// ask (bounded) — the wire-level sync signal the drivers gate on.
+func (c *permissionClient) awaitAsk(t *testing.T) {
+	t.Helper()
+
+	deadline := time.After(noticeWaitTimeout)
+
+	for {
+		c.mu.Lock()
+		n := len(c.asks)
+		c.mu.Unlock()
+
+		if n > 0 {
+			return
+		}
+
+		select {
+		case <-time.After(2 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("no request_permission ask reached the scripted client within the wait bound")
+		}
 	}
 }
