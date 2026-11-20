@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"io"
@@ -345,6 +346,167 @@ func assertMethodNotFound(t *testing.T, err error, method string) {
 
 	if data["method"] != method {
 		t.Fatalf("error data method = %q, want %q", data["method"], method)
+	}
+}
+
+// connProbe is one raw JSON-RPC exchange through a live agent-side
+// connection: write the request frame, read back the raw response frame —
+// the SDK dispatcher's actual wire answer, not just the adapter method.
+type connProbe func(t *testing.T, method, params string) string
+
+// newConnectionProbe wires acpport.NewAgentSideConnection over io pipes
+// (construction completes before any frame flows — the Phase-3 discipline)
+// and returns the raw-frame exchange probe. Everything tears down via
+// t.Cleanup; response frames arrive on the drained channel.
+func newConnectionProbe(t *testing.T, h *scriptedHandlers) connProbe {
+	t.Helper()
+
+	toAgentR, toAgentW := io.Pipe()
+	fromAgentR, fromAgentW := io.Pipe()
+
+	t.Cleanup(func() {
+		for _, c := range []io.Closer{toAgentR, toAgentW, fromAgentR, fromAgentW} {
+			_ = c.Close()
+		}
+	})
+
+	acpport.NewAgentSideConnection(acpport.NewAgent(h), fromAgentW, toAgentR)
+
+	lines := make(chan string, 16)
+	go drainFrames(fromAgentR, lines)
+
+	return func(t *testing.T, method, params string) string {
+		t.Helper()
+
+		frame := fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":%q,"params":%s}`+"\n", method, params)
+		if _, err := toAgentW.Write([]byte(frame)); err != nil {
+			t.Fatalf("write %s request frame: %v", method, err)
+		}
+
+		return readFrame(t, lines)
+	}
+}
+
+// jsonRPCErrorFrame decodes the error object of one raw response frame;
+// nil when the frame is a result (never expected in these probes).
+func jsonRPCErrorFrame(t *testing.T, raw, method string) *struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		Method string `json:"method"`
+	} `json:"data"`
+} {
+	t.Helper()
+
+	var frame struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				Method string `json:"method"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("decode %s response frame: %v (%s)", method, err, raw)
+	}
+
+	return frame.Error
+}
+
+// TestUnadvertisedStableMethodsAnswerNotFound (plan 04-03 lock) drives the
+// seven unadvertised stable methods through a REAL agent-side connection
+// with raw JSON-RPC frames: each must answer the clean -32601 default
+// naming the method on the actual wire (Pitfall 6 — capability omission
+// stops legitimate clients, but the dispatcher still routes), and the
+// Handlers impl must never be touched (the defaults are adapter-side).
+// Authenticate is NOT in this table: it is advertised per D-02 and answers
+// the deliberate honest exception (TestAuthenticateHonestError).
+func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
+	h := newScriptedHandlers()
+
+	probe := newConnectionProbe(t, h)
+
+	// Minimal params per method — only two shapes need real values:
+	// session/resume's Validate requires cwd, and session/set_config_option
+	// is a union whose default (value-id) variant needs its keys; everything
+	// else decodes the empty object.
+	tests := []struct {
+		method string
+		params string
+	}{
+		{acp.AgentMethodLogout, "{}"},
+		{acp.AgentMethodSessionClose, "{}"},
+		{acp.AgentMethodSessionDelete, "{}"},
+		{acp.AgentMethodSessionList, "{}"},
+		{acp.AgentMethodSessionResume, `{"cwd":"` + testCwd + `"}`},
+		{acp.AgentMethodSessionSetConfigOption, `{"configId":"c","sessionId":"s","value":"v"}`},
+		{acp.AgentMethodSessionSetMode, "{}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			errObj := jsonRPCErrorFrame(t, probe(t, tt.method, tt.params), tt.method)
+
+			if errObj == nil {
+				t.Fatalf("%s must answer a JSON-RPC error, got a result frame", tt.method)
+			}
+
+			if errObj.Code != -32601 {
+				t.Fatalf("%s error code = %d, want -32601 (MethodNotFound)", tt.method, errObj.Code)
+			}
+
+			if errObj.Data.Method != tt.method {
+				t.Fatalf("%s error data method = %q, want %q", tt.method, errObj.Data.Method, tt.method)
+			}
+		})
+	}
+
+	if calls := h.totalCalls(); calls != 0 {
+		t.Fatalf("unadvertised methods reached Handlers %d times, want 0 (defaults are adapter-side)", calls)
+	}
+}
+
+// TestAuthenticateHonestError (plan 04-03 RED target): authenticate is
+// ADVERTISED per D-02 (both z.ai auth methods ride the initialize report),
+// so a client may legitimately call it — but no auth flow exists in this
+// build (Phases 5-6). It must answer a JSON-RPC ERROR in the -32603
+// internal class with a stable readable message naming that authentication
+// is not available in this build (RESEARCH Open Question 2 / Assumption
+// A2): NEVER a fake success and NEVER the misleading -32601 MethodNotFound
+// default (D-02 honesty — fake success acknowledges an auth that did not
+// happen; MethodNotFound tells the client the method is absent).
+func TestAuthenticateHonestError(t *testing.T) {
+	h := newScriptedHandlers()
+
+	probe := newConnectionProbe(t, h)
+
+	raw := probe(t, acp.AgentMethodAuthenticate, `{"methodId":"zai-api-key"}`)
+
+	errObj := jsonRPCErrorFrame(t, raw, acp.AgentMethodAuthenticate)
+
+	if errObj == nil {
+		t.Fatalf("authenticate must answer a JSON-RPC ERROR (never fake success), got result frame: %s", raw)
+	}
+
+	if errObj.Code == -32601 {
+		t.Fatalf("authenticate answers the misleading MethodNotFound default (-32601) — "+
+			"must be the honest not-available error: %s", raw)
+	}
+
+	if errObj.Code != acpport.CodeInternal {
+		t.Fatalf("authenticate error code = %d, want %d (-32603 internal class, A2): %s",
+			errObj.Code, acpport.CodeInternal, raw)
+	}
+
+	if !strings.Contains(errObj.Message, "authentication is not available") {
+		t.Fatalf("authenticate error message %q must name that authentication is not available in this build: %s",
+			errObj.Message, raw)
+	}
+
+	if calls := h.totalCalls(); calls != 0 {
+		t.Fatalf("authenticate reached Handlers %d times, want 0 (no auth flow exists in this build)", calls)
 	}
 }
 
