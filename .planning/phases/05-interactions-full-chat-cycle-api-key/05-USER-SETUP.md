@@ -34,16 +34,21 @@ Optional overrides (defaults are the corpus-locked shapes):
 
 ## Dashboard / Session Configuration
 
-- [ ] **Unlock the login keyring and confirm the credential entry resolves**
+- [x] **Unlock the login keyring and confirm the credential entry resolves** (verified 2026-11-20)
   - Location: local GNOME session — gnome-keyring unlocked
-  - Verification (field-verified shape, 05-RESEARCH Pattern 6):
+  - Verification (field-verified on this machine 2026-11-20 — the username is
+    the sha256 of the RESOLVED PATH STRING, not of the file content; the
+    key is emitted WITHOUT a trailing newline):
     ```bash
     secret-tool lookup service 'ZCode Credential Encryption' \
-      username "$(sha256sum "$(realpath ~/.zcode/v2/credentials.json)" | cut -d' ' -f1)" | wc -c
+      username "$(printf '%s' "$(realpath ~/.zcode/v2/credentials.json)" | sha256sum | cut -d' ' -f1)" | wc -c
     ```
-  - Expected: 44 bytes (the 43-char base64url key + newline). Empty output =
+  - Expected: 43 bytes (the 43-char base64url key, no newline). Empty output =
     locked keyring or absent entry — the run's cipher ask then degrades
     honestly (tracked no-answer → turn failure), never a fabricated success.
+    (The earlier content-hash form was wrong on both counts — it resolves to
+    nothing on this machine; the 05-07 loader's path-string derivation is the
+    one the real keyring entry matches.)
 
 ## Verification
 
