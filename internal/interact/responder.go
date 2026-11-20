@@ -134,6 +134,21 @@ func WithRouterEvent(fn func(zcode.RouterEvent)) Option {
 	}
 }
 
+// WithCredentialDecrypt injects the D-06 decrypt seam (plan 05-07): the
+// requestCredentialCipher ask gains a policy row dispatching decrypt ops to
+// the CredentialDecrypt service (the field-verified {requestId,
+// result:{ok...}} reply shapes). Unwired, the ask keeps the D-05
+// tracked-no-answer fall-through — CI tiers never touch the keyring.
+func WithCredentialDecrypt(svc *CredentialDecrypt) Option {
+	return func(r *Responder) {
+		r.cipher = svc
+		r.methods[zcode.MethodRequestCredentialCipher] = MethodPolicy{
+			Deadline: DefaultCredentialCipherDeadline,
+			Handler:  svc.Handle,
+		}
+	}
+}
+
 // Responder is the D-01 policy object: one handler per server→host method,
 // per-method deadlines, and the re-announce dedupe table. Constructed once
 // via NewResponder and immutable afterwards; Serve is safe for concurrent
@@ -143,6 +158,7 @@ type Responder struct {
 	dedupe     *dedupeTable
 	permission PermissionForwarder
 	keySource  RuntimeHeadersKeySource
+	cipher     *CredentialDecrypt
 	onEvent    func(zcode.RouterEvent)
 }
 
@@ -170,17 +186,20 @@ func (r *Responder) PendingRequests() int {
 // signature): (result, wire error, handled). It returns handled=true for
 // everything it routes — the unknown -32601 floor included — so the
 // built-in router is never consulted behind it; the one exception is
-// interaction/requestCredentialCipher, which falls through to the conn's
-// tracked-no-answer tracker (D-05).
+// interaction/requestCredentialCipher while the D-06 decrypt seam is
+// unwired, which falls through to the conn's tracked-no-answer tracker
+// (D-05). With the seam injected the ask routes through its policy row
+// like every other method.
 func (r *Responder) Serve(ctx context.Context, env zcode.Envelope) (any, *zcode.WireError, bool) {
 	req := normalize(env)
 
 	// D-05 posture (Phase-3 locked): credential-cipher is tracked and
-	// never answered — replying at all (result, error, or bare id-echo)
-	// would claim an answer the wrapper cannot give while the server holds
-	// the turn on it. The seam's fall-through composes with the conn's
-	// base-context tracker.
-	if req.Method == zcode.MethodRequestCredentialCipher {
+	// never answered while the decrypt seam is unwired — replying at all
+	// (result, error, or bare id-echo) would claim an answer the wrapper
+	// cannot give while the server holds the turn on it. The unwired
+	// fall-through composes with the conn's base-context tracker; the D-06
+	// injection (WithCredentialDecrypt) replaces it with the policy row.
+	if req.Method == zcode.MethodRequestCredentialCipher && r.cipher == nil {
 		return nil, nil, false
 	}
 
@@ -243,12 +262,12 @@ func (r *Responder) Serve(ctx context.Context, env zcode.Envelope) (any, *zcode.
 // the browser* pair (field-verified harmless — EXP-SUBSCRIBE-01: 6-7 asks
 // per create answered -32601 without breaking the flow).
 //
-// interaction/requestCredentialCipher is deliberately ABSENT: Serve falls
-// it through (handled=false) to the conn's built-in tracked-no-answer
-// tracker — the Phase-3 locked D-05 posture (a reply of ANY shape would
-// claim an answer the wrapper cannot give and the server holds the turn on
-// it). The D-06 decrypt seam (plan 05-07) replaces this delegation with a
-// policy entry.
+// interaction/requestCredentialCipher is deliberately ABSENT here: while
+// the D-06 decrypt seam is unwired, Serve falls it through (handled=false)
+// to the conn's built-in tracked-no-answer tracker — the Phase-3 locked
+// D-05 posture (a reply of ANY shape would claim an answer the wrapper
+// cannot give and the server holds the turn on it). WithCredentialDecrypt
+// adds the policy row at injection time.
 func (r *Responder) defaultPolicyTable() map[string]MethodPolicy {
 	return map[string]MethodPolicy{
 		zcode.MethodRequestRuntimePreferences: {
