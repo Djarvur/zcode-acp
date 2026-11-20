@@ -34,7 +34,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 - [x] **CORE-02**: `session/new{cwd}` → `session/create` + follow-up `session/setModel` (reasoningLevel-loss workaround); `mcpServers` accepted and ignored
 - [x] **CORE-03**: `session/prompt` streams `agent_message_chunk` deltas live and replies `stopReason` only after all pending updates flush
 - [x] **CORE-04**: `agent_thought_chunk` streamed when the backend emits reasoning events (never synthesized)
-- [ ] **CORE-05**: `session/cancel` stops the turn, resolves pending permission requests as `cancelled`, replies `stopReason: "cancelled"`
+- [x] **CORE-05**: `session/cancel` stops the turn, resolves pending permission requests as `cancelled`, replies `stopReason: "cancelled"`
 - [ ] **CORE-06**: Host-managed interaction responder always on: every `interaction/*` answered promptly (dedupe re-announcements, per-method deadlines, error replies to unknown methods instead of crash)
 
 ### Tools & Permissions
@@ -125,7 +125,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CORE-02 | Phase 4 | Complete |
 | CORE-03 | Phase 4 | Complete |
 | CORE-04 | Phase 4 | Complete |
-| CORE-05 | Phase 4 | Pending |
+| CORE-05 | Phase 4 | Complete |
 | AUTH-01 | Phase 5 | Pending |
 | CORE-06 | Phase 5 | Pending |
 | SESS-01 | Phase 5 | Pending |

@@ -122,7 +122,7 @@ Plans:
   3. `session/prompt` streams `agent_message_chunk` deltas live while the turn runs and returns `stopReason` only after all pending updates have flushed
   4. When the backend emits reasoning events the client receives `agent_thought_chunk` updates; none are synthesized when it does not
   5. `session/cancel` during a turn stops it and the prompt call is answered exactly once with `stopReason: "cancelled"`
-**Plans**: 5/6 plans executed
+**Plans**: 6/6 plans executed
 
 Plans:
 **Wave 1**
@@ -139,7 +139,7 @@ Plans:
 - [x] 04-04-PLAN.md — CORE-03/CORE-04 streaming locks: reasoning→thought chunks (RED) + never-synthesized negative, flush-before-stopReason ordering proof across both completion variants, zero-delta turn honesty
 
 **Wave 5** *(blocked on Wave 4 — shares front.go with 04-03)*
-- [ ] 04-05-PLAN.md — CORE-05 cancel locks: cancelled exactly-once never -32800, second-prompt rejection (RED), cancel-after-complete no-op + cmd/zcode-acp first real wiring (supervisor override seam, model flags) + binary-level E2E
+- [x] 04-05-PLAN.md — CORE-05 cancel locks: cancelled exactly-once never -32800, second-prompt rejection (RED), cancel-after-complete no-op + cmd/zcode-acp first real wiring (supervisor override seam, model flags) + binary-level E2E
 
 ### Phase 5: Interactions & Full Chat Cycle (api-key)
 **Goal**: On a real z.ai account via api-key, a client gets a complete chat cycle — streamed tool calls, permission decisions answered from the client, working session lifecycle — with the host-managed interaction responder always on.
@@ -190,7 +190,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Research & Protocol Documentation | 6/6 | Complete    | 2026-11-19 |
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
-| 4. ACP Front — Minimal Chat Loop | 5/6 | In Progress | - |
+| 4. ACP Front — Minimal Chat Loop | 6/6 | In Progress | - |
 | 5. Interactions & Full Chat Cycle (api-key) | 0/TBD | Not started | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
