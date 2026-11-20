@@ -397,11 +397,16 @@ func driveCompletionIdlePatch(ctx context.Context, d *exchangeDriver) {
 	h.send(ctx)
 }
 
-// driveCompletionQuietWindow: send, then a fixed count of session/messages
-// polls the fake answers with stable content — the poll-watcher settling
-// surface (03-05/03-08 key link: neither terminal event nor idle patch
-// arrives; the quiet window is the proven fallback).
+// driveCompletionQuietWindow: the front preamble (plan 04-04 Rule 3 — the
+// front-tier ordering lock rides this row and the front cannot open a
+// session without it; rules copied verbatim from the setmodel-followup
+// preamble), then send, then a fixed count of session/messages polls the
+// fake answers with stable content — the poll-watcher settling surface
+// (03-05/03-08 key link: neither terminal event nor idle patch arrives;
+// the quiet window is the proven fallback).
 func driveCompletionQuietWindow(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.send(ctx)
 
