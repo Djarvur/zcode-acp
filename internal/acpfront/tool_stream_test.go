@@ -182,7 +182,7 @@ func testToolLifecycleEdit(t *testing.T) {
 	resultPatch := patches[2].Update.ToolCallUpdate
 
 	raw, _ := resultPatch.RawOutput.Value()
-	if string(raw) != `{"display":{"kind":"diff"},"ok":true}` {
+	if string(raw) != `{"ok":true,"display":{"kind":"diff"}}` {
 		t.Fatalf("result patch rawOutput = %s, want the backend result verbatim", raw)
 	}
 
@@ -242,15 +242,30 @@ func testToolLifecycleWrite(t *testing.T) {
 		t.Fatalf("stopReason = %q, want %q", resp.StopReason, acp.StopReasonEndTurn)
 	}
 
-	starts := toolUpdates(h.Updates())
+	// The collector spans both prompts of this harness — the leg-2 starts
+	// are the tc2 rows (the warm-up prompt's tc1 start stays in the same
+	// collection, so the filter is by id, not by count).
+	var starts []ACPUpdate
+
+	for _, u := range toolUpdates(h.Updates()) {
+		if u.Update.ToolCall.ToolCallId == "tc2" {
+			starts = append(starts, u)
+		}
+	}
+
 	if len(starts) != 1 {
-		t.Fatalf("leg 2 collected %d tool_call starts, want exactly 1 (tc2)", len(starts))
+		t.Fatalf("leg 2 collected %d tc2 tool_call starts, want exactly 1", len(starts))
 	}
 
 	start := starts[0].Update.ToolCall
 
-	if start.ToolCallId != "tc2" || start.Name == nil || *start.Name != "Write" {
-		t.Fatalf("leg 2 start = (id %q, name %v), want (tc2, Write)", start.ToolCallId, start.Name)
+	if start.Name == nil || *start.Name != "Write" {
+		t.Fatalf("leg 2 start name = %v, want Write", start.Name)
+	}
+
+	if start.Title != "Write new.go" || start.Kind != acp.ToolKindEdit || start.Status != acp.ToolCallStatusPending {
+		t.Fatalf("leg 2 start = (title %q, kind %q, status %q), want (Write new.go, edit, pending)",
+			start.Title, start.Kind, start.Status)
 	}
 
 	wantPath := toolLifecycleCwd + "/docs/new.md"
@@ -301,13 +316,20 @@ func testToolLifecycleWrite(t *testing.T) {
 }
 
 // assertToolFramesBeforeResponse checks that every tool_call /
-// tool_call_update frame on the tee strictly precedes the prompt response
-// frame of the exchange (the TOOL-01 wire-order lock).
+// tool_call_update frame on the tee strictly precedes THIS leg's prompt
+// response frame — the LAST stopReason line on the tee (the collector
+// spans both prompts of the harness, so the anchor is the final response).
 func assertToolFramesBeforeResponse(t *testing.T, h *FrontHarness, leg string) {
 	t.Helper()
 
 	lines := h.ACPLines()
-	respIdx := teeLineIndex(t, lines, "in", `"stopReason"`, "prompt response")
+
+	respIdxs := teeLineIndexes(lines, "in", `"stopReason"`)
+	if len(respIdxs) == 0 {
+		t.Fatal("no prompt response frame on the tee")
+	}
+
+	respIdx := respIdxs[len(respIdxs)-1]
 
 	for i, line := range lines {
 		if line.Dir == "in" && strings.Contains(line.JSON, `"tool_call"`) && i >= respIdx {

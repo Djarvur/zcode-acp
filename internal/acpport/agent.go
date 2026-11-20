@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -250,20 +253,55 @@ func (a *agentAdapter) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 }
 
 // joinContentBlocks flattens the prompt content into one string: text
-// blocks verbatim, resource_link blocks as their URI (A3), image/audio
-// blocks skipped (Phase 4 advertises the text baseline only).
+// blocks verbatim, resource_link blocks as their URI (A3), image/audio/
+// embedded-resource blocks skipped (this build advertises the text
+// baseline only). The drop site warns STRUCTURALLY (WR-06, plan 05-04):
+// kinds and counts only — never block content.
 func joinContentBlocks(blocks []acp.ContentBlock) string {
 	parts := make([]string, 0, len(blocks))
+	held := make(map[string]int)
+
 	for _, block := range blocks {
 		switch {
 		case block.Text != nil:
 			parts = append(parts, block.Text.Text)
 		case block.ResourceLink != nil:
 			parts = append(parts, block.ResourceLink.Uri)
+		case block.Image != nil:
+			held["image"]++
+		case block.Audio != nil:
+			held["audio"]++
+		case block.Resource != nil:
+			held["resource"]++
+		default:
+			held["unknown"]++
 		}
 	}
 
+	if len(held) > 0 {
+		slog.Warn("acpport: unsupported prompt content blocks held from the turn text",
+			"kinds", heldSummary(held))
+	}
+
 	return strings.Join(parts, " ")
+}
+
+// heldSummary renders the held-block counts as sorted kind=count pairs —
+// the WR-06 warn carries kinds and counts only.
+func heldSummary(held map[string]int) string {
+	keys := make([]string, 0, len(held))
+	for kind := range held {
+		keys = append(keys, kind)
+	}
+
+	slices.Sort(keys)
+
+	pairs := make([]string, 0, len(keys))
+	for _, kind := range keys {
+		pairs = append(pairs, kind+"="+strconv.Itoa(held[kind]))
+	}
+
+	return strings.Join(pairs, ",")
 }
 
 // Cancel forwards the session id to Handlers (D-05 — the front owns the

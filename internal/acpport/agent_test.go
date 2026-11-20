@@ -2,6 +2,7 @@ package acpport_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"log/slog"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -966,6 +968,60 @@ func TestToolNote(t *testing.T) {
 	}
 
 	expectNoFrame(t, lines, "loud-default notes must not emit frames")
+}
+
+// TestUnsupportedPromptBlocksWarnStructural locks WR-06 (plan 05-04
+// Task 2) at the drop site: image/audio/embedded-resource prompt blocks
+// are held from the joined turn text (the text baseline intact) and the
+// drop emits ONE structural slog warn carrying kinds and counts — never
+// the block content (the base64 payload must not appear anywhere in the
+// log record).
+func TestUnsupportedPromptBlocksWarnStructural(t *testing.T) {
+	var logBuf bytes.Buffer
+
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	h := newScriptedHandlers()
+	h.promptReason = acpport.StopEndTurn
+
+	const secretPixel = "c2VjcmV0LXBpeGVsLXBheWxvYWQ=" // scrubbed fixture bytes
+
+	adapter := acpport.NewAgent(h)
+
+	_, err := adapter.Prompt(context.Background(), acp.PromptRequest{
+		SessionId: acp.SessionId(testSessionID),
+		Prompt: []acp.ContentBlock{
+			acp.TextBlock("before"),
+			acp.ImageBlock(secretPixel, "image/png"),
+			acp.AudioBlock(secretPixel, "audio/wav"),
+			acp.TextBlock("after"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("prompt with unsupported blocks: %v", err)
+	}
+
+	// The text baseline joined intact around the held blocks.
+	prompted := h.promptCalls
+	if len(prompted) != 1 || prompted[0].Text != "before after" {
+		t.Fatalf("joined prompt text = %q, want %q (held blocks contribute nothing)", prompted[0].Text, "before after")
+	}
+
+	logs := logBuf.String()
+
+	if !strings.Contains(logs, "unsupported prompt content blocks held") {
+		t.Fatalf("no drop-site warn recorded:\n%s", logs)
+	}
+
+	if !strings.Contains(logs, "image=1") || !strings.Contains(logs, "audio=1") {
+		t.Fatalf("drop-site warn must carry kinds and counts (image=1, audio=1):\n%s", logs)
+	}
+
+	if strings.Contains(logs, secretPixel) {
+		t.Fatal("drop-site warn leaked block content — the warn carries kinds and counts ONLY")
+	}
 }
 
 // TestPermissionSender (plan 05-02 Task 1 RED target) drives the bound

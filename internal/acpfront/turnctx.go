@@ -48,11 +48,22 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (turnCtx 
 		return sink(turnCtx, note)
 	}
 
+	// The tap's turn-scoped classification state (plan 05-04): the slot's
+	// turnId starts empty (record-on-first-sight at the tap, IN-05), the
+	// cwd anchors the absolute diff/location paths (Pitfall 5), and the
+	// diff registry starts fresh per turn.
+	f.turnID = ""
+	f.turnCwd = f.sessionCwdLocked(sessionID)
+	f.turnDiffs = make(map[string]acpport.ToolDiff)
+
 	release = func() {
 		f.turnMu.Lock()
 
 		f.turnActive = false
 		f.turnEmit = nil
+		f.turnID = ""
+		f.turnCwd = ""
+		f.turnDiffs = nil
 
 		f.turnMu.Unlock()
 
@@ -60,4 +71,14 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (turnCtx 
 	}
 
 	return turnCtx, release
+}
+
+// sessionCwdLocked reads the session-cwd registry; the caller holds turnMu
+// (a different mutex than the registry's cwdMu — no lock ordering issue,
+// this is a leaf read).
+func (f *Front) sessionCwdLocked(sessionID string) string {
+	f.cwdMu.Lock()
+	defer f.cwdMu.Unlock()
+
+	return f.cwds[sessionID]
 }

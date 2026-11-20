@@ -61,10 +61,25 @@ type Front struct {
 	// binding the turn's sink, session id, and context into one call the
 	// stream.go tap makes per delta envelope. Nil when no turn is active.
 	// The slot is held for the turn's whole lifetime: from Prompt entry to
-	// its return.
+	// its return. The remaining slot fields are the tap's turn-scoped
+	// classification state (plan 05-04): turnID is the active turn's
+	// backend turnId (IN-05 — record-on-first-sight, foreign-turnId deltas
+	// are skipped), turnCwd the session cwd the diff/location paths resolve
+	// absolute against (Pitfall 5), turnDiffs the scheduled diffs the
+	// result arm re-emits (clients render early; update content merges per
+	// spec).
 	turnMu     sync.Mutex
 	turnActive bool
 	turnEmit   func(note acpport.SessionNote) error
+	turnID     string
+	turnCwd    string
+	turnDiffs  map[string]acpport.ToolDiff
+
+	// cwdMu guards the session-cwd registry (session id → the validated
+	// absolute cwd from session/new) — acquireTurn copies the active
+	// session's cwd into the turn slot.
+	cwdMu sync.Mutex
+	cwds  map[string]string
 }
 
 // ModelSelection is the configured backend model the session/new leg binds
@@ -109,6 +124,7 @@ func New(conn *zcode.Conn, opts ...Option) *Front {
 		registry: core.NewSessionRegistry(),
 		version:  "0.0.0-dev",
 		perm:     newPermissionBridge(),
+		cwds:     make(map[string]string),
 		newTurnCtx: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(baseCtx)
 		},
@@ -176,6 +192,8 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 	if err != nil {
 		return "", err
 	}
+
+	f.recordCwd(sid, params.Cwd)
 
 	if _, err := f.conn.Call(ctx, zcode.MethodSessionSubscribe, map[string]any{
 		"sessionId":    sid,
@@ -305,6 +323,86 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 	f.perm.cancelPendingForTurn()
 
 	return nil
+}
+
+// recordCwd stores one session's validated absolute cwd (the T-4-01 guard
+// upstream guarantees absoluteness) for the tap's diff/location resolution.
+func (f *Front) recordCwd(sessionID, cwd string) {
+	f.cwdMu.Lock()
+	defer f.cwdMu.Unlock()
+
+	f.cwds[sessionID] = cwd
+}
+
+// sessionCwd returns the recorded cwd for one session ("" when unknown —
+// the tap then passes backend paths through unchanged).
+func (f *Front) sessionCwd(sessionID string) string {
+	f.cwdMu.Lock()
+	defer f.cwdMu.Unlock()
+
+	return f.cwds[sessionID]
+}
+
+// turnScope copies the active turn's emitter out under the slot lock and
+// applies the IN-05 turn-id guard (record-on-first-sight; a foreign-turnId
+// envelope is not scoped). The emit call itself happens OUTSIDE the lock —
+// the lock is never held across a wire write.
+func (f *Front) turnScope(turnID string) (emit func(note acpport.SessionNote) error, scoped bool) {
+	emit, _, scoped = f.turnScopeWithCwd(turnID)
+
+	return emit, scoped
+}
+
+// turnScopeWithCwd is turnScope plus the session cwd copy the tool
+// classification resolves diff/location paths against (Pitfall 5).
+func (f *Front) turnScopeWithCwd(turnID string) (
+	emit func(note acpport.SessionNote) error,
+	cwd string,
+	scoped bool,
+) {
+	f.turnMu.Lock()
+	defer f.turnMu.Unlock()
+
+	if !f.turnActive || f.turnEmit == nil {
+		return nil, "", false
+	}
+
+	if turnID != "" {
+		switch f.turnID {
+		case "":
+			f.turnID = turnID // record-on-first-sight (machine.go discipline)
+		case turnID:
+		default:
+			return nil, "", false // IN-05: a foreign turn's envelope never reaches the client
+		}
+	}
+
+	return f.turnEmit, f.turnCwd, true
+}
+
+// recordTurnDiff stores one scheduled tool's diff recipe in the turn slot
+// so the result arm re-emits it (TOOL-01: the diff rides BOTH the
+// scheduled tool_call and the result update). A no-op outside an active
+// turn.
+func (f *Front) recordTurnDiff(toolCallID string, diff acpport.ToolDiff) {
+	f.turnMu.Lock()
+	defer f.turnMu.Unlock()
+
+	if !f.turnActive || f.turnDiffs == nil {
+		return
+	}
+
+	f.turnDiffs[toolCallID] = diff
+}
+
+// turnDiffFor snapshots one tool's recorded diff under the slot lock.
+func (f *Front) turnDiffFor(toolCallID string) (acpport.ToolDiff, bool) {
+	f.turnMu.Lock()
+	defer f.turnMu.Unlock()
+
+	diff, ok := f.turnDiffs[toolCallID]
+
+	return diff, ok
 }
 
 // createSessionID digs result.session.sessionId out of the create reply
