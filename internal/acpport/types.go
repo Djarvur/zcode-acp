@@ -133,11 +133,6 @@ type Error struct {
 	Message string
 }
 
-// Error implements the error interface with the plain message.
-func (e *Error) Error() string {
-	return e.Message
-}
-
 // NewInvalidRequest builds a -32600 front error (protocol-level request
 // violation — e.g. the D-05 second-prompt guard until 04-05 sharpens the
 // concurrency mapping).
@@ -149,4 +144,9 @@ func NewInvalidRequest(format string, args ...any) *Error {
 // honestly — A5).
 func NewInternal(format string, args ...any) *Error {
 	return &Error{Code: CodeInternal, Message: fmt.Sprintf(format, args...)}
+}
+
+// Error implements the error interface with the plain message.
+func (e *Error) Error() string {
+	return e.Message
 }

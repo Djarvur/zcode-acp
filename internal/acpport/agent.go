@@ -30,20 +30,14 @@ type agentAdapter struct {
 // sinkBinder is the hook NewAgentSideConnection uses to hand the
 // connection-bound sink to our adapter before any frame flows.
 type sinkBinder interface {
-	bindSink(UpdateSink)
+	bindSink(sink UpdateSink)
 }
 
-// bindSink attaches the connection-bound update sink; called once by
-// NewAgentSideConnection during construction.
-func (a *agentAdapter) bindSink(sink UpdateSink) {
-	a.sink = sink
-}
-
-// NewAgent wraps a Handlers impl as an acp.Agent — the D-01 translation
-// point (RESEARCH Pattern 1): production wiring passes the result to
-// NewAgentSideConnection; the adapter carries no state beyond the
-// Handlers reference and the connection-bound sink.
-func NewAgent(h Handlers) acp.Agent {
+// NewAgent wraps a Handlers impl as the acp.Agent implementation — the
+// D-01 translation point (RESEARCH Pattern 1): production wiring passes
+// the result to NewAgentSideConnection; the adapter carries no state
+// beyond the Handlers reference and the connection-bound sink.
+func NewAgent(h Handlers) *agentAdapter {
 	return &agentAdapter{h: h}
 }
 
@@ -67,12 +61,13 @@ func NewAgentSideConnection(
 }
 
 // Initialize translates the neutral InitReport onto the honest D-02 wire
-// response via initializeResponse; front errors surface as Go errors and
-// are coded at the dispatch layer.
+// response; front errors are coded via wireError, never passed raw (the
+// SDK's toReqErr type-asserts *RequestError — an untranslated seam error
+// would degrade to a generic -32603).
 func (a *agentAdapter) Initialize(ctx context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
 	report, err := a.h.Initialize(ctx)
 	if err != nil {
-		return acp.InitializeResponse{}, err
+		return acp.InitializeResponse{}, wireError(err)
 	}
 
 	return initializeResponse(report), nil
@@ -113,7 +108,7 @@ func initializeResponse(report InitReport) acp.InitializeResponse {
 func (a *agentAdapter) NewSession(ctx context.Context, params acp.NewSessionRequest) (acp.NewSessionResponse, error) {
 	sessionID, err := a.h.NewSession(ctx, newSessionParams(params))
 	if err != nil {
-		return acp.NewSessionResponse{}, err
+		return acp.NewSessionResponse{}, wireError(err)
 	}
 
 	return acp.NewSessionResponse{SessionId: acp.SessionId(sessionID)}, nil
@@ -192,6 +187,82 @@ func joinContentBlocks(blocks []acp.ContentBlock) string {
 	return strings.Join(parts, " ")
 }
 
+// Cancel forwards the session id to Handlers (D-05 — the front owns the
+// exactly-once cancel machinery).
+func (a *agentAdapter) Cancel(ctx context.Context, params acp.CancelNotification) error {
+	return wireError(a.h.Cancel(ctx, string(params.SessionId)))
+}
+
+// Authenticate answers the generic unadvertised default in Phase 4
+// (deliberate -32601 exception, Open Question 2 — authMethods are
+// advertised per D-02, the flow lands in Phases 5-6); plan 04-03 flips it
+// to the honest not-available error.
+func (a *agentAdapter) Authenticate(
+	ctx context.Context,
+	params acp.AuthenticateRequest,
+) (acp.AuthenticateResponse, error) {
+	return acp.AuthenticateResponse{}, unadvertised(acp.AgentMethodAuthenticate)
+}
+
+// Logout is unadvertised in Phase 4 — clean -32601 default (Pitfall 6).
+func (a *agentAdapter) Logout(ctx context.Context, params acp.LogoutRequest) (acp.LogoutResponse, error) {
+	return acp.LogoutResponse{}, unadvertised(acp.AgentMethodLogout)
+}
+
+// CloseSession is unadvertised in Phase 4 — clean -32601 default.
+func (a *agentAdapter) CloseSession(
+	ctx context.Context,
+	params acp.CloseSessionRequest,
+) (acp.CloseSessionResponse, error) {
+	return acp.CloseSessionResponse{}, unadvertised(acp.AgentMethodSessionClose)
+}
+
+// DeleteSession is unadvertised in Phase 4 — clean -32601 default.
+func (a *agentAdapter) DeleteSession(
+	ctx context.Context,
+	params acp.DeleteSessionRequest,
+) (acp.DeleteSessionResponse, error) {
+	return acp.DeleteSessionResponse{}, unadvertised(acp.AgentMethodSessionDelete)
+}
+
+// ListSessions is unadvertised in Phase 4 — clean -32601 default.
+func (a *agentAdapter) ListSessions(
+	ctx context.Context,
+	params acp.ListSessionsRequest,
+) (acp.ListSessionsResponse, error) {
+	return acp.ListSessionsResponse{}, unadvertised(acp.AgentMethodSessionList)
+}
+
+// ResumeSession is unadvertised in Phase 4 — clean -32601 default.
+func (a *agentAdapter) ResumeSession(
+	ctx context.Context,
+	params acp.ResumeSessionRequest,
+) (acp.ResumeSessionResponse, error) {
+	return acp.ResumeSessionResponse{}, unadvertised(acp.AgentMethodSessionResume)
+}
+
+// SetSessionConfigOption is unadvertised in Phase 4 — clean -32601 default.
+func (a *agentAdapter) SetSessionConfigOption(
+	ctx context.Context,
+	params acp.SetSessionConfigOptionRequest,
+) (acp.SetSessionConfigOptionResponse, error) {
+	return acp.SetSessionConfigOptionResponse{}, unadvertised(acp.AgentMethodSessionSetConfigOption)
+}
+
+// SetSessionMode is unadvertised in Phase 4 — clean -32601 default.
+func (a *agentAdapter) SetSessionMode(
+	ctx context.Context,
+	params acp.SetSessionModeRequest,
+) (acp.SetSessionModeResponse, error) {
+	return acp.SetSessionModeResponse{}, unadvertised(acp.AgentMethodSessionSetMode)
+}
+
+// bindSink attaches the connection-bound update sink; called once by
+// NewAgentSideConnection during construction.
+func (a *agentAdapter) bindSink(sink UpdateSink) {
+	a.sink = sink
+}
+
 // sinkForPrompt returns the bound connection sink; the construction
 // discipline makes the bound path the only real path, but a direct
 // NewAgent misuse gets a loud error instead of a nil-deref panic.
@@ -205,64 +276,22 @@ func (a *agentAdapter) sinkForPrompt() UpdateSink {
 	}
 }
 
-// Cancel forwards the session id to Handlers (D-05 — the front owns the
-// exactly-once cancel machinery).
-func (a *agentAdapter) Cancel(ctx context.Context, params acp.CancelNotification) error {
-	return a.h.Cancel(ctx, string(params.SessionId))
-}
-
 // wireError maps a front error onto the SDK's coded RequestError: seam
 // errors carry their own code; anything else is an internal error (A5).
+// The returned *RequestError must stay unwrapped — the SDK's toReqErr
+// type-asserts the concrete type (no errors.As), so %w wrapping would
+// silently degrade every coded seam error to a generic -32603.
 func wireError(err error) error {
+	if err == nil {
+		return nil
+	}
+
 	var seamErr *Error
 	if errors.As(err, &seamErr) {
 		return acp.NewRequestError(seamErr.Code, seamErr.Message, nil)
 	}
 
 	return acp.NewInternalError(err.Error())
-}
-
-// Authenticate answers the generic unadvertised default in Phase 4
-// (deliberate -32601 exception, Open Question 2 — authMethods are
-// advertised per D-02, the flow lands in Phases 5-6); plan 04-03 flips it
-// to the honest not-available error.
-func (a *agentAdapter) Authenticate(ctx context.Context, params acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
-	return acp.AuthenticateResponse{}, unadvertised(acp.AgentMethodAuthenticate)
-}
-
-// Logout is unadvertised in Phase 4 — clean -32601 default (Pitfall 6).
-func (a *agentAdapter) Logout(ctx context.Context, params acp.LogoutRequest) (acp.LogoutResponse, error) {
-	return acp.LogoutResponse{}, unadvertised(acp.AgentMethodLogout)
-}
-
-// CloseSession is unadvertised in Phase 4 — clean -32601 default.
-func (a *agentAdapter) CloseSession(ctx context.Context, params acp.CloseSessionRequest) (acp.CloseSessionResponse, error) {
-	return acp.CloseSessionResponse{}, unadvertised(acp.AgentMethodSessionClose)
-}
-
-// DeleteSession is unadvertised in Phase 4 — clean -32601 default.
-func (a *agentAdapter) DeleteSession(ctx context.Context, params acp.DeleteSessionRequest) (acp.DeleteSessionResponse, error) {
-	return acp.DeleteSessionResponse{}, unadvertised(acp.AgentMethodSessionDelete)
-}
-
-// ListSessions is unadvertised in Phase 4 — clean -32601 default.
-func (a *agentAdapter) ListSessions(ctx context.Context, params acp.ListSessionsRequest) (acp.ListSessionsResponse, error) {
-	return acp.ListSessionsResponse{}, unadvertised(acp.AgentMethodSessionList)
-}
-
-// ResumeSession is unadvertised in Phase 4 — clean -32601 default.
-func (a *agentAdapter) ResumeSession(ctx context.Context, params acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
-	return acp.ResumeSessionResponse{}, unadvertised(acp.AgentMethodSessionResume)
-}
-
-// SetSessionConfigOption is unadvertised in Phase 4 — clean -32601 default.
-func (a *agentAdapter) SetSessionConfigOption(ctx context.Context, params acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
-	return acp.SetSessionConfigOptionResponse{}, unadvertised(acp.AgentMethodSessionSetConfigOption)
-}
-
-// SetSessionMode is unadvertised in Phase 4 — clean -32601 default.
-func (a *agentAdapter) SetSessionMode(ctx context.Context, params acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
-	return acp.SetSessionModeResponse{}, unadvertised(acp.AgentMethodSessionSetMode)
 }
 
 // unadvertised is the -32601 default for the stable methods this build

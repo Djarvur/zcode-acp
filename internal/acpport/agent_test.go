@@ -41,6 +41,18 @@ const sdkModulePath = "github.com/coder/acp-go-sdk"
 // a missing frame fails fast instead of hanging the exchange.
 const frameWaitTimeout = 2 * time.Second
 
+// Fixed synthetic ids for the contract tests.
+const (
+	testSessionID    = "sess_1"
+	backendSessionID = "sess_backend"
+	testCwd          = "/tmp/ws"
+)
+
+// errRawFront is the deliberately non-seam error in the coding table: a
+// front failure that is NOT an *acpport.Error must still surface as a
+// coded -32603, never raw (A5).
+var errRawFront = errors.New("raw front failure")
+
 // TestSDKImportBoundary walks every non-test .go file in the repo and
 // fails if any file outside internal/acpport imports the SDK — the D-01
 // seam lock, enforced structurally (T-4-SC containment).
@@ -138,24 +150,28 @@ func sdkImportSpec(path string) (string, error) {
 	return "", nil
 }
 
-// The honest initialize payload (D-02, executed-probe shape): real
-// agentInfo, both advertised auth methods, zero-value capabilities.
-var honestReport = acpport.InitReport{
-	Name:    "zcode-acp",
-	Title:   "zcode-acp agent",
-	Version: "0.0.0-dev",
-	AuthMethods: []acpport.AuthMethodDef{
-		{ID: "zai-api-key", Name: "z.ai API key"},
-		{ID: "zai-individual-coding-plan", Name: "z.ai Individual Coding Plan"},
-	},
+// honestReport builds the honest initialize payload (D-02,
+// executed-probe shape): real agentInfo, both advertised auth methods,
+// zero-value capabilities.
+func honestReport() acpport.InitReport {
+	return acpport.InitReport{
+		Name:    "zcode-acp",
+		Title:   "zcode-acp agent",
+		Version: "0.0.0-dev",
+		AuthMethods: []acpport.AuthMethodDef{
+			{ID: "zai-api-key", Name: "z.ai API key"},
+			{ID: "zai-individual-coding-plan", Name: "z.ai Individual Coding Plan"},
+		},
+	}
 }
 
 // honestInitializeFrame is the byte-exact wire shape the executed probe
 // against v0.20.0 produced (RESEARCH Code Examples): capabilities are
 // empty objects, the agent-variant authMethods carry no type
 // discriminator, and no fs/terminal/loadSession surface appears anywhere.
-const honestInitializeFrame = `{"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},"sessionCapabilities":{}}` +
-	`,"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},` +
+const honestInitializeFrame = `{"agentCapabilities":{"auth":{},"mcpCapabilities":{},` +
+	`"promptCapabilities":{},"sessionCapabilities":{}},` +
+	`"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},` +
 	`"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},` +
 	`{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}`
 
@@ -166,11 +182,13 @@ const honestInitializeFrame = `{"agentCapabilities":{"auth":{},"mcpCapabilities"
 // honesty by construction; assert on absent features, A7).
 func TestInitializeAssemblesHonestReport(t *testing.T) {
 	h := newScriptedHandlers()
-	h.initReport = honestReport
+	h.initReport = honestReport()
 
 	adapter := acpport.NewAgent(h)
 
-	resp, err := adapter.Initialize(context.Background(), acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersionNumber})
+	initReq := acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersionNumber}
+
+	resp, err := adapter.Initialize(context.Background(), initReq)
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
@@ -188,16 +206,18 @@ func TestInitializeAssemblesHonestReport(t *testing.T) {
 func assertAgentInfo(t *testing.T, got *acp.Implementation) {
 	t.Helper()
 
+	want := honestReport()
+
 	if got == nil {
 		t.Fatal("agentInfo missing — the honest report carries real identity (D-02)")
 	}
 
-	if got.Name != honestReport.Name || got.Version != honestReport.Version {
+	if got.Name != want.Name || got.Version != want.Version {
 		t.Fatalf("agentInfo = %+v, want name/version from InitReport", got)
 	}
 
-	if got.Title == nil || *got.Title != honestReport.Title {
-		t.Fatalf("agentInfo title = %v, want %q", got.Title, honestReport.Title)
+	if got.Title == nil || *got.Title != want.Title {
+		t.Fatalf("agentInfo title = %v, want %q", got.Title, want.Title)
 	}
 }
 
@@ -252,17 +272,46 @@ func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 		method string
 		call   func() error
 	}{
-		{acp.AgentMethodAuthenticate, func() error { _, err := adapter.Authenticate(ctx, acp.AuthenticateRequest{}); return err }},
-		{acp.AgentMethodLogout, func() error { _, err := adapter.Logout(ctx, acp.LogoutRequest{}); return err }},
-		{acp.AgentMethodSessionClose, func() error { _, err := adapter.CloseSession(ctx, acp.CloseSessionRequest{}); return err }},
-		{acp.AgentMethodSessionDelete, func() error { _, err := adapter.DeleteSession(ctx, acp.DeleteSessionRequest{}); return err }},
-		{acp.AgentMethodSessionList, func() error { _, err := adapter.ListSessions(ctx, acp.ListSessionsRequest{}); return err }},
-		{acp.AgentMethodSessionResume, func() error { _, err := adapter.ResumeSession(ctx, acp.ResumeSessionRequest{}); return err }},
-		{acp.AgentMethodSessionSetConfigOption, func() error {
-			_, err := adapter.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{})
+		{acp.AgentMethodAuthenticate, func() error {
+			_, err := adapter.Authenticate(ctx, acp.AuthenticateRequest{})
+
 			return err
 		}},
-		{acp.AgentMethodSessionSetMode, func() error { _, err := adapter.SetSessionMode(ctx, acp.SetSessionModeRequest{}); return err }},
+		{acp.AgentMethodLogout, func() error {
+			_, err := adapter.Logout(ctx, acp.LogoutRequest{})
+
+			return err
+		}},
+		{acp.AgentMethodSessionClose, func() error {
+			_, err := adapter.CloseSession(ctx, acp.CloseSessionRequest{})
+
+			return err
+		}},
+		{acp.AgentMethodSessionDelete, func() error {
+			_, err := adapter.DeleteSession(ctx, acp.DeleteSessionRequest{})
+
+			return err
+		}},
+		{acp.AgentMethodSessionList, func() error {
+			_, err := adapter.ListSessions(ctx, acp.ListSessionsRequest{})
+
+			return err
+		}},
+		{acp.AgentMethodSessionResume, func() error {
+			_, err := adapter.ResumeSession(ctx, acp.ResumeSessionRequest{})
+
+			return err
+		}},
+		{acp.AgentMethodSessionSetConfigOption, func() error {
+			_, err := adapter.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{})
+
+			return err
+		}},
+		{acp.AgentMethodSessionSetMode, func() error {
+			_, err := adapter.SetSessionMode(ctx, acp.SetSessionModeRequest{})
+
+			return err
+		}},
 	}
 
 	for _, tt := range tests {
@@ -304,7 +353,7 @@ func assertMethodNotFound(t *testing.T, err error, method string) {
 // contributes its URI to the joined content).
 func promptJoinProbe() acp.PromptRequest {
 	return acp.PromptRequest{
-		SessionId: "sess_1",
+		SessionId: testSessionID,
 		Prompt: []acp.ContentBlock{
 			acp.TextBlock("Reply"),
 			{ResourceLink: &acp.ContentBlockResourceLink{Uri: "file:///x", Name: "x"}},
@@ -322,98 +371,181 @@ func TestPromptMapsStopReasonsAndCodesErrors(t *testing.T) {
 	req := promptJoinProbe()
 
 	t.Run("stop-reason mapping", func(t *testing.T) {
-		for reason, want := range map[acpport.StopReason]acp.StopReason{
-			acpport.StopEndTurn:   acp.StopReasonEndTurn,
-			acpport.StopCancelled: acp.StopReasonCancelled,
-		} {
-			h := newScriptedHandlers()
-			h.promptReason = reason
-
-			resp, err := acpport.NewAgent(h).Prompt(context.Background(), req)
-			if err != nil {
-				t.Fatalf("Prompt(%s): %v", reason, err)
-			}
-
-			if resp.StopReason != want {
-				t.Fatalf("Prompt(%s) stopReason = %q, want %q", reason, resp.StopReason, want)
-			}
-		}
+		assertPromptStopReasons(t, req)
 	})
 
 	t.Run("content join and delegation", func(t *testing.T) {
-		h := newScriptedHandlers()
-		h.promptReason = acpport.StopEndTurn
-
-		if _, err := acpport.NewAgent(h).Prompt(context.Background(), req); err != nil {
-			t.Fatalf("Prompt: %v", err)
-		}
-
-		if len(h.promptCalls) != 1 {
-			t.Fatalf("Handlers.Prompt calls = %d, want 1", len(h.promptCalls))
-		}
-
-		got := h.promptCalls[0]
-
-		if got.SessionID != "sess_1" {
-			t.Fatalf("PromptParams.SessionID = %q, want sess_1", got.SessionID)
-		}
-
-		if got.Text != "Reply file:///x OK" {
-			t.Fatalf("PromptParams.Text = %q, want joined content %q", got.Text, "Reply file:///x OK")
-		}
-
-		if h.sinks[0] == nil {
-			t.Fatal("Handlers.Prompt must receive a non-nil update sink")
-		}
+		assertPromptContentJoin(t, req)
 	})
 
 	t.Run("front errors are coded", func(t *testing.T) {
-		tests := []struct {
-			name     string
-			frontErr error
-			wantCode int
-		}{
-			{"invalid request", acpport.NewInvalidRequest("a prompt is already running for this session"), -32600},
-			{"internal", acpport.NewInternal("backend session send failed"), -32603},
-			{"raw error is coded internal", errors.New("raw front failure"), -32603},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				h := newScriptedHandlers()
-				h.promptErr = tt.frontErr
-
-				resp, err := acpport.NewAgent(h).Prompt(context.Background(), req)
-				if err == nil {
-					t.Fatalf("Prompt must fail, got response %+v", resp)
-				}
-
-				var rerr *acp.RequestError
-				if !errors.As(err, &rerr) {
-					t.Fatalf("front error must surface as a coded RequestError, got %T: %v", err, err)
-				}
-
-				if rerr.Code != tt.wantCode {
-					t.Fatalf("error code = %d, want %d", rerr.Code, tt.wantCode)
-				}
-			})
-		}
+		assertPromptCodedErrors(t, req)
 	})
 
 	t.Run("unmapped stop reason must not leak", func(t *testing.T) {
+		assertUnmappedReasonLoud(t, req)
+	})
+}
+
+// assertPromptStopReasons checks both neutral stop reasons map onto the
+// SDK's wire stop reasons.
+func assertPromptStopReasons(t *testing.T, req acp.PromptRequest) {
+	t.Helper()
+
+	for reason, want := range map[acpport.StopReason]acp.StopReason{
+		acpport.StopEndTurn:   acp.StopReasonEndTurn,
+		acpport.StopCancelled: acp.StopReasonCancelled,
+	} {
 		h := newScriptedHandlers()
-		h.promptReason = acpport.StopReason("refusal")
+		h.promptReason = reason
 
 		resp, err := acpport.NewAgent(h).Prompt(context.Background(), req)
-		if err == nil {
-			t.Fatalf("unmapped stop reason %q must not become a response, got %+v", h.promptReason, resp)
+		if err != nil {
+			t.Fatalf("Prompt(%s): %v", reason, err)
 		}
 
-		var rerr *acp.RequestError
-		if !errors.As(err, &rerr) || rerr.Code != -32603 {
-			t.Fatalf("unmapped stop reason must surface as -32603, got %v", err)
+		if resp.StopReason != want {
+			t.Fatalf("Prompt(%s) stopReason = %q, want %q", reason, resp.StopReason, want)
 		}
+	}
+}
+
+// assertPromptContentJoin checks the delegation contract: one Handlers
+// call with the joined content (text verbatim, resource_link as URI) and
+// a non-nil sink.
+func assertPromptContentJoin(t *testing.T, req acp.PromptRequest) {
+	t.Helper()
+
+	h := newScriptedHandlers()
+	h.promptReason = acpport.StopEndTurn
+
+	if _, err := acpport.NewAgent(h).Prompt(context.Background(), req); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	if len(h.promptCalls) != 1 {
+		t.Fatalf("Handlers.Prompt calls = %d, want 1", len(h.promptCalls))
+	}
+
+	got := h.promptCalls[0]
+
+	if got.SessionID != testSessionID {
+		t.Fatalf("PromptParams.SessionID = %q, want %s", got.SessionID, testSessionID)
+	}
+
+	if got.Text != "Reply file:///x OK" {
+		t.Fatalf("PromptParams.Text = %q, want joined content %q", got.Text, "Reply file:///x OK")
+	}
+
+	if h.sinks[0] == nil {
+		t.Fatal("Handlers.Prompt must receive a non-nil update sink")
+	}
+}
+
+// assertPromptCodedErrors checks the error-coding table: seam
+// invalid-request codes -32600, seam and raw internal errors code -32603.
+func assertPromptCodedErrors(t *testing.T, req acp.PromptRequest) {
+	t.Helper()
+
+	tests := []struct {
+		name     string
+		frontErr error
+		wantCode int
+	}{
+		{"invalid request", acpport.NewInvalidRequest("a prompt is already running for this session"), -32600},
+		{"internal", acpport.NewInternal("backend session send failed"), -32603},
+		{"raw error is coded internal", errRawFront, -32603},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newScriptedHandlers()
+			h.promptErr = tt.frontErr
+
+			resp, err := acpport.NewAgent(h).Prompt(context.Background(), req)
+			if err == nil {
+				t.Fatalf("Prompt must fail, got response %+v", resp)
+			}
+
+			var rerr *acp.RequestError
+			if !errors.As(err, &rerr) {
+				t.Fatalf("front error must surface as a coded RequestError, got %T: %v", err, err)
+			}
+
+			if rerr.Code != tt.wantCode {
+				t.Fatalf("error code = %d, want %d", rerr.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+// assertUnmappedReasonLoud checks a foreign stop reason never becomes a
+// result — it surfaces as a coded internal error (A5).
+func assertUnmappedReasonLoud(t *testing.T, req acp.PromptRequest) {
+	t.Helper()
+
+	h := newScriptedHandlers()
+	h.promptReason = acpport.StopReason("refusal")
+
+	resp, err := acpport.NewAgent(h).Prompt(context.Background(), req)
+	if err == nil {
+		t.Fatalf("unmapped stop reason %q must not become a response, got %+v", h.promptReason, resp)
+	}
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) || rerr.Code != -32603 {
+		t.Fatalf("unmapped stop reason must surface as -32603, got %v", err)
+	}
+}
+
+// TestFrontErrorsCodedOnAllAdvertisedMethods pins the coding contract on
+// every advertised method: a seam error returned by Handlers surfaces as
+// the coded RequestError on the wire, never raw — the SDK's toReqErr
+// type-asserts *RequestError, so an untranslated seam error would degrade
+// to a generic -32603 with the message string.
+func TestFrontErrorsCodedOnAllAdvertisedMethods(t *testing.T) {
+	ctx := context.Background()
+
+	seamErr := acpport.NewInvalidRequest("session is not available for this operation")
+
+	t.Run("initialize", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.initErr = seamErr
+
+		_, err := acpport.NewAgent(h).Initialize(ctx, acp.InitializeRequest{})
+		assertSeamCoded(t, err, seamErr)
 	})
+
+	t.Run("new_session", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.newSessionErr = seamErr
+
+		_, err := acpport.NewAgent(h).NewSession(ctx, acp.NewSessionRequest{Cwd: testCwd})
+		assertSeamCoded(t, err, seamErr)
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.cancelErr = seamErr
+
+		err := acpport.NewAgent(h).Cancel(ctx, acp.CancelNotification{SessionId: testSessionID})
+		assertSeamCoded(t, err, seamErr)
+	})
+}
+
+// assertSeamCoded asserts err is the coded RequestError carrying the seam
+// error's code and message.
+func assertSeamCoded(t *testing.T, err error, seam *acpport.Error) {
+	t.Helper()
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("seam error must surface as a coded RequestError, got %T: %v", err, err)
+	}
+
+	if rerr.Code != seam.Code || rerr.Message != seam.Message {
+		t.Fatalf("coded error = %d/%q, want %d/%q", rerr.Code, rerr.Message, seam.Code, seam.Message)
+	}
 }
 
 // TestNewSessionAndCancelDelegate drives the two remaining advertised
@@ -426,7 +558,7 @@ func TestNewSessionAndCancelDelegate(t *testing.T) {
 	ctx := context.Background()
 
 	req := acp.NewSessionRequest{
-		Cwd: "/tmp/ws",
+		Cwd: testCwd,
 		McpServers: []acp.McpServer{
 			{Stdio: &acp.McpServerStdio{Name: "mcp-fs", Command: "uvx"}},
 		},
@@ -447,12 +579,14 @@ func TestNewSessionAndCancelDelegate(t *testing.T) {
 
 	assertNeutralNewSessionParams(t, h.newSessionCalls[0])
 
-	if err := adapter.Cancel(ctx, acp.CancelNotification{SessionId: "sess_backend"}); err != nil {
+	cancelNote := acp.CancelNotification{SessionId: backendSessionID}
+
+	if err := adapter.Cancel(ctx, cancelNote); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 
-	if len(h.cancelCalls) != 1 || h.cancelCalls[0] != "sess_backend" {
-		t.Fatalf("Handlers.Cancel calls = %v, want exactly [sess_backend]", h.cancelCalls)
+	if len(h.cancelCalls) != 1 || h.cancelCalls[0] != backendSessionID {
+		t.Fatalf("Handlers.Cancel calls = %v, want exactly [%s]", h.cancelCalls, backendSessionID)
 	}
 }
 
@@ -461,8 +595,8 @@ func TestNewSessionAndCancelDelegate(t *testing.T) {
 func assertNeutralNewSessionParams(t *testing.T, params acpport.NewSessionParams) {
 	t.Helper()
 
-	if params.Cwd != "/tmp/ws" {
-		t.Fatalf("NewSessionParams.Cwd = %q, want /tmp/ws", params.Cwd)
+	if params.Cwd != testCwd {
+		t.Fatalf("NewSessionParams.Cwd = %q, want %s", params.Cwd, testCwd)
 	}
 
 	if len(params.McpServers) != 1 || params.McpServers[0].Kind != "stdio" || params.McpServers[0].Name != "mcp-fs" {
@@ -471,10 +605,10 @@ func assertNeutralNewSessionParams(t *testing.T, params acpport.NewSessionParams
 }
 
 // TestUpdateSinkEmitsChunkShapes wires a real agent-side connection and
-// asserts the sink's wire shapes byte-for-byte (executed-probe shapes):
-// message notes become agent_message_chunk notifications, thought notes
-// become agent_thought_chunk notifications, and an unknown note kind
-// fails loud without emitting anything (D-04 honesty).
+// asserts the sink's wire shapes byte-for-byte: message notes become
+// agent_message_chunk notifications, thought notes become
+// agent_thought_chunk notifications, and an unknown note kind fails loud
+// without emitting anything (D-04 honesty).
 func TestUpdateSinkEmitsChunkShapes(t *testing.T) {
 	clientToAgentR, clientToAgentW := io.Pipe()
 	agentToClientR, agentToClientW := io.Pipe()
@@ -495,19 +629,25 @@ func TestUpdateSinkEmitsChunkShapes(t *testing.T) {
 
 	ctx := context.Background()
 
-	if err := sink(ctx, acpport.SessionNote{SessionID: "sess_1", Kind: acpport.NoteMessage, Delta: "hello"}); err != nil {
+	messageNote := acpport.SessionNote{SessionID: testSessionID, Kind: acpport.NoteMessage, Delta: "hello"}
+
+	if err := sink(ctx, messageNote); err != nil {
 		t.Fatalf("sink(message): %v", err)
 	}
 
-	if err := sink(ctx, acpport.SessionNote{SessionID: "sess_1", Kind: acpport.NoteThought, Delta: "thinking"}); err != nil {
+	thoughtNote := acpport.SessionNote{SessionID: testSessionID, Kind: acpport.NoteThought, Delta: "thinking"}
+
+	if err := sink(ctx, thoughtNote); err != nil {
 		t.Fatalf("sink(thought): %v", err)
 	}
 
 	// The full wire frame: the SDK wraps the notification in the JSON-RPC
-	// envelope — the probe shapes (RESEARCH Code Examples) are the params
-	// payload inside it.
-	wantMessage := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"content":{"text":"hello","type":"text"},"sessionUpdate":"agent_message_chunk"}}}`
-	wantThought := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"content":{"text":"thinking","type":"text"},"sessionUpdate":"agent_thought_chunk"}}}`
+	// envelope — the executed-probe shapes (RESEARCH Code Examples) are
+	// the params payload inside it.
+	wantMessage := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
+		`","update":{"content":{"text":"hello","type":"text"},"sessionUpdate":"agent_message_chunk"}}}`
+	wantThought := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
+		`","update":{"content":{"text":"thinking","type":"text"},"sessionUpdate":"agent_thought_chunk"}}}`
 
 	if got := readFrame(t, lines); got != wantMessage {
 		t.Fatalf("message chunk frame drift:\n got: %s\nwant: %s", got, wantMessage)
@@ -517,7 +657,7 @@ func TestUpdateSinkEmitsChunkShapes(t *testing.T) {
 		t.Fatalf("thought chunk frame drift:\n got: %s\nwant: %s", got, wantThought)
 	}
 
-	err := sink(ctx, acpport.SessionNote{SessionID: "sess_1", Kind: "bogus", Delta: "?"})
+	err := sink(ctx, acpport.SessionNote{SessionID: testSessionID, Kind: "bogus", Delta: "?"})
 	if err == nil {
 		t.Fatal("unknown note kind must fail loud, got nil error")
 	}
@@ -564,10 +704,13 @@ func expectNoFrame(t *testing.T, lines <-chan string, why string) {
 type scriptedHandlers struct {
 	mu sync.Mutex
 
-	initReport   acpport.InitReport
-	newSessionID string
-	promptReason acpport.StopReason
-	promptErr    error
+	initReport    acpport.InitReport
+	newSessionID  string
+	promptReason  acpport.StopReason
+	promptErr     error
+	initErr       error
+	newSessionErr error
+	cancelErr     error
 
 	initCalls       int
 	newSessionCalls []acpport.NewSessionParams
@@ -578,7 +721,7 @@ type scriptedHandlers struct {
 
 // newScriptedHandlers returns the fake with the canned backend session id.
 func newScriptedHandlers() *scriptedHandlers {
-	return &scriptedHandlers{newSessionID: "sess_backend"}
+	return &scriptedHandlers{newSessionID: backendSessionID}
 }
 
 // Initialize records the call and replays the canned report.
@@ -587,6 +730,10 @@ func (s *scriptedHandlers) Initialize(ctx context.Context) (acpport.InitReport, 
 	defer s.mu.Unlock()
 
 	s.initCalls++
+
+	if s.initErr != nil {
+		return acpport.InitReport{}, s.initErr
+	}
 
 	return s.initReport, nil
 }
@@ -598,12 +745,20 @@ func (s *scriptedHandlers) NewSession(ctx context.Context, params acpport.NewSes
 
 	s.newSessionCalls = append(s.newSessionCalls, params)
 
+	if s.newSessionErr != nil {
+		return "", s.newSessionErr
+	}
+
 	return s.newSessionID, nil
 }
 
 // Prompt records the params and sink, then answers with the canned reason
 // and error.
-func (s *scriptedHandlers) Prompt(ctx context.Context, params acpport.PromptParams, sink acpport.UpdateSink) (acpport.StopReason, error) {
+func (s *scriptedHandlers) Prompt(
+	ctx context.Context,
+	params acpport.PromptParams,
+	sink acpport.UpdateSink,
+) (acpport.StopReason, error) {
 	s.mu.Lock()
 	s.promptCalls = append(s.promptCalls, params)
 	s.sinks = append(s.sinks, sink)
@@ -619,7 +774,7 @@ func (s *scriptedHandlers) Cancel(ctx context.Context, sessionID string) error {
 
 	s.cancelCalls = append(s.cancelCalls, sessionID)
 
-	return nil
+	return s.cancelErr
 }
 
 // totalCalls reports the number of Handlers invocations recorded.

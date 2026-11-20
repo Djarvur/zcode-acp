@@ -132,6 +132,13 @@ linters:
       # Relax exhaustruct everywhere (too noisy for structs with optional fields)
       - linters: [exhaustruct, exhaustruct_v5]
         text: ".*"
+      # The acpport seam returns the SDK's coded RequestErrors UNWRAPPED by
+      # contract: the SDK's toReqErr type-asserts *RequestError (no
+      # errors.As), so %w wrapping would silently degrade every coded seam
+      # error (-32601/-32600/-32603) to a generic -32603 (D-01 seam, plan 04-02)
+      - linters: [wrapcheck]
+        path: "internal/acpport/.*\\.go"
+        text: ".*coder/acp-go-sdk.*"
       # Allow unchecked errors in main() init paths
       - linters: [errcheck]
         path: "cmd/.*"
