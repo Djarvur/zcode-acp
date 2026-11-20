@@ -2,6 +2,44 @@
   "name": "cancel-mid-turn",
   "on_request": [
     {
+      "method": "session/create",
+      "reply": {
+        "result": {"session": {"sessionId": "sess_fix1"}, "protocol": {"name": "ZCode Protocol", "version": 1}}
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {"sessionId": "sess_fix1", "scope": "runtime-materialization"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"nativeSearchEnhancementsEnabled": false, "memoryEnabled": false}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {
+        "result": {"sessionId": "sess_fix1", "eventSeq": 0, "events": []}
+      }
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {}}
+    },
+    {
       "method": "session/send",
       "reply": {"result": {"accepted": true, "sessionId": "sess_fix1", "stateRevision": 1}},
       "side_effects": [

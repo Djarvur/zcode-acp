@@ -298,11 +298,39 @@ func driveHappyTurnCorpus(ctx context.Context, d *exchangeDriver) {
 	h.send(ctx)
 }
 
-// driveCancelMidTurn: send ack, then session/stop on the bypass lane (D-02);
-// the stop rule's cancelled patch doubles as the wire-level sync signal that
-// the fake processed the stop frame before the exchange closes.
+// driveCancelMidTurn: the front preamble (plan 04-06 — the front tier
+// cannot reach send without a session: create, subscribe, setModel copied
+// verbatim from the setmodel-followup row), then send ack, then
+// session/stop on the bypass lane (D-02); the stop rule's cancelled patch
+// doubles as the wire-level sync signal that the fake processed the stop
+// frame before the exchange closes.
 func driveCancelMidTurn(ctx context.Context, d *exchangeDriver) {
 	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.create(ctx)
+
+	subParams := map[string]any{
+		wireKeySessionID: fixSessionID,
+		"deliveryKind":   "desktop-continuous",
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
+		d.t.Fatalf("session/subscribe: %v", err)
+	}
+
+	setModelParams := map[string]any{
+		wireKeySessionID: fixSessionID,
+		"model": map[string]any{
+			"providerId": "zai-api",
+			"modelId":    "GLM-5.3-Flash",
+			"options":    map[string]any{"reasoningLevel": "high"},
+		},
+		"persistAsWorkspaceLastUsed": false,
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSetModel, setModelParams); err != nil {
+		d.t.Fatalf("session/setModel: %v", err)
+	}
+
 	h.send(ctx)
 
 	if err := d.conn.Stop(fixSessionID); err != nil {
