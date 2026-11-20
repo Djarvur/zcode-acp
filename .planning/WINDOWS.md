@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 9
+open_count: 10
 waived_count: 0
 fixed_count: 1
-total_count: 10
-last_updated: 2026-11-20T15:16:17.803Z
+total_count: 11
+last_updated: 2026-11-20T15:56:11.062Z
 ---
 
 # Broken Windows Ledger
@@ -25,6 +25,7 @@ last_updated: 2026-11-20T15:16:17.803Z
 | 8 | 04 | stub | internal/acpport/doc.go | 12 | acpport seam package pre-placed as skeleton (doc.go + pin_test.go) — adapter surface (types/agent/sink) lands with plan 04-02 | fixed |  | 2026-11-19T23:46:45.534Z | 2026-11-20T00:22:27.097Z |
 | 9 | 05 | deviation | experiments/scan-secrets.sh |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:11.286Z |  |
 | 10 | 05 | deviation | experiments/scan-secrets.sh |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:17.803Z |  |
+| 11 | 05 | unrun-verify | test/realdesktop/apicycle_test.go |  | END-OF-PHASE REAL RUN: TestAPIKeyFullCycle against the live z.ai api-key account (guarded tier, orchestrator-run, quota-ledgered per experiments/README.md Phase-5 row + 05-USER-SETUP.md) — the D-06 live-keyring decrypt and the registry read-back verdict are proven only by this run | open |  | 2026-11-20T15:56:11.062Z |  |
 
 ````json
 [
@@ -155,6 +156,19 @@ last_updated: 2026-11-20T15:16:17.803Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-20T15:16:17.803Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 11,
+    "kind": "unrun-verify",
+    "phase": "05",
+    "file": "test/realdesktop/apicycle_test.go",
+    "line": null,
+    "description": "END-OF-PHASE REAL RUN: TestAPIKeyFullCycle against the live z.ai api-key account (guarded tier, orchestrator-run, quota-ledgered per experiments/README.md Phase-5 row + 05-USER-SETUP.md) — the D-06 live-keyring decrypt and the registry read-back verdict are proven only by this run",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-20T15:56:11.062Z",
     "resolved_at": null,
     "milestone": "v0.20.0"
   }

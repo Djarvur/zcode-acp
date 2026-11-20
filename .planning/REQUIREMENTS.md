@@ -35,23 +35,23 @@ Requirements for the initial release. Each maps to roadmap phases.
 - [x] **CORE-03**: `session/prompt` streams `agent_message_chunk` deltas live and replies `stopReason` only after all pending updates flush
 - [x] **CORE-04**: `agent_thought_chunk` streamed when the backend emits reasoning events (never synthesized)
 - [x] **CORE-05**: `session/cancel` stops the turn, resolves pending permission requests as `cancelled`, replies `stopReason: "cancelled"`
-- [ ] **CORE-06**: Host-managed interaction responder always on: every `interaction/*` answered promptly (dedupe re-announcements, per-method deadlines, error replies to unknown methods instead of crash)
+- [x] **CORE-06**: Host-managed interaction responder always on: every `interaction/*` answered promptly (dedupe re-announcements, per-method deadlines, error replies to unknown methods instead of crash)
 
 ### Tools & Permissions
 
-- [ ] **TOOL-01**: `tool_call` / `tool_call_update` streamed from app-server tool lifecycle events with title, kind, status transitions, and file diffs for edit tools
-- [ ] **TOOL-02**: `session/request_permission` bridged to app-server `interaction/requestPermission` with `allow/reject` options and `cancelled` outcome on ACP-side cancel
+- [x] **TOOL-01**: `tool_call` / `tool_call_update` streamed from app-server tool lifecycle events with title, kind, status transitions, and file diffs for edit tools
+- [x] **TOOL-02**: `session/request_permission` bridged to app-server `interaction/requestPermission` with `allow/reject` options and `cancelled` outcome on ACP-side cancel
 
 ### Auth (both paths end-to-end)
 
-- [ ] **AUTH-01**: api-key path: `provider/updateAccountConfig` + `interaction/requestProviderRuntimeHeaders` answered correctly (registry state verified, not the ack)
+- [x] **AUTH-01**: api-key path: `provider/updateAccountConfig` + `interaction/requestProviderRuntimeHeaders` answered correctly (registry state verified, not the ack)
 - [ ] **AUTH-02**: OAuth individual coding plan: registry snapshot with exact `zcode-builtin:<rev>:<sha256>` revision string, `interaction/requestCredentialCipher` (Secret Service key decryption on Ubuntu GNOME), PAT mint via api.z.ai chain, `requestAuth` response — only official paths
 - [ ] **AUTH-03**: `authenticate{methodId}` works for both advertised methods; account models appear after auth
 - [ ] **AUTH-04**: Missing keyring (headless/CI) fails with a clear error and does not hang the turn
 
 ### Session Lifecycle (Orca-wide dialect)
 
-- [ ] **SESS-01**: `session/resume` (no replay) and `session/close` (with child-side cleanup) supported
+- [x] **SESS-01**: `session/resume` (no replay) and `session/close` (with child-side cleanup) supported
 - [ ] **SESS-02**: `session/delete` answered as a graceful no-op and `session/fork` handled gracefully (never a crash path) — clients that call them keep working
 - [ ] **SESS-03**: Full Orca ACP dialect coverage: every method Orca's client calls at card startup and during a turn (per DISC-02) is implemented or gracefully handled, so a card works end-to-end — including the persona CLI contract: `--model <id>` honored at launch (`launchesWithModel:true`) and the `/model <name>` slash prompt with the exact Hb string contracts (`Unknown ACP model: …`, `No model selected.`)
 
@@ -126,11 +126,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CORE-03 | Phase 4 | Complete |
 | CORE-04 | Phase 4 | Complete |
 | CORE-05 | Phase 4 | Complete |
-| AUTH-01 | Phase 5 | Pending |
-| CORE-06 | Phase 5 | Pending |
-| SESS-01 | Phase 5 | Pending |
-| TOOL-01 | Phase 5 | Pending |
-| TOOL-02 | Phase 5 | Pending |
+| AUTH-01 | Phase 5 | Complete |
+| CORE-06 | Phase 5 | Complete |
+| SESS-01 | Phase 5 | Complete |
+| TOOL-01 | Phase 5 | Complete |
+| TOOL-02 | Phase 5 | Complete |
 | AUTH-02 | Phase 6 | Pending |
 | AUTH-03 | Phase 6 | Pending |
 | AUTH-04 | Phase 6 | Pending |
