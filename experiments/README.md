@@ -193,6 +193,13 @@ config at run time; write the raw capture outside the repo; scrub into
   does not do). Plan 01-01 spent nothing (registry-level only). No key was ever
   minted; nothing here may ever run from CI.
 - **Phase-5 guarded full-cycle run (plan 05-09, EXP-APIKEY-CYCLE-01) — PENDING**
+
+  - **Attempt 1 (2026-11-21 00:00, orchestrator-run) — auth read-back FAILED, zero model spend.**
+    Discovery OK (3.18.2 unpacked-appimage; our basedOn hash matched the rev-44 endpoint builtin file).
+    provider/updateAccountConfig acked {status:"received", providerCount:0, receivedRevision:"account-bridge:<epoch-nanos>"};
+    refreshRegistry {refreshed:true}; the desktop applied runtime headers for GLM-5.3-Flash in its own refresh loop —
+    but no state.updated registry patch within the 30 s read-back window (the dialect §8 silent-discard shape).
+    Zero turns. Capture: experiments/captures/EXP-APIKEY-CYCLE-01.jsonl (scan-secrets clean). Row stays PENDING for the passing run.
   (planned 2026-11-20; this row records the PLANNED spend — the end-of-phase
   verification run appends the actuals + verdict line beneath it)
   — planned spend (the D-05 minimum): one registry read-back (no turn) + two tiny

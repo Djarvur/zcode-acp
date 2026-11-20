@@ -5,10 +5,10 @@ current_phase: 5
 current_phase_name: Interactions & Full Chat Cycle (api-key)
 status: verifying
 stopped_at: Completed 05-09-PLAN.md
-last_updated: "2026-11-20T15:55:44.908Z"
+last_updated: "2026-11-20T21:06:37.772Z"
 last_activity: 2026-11-20
 last_activity_desc: Phase 5 execution started
-state_head: 92d6042220b6b8b98bc0183907d05d1333ec4a64
+state_head: eac7365ee5ba913d8ce6531428163d39c571b812
 progress:
   total_phases: 7
   completed_phases: 4
@@ -198,6 +198,7 @@ None yet.
 - ⚠️ [Phase 2] CI must never call api.z.ai or spawn the real desktop (quota burn / PAT minting creates API keys) — three test tiers only; `experiments/scan-secrets.sh` is the seed for the CI secret-scan (align its credential regex with the scrubber first — REVIEW WR-01/IN-03)
 - ⚠️ [Phase 4/6] modelDiscovery: client lists models PRE-session via a disposable probe session reading `session/new` response `models` state — wrapper should publish a `models` field (Orca extension) or switches fall back to the `/model` prompt path (source-verified correction)
 - ⚠️ [Phase 7 live] real settings store for `agentCmdOverrides` still unknown (not in `~/.config/orca/*.json` — Electron storage/orcad); hermes card (9th) appears in client builds v1.4.263+ — build-drift watch; live `--version` probe half unverified
+- REAL RUN EXP-APIKEY-CYCLE-01 attempt 1 failed at authenticate read-back: real desktop 3.18.2 acks updateAccountConfig (received/providerCount:0) and applies runtime headers, but emits NO state.updated registry patch within the window — the fake-tier read-back surface does not match real behavior. Gap candidates: version-dir selection for the desktop's active builtin revision (runtime self-reports 0.17.1), empty-providers snapshot = nothing-to-apply, or the read-back surface must be the first session/create reply. Needs a gap plan before the phase can complete.
 
 ## Deferred Items
 
