@@ -150,10 +150,10 @@ type PermissionScript struct {
 // returning zero values — Phase 5 bridges no further client surfaces
 // (elicitation/fs/terminal stay Phases 6+).
 type RecordingClient struct {
-	mu          sync.Mutex
-	updates     []ACPUpdate
-	permScript  PermissionScript
-	permAsks    []acp.RequestPermissionRequest
+	mu         sync.Mutex
+	updates    []ACPUpdate
+	permScript PermissionScript
+	permAsks   []acp.RequestPermissionRequest
 }
 
 // SetPermissionScript installs the scripted request_permission outcome.

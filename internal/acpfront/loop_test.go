@@ -35,6 +35,15 @@ import (
 // high) is configured on the Front — the setModel follow-up payload must
 // match the recorded goldens byte for byte.
 
+// The corpus-locked synthetic selection (the setModel preamble both
+// tracer front compositions bind with — the corpus rows byte-lock the
+// payload values).
+const (
+	corpusProviderID     = "zai-api"
+	corpusModelID        = "GLM-5.3-Flash"
+	corpusReasoningLevel = "high"
+)
+
 const (
 	// tracerScenarioDir reaches the corpus from this package's test dir.
 	tracerScenarioDir = "../zcode/fake/testdata/scenarios/"
@@ -69,11 +78,7 @@ func newTracerFront(t *testing.T, scenario string) *FrontHarness {
 	h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
 		front := acpfront.New(conn,
 			acpfront.WithVersion("0.0.0-dev"),
-			acpfront.WithModel(acpfront.ModelSelection{
-				ProviderID:     "zai-api",
-				ModelID:        "GLM-5.3-Flash",
-				ReasoningLevel: "high",
-			}),
+			acpfront.WithModel(corpusModelSelection()),
 		)
 
 		return acpport.NewAgent(front)
@@ -92,6 +97,16 @@ func mustLoadScenario(t *testing.T, name string) *fake.Scenario {
 	}
 
 	return sc
+}
+
+// corpusModelSelection is the corpus-locked ModelSelection both tracer
+// front compositions bind with.
+func corpusModelSelection() acpfront.ModelSelection {
+	return acpfront.ModelSelection{
+		ProviderID:     corpusProviderID,
+		ModelID:        corpusModelID,
+		ReasoningLevel: corpusReasoningLevel,
+	}
 }
 
 // teeLineIndexes returns the indexes of every line in one direction whose

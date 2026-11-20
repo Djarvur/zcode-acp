@@ -2,6 +2,7 @@ package acpfront
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
@@ -12,9 +13,10 @@ import (
 // requestId holds the round-trip's cancel func (published under one mutex —
 // the turnctx.go acquireTurn discipline: complete-or-none state); Front.
 // Cancel's fan-in cancels every pending entry so a bridge never outlives
-// its turn (→ -32021 replies, T-5-05), and the entry is removed under the
+// its turn (→ -32021 replies, T-5-05), and each entry is deleted under the
 // same lock on return (delete-under-lock exactly-once, the call.go
-// pendingTable discipline).
+// pendingTable discipline). The map is bounded by one entry per in-flight
+// ask — growth is capped by the responder's per-method deadline.
 
 // permissionBridge is the Front-owned bridge component; the connection-
 // bound PermissionSender binds at acpport construction (the sinkBinder
@@ -25,39 +27,132 @@ type permissionBridge struct {
 	send    acpport.PermissionSender
 }
 
-// newPermissionBridge builds the bridge with an unbound sender.
-//
-// SKELETON (plan 05-02 Task 2 RED): the pending table and round-trip land
-// with GREEN.
+// newPermissionBridge builds the bridge with an unbound sender and an
+// empty pending table.
 func newPermissionBridge() *permissionBridge {
-	return &permissionBridge{}
+	return &permissionBridge{pending: make(map[string]context.CancelFunc)}
 }
 
 // bindSender attaches the connection-bound sender; called once by
 // acpport.NewAgentSideConnection during construction.
-func (b *permissionBridge) bindSender(_ acpport.PermissionSender) {}
+func (b *permissionBridge) bindSender(send acpport.PermissionSender) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
-// forward performs the client round-trip for one normalized ask.
-//
-// SKELETON: fails loud — an unwired round-trip must never read as a
-// cancelled or selected outcome.
-func (b *permissionBridge) forward(_ context.Context, _ acpport.PermissionAsk) (acpport.PermissionOutcome, error) {
-	return acpport.PermissionOutcome{}, acpport.NewInternal("acpfront: permission bridge not wired (skeleton)")
+	b.send = send
 }
 
-// cancelPendingForTurn cancels every in-flight round-trip.
-func (b *permissionBridge) cancelPendingForTurn() {}
+// boundSender returns the bound sender under the lock; nil until
+// construction binds it.
+func (b *permissionBridge) boundSender() acpport.PermissionSender {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.send
+}
+
+// forward performs the client round-trip for one normalized ask: the
+// in-flight entry joins the pending table (keyed by the backend
+// requestId), the bound sender runs on the entry's own derived context, and
+// the entry is removed under the lock before the outcome returns. A
+// locally-cancelled round-trip (the turn's cancel fan-in) reads as the
+// cancelled outcome — never an error the backend would misread as a
+// transport failure; every other send failure surfaces as-is.
+func (b *permissionBridge) forward(ctx context.Context, ask acpport.PermissionAsk) (acpport.PermissionOutcome, error) {
+	send := b.boundSender()
+	if send == nil {
+		return acpport.PermissionOutcome{}, acpport.NewInternal(
+			"acpfront: no permission sender bound — construct via acpport.NewAgentSideConnection")
+	}
+
+	pctx, cancel := context.WithCancel(ctx)
+
+	tracked := ask.RequestID != ""
+	if tracked {
+		b.addPending(ask.RequestID, cancel)
+	}
+
+	outcome, err := send(pctx, ask)
+
+	if tracked {
+		b.removePending(ask.RequestID)
+	}
+
+	cancel() // outside any lock: releases the entry's derived context either way
+
+	if err != nil && pctx.Err() != nil {
+		// The round-trip was cancelled locally (the turn's cancel fan-in,
+		// or the responder deadline the caller owns): resolve as the
+		// cancelled outcome — the backend answers its pending ask -32021
+		// and ends the turn honestly. Returning a nil error beside the
+		// send error is the cancelled classification itself (the caller
+		// matches the outcome, not the transport failure).
+		//
+		//nolint:nilerr // deliberate cancelled classification — the outcome IS the contract
+		return acpport.PermissionOutcome{Cancelled: true}, nil
+	}
+
+	if err != nil {
+		return acpport.PermissionOutcome{}, err
+	}
+
+	return outcome, nil
+}
+
+// addPending registers one in-flight round-trip's cancel func.
+func (b *permissionBridge) addPending(requestID string, cancel context.CancelFunc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.pending[requestID] = cancel
+}
+
+// removePending deletes one in-flight entry (delete-under-lock — the
+// exactly-once discipline: a cancelled entry that raced the answer can
+// never fire twice).
+func (b *permissionBridge) removePending(requestID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	delete(b.pending, requestID)
+}
+
+// cancelPendingForTurn cancels every in-flight round-trip (the Front.
+// Cancel fan-in — pending bridges never outlive their turn). Cancels run
+// outside the lock; each entry's forward observes the cancellation through
+// its own derived context exactly once.
+func (b *permissionBridge) cancelPendingForTurn() {
+	b.mu.Lock()
+
+	cancels := make([]context.CancelFunc, 0, len(b.pending))
+	for id, cancel := range b.pending {
+		cancels = append(cancels, cancel)
+		delete(b.pending, id)
+	}
+
+	b.mu.Unlock()
+
+	if len(cancels) > 0 {
+		slog.Info("acpfront: permission pendings cancelled by turn cancel", "count", len(cancels))
+	}
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
 
 // PermissionForward returns the front bridge func the interact Responder
 // wiring injects as its PermissionForwarder seam (interact.
 // NewPermissionBridge over this func).
-func (f *Front) PermissionForward() func(ctx context.Context, ask acpport.PermissionAsk) (acpport.PermissionOutcome, error) {
+func (f *Front) PermissionForward() func(
+	ctx context.Context, ask acpport.PermissionAsk,
+) (acpport.PermissionOutcome, error) {
 	return f.perm.forward
 }
 
-// bindPermissionSender is the acpport permissionBinder hook: the adapter
+// BindPermissionSender is the acpport.PermissionBinder hook: the adapter
 // forwards the connection-bound sender here during construction, before
 // any frame flows.
-func (f *Front) bindPermissionSender(sender acpport.PermissionSender) {
+func (f *Front) BindPermissionSender(sender acpport.PermissionSender) {
 	f.perm.bindSender(sender)
 }

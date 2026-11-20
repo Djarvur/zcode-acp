@@ -708,6 +708,9 @@ func drivePermissionAllow(ctx context.Context, d *exchangeDriver) {
 		}
 	})
 
+	//nolint:contextcheck // the Front derives its own process-lifetime base
+	// context by design (front.go New — the containedctx rule); the driver's
+	// ctx bounds only the back-leg calls.
 	front := acpfront.New(d.conn)
 
 	// Hook contract: the responder (whose PermissionForwarder is the real
@@ -723,12 +726,22 @@ func drivePermissionAllow(ctx context.Context, d *exchangeDriver) {
 	// The construction order completes both bindings (sink + sender) before
 	// any frame flows: the sender binds into the front's bridge here, the
 	// client only ever sees the request_permission frames the bridge sends.
-	// Client-side wiring mirrors the agent side: peerInput is where the
-	// client writes (toAgentW), peerOutput what it reads (toClientR).
-	_, _, _ = acpport.NewAgentSideConnection(acpport.NewAgent(front), toAgentW, toClientR)
+	// Pipe ownership: the agent connection writes the agent→client pipe
+	// (toClientW) and reads the client→agent pipe (toAgentR); the client is
+	// wired the mirror way (writes toAgentW, reads toClientR).
+	//
+	//nolint:dogsled // the front carries all three bindings; none is needed here
+	_, _, _ = acpport.NewAgentSideConnection(acpport.NewAgent(front), toClientW, toAgentR)
 	_ = acp.NewClientSideConnection(client, toAgentW, toClientR)
 
 	driveFrontPreamble(ctx, d)
+
+	// The send fires the row's tracer exchange: tool.updated, the
+	// permission reverse (answered by the scripted client through the full
+	// bridge chain), turn.completed, then the ack — the golden byte-locks
+	// the whole answered round-trip.
+	h := happyTurnHarness{t: t, conn: d.conn}
+	h.send(ctx)
 }
 
 // permissionClient is the fake_test-local SDK Client double the corpus

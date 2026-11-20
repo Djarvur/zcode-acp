@@ -286,6 +286,13 @@ func (f *Front) Prompt(
 // resolves stopReason cancelled as a SUCCESS response; this handler never
 // touches the turn context — cancelling it would surface the SDK's -32800
 // error instead of the success stopReason (Pitfall 2, turnctx.go).
+//
+// TOOL-02 cancel fan-in (plan 05-02): after machine.Cancel, every
+// in-flight permission bridge of the turn is cancelled too (→ -32021
+// replies to the backend's pending asks) — a cancelled turn leaves no
+// pending bridge silently dangling while the server re-announces forever
+// (T-5-05, Pitfall 2). One turn per front, so the bridge's whole pending
+// table belongs to the cancelling turn.
 func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 	_ = ctx
 
@@ -295,6 +302,7 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 	}
 
 	st.Machine.Cancel()
+	f.perm.cancelPendingForTurn()
 
 	return nil
 }
