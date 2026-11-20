@@ -2,6 +2,7 @@ package acpport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -86,20 +87,87 @@ type PromptParams struct {
 // (D-04).
 type SessionNoteKind string
 
-// The two backend-sourced delta kinds: message text and reasoning text.
+// The backend-sourced streaming kinds: message text, reasoning text, and
+// the tool-call lifecycle notes (TOOL-01).
 const (
 	NoteMessage SessionNoteKind = "message"
 	NoteThought SessionNoteKind = "thought"
+	NoteTool    SessionNoteKind = "tool"
 )
 
 // SessionNote is one streaming content delta (D-04): one backend
 // part.delta envelope maps to exactly one note — nothing here is ever
 // synthesized (every chunk the client sees is traceable to one received
-// backend event).
+// backend event). Tool lifecycle envelopes map onto Kind NoteTool with a
+// non-nil Tool payload (TOOL-01).
 type SessionNote struct {
 	SessionID string
 	Kind      SessionNoteKind
 	Delta     string
+
+	// Tool carries the neutral tool-call vocabulary when Kind is NoteTool.
+	Tool *ToolNote
+}
+
+// ACP tool-call kinds (05-RESEARCH.md Pattern 4 mapping table, the SDK's
+// ToolKind vocabulary): the neutral vocabulary carries the wire strings —
+// SDK types never cross the seam. Unknown backend tool names decode as
+// ToolKindOther at the mapping site (the tap), never here.
+const (
+	ToolKindRead    = "read"
+	ToolKindEdit    = "edit"
+	ToolKindDelete  = "delete"
+	ToolKindMove    = "move"
+	ToolKindSearch  = "search"
+	ToolKindExecute = "execute"
+	ToolKindThink   = "think"
+	ToolKindFetch   = "fetch"
+	ToolKindOther   = "other"
+)
+
+// ACP tool-call statuses (05-RESEARCH.md Pattern 4): the lifecycle
+// transitions the tool notes carry — pending→in_progress→completed/failed.
+const (
+	ToolStatusPending    = "pending"
+	ToolStatusInProgress = "in_progress"
+	ToolStatusCompleted  = "completed"
+	ToolStatusFailed     = "failed"
+)
+
+// ToolDiff is one rendered file diff (TOOL-01, D-03): the path is the
+// session-cwd-resolved ABSOLUTE path (the tap resolves before emitting —
+// Pitfall 5); an empty OldText omits oldText on the wire (the new-file
+// Write shape per the ACP tool-calls spec).
+type ToolDiff struct {
+	Path    string
+	OldText string
+	NewText string
+}
+
+// ToolLocation is one affected file location (the ACP tool-calls
+// locations follow-along surface); the path is absolute like ToolDiff.
+type ToolLocation struct {
+	Path string
+}
+
+// ToolNote is one neutral tool-call lifecycle note (TOOL-01, the
+// prescription vocabulary): one backend tool.updated envelope maps to
+// exactly one note — nothing synthesized (the TOOL-01 honesty carry-over
+// of D-04). IsStart selects the wire shape: a start note renders the
+// tool_call frame (StartToolCall arms), an update note renders the
+// tool_call_update patch (only the populated fields ride — patch
+// semantics per spec).
+type ToolNote struct {
+	ToolCallID string
+	IsStart    bool
+	Title      string
+	Name       string
+	Kind       string // one of the ToolKind* wire strings
+	Status     string // one of the ToolStatus* wire strings
+	Diff       *ToolDiff
+	Locations  []ToolLocation
+	RawInput   json.RawMessage
+	RawOutput  json.RawMessage
 }
 
 // UpdateSink streams one SessionNote to the ACP client; the adapter hands

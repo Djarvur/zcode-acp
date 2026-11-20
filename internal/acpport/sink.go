@@ -38,6 +38,10 @@ func noteToNotification(note SessionNote) (acp.SessionNotification, error) {
 			SessionId: acp.SessionId(note.SessionID),
 			Update:    acp.UpdateAgentThoughtText(note.Delta),
 		}, nil
+	case NoteTool:
+		// RED skeleton (plan 05-04 Task 1): the tool arms are not wired yet —
+		// fail loud, never emit a frame, never read as a delivered note.
+		return acp.SessionNotification{}, NewInternal("acpport: tool note translation not wired")
 	default:
 		return acp.SessionNotification{}, NewInternal("acpport: unknown session note kind %q", note.Kind)
 	}

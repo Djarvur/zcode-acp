@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestToolNote|TestSink' ./internal/acpport/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestToolNote (0.00s)\n    agent_test.go:949: start note renders tool_call with diff, locations, raw input: sink: acpport: tool note translation not wired\n2026/11/20 14:59:03 INFO connection closed cause=\"io: read/write on closed pipe\"\n2026/11/20 14:59:03 INFO connection closed cause=\"io: read/write on closed pipe\"\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpport\t0.011s\nFAIL\n",
+  "targetTest": "TestToolNote",
+  "targetFile": "internal/acpport/agent_test.go",
+  "expected": "TestToolNote fails on its first unmet planned assertion against the not-wired sink skeleton: the NoteTool arm answers the coded 'tool note translation not wired' error without ever writing a frame, so the first table row (start note with diff, locations, and raw input) fails at the sink-error gate BEFORE any wire-shape assert can run. Build and vet must succeed (the neutral ToolNote vocabulary skeleton compiles); every other acpport test must stay green — the RED run's only failure is TestToolNote.",
+  "actual": "Exactly that: go build ./... and go vet passed; the filtered run fails only on TestToolNote at agent_test.go:949 — the first table row's sink call returns the skeleton's coded error, no session/update frame was attempted. TestUpdateSinkEmitsChunkShapes (the TestSink filter arm, message/thought chunk shapes + loud unknown-kind default) stayed green under -race.",
+  "semanticAssessment": "Genuine RED on the planned assertion, not an incidental failure: the target test executed, build/vet gates passed, and the failure is the FIRST staged contract clause (the sink must translate the start note onto a tool_call frame — the skeleton deliberately refuses). The downstream clauses (patch-semantics update frame, result re-emitted diff + rawOutput, new-file oldText omission, loud empty-kind/nil-payload defaults) sit behind it and become load-bearing once GREEN wires the tool arms; the four-row table plus the two loud-default arms are all staged in the test body and will each assert on the GREEN run."
+}

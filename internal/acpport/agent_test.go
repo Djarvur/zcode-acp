@@ -824,6 +824,150 @@ func TestUpdateSinkEmitsChunkShapes(t *testing.T) {
 	expectNoFrame(t, lines, "unknown note kind must not emit a frame")
 }
 
+// TestToolNote (plan 05-04 Task 1 RED target) locks the TOOL-01 sink
+// translation on recorded session/update wire frames: the neutral ToolNote
+// vocabulary maps onto the SDK's tool vocabulary byte-exactly —
+//
+//	start note with diff, locations, and raw input → the tool_call frame
+//	  carrying toolCallId+title+name+kind+status pending, the diff content
+//	  (type diff with path/newText/oldText exactly as the SDK helper sets
+//	  them), and the location path — with rawInput carried VERBATIM (the
+//	  D-04 honesty carry-over: the sink transports, never augments);
+//	update note with a status → the tool_call_update frame with ONLY the
+//	  changed field (patch semantics — no empty patch objects on the wire);
+//	result note (status completed + rawOutput + diff re-emitted) → the
+//	  patch carrying content, rawOutput, and the completed status;
+//	new-file Write shape (empty OldText) → oldText ABSENT on the wire.
+//
+// The empty-kind and payload-less arms keep the loud coded error — an
+// unknown or unusable note never emits a frame, never silently drops.
+func TestToolNote(t *testing.T) {
+	clientToAgentR, clientToAgentW := io.Pipe()
+	agentToClientR, agentToClientW := io.Pipe()
+
+	t.Cleanup(func() {
+		for _, c := range []io.Closer{clientToAgentR, clientToAgentW, agentToClientR, agentToClientW} {
+			_ = c.Close()
+		}
+	})
+
+	h := newScriptedHandlers()
+	conn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(h), agentToClientW, clientToAgentR)
+	sink := acpport.NewUpdateSink(conn)
+
+	lines := make(chan string, 16)
+
+	go drainFrames(agentToClientR, lines)
+
+	ctx := context.Background()
+
+	// The wire-shape table: one note per row, the byte-exact expected frame
+	// (the SDK wraps each in the JSON-RPC notification envelope — the
+	// existing chunk-shape test's contract).
+	cases := []struct {
+		name string
+		note acpport.SessionNote
+		want string
+	}{
+		{
+			name: "start note renders tool_call with diff, locations, raw input",
+			note: acpport.SessionNote{
+				SessionID: testSessionID,
+				Kind:      acpport.NoteTool,
+				Tool: &acpport.ToolNote{
+					ToolCallID: "tc1",
+					IsStart:    true,
+					Title:      "Edit main.go",
+					Name:       "Edit",
+					Kind:       acpport.ToolKindEdit,
+					Status:     acpport.ToolStatusPending,
+					RawInput:   json.RawMessage(`{"file_path":"/w/main.go","old_string":"a","new_string":"b"}`),
+					Diff:       &acpport.ToolDiff{Path: "/w/main.go", OldText: "a", NewText: "b"},
+					Locations:  []acpport.ToolLocation{{Path: "/w/main.go"}},
+				},
+			},
+			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
+				`","update":{"content":[{"diff":{"newText":"b","oldText":"a","path":"/w/main.go","type":"diff"}}],` +
+				`"kind":"edit","locations":[{"path":"/w/main.go"}],"name":"Edit",` +
+				`"rawInput":{"file_path":"/w/main.go","old_string":"a","new_string":"b"},` +
+				`"sessionUpdate":"tool_call","status":"pending","title":"Edit main.go","toolCallId":"tc1"}}}`,
+		},
+		{
+			name: "update note carries only the changed field (patch semantics)",
+			note: acpport.SessionNote{
+				SessionID: testSessionID,
+				Kind:      acpport.NoteTool,
+				Tool: &acpport.ToolNote{
+					ToolCallID: "tc1",
+					Status:     acpport.ToolStatusInProgress,
+				},
+			},
+			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
+				`","update":{"sessionUpdate":"tool_call_update","status":"in_progress","toolCallId":"tc1"}}}`,
+		},
+		{
+			name: "result note re-emits the diff and completes with raw output",
+			note: acpport.SessionNote{
+				SessionID: testSessionID,
+				Kind:      acpport.NoteTool,
+				Tool: &acpport.ToolNote{
+					ToolCallID: "tc1",
+					Status:     acpport.ToolStatusCompleted,
+					RawOutput:  json.RawMessage(`{"ok":true}`),
+					Diff:       &acpport.ToolDiff{Path: "/w/main.go", OldText: "a", NewText: "b"},
+				},
+			},
+			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
+				`","update":{"content":[{"diff":{"newText":"b","oldText":"a","path":"/w/main.go","type":"diff"}}],` +
+				`"rawOutput":{"ok":true},"sessionUpdate":"tool_call_update","status":"completed","toolCallId":"tc1"}}}`,
+		},
+		{
+			name: "new-file write shape omits oldText on the wire",
+			note: acpport.SessionNote{
+				SessionID: testSessionID,
+				Kind:      acpport.NoteTool,
+				Tool: &acpport.ToolNote{
+					ToolCallID: "tc2",
+					IsStart:    true,
+					Title:      "Write new.go",
+					Name:       "Write",
+					Kind:       acpport.ToolKindEdit,
+					Status:     acpport.ToolStatusPending,
+					RawInput:   json.RawMessage(`{"content":"file body","file_path":"/w/new.go"}`),
+					Diff:       &acpport.ToolDiff{Path: "/w/new.go", NewText: "file body"},
+				},
+			},
+			want: `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"` + testSessionID +
+				`","update":{"content":[{"diff":{"newText":"file body","path":"/w/new.go","type":"diff"}}],` +
+				`"kind":"edit","name":"Write","rawInput":{"content":"file body","file_path":"/w/new.go"},` +
+				`"sessionUpdate":"tool_call","status":"pending","title":"Write new.go","toolCallId":"tc2"}}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		if err := sink(ctx, tc.note); err != nil {
+			t.Fatalf("%s: sink: %v", tc.name, err)
+		}
+
+		if got := readFrame(t, lines); got != tc.want {
+			t.Fatalf("%s: wire frame drift:\n got: %s\nwant: %s", tc.name, got, tc.want)
+		}
+	}
+
+	// The loud defaults: an empty-kind note and a tool note without its
+	// payload fail loud, never emit, never silently drop.
+	for _, note := range []acpport.SessionNote{
+		{SessionID: testSessionID, Kind: "", Delta: "?"},
+		{SessionID: testSessionID, Kind: acpport.NoteTool},
+	} {
+		if err := sink(ctx, note); err == nil {
+			t.Fatalf("note kind %q without usable payload must fail loud, got nil error", note.Kind)
+		}
+	}
+
+	expectNoFrame(t, lines, "loud-default notes must not emit frames")
+}
+
 // TestPermissionSender (plan 05-02 Task 1 RED target) drives the bound
 // PermissionSender over a real agent-side connection and asserts the wire
 // round-trip on the recorded frame: the outgoing session/request_permission
