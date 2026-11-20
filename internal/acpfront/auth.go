@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
@@ -59,10 +62,17 @@ type AuthConfig struct {
 	// WantModels is the read-back want list — every entry must appear on a
 	// registry surface before authenticate succeeds.
 	WantModels []string
+
+	// ReadbackDeadline bounds the registry read-back window (0 →
+	// hostsvc.DefaultReadbackDeadline). Injectable per the established
+	// deadline-knob posture: the window is authenticate policy, and tests
+	// shorten it to exercise the coded read-back-negative arm without
+	// racing the client's own context.
+	ReadbackDeadline time.Duration
 }
 
-// Option configures the Front at construction. (See front.go for the
-// option set; WithAuth joins it with plan 05-07.)
+// WithAuth injects the authenticate machinery (the plan 05-07 option on
+// the front.go option set) before any frame flows.
 func WithAuth(cfg AuthConfig) Option {
 	return func(f *Front) { f.auth = &cfg }
 }
@@ -70,23 +80,88 @@ func WithAuth(cfg AuthConfig) Option {
 // Authenticate runs one advertised auth method (the Handlers vocabulary).
 // The method id validates against the advertised set; the zai-api-key arm
 // runs the honest chain; the coding-plan arm answers its honest Phase-6
-// disposition; an unknown id answers coded invalid-params.
-//
-// Skeleton posture (RED floor): every call answers the Phase-4 honest
-// not-available error — never a fabricated success — while the composed
-// chain lands in GREEN.
-func (f *Front) Authenticate(_ context.Context, _ string) error {
-	_ = f.auth
+// disposition; an unknown id answers coded invalid-params. Every
+// non-success is a coded error — never a fabricated success (PITFALL 3),
+// never raw transport noise.
+func (f *Front) Authenticate(ctx context.Context, methodID string) error {
+	advertised := advertisedAuthMethods()
 
-	return acpport.NewInternal(
-		"authentication is not available in this build yet (z.ai auth flows land in Phases 5-6)")
+	ids := make([]string, 0, len(advertised))
+	for _, m := range advertised {
+		ids = append(ids, m.ID)
+	}
+
+	if !slices.Contains(ids, methodID) {
+		return acpport.NewInvalidParams(
+			"authenticate: unknown methodId %q (advertised: %s)", methodID, strings.Join(ids, ", "))
+	}
+
+	if methodID != AuthMethodZaiAPIKey {
+		// Honest disposition for the advertised-but-Phase-6 method: never a
+		// fake success, never the misleading -32601 default (D-02).
+		authLog(methodID, "declined (Phase 6)")
+
+		return acpport.NewInternal(
+			"authenticate %s: the OAuth coding-plan flow lands in Phase 6", methodID)
+	}
+
+	if err := f.authenticateAPIKey(ctx); err != nil {
+		return err
+	}
+
+	authLog(methodID, "authenticated (read-back proven)")
+
+	return nil
 }
 
-// authenticateAPIKey runs the AUTH-01 chain for the zai-api-key arm. (The
-// GREEN implementation composes hostsvc PushSnapshot → RefreshRegistry →
-// the registry read-back with per-step coded error wrapping.)
-func (f *Front) authenticateAPIKey(_ context.Context) error {
-	return errAPIKeyUnconfigured
+// authenticateAPIKey runs the AUTH-01 chain: the configured-key gate → the
+// read-back watcher registration (BEFORE the push traffic — the conn hook
+// contract; a registry surface emitted between the refresh reply and a
+// late registration would be missed) → snapshot build → push → refresh →
+// read-back verdict, each step wrapping its failure into a coded error
+// naming the step (transport noise never passes raw).
+func (f *Front) authenticateAPIKey(ctx context.Context) error {
+	if f.auth == nil || f.auth.Keys == nil {
+		return acpport.NewInternal("%v", errAPIKeyUnconfigured)
+	}
+
+	if apiKey, _, ok := f.auth.Keys.APIKey(ctx); !ok || apiKey == "" {
+		// The sentinel wraps through the seam vocabulary so the wire
+		// message carries the env var name verbatim (the client's readable
+		// surface — never the generic internal mapping's data-only shape).
+		return acpport.NewInternal("%v", errAPIKeyUnconfigured)
+	}
+
+	watchOpts := []hostsvc.WatchOption{}
+	if f.auth.ReadbackDeadline > 0 {
+		watchOpts = append(watchOpts, hostsvc.WithReadbackDeadline(f.auth.ReadbackDeadline))
+	}
+
+	watcher, remove := hostsvc.WatchRegistry(f.conn, f.auth.WantModels, watchOpts...)
+	defer remove()
+
+	snap, err := hostsvc.NewSnapshotBuilder(f.auth.Keys).Build(f.auth.Install)
+	if err != nil {
+		return acpport.NewInternal("authenticate: build snapshot: %v", err)
+	}
+
+	if _, err := hostsvc.PushEnvelope(ctx, f.conn, snap.Params); err != nil {
+		return acpport.NewInternal("authenticate: push snapshot: %v", err)
+	}
+
+	if err := hostsvc.RefreshRegistry(ctx, f.conn); err != nil {
+		return acpport.NewInternal("authenticate: refresh registry: %v", err)
+	}
+
+	// The verdict is the registry's (PITFALL 1): the received ack is
+	// receipt evidence only. A cancelled or expired wait surfaces the
+	// coded read-back error — no success state is recorded, so a
+	// re-authenticate is a clean retry (the interruptibility contract).
+	if _, err := watcher.Await(ctx); err != nil {
+		return acpport.NewInternal("authenticate: registry read-back: %v", err)
+	}
+
+	return nil
 }
 
 // advertisedAuthMethods returns the advertised auth-method definitions the

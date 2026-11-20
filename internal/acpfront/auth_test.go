@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +74,7 @@ type stubAuthKey struct {
 }
 
 // APIKey replays the canned material.
-func (k *stubAuthKey) APIKey(_ context.Context) (string, string, bool) {
+func (k *stubAuthKey) APIKey(_ context.Context) (apiKey, keyID string, ok bool) {
 	return k.apiKey, k.keyID, k.ok
 }
 
@@ -146,15 +145,35 @@ func authScenario(rules []fake.RequestRule) *fake.Scenario {
 	}
 }
 
+// authReadbackDeadline is the arms' shortened read-back window: the
+// negative arm's coded read-back error must reach the client WELL before
+// the client's own bounded context dies (a client ctx expiry would surface
+// the SDK's cancelled-request mapping instead of the server's verdict).
+const authReadbackDeadline = 150 * time.Millisecond
+
 // newAuthFront composes the full loop over per-arm rules with the auth
 // machinery injected.
 func newAuthFront(t *testing.T, rules []fake.RequestRule, keys hostsvc.KeySource) *FrontHarness {
 	t.Helper()
 
-	cfg := acpfront.AuthConfig{
-		Keys:       keys,
-		Install:    authFixtureInstall(t),
-		WantModels: authFixWantModels(),
+	return newAuthFrontWith(t, rules, acpfront.AuthConfig{
+		Keys:             keys,
+		Install:          authFixtureInstall(t),
+		WantModels:       authFixWantModels(),
+		ReadbackDeadline: authReadbackDeadline,
+	})
+}
+
+// newAuthFrontWith composes the loop over an explicit auth config.
+func newAuthFrontWith(t *testing.T, rules []fake.RequestRule, cfg acpfront.AuthConfig) *FrontHarness {
+	t.Helper()
+
+	if cfg.Install.Root == "" {
+		cfg.Install = authFixtureInstall(t)
+	}
+
+	if len(cfg.WantModels) == 0 {
+		cfg.WantModels = authFixWantModels()
 	}
 
 	h := ComposeFront(t, authScenario(rules), func(conn *zcode.Conn) acp.Agent {
@@ -212,178 +231,199 @@ func wireErrOf(t *testing.T, err error) *acp.RequestError {
 
 // TestAuthenticate locks the AUTH-01 composition tier's five arms.
 func TestAuthenticate(t *testing.T) {
-	t.Run("happy chain is read-back proven", func(t *testing.T) {
-		h := newAuthFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, true)}, configuredAuthKey())
+	t.Run("happy chain is read-back proven", testAuthHappyChain)
+	t.Run("no key answers the coded error naming ZCODE_ACP_API_KEY", testAuthNoKey)
+	t.Run("unknown methodId answers coded invalid-params", testAuthUnknownMethod)
+	t.Run("ack without registry confirmation errors, never {}", testAuthReadbackNegative)
+	t.Run("interrupted authenticate is a clean retry", testAuthInterruptRetry)
+}
 
-		if _, err := authenticate(h, acpfront.AuthMethodZaiAPIKey); err != nil {
-			t.Fatalf("authenticate with a configured key: %v", err)
-		}
+// testAuthHappyChain is arm (a): the configured-key chain answers the empty
+// {} AND the transcript proves the full sequence ran (push → refresh —
+// PITFALL 3: never the return value alone).
+func testAuthHappyChain(t *testing.T) {
+	h := newAuthFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, true)}, configuredAuthKey())
 
-		// PITFALL 3 discipline: the success arm asserts the TRANSCRIPT
-		// SEQUENCE — push then refresh actually ran on the back leg — never
-		// the return value alone.
-		tr, trErr := h.Transcript(t)
-		if trErr != nil {
-			t.Fatalf("fake transcript: %v", trErr)
-		}
+	if _, err := authenticate(h, acpfront.AuthMethodZaiAPIKey); err != nil {
+		t.Fatalf("authenticate with a configured key: %v", err)
+	}
 
-		pushIdx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig)
-		refreshIdx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry)
+	// PITFALL 3 discipline: the success arm asserts the TRANSCRIPT
+	// SEQUENCE — push then refresh actually ran on the back leg — never
+	// the return value alone.
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
 
-		if len(pushIdx) != 1 || len(refreshIdx) != 1 {
-			t.Fatalf("transcript records push×%d refresh×%d, want exactly one honest chain run",
-				len(pushIdx), len(refreshIdx))
-		}
+	pushIdx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig)
+	refreshIdx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry)
 
-		if pushIdx[0] >= refreshIdx[0] {
-			t.Fatalf("chain order violated: push(%d) must precede refresh(%d)", pushIdx[0], refreshIdx[0])
-		}
+	if len(pushIdx) != 1 || len(refreshIdx) != 1 {
+		t.Fatalf("transcript records push×%d refresh×%d, want exactly one honest chain run",
+			len(pushIdx), len(refreshIdx))
+	}
 
-		// The ACP tee answers a RESULT frame (the empty {}), never an error.
-		lines := h.ACPLines()
-		reqIdx := teeLineIndex(t, lines, "out", `"authenticate"`, "authenticate request")
-		respLine := authTeeResponse(t, lines, reqIdx)
+	if pushIdx[0] >= refreshIdx[0] {
+		t.Fatalf("chain order violated: push(%d) must precede refresh(%d)", pushIdx[0], refreshIdx[0])
+	}
 
-		if strings.Contains(respLine.JSON, `"error"`) {
-			t.Fatalf("authenticate response carries an error frame: %s", respLine.JSON)
-		}
+	// The ACP tee answers a RESULT frame (the empty {}), never an error.
+	lines := h.ACPLines()
+	reqIdx := teeLineIndex(t, lines, "out", `"authenticate"`, "authenticate request")
+	respLine := authTeeResponse(t, lines, reqIdx)
 
-		if !strings.Contains(respLine.JSON, `"result":{}`) {
-			t.Fatalf("authenticate response = %s, want the empty {} result", respLine.JSON)
-		}
+	if strings.Contains(respLine.JSON, `"error"`) {
+		t.Fatalf("authenticate response carries an error frame: %s", respLine.JSON)
+	}
+
+	if !strings.Contains(respLine.JSON, `"result":{}`) {
+		t.Fatalf("authenticate response = %s, want the empty {} result", respLine.JSON)
+	}
+}
+
+// testAuthNoKey is arm (b): the OQ4 disposition — the honest coded error
+// names ZCODE_ACP_API_KEY, and the rejection precedes every backend call
+// (never a fallback read of the desktop's config store).
+func testAuthNoKey(t *testing.T) {
+	h := newAuthFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, true)},
+		&stubAuthKey{ok: false})
+
+	_, err := authenticate(h, acpfront.AuthMethodZaiAPIKey)
+
+	rerr := wireErrOf(t, err)
+	if !strings.Contains(rerr.Message, "ZCODE_ACP_API_KEY") {
+		t.Fatalf("no-key error message %q must name ZCODE_ACP_API_KEY exactly (OQ4)", rerr.Message)
+	}
+
+	// The honest rejection happens BEFORE any backend call — never a
+	// push without a key, never a fallback read of the desktop's config
+	// store (OQ4).
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	if idx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig); len(idx) != 0 {
+		t.Fatalf("no-key authenticate touched the back leg (push at %v) — "+
+			"the honest rejection must precede every backend call", idx)
+	}
+}
+
+// testAuthUnknownMethod is arm (c): an id outside the advertised set
+// answers coded invalid-params naming the offending id and the set.
+func testAuthUnknownMethod(t *testing.T) {
+	h := newAuthFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, true)}, configuredAuthKey())
+
+	_, err := authenticate(h, "zai-oauth")
+
+	rerr := wireErrOf(t, err)
+	if rerr.Code != acpport.CodeInvalidParams {
+		t.Fatalf("unknown methodId code = %d, want %d (-32602)", rerr.Code, acpport.CodeInvalidParams)
+	}
+
+	if !strings.Contains(rerr.Message, "zai-oauth") ||
+		!strings.Contains(rerr.Message, acpfront.AuthMethodZaiAPIKey) {
+		t.Fatalf("unknown-methodId message %q must name the offending id and the advertised set",
+			rerr.Message)
+	}
+}
+
+// testAuthReadbackNegative is arm (d): the ack says received but the
+// registry never confirms — the coded read-back error answers, never {}
+// (PITFALL 1: the verdict is the registry's).
+func testAuthReadbackNegative(t *testing.T) {
+	h := newAuthFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, false)}, configuredAuthKey())
+
+	ctx, cancel := context.WithTimeout(context.Background(), authReadbackWait)
+	defer cancel()
+
+	_, err := h.client.Authenticate(ctx, acp.AuthenticateRequest{
+		MethodId: acp.AuthMethodId(acpfront.AuthMethodZaiAPIKey),
 	})
 
-	t.Run("no key answers the coded error naming ZCODE_ACP_API_KEY", func(t *testing.T) {
-		h := newAuthFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, true)},
-			&stubAuthKey{ok: false})
+	rerr := wireErrOf(t, err)
+	if !strings.Contains(rerr.Message, "read-back") {
+		t.Fatalf("read-back-negative message %q must name the read-back step", rerr.Message)
+	}
 
-		_, err := authenticate(h, acpfront.AuthMethodZaiAPIKey)
+	// The negative's point: the chain RAN (push and refresh are on the
+	// transcript — the ack said received) and the verdict was still the
+	// registry's, never the ack's (PITFALL 1).
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
 
-		rerr := wireErrOf(t, err)
-		if !strings.Contains(rerr.Message, "ZCODE_ACP_API_KEY") {
-			t.Fatalf("no-key error message %q must name ZCODE_ACP_API_KEY exactly (OQ4)", rerr.Message)
-		}
+	if idx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig); len(idx) != 1 {
+		t.Fatalf("transcript records push×%d, want the chain's honest run", len(idx))
+	}
 
-		// The honest rejection happens BEFORE any backend call — never a
-		// push without a key, never a fallback read of the desktop's config
-		// store (OQ4).
-		tr, trErr := h.Transcript(t)
-		if trErr != nil {
-			t.Fatalf("fake transcript: %v", trErr)
-		}
+	if idx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry); len(idx) != 1 {
+		t.Fatalf("transcript records refresh×%d, want the chain's honest run", len(idx))
+	}
+}
 
-		if idx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig); len(idx) != 0 {
-			t.Fatalf("no-key authenticate touched the back leg (push at %v) — "+
-				"the honest rejection must precede every backend call", idx)
-		}
-	})
+// testAuthInterruptRetry is arm (e) — the AUTH-01 concurrency probe: a
+// cancelled authenticate surfaces a coded error with no success recorded,
+// and the immediate re-authenticate completes cleanly (no
+// half-authenticated state observable).
+func testAuthInterruptRetry(t *testing.T) {
+	// Run 1: the refresh reply holds (authRefreshDelayMs); the cancel
+	// fires inside the hold — after the push leg, before any read-back.
+	h := newAuthFront(t, []fake.RequestRule{
+		authAckRule(),
+		authRefreshRule(1, authRefreshDelayMs, false), // spent by run 1
+		authRefreshRule(0, 0, true),                   // run 2's registry surface
+	}, configuredAuthKey())
 
-	t.Run("unknown methodId answers coded invalid-params", func(t *testing.T) {
-		h := newAuthFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, true)}, configuredAuthKey())
+	ctx1, cancel1 := context.WithCancel(context.Background())
 
-		_, err := authenticate(h, "zai-oauth")
+	type authResult struct {
+		resp acp.AuthenticateResponse
+		err  error
+	}
 
-		rerr := wireErrOf(t, err)
-		if rerr.Code != acpport.CodeInvalidParams {
-			t.Fatalf("unknown methodId code = %d, want %d (-32602)", rerr.Code, acpport.CodeInvalidParams)
-		}
+	done1 := make(chan authResult, 1)
 
-		if !strings.Contains(rerr.Message, "zai-oauth") ||
-			!strings.Contains(rerr.Message, acpfront.AuthMethodZaiAPIKey) {
-			t.Fatalf("unknown-methodId message %q must name the offending id and the advertised set",
-				rerr.Message)
-		}
-	})
-
-	t.Run("ack without registry confirmation errors, never {}", func(t *testing.T) {
-		h := newAuthFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, false)}, configuredAuthKey())
-
-		ctx, cancel := context.WithTimeout(context.Background(), authReadbackWait)
-		defer cancel()
-
-		_, err := h.client.Authenticate(ctx, acp.AuthenticateRequest{
+	go func() {
+		resp, err := h.client.Authenticate(ctx1, acp.AuthenticateRequest{
 			MethodId: acp.AuthMethodId(acpfront.AuthMethodZaiAPIKey),
 		})
+		done1 <- authResult{resp: resp, err: err}
+	}()
 
-		rerr := wireErrOf(t, err)
-		if !strings.Contains(rerr.Message, "read-back") {
-			t.Fatalf("read-back-negative message %q must name the read-back step", rerr.Message)
-		}
+	time.Sleep(authCancelAfter)
+	cancel1()
 
-		// The negative's point: the chain RAN (push and refresh are on the
-		// transcript — the ack said received) and the verdict was still the
-		// registry's, never the ack's (PITFALL 1).
-		tr, trErr := h.Transcript(t)
-		if trErr != nil {
-			t.Fatalf("fake transcript: %v", trErr)
-		}
+	res1 := <-done1
+	if res1.err == nil {
+		t.Fatal("interrupted authenticate answered success — a cancelled chain must surface a coded error")
+	}
 
-		if idx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig); len(idx) != 1 {
-			t.Fatalf("transcript records push×%d, want the chain's honest run", len(idx))
-		}
+	var rerr1 *acp.RequestError
+	if !errors.As(res1.err, &rerr1) {
+		t.Fatalf("interrupted authenticate error %v is not a coded request error", res1.err)
+	}
 
-		if idx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry); len(idx) != 1 {
-			t.Fatalf("transcript records refresh×%d, want the chain's honest run", len(idx))
-		}
-	})
+	// Run 2: the immediate re-authenticate completes cleanly — no
+	// half-authenticated state is observable (the AUTH-01 concurrency
+	// probe). The empty-{} wire shape is the happy arm's lock; here the
+	// clean completion is the point.
+	if _, err2 := authenticate(h, acpfront.AuthMethodZaiAPIKey); err2 != nil {
+		t.Fatalf("re-authenticate after interruption: %v (the retry must be clean)", err2)
+	}
 
-	t.Run("interrupted authenticate is a clean retry", func(t *testing.T) {
-		// Run 1: the refresh reply holds (authRefreshDelayMs); the cancel
-		// fires inside the hold — after the push leg, before any read-back.
-		h := newAuthFront(t, []fake.RequestRule{
-			authAckRule(),
-			authRefreshRule(1, authRefreshDelayMs, false), // spent by run 1
-			authRefreshRule(0, 0, true),                   // run 2's registry surface
-		}, configuredAuthKey())
+	// The retry ran its OWN full honest chain (a second push+refresh on
+	// the transcript — the retry is not a replay of cached success).
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
 
-		ctx1, cancel1 := context.WithCancel(context.Background())
-
-		type authResult struct {
-			resp acp.AuthenticateResponse
-			err  error
-		}
-
-		done1 := make(chan authResult, 1)
-
-		go func() {
-			resp, err := h.client.Authenticate(ctx1, acp.AuthenticateRequest{
-				MethodId: acp.AuthMethodId(acpfront.AuthMethodZaiAPIKey),
-			})
-			done1 <- authResult{resp: resp, err: err}
-		}()
-
-		time.Sleep(authCancelAfter)
-		cancel1()
-
-		res1 := <-done1
-		if res1.err == nil {
-			t.Fatal("interrupted authenticate answered success — a cancelled chain must surface a coded error")
-		}
-
-		var rerr1 *acp.RequestError
-		if !errors.As(res1.err, &rerr1) {
-			t.Fatalf("interrupted authenticate error %v is not a coded request error", res1.err)
-		}
-
-		// Run 2: the immediate re-authenticate completes cleanly — no
-		// half-authenticated state is observable (the AUTH-01 concurrency
-		// probe). The empty-{} wire shape is the happy arm's lock; here the
-		// clean completion is the point.
-		if _, err2 := authenticate(h, acpfront.AuthMethodZaiAPIKey); err2 != nil {
-			t.Fatalf("re-authenticate after interruption: %v (the retry must be clean)", err2)
-		}
-
-		// The retry ran its OWN full honest chain (a second push+refresh on
-		// the transcript — the retry is not a replay of cached success).
-		tr, trErr := h.Transcript(t)
-		if trErr != nil {
-			t.Fatalf("fake transcript: %v", trErr)
-		}
-
-		if idx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry); len(idx) != 2 {
-			t.Fatalf("transcript records refresh×%d, want both runs' honest chains", len(idx))
-		}
-	})
+	if idx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry); len(idx) != 2 {
+		t.Fatalf("transcript records refresh×%d, want both runs' honest chains", len(idx))
+	}
 }
 
 // authTeeResponse finds the agent→client response frame matching the
@@ -398,7 +438,7 @@ func authTeeResponse(t *testing.T, lines []TeeLine, reqIdx int) TeeLine {
 		t.Fatalf("decode authenticate request frame: %v (%s)", err, lines[reqIdx].JSON)
 	}
 
-	idKey := fmt.Sprintf(`"id":%s`, string(req.ID))
+	idKey := `"id":` + string(req.ID)
 
 	for _, line := range lines {
 		if line.Dir == "in" && !strings.Contains(line.JSON, `"method"`) && strings.Contains(line.JSON, idKey) {
