@@ -12,11 +12,14 @@ import (
 // SDK's generated acp.Agent surface, so a v0.x SDK break is a
 // one-package migration.
 //
-// Method coverage is the v1 minimal chat loop: Initialize assembles the
-// honest D-02 capability report, NewSession/Prompt/Cancel carry the
-// D-03/D-04/D-05 contracts, and every unadvertised stable method is
-// answered with the -32601 default inside the adapter (Pitfall 6) — the
-// Handlers vocabulary never grows for methods this build does not offer.
+// Method coverage is the v1 minimal chat loop plus the SESS-01 lifecycle
+// pair: Initialize assembles the honest D-02 capability report,
+// NewSession/Prompt/Cancel carry the D-03/D-04/D-05 contracts, Resume/
+// Close carry SESS-01 (plan 05-05 — the adapter's unadvertised -32601
+// stubs became real delegates), and every remaining unadvertised stable
+// method is answered with the -32601 default inside the adapter (Pitfall
+// 6) — the Handlers vocabulary never grows for methods this build does
+// not offer.
 type Handlers interface {
 	// Initialize returns the honest agent identity and the auth methods
 	// this build advertises (D-02); the adapter assembles the wire
@@ -35,6 +38,18 @@ type Handlers interface {
 
 	// Cancel cancels the session's active turn exactly once (D-05).
 	Cancel(ctx context.Context, sessionID string) error
+
+	// ResumeSession reattaches one backend session and returns its id
+	// (SESS-01, plan 05-05): the backend reply is the create-shaped full
+	// snapshot, so the id the front returns digs out through the same
+	// path session/new uses. No setModel follow-up, no replay of
+	// pre-resume history (D-04) — the contracts live in the front.
+	ResumeSession(ctx context.Context, sessionID string) (string, error)
+
+	// CloseSession runs the session teardown (SESS-01, plan 05-05):
+	// cancel-then-close-then-release, best-effort on the backend leg —
+	// the ordered contract lives in the front.
+	CloseSession(ctx context.Context, sessionID string) error
 }
 
 // InitReport is the honest initialize payload (D-02): agent identity plus

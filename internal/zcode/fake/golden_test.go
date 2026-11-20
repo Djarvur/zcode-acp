@@ -218,6 +218,7 @@ func goldenDrivers() map[string]driverFunc {
 		"permission-cancel":          drivePermissionCancel,
 		"user-input-decline":         driveUserInputDecline,
 		"tool-lifecycle":             driveToolLifecycle,
+		"session-lifecycle":          driveSessionLifecycle,
 	}
 }
 
@@ -858,6 +859,96 @@ func driveToolLifecycle(ctx context.Context, d *exchangeDriver) {
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.send(ctx) // rule 1 (times 1): the Edit lifecycle + foreign delta
 	h.send(ctx) // rule 2 (unlimited): the Write lifecycle
+}
+
+// driveSessionLifecycle: the SESS-01 corpus row (plan 05-05) — the front
+// preamble (copied verbatim from setmodel-followup), then the lifecycle
+// legs the front-tier contracts replay at the corpus tier (the
+// driveFrontPreamble discipline: the front-tier contract calls driven
+// verbatim so the golden byte-locks their wire shape): session/resume
+// {sessionId} answered with the SAME create-shaped snapshot (the reply
+// body session.sessionId dig-out createSessionID performs unchanged),
+// the RE-ISSUED session/subscribe {deliveryKind:desktop-continuous}
+// (the resume leg's subscribe, no setModel — model binding persists
+// backend-side), and session/close {sessionId} answered {closed:true}.
+// The golden locks the wire order create→subscribe→setModel→resume→
+// subscribe→close; the composed-tier resume/close contracts live in
+// acpfront's TestResume/TestCloseTeardown (the same row through the
+// harness). The row also carries the send legs the composed tier drives
+// (a completing send on times-1 rule 1, the active-turn send + stop rule
+// for the close race probe) — unused here, matched on demand.
+func driveSessionLifecycle(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	res, err := d.call(ctx, zcode.MethodSessionResume, map[string]any{
+		wireKeySessionID: fixSessionID,
+	})
+	if err != nil {
+		d.t.Fatalf("session/resume: %v", err)
+	}
+
+	assertResumeSnapshot(d.t, res)
+
+	subParams := map[string]any{
+		wireKeySessionID: fixSessionID,
+		"deliveryKind":   "desktop-continuous",
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, subParams); err != nil {
+		d.t.Fatalf("session/subscribe (resume leg): %v", err)
+	}
+
+	closeRes, err := d.call(ctx, zcode.MethodSessionClose, map[string]any{
+		wireKeySessionID: fixSessionID,
+	})
+	if err != nil {
+		d.t.Fatalf("session/close: %v", err)
+	}
+
+	assertCloseResult(d.t, closeRes)
+}
+
+// assertResumeSnapshot digs result.session.sessionId out of the resume
+// reply — the SAME decode path createSessionID runs on the create reply
+// (the backend resume snapshot shape, 05-RESEARCH.md Pattern 7): a reply
+// without the id fails loud.
+func assertResumeSnapshot(t *testing.T, res json.RawMessage) {
+	t.Helper()
+
+	var result struct {
+		Session json.RawMessage `json:"session"`
+	}
+
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("session/resume: decode reply: %v (%s)", err, res)
+	}
+
+	var session map[string]any
+	if err := json.Unmarshal(result.Session, &session); err != nil {
+		t.Fatalf("session/resume: decode session: %v (%s)", err, res)
+	}
+
+	if sid, _ := session["sessionId"].(string); sid != fixSessionID {
+		t.Fatalf("session/resume snapshot sessionId = %q, want %q (the create-shaped snapshot)", sid, fixSessionID)
+	}
+}
+
+// assertCloseResult asserts the session/close reply carries the dialect's
+// {closed:true} result (05-RESEARCH.md Pattern 7 close params/result).
+func assertCloseResult(t *testing.T, res json.RawMessage) {
+	t.Helper()
+
+	var result struct {
+		Closed bool `json:"closed"`
+	}
+
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("session/close: decode reply: %v (%s)", err, res)
+	}
+
+	if !result.Closed {
+		t.Fatalf("session/close result = %s, want {\"closed\":true}", res)
+	}
 }
 
 // waitStopReason blocks for the in-flight prompt's resolution and requires

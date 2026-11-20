@@ -262,12 +262,14 @@ func assertHonestFrame(t *testing.T, resp acp.InitializeResponse) {
 	}
 }
 
-// TestUnadvertisedMethodsAnswerMethodNotFound drives the seven unadvertised
+// TestUnadvertisedMethodsAnswerMethodNotFound drives the five unadvertised
 // stable methods and asserts each answers the clean -32601 default naming
 // the method (Pitfall 6) — and that the Handlers fake was never touched
 // (the defaults are adapter-side). Authenticate is NOT in this table: it is
 // advertised per D-02 and answers the deliberate honest exception, locked
-// by TestAuthenticateHonestError (plan 04-03).
+// by TestAuthenticateHonestError (plan 04-03). SessionResume/SessionClose
+// left the table with plan 05-05: the SESS-01 lifecycle pair became real
+// delegates (TestLifecycleDelegation locks the delegation contract).
 func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 	h := newScriptedHandlers()
 	adapter := acpport.NewAgent(h)
@@ -282,11 +284,6 @@ func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 
 			return err
 		}},
-		{acp.AgentMethodSessionClose, func() error {
-			_, err := adapter.CloseSession(ctx, acp.CloseSessionRequest{})
-
-			return err
-		}},
 		{acp.AgentMethodSessionDelete, func() error {
 			_, err := adapter.DeleteSession(ctx, acp.DeleteSessionRequest{})
 
@@ -294,11 +291,6 @@ func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 		}},
 		{acp.AgentMethodSessionList, func() error {
 			_, err := adapter.ListSessions(ctx, acp.ListSessionsRequest{})
-
-			return err
-		}},
-		{acp.AgentMethodSessionResume, func() error {
-			_, err := adapter.ResumeSession(ctx, acp.ResumeSessionRequest{})
 
 			return err
 		}},
@@ -345,6 +337,165 @@ func assertMethodNotFound(t *testing.T, err error, method string) {
 
 	if data["method"] != method {
 		t.Fatalf("error data method = %q, want %q", data["method"], method)
+	}
+}
+
+// TestLifecycleDelegation (SESS-01, plan 05-05) locks the delegation
+// contract of the two former unadvertised stubs: the adapter translates
+// the wire request onto the neutral Handlers vocabulary, the session id
+// rides verbatim, the resume response stays the SDK zero value (the SDK
+// resume response carries no session id — the reattached id is the
+// request's own), and a front seam error surfaces coded via wireError —
+// never raw (A5).
+func TestLifecycleDelegation(t *testing.T) {
+	t.Run("resume delegates the session id", func(t *testing.T) {
+		h := newScriptedHandlers()
+		adapter := acpport.NewAgent(h)
+
+		resp, err := adapter.ResumeSession(context.Background(), acp.ResumeSessionRequest{
+			SessionId: acp.SessionId(testSessionID),
+		})
+		if err != nil {
+			t.Fatalf("ResumeSession: %v", err)
+		}
+
+		if len(h.resumeCalls) != 1 || h.resumeCalls[0] != testSessionID {
+			t.Fatalf("Handlers.ResumeSession calls = %v, want exactly [%s]", h.resumeCalls, testSessionID)
+		}
+
+		marshaled, marshalErr := json.Marshal(resp)
+		if marshalErr != nil {
+			t.Fatalf("marshal resume response: %v", marshalErr)
+		}
+
+		if string(marshaled) != "{}" {
+			t.Fatalf("resume response = %s, want the empty object (no id echo on the wire)", marshaled)
+		}
+	})
+
+	t.Run("close delegates the session id", func(t *testing.T) {
+		h := newScriptedHandlers()
+		adapter := acpport.NewAgent(h)
+
+		if _, err := adapter.CloseSession(context.Background(), acp.CloseSessionRequest{
+			SessionId: acp.SessionId(testSessionID),
+		}); err != nil {
+			t.Fatalf("CloseSession: %v", err)
+		}
+
+		if len(h.closeCalls) != 1 || h.closeCalls[0] != testSessionID {
+			t.Fatalf("Handlers.CloseSession calls = %v, want exactly [%s]", h.closeCalls, testSessionID)
+		}
+	})
+
+	t.Run("resume seam error surfaces coded", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.mu.Lock()
+		h.resumeErr = acpport.NewInternal("backend refused the reattach")
+		h.mu.Unlock()
+
+		_, err := acpport.NewAgent(h).ResumeSession(context.Background(), acp.ResumeSessionRequest{
+			SessionId: acp.SessionId(testSessionID),
+		})
+		assertCodedInternal(t, err, "backend refused the reattach")
+	})
+}
+
+// TestLifecycleDelegationCoded locks the error leg of the SESS-01
+// delegation: a Handlers-seam error (and an invalid-request one) surfaces
+// through wireError with its own code and message — never raw (A5), never
+// the -32601 stub default the methods answered before plan 05-05.
+func TestLifecycleDelegationCoded(t *testing.T) {
+	t.Run("close seam error surfaces coded", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.mu.Lock()
+		h.closeErr = acpport.NewInvalidRequest("no session registered under id")
+		h.mu.Unlock()
+
+		_, err := acpport.NewAgent(h).CloseSession(context.Background(), acp.CloseSessionRequest{
+			SessionId: acp.SessionId(testSessionID),
+		})
+
+		var rerr *acp.RequestError
+		if !errors.As(err, &rerr) {
+			t.Fatalf("close error = %T (%v), want a coded RequestError", err, err)
+		}
+
+		if rerr.Code != acpport.CodeInvalidRequest {
+			t.Fatalf("close error code = %d, want %d", rerr.Code, acpport.CodeInvalidRequest)
+		}
+
+		if rerr.Message != "no session registered under id" {
+			t.Fatalf("close error message = %q, want the seam's own text", rerr.Message)
+		}
+	})
+}
+
+// assertCodedInternal asserts one coded -32603 RequestError whose message
+// carries the front's own text (wireError keeps seam messages verbatim,
+// never the wrapped transport noise).
+func assertCodedInternal(t *testing.T, err error, message string) {
+	t.Helper()
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("error = %T (%v), want a coded RequestError", err, err)
+	}
+
+	if rerr.Code != acpport.CodeInternal {
+		t.Fatalf("error code = %d, want %d (internal class)", rerr.Code, acpport.CodeInternal)
+	}
+
+	if rerr.Message != message {
+		t.Fatalf("error message = %q, want %q", rerr.Message, message)
+	}
+}
+
+// TestLifecycleDelegationWire drives the SESS-01 pair through a REAL
+// agent-side connection with raw JSON-RPC frames: session/resume and
+// session/close answer RESULT frames on the actual wire (no -32601
+// remains for these two methods — the plan 04-03 unadvertised lock
+// shrank to five), and the Handlers impl received the wire session ids.
+func TestLifecycleDelegationWire(t *testing.T) {
+	h := newScriptedHandlers()
+
+	probe := newConnectionProbe(t, h)
+
+	tests := []struct {
+		method string
+		params string
+	}{
+		{acp.AgentMethodSessionResume, `{"sessionId":"` + testSessionID + `","cwd":"` + testCwd + `"}`},
+		{acp.AgentMethodSessionClose, `{"sessionId":"` + testSessionID + `"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			raw := probe(t, tt.method, tt.params)
+
+			var frame struct {
+				Error json.RawMessage `json:"error"`
+			}
+
+			if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+				t.Fatalf("decode %s response frame: %v (%s)", tt.method, err, raw)
+			}
+
+			if len(frame.Error) != 0 && string(frame.Error) != "null" {
+				t.Fatalf("%s answered an error frame, want a result: %s", tt.method, raw)
+			}
+		})
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if len(h.resumeCalls) != 1 || h.resumeCalls[0] != testSessionID {
+		t.Fatalf("Handlers.ResumeSession calls = %v, want exactly [%s]", h.resumeCalls, testSessionID)
+	}
+
+	if len(h.closeCalls) != 1 || h.closeCalls[0] != testSessionID {
+		t.Fatalf("Handlers.CloseSession calls = %v, want exactly [%s]", h.closeCalls, testSessionID)
 	}
 }
 
@@ -415,31 +566,30 @@ func jsonRPCErrorFrame(t *testing.T, raw, method string) *struct {
 }
 
 // TestUnadvertisedStableMethodsAnswerNotFound (plan 04-03 lock) drives the
-// seven unadvertised stable methods through a REAL agent-side connection
+// five unadvertised stable methods through a REAL agent-side connection
 // with raw JSON-RPC frames: each must answer the clean -32601 default
 // naming the method on the actual wire (Pitfall 6 — capability omission
 // stops legitimate clients, but the dispatcher still routes), and the
 // Handlers impl must never be touched (the defaults are adapter-side).
 // Authenticate is NOT in this table: it is advertised per D-02 and answers
 // the deliberate honest exception (TestAuthenticateHonestError).
+// SessionResume/SessionClose left the table with plan 05-05 (the SESS-01
+// delegates; TestLifecycleDelegationWire locks the wire shape).
 func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
 	h := newScriptedHandlers()
 
 	probe := newConnectionProbe(t, h)
 
-	// Minimal params per method — only two shapes need real values:
-	// session/resume's Validate requires cwd, and session/set_config_option
-	// is a union whose default (value-id) variant needs its keys; everything
-	// else decodes the empty object.
+	// Minimal params per method — session/set_config_option is a union whose
+	// default (value-id) variant needs its keys; everything else decodes the
+	// empty object.
 	tests := []struct {
 		method string
 		params string
 	}{
 		{acp.AgentMethodLogout, "{}"},
-		{acp.AgentMethodSessionClose, "{}"},
 		{acp.AgentMethodSessionDelete, "{}"},
 		{acp.AgentMethodSessionList, "{}"},
-		{acp.AgentMethodSessionResume, `{"cwd":"` + testCwd + `"}`},
 		{acp.AgentMethodSessionSetConfigOption, `{"configId":"c","sessionId":"s","value":"v"}`},
 		{acp.AgentMethodSessionSetMode, "{}"},
 	}
@@ -1393,6 +1543,9 @@ type scriptedHandlers struct {
 	initErr       error
 	newSessionErr error
 	cancelErr     error
+	resumeID      string
+	resumeErr     error
+	closeErr      error
 
 	initCalls       int
 	newSessionCalls []acpport.NewSessionParams
@@ -1400,11 +1553,13 @@ type scriptedHandlers struct {
 	sinks           []acpport.UpdateSink
 	sinkErrs        []error
 	cancelCalls     []string
+	resumeCalls     []string
+	closeCalls      []string
 }
 
 // newScriptedHandlers returns the fake with the canned backend session id.
 func newScriptedHandlers() *scriptedHandlers {
-	return &scriptedHandlers{newSessionID: backendSessionID}
+	return &scriptedHandlers{newSessionID: backendSessionID, resumeID: backendSessionID}
 }
 
 // Initialize records the call and replays the canned report.
@@ -1468,6 +1623,32 @@ func (s *scriptedHandlers) Cancel(ctx context.Context, sessionID string) error {
 	s.cancelCalls = append(s.cancelCalls, sessionID)
 
 	return s.cancelErr
+}
+
+// ResumeSession records the session id and replays the canned reattached
+// id (SESS-01, plan 05-05 — the lifecycle pair delegate through the same
+// translate-call-code path as the other advertised methods).
+func (s *scriptedHandlers) ResumeSession(ctx context.Context, sessionID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.resumeCalls = append(s.resumeCalls, sessionID)
+
+	if s.resumeErr != nil {
+		return "", s.resumeErr
+	}
+
+	return s.resumeID, nil
+}
+
+// CloseSession records the session id.
+func (s *scriptedHandlers) CloseSession(ctx context.Context, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.closeCalls = append(s.closeCalls, sessionID)
+
+	return s.closeErr
 }
 
 // totalCalls reports the number of Handlers invocations recorded.

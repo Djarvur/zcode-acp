@@ -1,0 +1,124 @@
+{
+  "name": "session-lifecycle",
+  "on_request": [
+    {
+      "method": "session/create",
+      "reply": {
+        "result": {"session": {"sessionId": "sess_fix1"}, "protocol": {"name": "ZCode Protocol", "version": 1}}
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {"sessionId": "sess_fix1", "scope": "runtime-materialization"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"nativeSearchEnhancementsEnabled": false, "memoryEnabled": false}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {
+        "result": {"sessionId": "sess_fix1", "eventSeq": 0, "events": []}
+      }
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {}}
+    },
+    {
+      "method": "session/resume",
+      "reply": {
+        "result": {"session": {"sessionId": "sess_fix1"}, "protocol": {"name": "ZCode Protocol", "version": 1}}
+      }
+    },
+    {
+      "method": "session/close",
+      "reply": {"result": {"closed": true}}
+    },
+    {
+      "method": "session/send",
+      "times": 1,
+      "reply": {
+        "result": {"accepted": true, "sessionId": "sess_fix1", "stateRevision": 1}
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "running"}, "reason": "prompt_started", "revision": 1, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"type": "turn.started", "seq": 4, "turnId": "turn_fix1", "deliveryKind": "desktop-continuous"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"type": "part.delta", "seq": 5, "turnId": "turn_fix1", "messageId": "msg_1", "partId": "part_1", "field": "text", "delta": "Hello"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"type": "part.delta", "seq": 6, "turnId": "turn_fix1", "messageId": "msg_1", "partId": "part_1", "field": "text", "delta": " world"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"type": "turn.completed", "seq": 9, "turnId": "turn_fix1", "deliveryKind": "desktop-continuous"}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/send",
+      "reply": {"result": {"accepted": true, "sessionId": "sess_fix1", "stateRevision": 2}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "running"}, "reason": "prompt_started", "revision": 2, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"type": "turn.started", "seq": 10, "turnId": "turn_fix2", "deliveryKind": "desktop-continuous"}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/stop",
+      "reply": {"result": {}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "cancelled"}, "reason": "session_stopped", "revision": 3, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        }
+      ]
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

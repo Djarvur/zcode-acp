@@ -148,6 +148,8 @@ const (
 	MethodSessionLifecycleChanged   = "session/lifecycle/changed"
 	MethodSessionSubscribe          = "session/subscribe"
 	MethodSessionSetModel           = "session/setModel"
+	MethodSessionResume             = "session/resume"
+	MethodSessionClose              = "session/close"
 )
 
 // Error-code constants carry the dialect §6 numeric values verbatim.

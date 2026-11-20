@@ -15,10 +15,12 @@ import (
 )
 
 // agentAdapter implements the SDK's 12-method acp.Agent surface over a
-// Handlers impl (RESEARCH Pattern 1, the D-01 seam): the four advertised
-// methods translate the neutral vocabulary, the seven unadvertised stable
-// methods answer acp.NewMethodNotFound (-32601, Pitfall 6) — matching the
-// SDK's own optional-interface behavior — and authenticate (advertised per
+// Handlers impl (RESEARCH Pattern 1, the D-01 seam): the advertised
+// methods and the SESS-01 lifecycle pair (ResumeSession/CloseSession —
+// plain requests per the SDK's dispatcher, no capability flag) translate
+// the neutral vocabulary, the five remaining unadvertised stable methods
+// answer acp.NewMethodNotFound (-32601, Pitfall 6) — matching the SDK's
+// own optional-interface behavior — and authenticate (advertised per
 // D-02 but not yet functional) answers the honest not-available error, the
 // one deliberate non-(-32601) exception (RESEARCH Open Question 2 / A2).
 // Capability omission stops legitimate clients; the dispatcher still routes
@@ -335,12 +337,19 @@ func (a *agentAdapter) Logout(ctx context.Context, params acp.LogoutRequest) (ac
 	return acp.LogoutResponse{}, unadvertised(acp.AgentMethodLogout)
 }
 
-// CloseSession is unadvertised in Phase 4 — clean -32601 default.
+// CloseSession delegates the teardown to Handlers (SESS-01, plan 05-05)
+// and answers the empty result — the ordered cancel-close-release contract
+// lives in the front. Front errors are coded via wireError, never passed
+// raw.
 func (a *agentAdapter) CloseSession(
 	ctx context.Context,
 	params acp.CloseSessionRequest,
 ) (acp.CloseSessionResponse, error) {
-	return acp.CloseSessionResponse{}, unadvertised(acp.AgentMethodSessionClose)
+	if err := a.h.CloseSession(ctx, string(params.SessionId)); err != nil {
+		return acp.CloseSessionResponse{}, wireError(err)
+	}
+
+	return acp.CloseSessionResponse{}, nil
 }
 
 // DeleteSession is unadvertised in Phase 4 — clean -32601 default.
@@ -359,12 +368,20 @@ func (a *agentAdapter) ListSessions(
 	return acp.ListSessionsResponse{}, unadvertised(acp.AgentMethodSessionList)
 }
 
-// ResumeSession is unadvertised in Phase 4 — clean -32601 default.
+// ResumeSession delegates the reattach to Handlers (SESS-01, plan 05-05).
+// The SDK's resume response carries no session id — the reattached id is
+// the request's own, so the Handlers return value is validated non-empty
+// (a front that failed loud already errored) and the response stays the
+// SDK zero value. Front errors are coded via wireError, never passed raw.
 func (a *agentAdapter) ResumeSession(
 	ctx context.Context,
 	params acp.ResumeSessionRequest,
 ) (acp.ResumeSessionResponse, error) {
-	return acp.ResumeSessionResponse{}, unadvertised(acp.AgentMethodSessionResume)
+	if _, err := a.h.ResumeSession(ctx, string(params.SessionId)); err != nil {
+		return acp.ResumeSessionResponse{}, wireError(err)
+	}
+
+	return acp.ResumeSessionResponse{}, nil
 }
 
 // SetSessionConfigOption is unadvertised in Phase 4 — clean -32601 default.
