@@ -1,13 +1,18 @@
 package hostsvc_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
 	"github.com/Djarvur/zcode-acp/internal/interact"
@@ -331,4 +336,236 @@ func keysOfAny(m map[string]any) []string {
 	}
 
 	return out
+}
+
+// peerRule scripts one inbound method at the scripted peer: the canned
+// result reply and, optionally, one notification emitted afterMs after the
+// reply (the happy arm's read-back surface arrives strictly AFTER the
+// refresh reply registers — the live poll path the real wire shows).
+type peerRule struct {
+	result      json.RawMessage
+	emitAfterMs int
+	emitMethod  string
+	emitParams  json.RawMessage
+}
+
+// scriptedPeer is the minimal scripted app-server double: it answers each
+// scripted inbound request with its rule's canned result and plays the
+// rule's post-reply emit. Writes serialize behind mu (the peer serves on a
+// goroutine while the test writes nothing — but the mutex keeps the encode+
+// write pair atomic all the same).
+type scriptedPeer struct {
+	mu    sync.Mutex
+	w     io.Writer
+	rules map[string]peerRule
+}
+
+// serve reads host lines until the stream closes, answering per rule.
+func (p *scriptedPeer) serve(r io.Reader) {
+	sc := bufio.NewScanner(r)
+
+	for sc.Scan() {
+		env, err := zcode.Decode(sc.Bytes())
+		if err != nil || env.ID == nil || env.Method == "" {
+			continue
+		}
+
+		p.answer(&env)
+	}
+}
+
+// answer replies with the rule's canned result and plays its post-reply
+// emit.
+func (p *scriptedPeer) answer(env *zcode.Envelope) {
+	rule, ok := p.rules[env.Method]
+	if !ok {
+		return
+	}
+
+	if rule.result != nil {
+		p.write(&zcode.Envelope{ID: env.ID, Result: rule.result})
+	}
+
+	if rule.emitAfterMs > 0 {
+		time.Sleep(time.Duration(rule.emitAfterMs) * time.Millisecond)
+		p.write(&zcode.Envelope{Method: rule.emitMethod, Params: rule.emitParams})
+	}
+}
+
+// write encodes and writes one peer→host envelope.
+func (p *scriptedPeer) write(env *zcode.Envelope) {
+	line, err := zcode.Encode(env)
+	if err != nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	_, _ = p.w.Write(line)
+}
+
+// peerPipes joins one io.Pipe half-pair into an io.ReadWriteCloser end.
+type peerPipes struct {
+	r io.ReadCloser
+	w io.WriteCloser
+}
+
+func (p *peerPipes) Read(b []byte) (int, error)  { return p.r.Read(b) }
+func (p *peerPipes) Write(b []byte) (int, error) { return p.w.Write(b) }
+func (p *peerPipes) Close() error                { return errors.Join(p.r.Close(), p.w.Close()) }
+
+// newPeerConn wires a real zcode.Conn to a scripted peer over crossed
+// io.Pipes (the roundtrip_test pattern): the conn reads what the peer
+// writes and vice versa. The returned cleanup closes both ends.
+func newPeerConn(t *testing.T, rules map[string]peerRule) (*zcode.Conn, *scriptedPeer, func()) {
+	t.Helper()
+
+	toPeerR, toHostW := io.Pipe() // host writes → peer reads
+	toHostR, toPeerW := io.Pipe() // peer writes → host reads
+
+	conn := zcode.NewConn(&peerPipes{r: toHostR, w: toHostW})
+	peer := &scriptedPeer{w: toPeerW, rules: rules}
+
+	done := make(chan struct{})
+	go func() {
+		peer.serve(toPeerR)
+		close(done)
+	}()
+
+	cleanup := func() {
+		_ = conn.Close()
+		_ = toPeerR.Close()
+		<-done
+	}
+
+	t.Cleanup(cleanup)
+
+	return conn, peer, cleanup
+}
+
+// readbackWant returns the wanted provider model identifiers the read-back
+// arms await (providerId/modelId — the dig-out normalization).
+func readbackWant() []string {
+	return []string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3"}
+}
+
+// TestAuthReadback locks the PITFALL-1 read-back verdict in all three arms:
+// (a) the happy registry surface — the helper returns applied with the
+// observed revision echo when a state.updated carries the expected provider
+// models; (b) the ack-mismatch negative — the ack says received but the
+// registry never carries the models within the deadline, so applied=false
+// with the coded actionable error (the verdict is the registry's, never the
+// ack's); (c) the create-reply arm — the helper also accepts the
+// settings.model.available surface via OfferCreateReply.
+func TestAuthReadback(t *testing.T) {
+	want := readbackWant()
+
+	t.Run("happy registry surface", func(t *testing.T) {
+		rules := map[string]peerRule{
+			zcode.MethodProviderUpdateAccountConfig: {result: json.RawMessage(
+				`{"receivedRevision":"account-bridge:peer-fix1","providerCount":0,"status":"received"}`)},
+			zcode.MethodProviderRefreshRegistry: {
+				result:      json.RawMessage(`{"refreshed":true}`),
+				emitAfterMs: 30,
+				emitMethod:  zcode.MethodStateUpdated,
+				emitParams: json.RawMessage(`{"scope":"registry","reason":"registry_refresh","revision":2,` +
+					`"patch":{"providers":{"zai-api":{"models":["GLM-5.3-Flash","GLM-5.3"]}}}}`),
+			},
+		}
+
+		conn, _, _ := newPeerConn(t, rules)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		if _, err := hostsvc.PushSnapshot(ctx, conn, fixtureInstall(t, 44)); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+
+		if err := hostsvc.RefreshRegistry(ctx, conn); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+
+		rb, err := hostsvc.AwaitRegistryContains(ctx, conn, want)
+		if err != nil {
+			t.Fatalf("read-back: %v", err)
+		}
+
+		if !rb.Applied {
+			t.Fatal("read-back verdict applied = false, want true (the registry surface carried the models)")
+		}
+
+		if rb.Revision != "2" {
+			t.Fatalf("observed revision = %q, want the surface's revision echo %q", rb.Revision, "2")
+		}
+	})
+
+	t.Run("ack without registry confirmation is not application", func(t *testing.T) {
+		rules := map[string]peerRule{
+			zcode.MethodProviderUpdateAccountConfig: {result: json.RawMessage(
+				`{"receivedRevision":"account-bridge:peer-fix1","providerCount":0,"status":"received"}`)},
+			zcode.MethodProviderRefreshRegistry: {result: json.RawMessage(`{"refreshed":true}`)},
+		}
+
+		conn, _, _ := newPeerConn(t, rules)
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+
+		ack, err := hostsvc.PushSnapshot(ctx, conn, fixtureInstall(t, 44))
+		if err != nil {
+			t.Fatalf("push: %v", err)
+		}
+
+		if ack.Status != "received" {
+			t.Fatalf("ack status = %q, want received (the ack SAYS received — the negative's point)", ack.Status)
+		}
+
+		if err := hostsvc.RefreshRegistry(ctx, conn); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+
+		rb, err := hostsvc.AwaitRegistryContains(ctx, conn, want)
+		if rb.Applied {
+			t.Fatal("applied = true on ack-only evidence — the verdict must be the registry's, never the ack's")
+		}
+
+		if !errors.Is(err, hostsvc.ErrRegistryNotConfirmed) {
+			t.Fatalf("error = %v, want the coded ErrRegistryNotConfirmed sentinel", err)
+		}
+	})
+
+	t.Run("create-reply surface", func(t *testing.T) {
+		rules := map[string]peerRule{
+			zcode.MethodSessionCreate: {result: json.RawMessage(
+				`{"session":{"sessionId":"sess_fix1"},` +
+					`"settings":{"model":{"available":[` +
+					`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"}},` +
+					`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"}}]}}}`)},
+		}
+
+		conn, _, _ := newPeerConn(t, rules)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		w, remove := hostsvc.WatchRegistry(conn, want)
+		defer remove()
+
+		res, err := conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
+			"workspace": map[string]any{"workspacePath": "/tmp/readback-ws", "workspaceKey": "/tmp/readback-ws"},
+		})
+		if err != nil {
+			t.Fatalf("session/create: %v", err)
+		}
+
+		w.OfferCreateReply(res)
+
+		rb, err := w.Await(ctx)
+		if err != nil {
+			t.Fatalf("read-back: %v", err)
+		}
+
+		if !rb.Applied {
+			t.Fatal("read-back verdict applied = false, want true (the create-reply surface carried the models)")
+		}
+	})
 }
