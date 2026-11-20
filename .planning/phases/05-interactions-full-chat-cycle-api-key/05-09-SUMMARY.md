@@ -161,3 +161,7 @@ Phase plans complete — ready for phase verification. The real-half proof path 
 ---
 *Phase: 05-interactions-full-chat-cycle-api-key*
 *Completed: 2026-11-20*
+
+## Self-Check: PASSED
+
+All 5 files verified present on disk (apicycle_test.go, doc.go, experiments/README.md, this SUMMARY, 05-USER-SETUP.md); all 3 commits verified ancestors of HEAD (`f406da4` test, `92d6042` docs, `7cdf3be` docs metadata). Commit count measured from the persisted plan ledger (gsd-plan-head-before-05-09 = c6444fc): 2 production commits, matching the frontmatter actuals. No unexpected file deletions; no untracked files outside .planning/ (orchestrator-owned).
