@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
 	"github.com/Djarvur/zcode-acp/internal/supervisor"
+	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
 // Front.Authenticate (plan 05-07, AUTH-01's composition tier): the honest
@@ -153,6 +155,17 @@ func (f *Front) authenticateAPIKey(ctx context.Context) error {
 		return acpport.NewInternal("authenticate: refresh registry: %v", err)
 	}
 
+	// The field-verified read-back arm (plan 05-11, EXP-READBACK-DIAG-01):
+	// real-desktop 3.18.2 emits NO state.updated patch for push+refresh —
+	// the verdict surface is the first create reply's settings.model.available
+	// (dialect §8). When a patch already latched (a desktop that does emit
+	// one), the probe is unnecessary — the observer stays for patches the
+	// desktop does emit. Either way the probe is evidence, never the verdict:
+	// the verdict remains the watcher's Await below.
+	if !watcher.Applied() {
+		f.probeCreateReadback(ctx, watcher)
+	}
+
 	// The verdict is the registry's (PITFALL 1): the received ack is
 	// receipt evidence only. A cancelled or expired wait surfaces the
 	// coded read-back error — no success state is recorded, so a
@@ -162,6 +175,58 @@ func (f *Front) authenticateAPIKey(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// probeCreateReadback offers the field-verified registry surface to the
+// watcher (plan 05-11, the branch-(c) correction): one raw probe
+// session/create over a temp-dir cwd — NO model binding, NO turn
+// (registry-level ops spend nothing) — whose reply feeds
+// watcher.OfferCreateReply, then a raw session/close for the probe id
+// (best-effort; the field-verified {closed:true} shape answers it). The
+// probe id digs out through createSessionID READ-ONLY (front.go stays a
+// same-wave sibling's file). Every probe failure is recorded structurally
+// and skips its step: a refused create or a reply without the want models
+// leaves the verdict to Await — the ack and the probe's transport success
+// are never the verdict, and a cancelled ctx surfaces through the same
+// coded read-back error with no success recorded (the interruptibility
+// contract).
+func (f *Front) probeCreateReadback(ctx context.Context, watcher *hostsvc.RegistryWatcher) {
+	dir, err := os.MkdirTemp("", "zcode-acp-auth-probe-")
+	if err != nil {
+		slog.Warn("acpfront: authenticate probe create skipped (temp dir)", "err", err)
+
+		return
+	}
+
+	//nolint:errcheck // best-effort probe cleanup; a stale temp dir must never fail the auth chain
+	defer os.RemoveAll(dir)
+
+	res, err := f.conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
+		"workspace": map[string]any{"workspacePath": dir, "workspaceKey": dir},
+	})
+	if err != nil {
+		slog.Warn("acpfront: authenticate probe create refused "+
+			"(the registry verdict still awaits its surfaces)", "err", err)
+
+		return
+	}
+
+	// The reply IS the read-back surface — offer it BEFORE the id dig so a
+	// reply lacking a session id still latches.
+	watcher.OfferCreateReply(res)
+
+	sid, err := createSessionID(res, "session/create (authenticate probe)")
+	if err != nil {
+		slog.Warn("acpfront: authenticate probe reply carried no session id (close skipped)", "err", err)
+
+		return
+	}
+
+	if _, err := f.conn.Call(ctx, zcode.MethodSessionClose, map[string]any{
+		wireKeySessionID: sid,
+	}); err != nil {
+		slog.Warn("acpfront: backend probe session/close failed (auth continues)", "session", sid, "err", err)
+	}
 }
 
 // advertisedAuthMethods returns the advertised auth-method definitions the

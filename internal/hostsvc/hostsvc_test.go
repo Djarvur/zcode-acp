@@ -450,14 +450,16 @@ func readbackWant() []string {
 	return []string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3"}
 }
 
-// TestAuthReadback locks the PITFALL-1 read-back verdict in all three arms:
+// TestAuthReadback locks the PITFALL-1 read-back verdict in four arms:
 // (a) the happy registry surface — the helper returns applied with the
 // observed revision echo when a state.updated carries the expected provider
 // models; (b) the ack-mismatch negative — the ack says received but the
 // registry never carries the models within the deadline, so applied=false
 // with the coded actionable error (the verdict is the registry's, never the
 // ack's); (c) the create-reply arm — the helper also accepts the
-// settings.model.available surface via OfferCreateReply.
+// settings.model.available surface via OfferCreateReply; (d) the Applied
+// gate — false before any surface, true once one latches (the corrected
+// chain's probe gate, plan 05-11).
 func TestAuthReadback(t *testing.T) {
 	want := readbackWant()
 
@@ -472,6 +474,38 @@ func TestAuthReadback(t *testing.T) {
 	t.Run("create-reply surface", func(t *testing.T) {
 		assertReadbackCreateReply(t, want)
 	})
+
+	t.Run("Applied gate before and after a surface", func(t *testing.T) {
+		assertReadbackAppliedGate(t, want)
+	})
+}
+
+// assertReadbackAppliedGate is arm (d): the watcher's Applied gate reads
+// false before ANY surface latched (the corrected chain must run its probe
+// observation then) and true once a surface carried the want models (the
+// probe is then unnecessary — the observer stays for patches the desktop
+// does emit, EXP-READBACK-DIAG-01).
+func assertReadbackAppliedGate(t *testing.T, want []string) {
+	t.Helper()
+
+	conn, _, _ := newPeerConn(t, map[string]peerRule{})
+
+	w, remove := hostsvc.WatchRegistry(conn, want)
+	defer remove()
+
+	if w.Applied() {
+		t.Fatal("Applied = true before any surface — the probe gate would skip its observation wrongly")
+	}
+
+	w.OfferCreateReply(json.RawMessage(
+		`{"session":{"sessionId":"sess_gate1"},` +
+			`"settings":{"model":{"available":[` +
+			`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"}},` +
+			`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"}}]}}}`))
+
+	if !w.Applied() {
+		t.Fatal("Applied = false after the create-reply surface carried the want models")
+	}
 }
 
 // peerAckRule is the canned provider/updateAccountConfig ack the read-back

@@ -80,6 +80,17 @@ func (w *RegistryWatcher) OfferCreateReply(res json.RawMessage) {
 	w.considerSurface(res)
 }
 
+// Applied reports whether any registry surface has already latched the
+// verdict — the corrected authenticate chain's probe gate (plan 05-11):
+// the probe-create observation runs only when no patch confirmed first
+// (the state.updated observer stays for patches the desktop does emit; on
+// real-desktop 3.18.2 none fires for push+refresh, EXP-READBACK-DIAG-01).
+func (w *RegistryWatcher) Applied() bool {
+	_, ok := w.latched()
+
+	return ok
+}
+
 // Await polls the latched verdict with a deadline: the effective window is
 // the shorter of the watcher deadline and the context's (injectable,
 // test-short). Applied true the moment any surface matched; the coded
@@ -154,11 +165,16 @@ func (w *RegistryWatcher) latched() (Readback, bool) {
 
 // notConfirmed renders the coded, actionable negative: what was awaited,
 // the cause, and the PITFALL-1 discipline (the received ack is not
-// application — check the snapshot's basedOn revision against the active
-// builtin, the silent-discard shape dialect §8 records).
+// application; the field-verified read-back surface on desktop 3.18.2 is
+// the create reply's settings.model.available — no state.updated patch
+// fires for push+refresh, EXP-READBACK-DIAG-01 — so check the snapshot's
+// basedOn revision against the active builtin, the silent-discard shape
+// dialect §8 records).
 func (w *RegistryWatcher) notConfirmed(cause error) error {
 	return fmt.Errorf("%w: models %v not observed within the read-back window (%v) — "+
-		"the received ack is not application; verify the snapshot's "+
+		"the received ack is not application; the field-verified read-back surface is "+
+		"the create reply's settings.model.available (no state.updated patch fires for "+
+		"push+refresh on desktop 3.18.2, EXP-READBACK-DIAG-01); verify the snapshot's "+
 		"basedOnZCodeBuiltinRevision matches the active builtin revision",
 		ErrRegistryNotConfirmed, w.want, cause)
 }

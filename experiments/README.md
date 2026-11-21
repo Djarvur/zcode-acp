@@ -200,6 +200,16 @@ config at run time; write the raw capture outside the repo; scrub into
     refreshRegistry {refreshed:true}; the desktop applied runtime headers for GLM-5.3-Flash in its own refresh loop —
     but no state.updated registry patch within the 30 s read-back window (the dialect §8 silent-discard shape).
     Zero turns. Capture: experiments/captures/EXP-APIKEY-CYCLE-01.jsonl (scan-secrets clean). Row stays PENDING for the passing run.
+  - **DIAGNOSTIC (2026-11-21, plan 05-11, EXP-READBACK-DIAG-01) — branch verdict: (c) create-reply surface. ZERO model spend**
+    (registry-level only: push → refresh → 30 s observation window → probe create → probe close; no turn ever started).
+    Field facts: updateAccountConfig acked {status:"received", providerCount:0, revision echo verbatim}; refreshRegistry
+    {refreshed:true}; NO state.updated in the 30 s window (startup/storageState ×5 only); probe session/create (temp-dir cwd)
+    → settings.model.available carried zai-api/GLM-5.3-Flash + zai-api/GLM-5.3 (plus OpenCodeGo/* entries), lifecycle
+    starting→ready, session/requestRuntimePreferences answered minimal, interaction/requestOfficialMcpAuthHeaders answered
+    -32601; probe session/close → {closed:true}; watcher latched on the create surface; staged shutdown, zero orphans.
+    Branch evidence: (c) — the create reply IS the registry read-back surface; the state.updated patch surface does not
+    fire for push+refresh on desktop 3.18.2. Capture: experiments/captures/EXP-READBACK-DIAG-01.jsonl (scrubbed,
+    scan-secrets clean). The EXP-APIKEY-CYCLE-01 row stays PENDING for the guarded REAL RUN re-run (05-12 human checkpoint).
   (planned 2026-11-20; this row records the PLANNED spend — the end-of-phase
   verification run appends the actuals + verdict line beneath it)
   — planned spend (the D-05 minimum): one registry read-back (no turn) + two tiny
