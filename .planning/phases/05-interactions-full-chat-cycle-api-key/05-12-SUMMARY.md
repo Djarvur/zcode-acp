@@ -186,6 +186,15 @@ None — no placeholder data paths; the evidence trail is complete for what it c
 
 None — no security-relevant surface beyond the plan's threat model. T-5-29 held (raw capture born outside the repo and read only by the scrubber; zero credential bytes in any log, context, or committed file); T-5-30 held (the human was the only spender; actual spend recorded); T-5-31 held (a failing verdict recorded WITH its evidence trail — scrubbed capture + scan + ledger actuals — no green verdict without evidence, and no evidence without the scan gate).
 
+## Self-Check: PASSED
+
+- `experiments/captures/EXP-APIKEY-CYCLE-02.jsonl` exists on disk and in git (committed in `3c80488`)
+- `05-12-SUMMARY.md` exists; `3c80488` (evidence) and `075374b` (docs close-out) are both ancestors of HEAD
+- `bash experiments/scan-secrets.sh` exit 0 on the final tree (and on the staged diff immediately before the evidence commit)
+- Attempt-1's committed capture `EXP-APIKEY-CYCLE-01.jsonl` is untouched by this plan's range (`git diff 64c8e1f..HEAD` over that path is empty) — evidence monotonicity held
+- `REQUIREMENTS.md` untouched — AUTH-01 stays `[ ]`, no mark-complete called, the shared-ID gate stays blocked
+- Working tree clean of unstaged tracked changes; the raw capture was never read by anything but the scrubber and lives outside the repo at the user's scratch path
+
 ---
 *Phase: 05-interactions-full-chat-cycle-api-key*
 *Completed: 2026-11-21*
