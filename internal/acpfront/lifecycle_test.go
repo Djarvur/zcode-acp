@@ -370,6 +370,109 @@ func TestCloseWhileTurnActiveRace(t *testing.T) {
 	assertCloseAfterStop(t, tr)
 }
 
+// TestCloseWithPendingPermissionCancelled is the CR-01 lock (plan 05-10,
+// gap 2 of 05-VERIFICATION.md): a session whose active turn holds a pending
+// interaction/requestPermission bridge — the client parks on the answer
+// gate — is closed mid-ask. The CORE-06 close-path truth demands the fan-in:
+// the pending table drains (the bridge's round-trip classifies cancelled)
+// and the backend observes the -32021 cancelled reply on the transcript —
+// a permission bridge never outlives its turn on the close path (the 05-02
+// prohibition). At HEAD the drain reports false after a successful drain,
+// so CloseSession skips cancelPendingForTurn exactly when a turn was
+// cancelled, and the pending dangles to the responder deadline instead.
+func TestCloseWithPendingPermissionCancelled(t *testing.T) {
+	gate := make(chan struct{})
+
+	h := newPermissionFrontOpts(t, "permission-cancel", PermissionScript{Gate: gate}, nil)
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	mustInitialize(ctx, t, h)
+
+	sid := openPermissionSession(ctx, t, h)
+
+	promptDone := make(chan promptOutcome, 1)
+
+	go func() {
+		resp, err := h.client.Prompt(ctx, acp.PromptRequest{
+			SessionId: acp.SessionId(sid),
+			Prompt:    []acp.ContentBlock{acp.TextBlock("hi")},
+		})
+		promptDone <- promptOutcome{resp: resp, err: err}
+	}()
+
+	// The ask is pending: the client captured it and parks on the gate —
+	// the bridge's round-trip holds until the turn's cancel fan-in (or the
+	// responder deadline) resolves it.
+	awaitPermissionAsk(t, h)
+
+	// Close while the ask is pending: the ordered teardown cancels the
+	// active turn first, and the cancelled turn's permission bridge must
+	// fan in with it (the -32021 cancelled arm — the disposition ledger's
+	// REAL RUN gate).
+	if _, err := h.client.CloseSession(ctx, acp.CloseSessionRequest{SessionId: acp.SessionId(sid)}); err != nil {
+		t.Fatalf("session/close: %v", err)
+	}
+
+	// The cancelled turn resolves as the SUCCESS cancelled stopReason (the
+	// close's machine.Cancel landed; the prompt never hangs).
+	outcome := waitPromptOutcome(t, promptDone)
+	if outcome.err != nil {
+		t.Fatalf("cancelled-by-close prompt must answer as a success response, got error: %v", outcome.err)
+	}
+
+	if outcome.resp.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("stopReason = %q, want %q", outcome.resp.StopReason, acp.StopReasonCancelled)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	// The close-path artifact: the pending reverse earned EXACTLY ONE reply
+	// and it is the -32021 cancelled error (the bridge's pending table
+	// drained — the fan-in fired), with the teardown wire order intact
+	// (stop precedes the ONE backend close).
+	assertCloseWithPendingBackLeg(t, tr)
+}
+
+// assertCloseWithPendingBackLeg locks the CR-01 close-path shape on the
+// fake transcript: the registering permission reverse earned exactly one
+// reply, that reply is the -32021 cancelled error carrying the bridge's
+// stable message (the corpus row's expect_answer byte-locks both), and the
+// teardown order holds (the turn's session/stop precedes the ONE backend
+// session/close — the close cancelled the turn, not skipped it).
+func assertCloseWithPendingBackLeg(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	errReplies := 0
+
+	for _, line := range tr.Lines {
+		probe := probeLineJSON(line.JSON)
+
+		if line.Dir != fake.DirIn || !isReplyTo(probe, permReverseID) {
+			continue
+		}
+
+		if probe["error"] == nil {
+			t.Fatalf("close-path reverse earned a result reply (%s), want the -32021 cancelled error "+
+				"(a deny after the turn was cancelled is the dangling-bridge shape CR-01 forbids)", line.JSON)
+		}
+
+		errReplies++
+		assertCancelledError(t, probe, line.JSON)
+	}
+
+	if errReplies != 1 {
+		t.Fatalf("close-path permission reverse earned %d replies, want exactly 1 (-32021 cancelled — "+
+			"the close must fan the pending bridge in with its turn)", errReplies)
+	}
+
+	assertCloseAfterStop(t, tr)
+}
+
 // assertCloseAfterStop locks the teardown wire order: exactly one
 // session/close, preceded by exactly one session/stop.
 func assertCloseAfterStop(t *testing.T, tr fake.Transcript) {
