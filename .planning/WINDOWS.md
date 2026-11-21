@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 10
+open_count: 12
 waived_count: 0
 fixed_count: 1
-total_count: 11
-last_updated: 2026-11-20T15:56:11.062Z
+total_count: 13
+last_updated: 2026-11-21T08:45:58.318Z
 ---
 
 # Broken Windows Ledger
@@ -26,6 +26,8 @@ last_updated: 2026-11-20T15:56:11.062Z
 | 9 | 05 | deviation | experiments/scan-secrets.sh |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:11.286Z |  |
 | 10 | 05 | deviation | experiments/scan-secrets.sh |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:17.803Z |  |
 | 11 | 05 | unrun-verify | test/realdesktop/apicycle_test.go |  | END-OF-PHASE REAL RUN: TestAPIKeyFullCycle against the live z.ai api-key account (guarded tier, orchestrator-run, quota-ledgered per experiments/README.md Phase-5 row + 05-USER-SETUP.md) — the D-06 live-keyring decrypt and the registry read-back verdict are proven only by this run | open |  | 2026-11-20T15:56:11.062Z |  |
+| 12 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:52.672Z |  |
+| 13 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:58.318Z |  |
 
 ````json
 [
@@ -169,6 +171,32 @@ last_updated: 2026-11-20T15:56:11.062Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-20T15:56:11.062Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 12,
+    "kind": "unrun-verify",
+    "phase": "05",
+    "file": "internal/acpfront/auth.go",
+    "line": 155,
+    "description": "branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-21T08:45:52.672Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 13,
+    "kind": "unrun-verify",
+    "phase": "05",
+    "file": "internal/acpfront/auth.go",
+    "line": 155,
+    "description": "branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1)",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-21T08:45:58.318Z",
     "resolved_at": null,
     "milestone": "v0.20.0"
   }
