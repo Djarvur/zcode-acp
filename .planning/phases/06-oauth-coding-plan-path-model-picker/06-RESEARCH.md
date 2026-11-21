@@ -1003,7 +1003,7 @@ arm — the corpus injects a scripted KeySource/PathSource seam, matching the
 | A8 | Client-side (Orca) config-options rendering resolves model-selectors from version ≥ 18.1.9 per the Phase-1 card study; our contract is spec-honest regardless of any one client | Pattern 6 | Purely client-side rendering risk; Phase 7 live E2E covers it |
 | A9 | The responder's seam widening (accountScope) can extend `RuntimeHeadersKeySource` without breaking the 05-06/05-07 test locks (the api-key two-field answer stays byte-identical) | Pattern 4 | A signature change touches responder tests — red-first update, same locks |
 
-## Open Questions
+## Open Questions (RESOLVED — planner locks in COVERAGE.md)
 
 1. **Which wire method carries a level-only change** (CONTEXT discretion;
    researcher resolves the facts, planner locks the choice)
