@@ -1,0 +1,13 @@
+=== RUN   TestCloseWithPendingPermissionCancelled
+2026/11/21 10:37:08 INFO acpfront: session opened session=sess_fix1
+2026/11/21 10:37:08 WARN acpfront: backend session/close failed (teardown continues) session=sess_fix1 err="zcode: wire error -32601: MethodNotFound"
+2026/11/21 10:37:08 INFO acpfront: session closed session=sess_fix1
+2026/11/21 10:37:08 WARN zcode: reverse-request reply failed id=s:fake-2 err="zcode: reply s:fake-2: zcode: writer stopped"
+2026/11/21 10:37:08 WARN zcode: read loop ended err="io: read/write on closed pipe"
+    lifecycle_test.go:438: close-path permission reverse earned 0 replies, want exactly 1 (-32021 cancelled — the close must fan the pending bridge in with its turn)
+--- FAIL: TestCloseWithPendingPermissionCancelled (0.65s)
+2026/11/21 10:37:08 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/21 10:37:08 INFO connection closed cause="io: read/write on closed pipe"
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	0.679s
+FAIL

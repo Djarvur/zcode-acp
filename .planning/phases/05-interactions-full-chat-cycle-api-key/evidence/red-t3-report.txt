@@ -1,0 +1,20 @@
+=== RUN   TestReplyStructuralSilence
+=== RUN   TestReplyStructuralSilence/nil-nil_answer_writes_no_frame
+    conn_test.go:1339: the nil-nil answer framed "{\"id\":7}" (the bare id-echo WR-01 forbids — a JSON-RPC response carries exactly one of result/error)
+2026/11/21 11:09:22 WARN zcode: read loop ended err="io: read/write on closed pipe"
+=== RUN   TestReplyStructuralSilence/genuine_result_arm_delivers
+2026/11/21 11:09:22 WARN zcode: read loop ended err="io: read/write on closed pipe"
+=== RUN   TestReplyStructuralSilence/genuine_error_arm_delivers
+2026/11/21 11:09:22 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestReplyStructuralSilence (0.15s)
+    --- FAIL: TestReplyStructuralSilence/nil-nil_answer_writes_no_frame (0.15s)
+    --- PASS: TestReplyStructuralSilence/genuine_result_arm_delivers (0.00s)
+    --- PASS: TestReplyStructuralSilence/genuine_error_arm_delivers (0.00s)
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/zcode	0.165s
+=== RUN   TestCancelFanInOnlyWhenSlotHeld
+    cancel_test.go:446: the slot-free cancel fanned the pending bridge in (fan-in log fired) — Front.Cancel's fan-in must fire only while a turn of THIS session holds the slot (WR-04/CR-01)
+--- FAIL: TestCancelFanInOnlyWhenSlotHeld (0.54s)
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	0.568s
+FAIL
