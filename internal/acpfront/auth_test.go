@@ -229,13 +229,82 @@ func wireErrOf(t *testing.T, err error) *acp.RequestError {
 	return rerr
 }
 
-// TestAuthenticate locks the AUTH-01 composition tier's five arms.
+// TestAuthenticate locks the AUTH-01 composition tier's arms.
 func TestAuthenticate(t *testing.T) {
 	t.Run("happy chain is read-back proven", testAuthHappyChain)
 	t.Run("no key answers the coded error naming ZCODE_ACP_API_KEY", testAuthNoKey)
 	t.Run("unknown methodId answers coded invalid-params", testAuthUnknownMethod)
 	t.Run("ack without registry confirmation errors, never {}", testAuthReadbackNegative)
 	t.Run("interrupted authenticate is a clean retry", testAuthInterruptRetry)
+	t.Run("probe create surface latches the field-verified verdict", testAuthProbeCreateSurface)
+}
+
+// authProbeCreateRule scripts the probe session/create reply the branch-(c)
+// lock arms against: the create reply carries settings.model.available with
+// BOTH want models — the field-verified read-back surface (plan 05-11,
+// EXP-READBACK-DIAG-01: the real desktop 3.18.2 emits NO state.updated
+// patch for push+refresh; the create reply IS the registry read-back).
+func authProbeCreateRule() fake.RequestRule {
+	return fake.RequestRule{
+		Method: zcode.MethodSessionCreate,
+		Reply: &fake.Reply{Result: json.RawMessage(
+			`{"session":{"sessionId":"sess_auth_probe"},` +
+				`"settings":{"model":{"available":[` +
+				`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"}},` +
+				`{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"}}]}}}`)},
+	}
+}
+
+// authProbeCloseRule scripts the probe session/close reply (the
+// field-verified {closed:true} shape the diagnostic recorded).
+func authProbeCloseRule() fake.RequestRule {
+	return fake.RequestRule{
+		Method: zcode.MethodSessionClose,
+		Reply:  &fake.Reply{Result: json.RawMessage(`{"closed":true}`)},
+	}
+}
+
+// testAuthProbeCreateSurface is the 05-11 branch-(c) corrected-surface lock:
+// the fake acks but emits NO state.updated (the field-verified real-desktop
+// shape) — authenticate must succeed ONLY via the probe create's
+// settings.model.available surface, with the probe pair (create → close)
+// on the transcript between the refresh and the chain's return. The ack and
+// the probe's transport success are never the verdict; the watcher's latch
+// is.
+func testAuthProbeCreateSurface(t *testing.T) {
+	h := newAuthFront(t, []fake.RequestRule{
+		authAckRule(),
+		authRefreshRule(0, 0, false),
+		authProbeCreateRule(),
+		authProbeCloseRule(),
+	}, configuredAuthKey())
+
+	if _, err := authenticate(h, acpfront.AuthMethodZaiAPIKey); err != nil {
+		t.Fatalf("authenticate via the probe-create read-back surface: %v", err)
+	}
+
+	// PITFALL 3 discipline: the probe ran on the wire — exactly one create
+	// and one close, ordered refresh → create → close (the probe never
+	// precedes its traffic and the close never precedes its create).
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	refreshIdx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry)
+	createIdx := transcriptMethodIndexes(tr, zcode.MethodSessionCreate)
+	closeIdx := transcriptMethodIndexes(tr, zcode.MethodSessionClose)
+
+	if len(createIdx) != 1 || len(closeIdx) != 1 {
+		t.Fatalf("transcript records probe create×%d close×%d, want exactly one probe pair",
+			len(createIdx), len(closeIdx))
+	}
+
+	if len(refreshIdx) != 1 || refreshIdx[0] >= createIdx[0] || createIdx[0] >= closeIdx[0] {
+		t.Fatalf("probe order violated: refresh(%v) create(%v) close(%v) — "+
+			"the probe pair must run between the refresh and the chain's return",
+			refreshIdx, createIdx, closeIdx)
+	}
 }
 
 // testAuthHappyChain is arm (a): the configured-key chain answers the empty
