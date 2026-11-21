@@ -208,7 +208,26 @@ Plans:
   3. On a machine without a keyring (headless/CI), auth fails fast with a clear actionable error and never hangs a turn
   4. After auth, `session/new` returns `configOptions` covering model and thought level, built from the live provider registry
   5. A client-side config-option change maps to `session/setModel` / `session/setThoughtLevel` on the wire, re-emits the full `configOptions` list, and `currentValue` always reflects the real session state
-**Plans**: TBD
+**Plans**: 8 plans
+
+Plans:
+**Wave 1**
+- [ ] 06-01-PLAN.md — Credential store reader + enc:v1 fallback loader behind the KeyLoader seam (AUTH-02, D-03)
+- [ ] 06-02-PLAN.md — PAT minter: official api.z.ai chain + accountScope + in-process cache (AUTH-02, D-04/D-06/D-07)
+- [ ] 06-03-PLAN.md — Account-provider overlay snapshot (BuildAccount, verbatim zhipu-account mirror) (AUTH-02)
+- [ ] 06-04-PLAN.md — configOptions translator + capability advertisement + session/new options (MODEL-01, D-08/D-09/D-10)
+
+**Wave 2** *(blocked on 06-01/02/03)*
+- [ ] 06-05-PLAN.md — Keyring probe (AUTH-04/D-02) + entitlement gate + coding-plan authenticate arm + corpus rows (AUTH-02/03)
+
+**Wave 3** *(blocked on 06-04; golden_test.go ownership after 06-05)*
+- [ ] 06-06-PLAN.md — session/set_config_option handler: validate-first, level-carry setModel path, full-list re-emit (MODEL-02)
+
+**Wave 4** *(blocked on 06-05 + 06-06)*
+- [ ] 06-07-PLAN.md — Mode-aware runtime-headers PAT serving (accountScope, D-05 re-mint) + cmd wiring, no new flags (AUTH-02/D-11/D-12)
+
+**Wave 5** *(blocked on 06-06 + 06-07; the real run is the human-gated end-of-phase UAT per D-12 — executor hands off, never autonomous)*
+- [ ] 06-08-PLAN.md — Composed fake full cycle + guarded real tier + REAL RUN checkpoint + evidence (D-12/D-13)
 
 ### Phase 7: Hardening, VM & Manual E2E, Documentation
 **Goal**: The done-v1 bar is met: full CI protocol conformance, a reproducible clean-VM scenario, manual E2E confirmed in a real chat-UI client on a real account through both auth paths, and English documentation including the launch recipe for ACP hosts that only accept preset agents.
