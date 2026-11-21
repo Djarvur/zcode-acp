@@ -141,6 +141,45 @@ All `session/event` envelopes above carried `deliveryKind:"desktop-continuous"`,
 - **Quiet-window fallback (2.5 s without new parts): the proven secondary** — field-verified end-to-end by the predecessor shim, and the harness implements its hardened form (send-latency floor = 3× quiet-ms after the send reply, plus the settle gate) after live runs showed a bare quiet window mis-arms during first-token latency [V-RPT private field notes] [V-EXP EXP-TURN-01].
 - Predecessor-shim provider logs carried `model.request.completed` / `turn.completed` markers at turn end — client-side log events, not captured wire envelopes [V-RPT private field notes; quoted in the capture's v-rpt block] [V-EXP EXP-TURN-01].
 
+### The one-turn-at-a-time latch — post-completion window, 3.18.2 [V-EXP EXP-APIKEY-CYCLE-01]
+
+Attempt 2 of the guarded api-key full cycle recorded the first COMPLETED real turn and its refused
+successor (capture file `experiments/captures/EXP-APIKEY-CYCLE-02.jsonl`, committed under the
+test-locked V-EXP id per the capture-monotonicity rule — its header line 1 carries the id above;
+line references below point into that file). Every fact in this subsection is capture-verified.
+
+- **A genuinely COMPLETED turn may surface NO terminal envelope within the quiet-floor window.**
+  The first real turn (end_turn, zero tool frames) emitted the send (`:36`), the `state.updated`
+  running patch (`reason:"prompt_started"`, revision 2, t=45.010, `:38`) and the turn-start
+  signals (context recomposition, session events, computer-use `turn-started`, v4/telemetry
+  `turn.started`, t=45.130–45.239, `:41`–`:47`) — and then NEVER a terminal envelope: no
+  `turn.completed` carrier on any of the three channels (session/event / v4/telemetry /
+  computer-use), and no `state.updated` idle patch after the prompt_started patch anywhere in the
+  window (`:38`–`:117`). The completion verdict was the quiet-window settle at floor expiry — send
+  ack 45.0105 + 3×2500 ms = 52.5105, landing on the aligned 500 ms poll tick (`:116`) —
+  strengthening the reliability column above: even a genuinely completed turn may present no
+  terminal surface at all.
+- **The post-completion latch is real and lingers ~7.5 s past the ack.** A second `session/send`
+  issued ~2 ms after the watcher's resolution (52.5133, `:118`) was refused `-32010 "A prompt is
+  already running for this session"` at 52.5149 (`:119`) — the same concurrency guard section 6
+  records for mid-turn sends, now observed POST-completion: the desktop holds the one-turn latch
+  after its turn finished.
+- **The interaction loop is the latch's live signal.** `interaction/requestCredentialCipher`
+  decrypt asks (fresh wire ids `server-7`…`server-21` with a fresh `requestId` each, ~500 ms
+  cadence) continued until 52.462 — ~50 ms before the refused send (`:50`–`:115`, last
+  ask/answer `:114`–`:115`).
+- **The poll surface cannot read the latch.** `session/messages` poll replies (ids 9–23, 500 ms
+  cadence, `:48`–`:117`) carried ONLY `messages` — no projection, no session status — so a
+  poll-based watcher cannot observe the latch state; the quiet-window gates remain the only
+  completion signal this surface offers.
+- **Open question, stated honestly: the TRUE terminal-surface shape is UNOBSERVED.** Whether a
+  late `state.updated` idle patch or a completion `session/event` arrives after the latch releases
+  is not in this capture; the next guarded run records it and arbitrates hypothesis (a) desktop
+  latch-lag (the wrapper's completion resolved before the desktop released the latch) vs
+  hypothesis (b) premature `end_turn` (our verdict fired before the desktop's true completion).
+  The wrapper's countermeasure — a latch drain between sends, rehearsed as the fake-tier corpus
+  row `lingering-latch-32010` — is correct under both.
+
 ## 6. Error-code table
 
 Literals extracted from the shipped bundle; occurrence counts are re-derivable, e.g. `grep -o -e '-32603' <bundle>/resources/glm/zcode.cjs | wc -l`. The `-e` is load-bearing: a bare leading-dash pattern (`grep -o '-32603' …`) is silently parsed as numeric context options by GNU grep — rc=1, no output, no error (verified with GNU grep 3.11) — so the plausible-looking form quietly "counts" nothing. The bundle carries a symbolic enum for the standard JSON-RPC codes plus protocol-specific codes (`e[e.MethodNotFound=-32601]="MethodNotFound"`, …) [V-SRC bundle resources/glm/zcode.cjs#error-code enum]:
