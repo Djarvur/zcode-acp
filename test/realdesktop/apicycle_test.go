@@ -137,6 +137,38 @@ const (
 	groupGonePoll     = 100 * time.Millisecond
 )
 
+// Latch-drain knobs (plan 05-13): the desktop held its one-turn-at-a-time
+// latch ~7.5 s post-ack in attempt 2 (EXP-APIKEY-CYCLE-02: send ack 45.010,
+// refusal 52.514, cipher asks live until 52.462 — 50 ms before the refused
+// send), so the drain is a wide-window wait by design. The totals stay well
+// inside apiCycleDeadline's 12 min.
+const (
+	// askQuietSettle is the interaction-ask silence the settle phase waits
+	// out before the second send (3 s quiet after the last interaction/*
+	// ask — the desktop's cipher-ask loop ran at ~500 ms cadence and went
+	// quiet only ~50 ms before attempt 2's refused send).
+	askQuietSettle = 3 * time.Second
+
+	// askSettleBudget bounds the settle phase (the ask loop must end
+	// eventually; a pathological loop still proceeds — the retry phase
+	// discriminates honestly).
+	askSettleBudget = 30 * time.Second
+
+	// settlePoll is the settle phase's re-check cadence.
+	settlePoll = 250 * time.Millisecond
+
+	// latchRetryStart/latchRetryMax are the drain's backoff band.
+	latchRetryStart = 2 * time.Second
+	latchRetryMax   = 15 * time.Second
+
+	// latchRetryBudget/latchRetryAttempts bound the drain: a persistent
+	// invalid-request refusal past this budget is hypothesis-(b) evidence
+	// (premature end_turn), surfaced loudly for the attempt-3 verdict —
+	// never masked by further retries.
+	latchRetryBudget   = 120 * time.Second
+	latchRetryAttempts = 8
+)
+
 // TestAPIKeyFullCycle runs the REAL guarded composition — the exact stack
 // production run() builds (discovery → supervisor SpawnChild with the
 // allowlist env → zcode.Conn over the exec pipes → the Front over the
@@ -199,13 +231,27 @@ func TestAPIKeyFullCycle(t *testing.T) {
 	// (production wireResponder order: responder policy table with the
 	// permission bridge, the runtime-headers key source, and the D-06
 	// cipher decrypt seam; the loader EXECUTES only when a real cipher ask
-	// arrives — CI never runs this file).
+	// arrives — CI never runs this file). The ask tap wraps the assigned
+	// chain immediately after, still before any frame flows: interaction/*
+	// asks are recorded structurally (method + UTC timestamp, never params
+	// — T-5-33) to drive the turn-2 latch drain.
 	wireCycleResponder(conn, front, keys)
+	asks := tapInteractionAsks(t, conn)
 
 	authenticateLeg(t, ctx, front)
 	sid := newSessionLeg(t, ctx, front, ws)
 	toollessTurnLeg(t, ctx, front, sid)
-	toolTurnLeg(t, ctx, front, sid, readTarget)
+
+	// The (a)/(b) discrimination anchor (plan 05-13): this UTC resolution
+	// instant correlates 1:1 with the capture tee's ts entries — attempt 3's
+	// evidence arbitrates desktop latch-lag (hypothesis a) vs premature
+	// end_turn (hypothesis b). Turn 1's quiet floor runs 3x2500 ms from the
+	// send ack (watcher.go PollConfig defaults), so the settle lands at
+	// floor expiry when message activity goes quiet.
+	t.Logf("turn 1 resolved at %s stop=end_turn — quiet-floor expiry per watcher.go floor math",
+		time.Now().UTC().Format(time.RFC3339Nano))
+
+	toolTurnLeg(t, ctx, front, asks, sid, readTarget)
 	resumeLeg(t, ctx, front, sid, ws)
 	closeLeg(t, ctx, front, sid)
 
@@ -664,6 +710,61 @@ func wireCycleResponder(conn *zcode.Conn, front *acpfront.Front, keys hostsvc.Ke
 	conn.OnRequest = responder.Serve
 }
 
+// tapInteractionAsks wraps the ALREADY-ASSIGNED conn.OnRequest with the ask
+// recorder: every interaction/* ask is recorded structurally (method + UTC
+// timestamp, never params — T-5-33) into the returned recorder — the settle
+// signal the turn-2 latch drain waits on. Call it before any traffic (the
+// Conn hook contract); the wrapped chain falls through to the full
+// responder untouched.
+func tapInteractionAsks(t *testing.T, conn *zcode.Conn) *askRecorder {
+	t.Helper()
+
+	next := conn.OnRequest
+	if next == nil {
+		t.Fatal("tapInteractionAsks: wireCycleResponder must assign conn.OnRequest before the tap wraps it")
+	}
+
+	tap := &askRecorder{}
+
+	conn.OnRequest = func(reqCtx context.Context, env zcode.Envelope) (any, *zcode.WireError, bool) {
+		if strings.HasPrefix(env.Method, "interaction/") {
+			now := time.Now().UTC()
+
+			tap.mu.Lock()
+			tap.lastAsk = now
+			tap.mu.Unlock()
+
+			// Structural logging ONLY (conn.go:436-450 precedent): the
+			// cipher asks' params carry the encrypted credential value
+			// verbatim — method name + UTC timestamp, never params (T-5-33).
+			t.Logf("interaction ask: %s at %s", env.Method, now.Format(time.RFC3339Nano))
+		}
+
+		return next(reqCtx, env)
+	}
+
+	return tap
+}
+
+// askRecorder is the interaction-ask tap's state: the UTC instant of the
+// most recent interaction/* request (the desktop's cipher-ask loop is the
+// latch's live signal — EXP-APIKEY-CYCLE-02 asks ran until 52.462, 50 ms
+// before the refused send). Guarded by mu: request handlers are concurrent
+// on the conn's read goroutine fan-out.
+type askRecorder struct {
+	mu      sync.Mutex
+	lastAsk time.Time
+}
+
+// lastAskAt returns the UTC instant of the most recent interaction/* ask
+// (zero time when none was seen — the drain settles immediately).
+func (r *askRecorder) lastAskAt() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.lastAsk
+}
+
 // credentialsPath is the desktop credentials file the login-keyring key is
 // bound to (the field-verified sha256-realpath derivation input — the
 // production main.go derivation; missing home yields an empty path and the
@@ -772,18 +873,116 @@ func toollessTurnLeg(t *testing.T, ctx context.Context, front *acpfront.Front, s
 	t.Log("tiny tool-less turn ok: end_turn, zero tool frames (the cipher ask answered mid-turn if it fired)")
 }
 
+// turnWithLatchDrain runs one prompt turn through the desktop's
+// one-turn-at-a-time latch (plan 05-13). Phase settle: wait for
+// interaction-ask silence (askQuietSettle quiet after the last
+// interaction/* ask, bounded by askSettleBudget) — the desktop's cipher-ask
+// loop was live until ~50 ms before attempt 2's refused send, so an
+// immediate second send races the lingering latch; no ask ever seen settles
+// immediately. Phase retry: front.Prompt retried ONLY on the invalid-request
+// class (T-5-32: BOTH concurrency surfaces — the front-wide slot guard and
+// the machine's -32010 refusal — map onto ONE acpport invalid-request error
+// carrying turnActiveMessage, front.go Prompt; the CODE is matched via
+// errors.As, never the message text). Any other error — including a
+// *acpport.Error with a different code — fails the leg immediately; a drain
+// that retried -32603 internals would green-wash a real defect. A refusal
+// persisting past the budget returns the hypothesis-(b) sentinel for the
+// attempt-3 verdict, loudly.
+func turnWithLatchDrain(
+	t *testing.T, ctx context.Context, front *acpfront.Front, asks *askRecorder,
+	sid, prompt string, sink acpport.UpdateSink,
+) (acpport.StopReason, error) {
+	t.Helper()
+
+	// Phase settle: the latch is held while the ask loop is live — wait for
+	// its silence before the send.
+	settleDeadline := time.Now().Add(askSettleBudget)
+
+	for {
+		last := asks.lastAskAt()
+
+		if last.IsZero() {
+			t.Logf("latch drain settle: no interaction ask seen — settling immediately at %s",
+				time.Now().UTC().Format(time.RFC3339Nano))
+
+			break
+		}
+
+		quiet := time.Since(last)
+		if quiet >= askQuietSettle {
+			t.Logf("latch drain settle: %s of ask silence at %s (last ask %s)",
+				quiet.Truncate(time.Millisecond), time.Now().UTC().Format(time.RFC3339Nano),
+				last.Format(time.RFC3339Nano))
+
+			break
+		}
+
+		if time.Now().After(settleDeadline) {
+			t.Logf("latch drain settle: %s budget exhausted at %s (last ask %s) — proceeding to the retry phase",
+				askSettleBudget, time.Now().UTC().Format(time.RFC3339Nano), last.Format(time.RFC3339Nano))
+
+			break
+		}
+
+		time.Sleep(settlePoll)
+	}
+
+	// Phase retry: bounded invalid-request-class drain.
+	backoff := latchRetryStart
+	started := time.Now()
+
+	for attempt := 1; ; attempt++ {
+		stop, err := front.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: prompt}, sink)
+		if err == nil {
+			t.Logf("latch drain: prompt accepted at %s (attempt %d)", time.Now().UTC().Format(time.RFC3339Nano), attempt)
+
+			return stop, nil
+		}
+
+		var acpErr *acpport.Error
+		if !errors.As(err, &acpErr) || acpErr.Code != acpport.CodeInvalidRequest {
+			// T-5-32: never retry outside the invalid-request class —
+			// anything else (including -32603 internals) is a genuine
+			// defect the drain must surface, not mask.
+			return "", err
+		}
+
+		t.Logf("latch refusal %d/%d at %s (invalid-request class): %s — draining",
+			attempt, latchRetryAttempts, time.Now().UTC().Format(time.RFC3339Nano), acpErr.Message)
+
+		if attempt >= latchRetryAttempts || time.Since(started)+backoff > latchRetryBudget {
+			return "", fmt.Errorf(
+				"latch drain exhausted after %d attempts / %s budget: the invalid-request refusal persisted "+
+					"past the drain budget (latchRetryBudget=%s, latchRetryAttempts=%d) — a persistent refusal is "+
+					"hypothesis-(b) evidence (our end_turn fired before the desktop's true completion) for the "+
+					"attempt-3 verdict; record it for the next gap plan, do not widen this drain",
+				attempt, time.Since(started).Truncate(time.Millisecond), latchRetryBudget, latchRetryAttempts)
+		}
+
+		time.Sleep(backoff)
+
+		backoff *= 2
+		if backoff > latchRetryMax {
+			backoff = latchRetryMax
+		}
+	}
+}
+
 // toolTurnLeg runs the file-read tool turn on the scratch file and asserts
 // the honest wire tier: end_turn AND observed tool_call frames with a
 // terminal status (start → completed/failed). Every observed frame is
 // logged for the capture discipline — never an over-fit to exact titles.
-func toolTurnLeg(t *testing.T, ctx context.Context, front *acpfront.Front, sid, filePath string) {
+// The prompt rides the latch drain (plan 05-13): this turn is the SECOND
+// send the desktop's lingering latch refused in attempt 2
+// (EXP-APIKEY-CYCLE-02.jsonl:118-119).
+func toolTurnLeg(t *testing.T, ctx context.Context, front *acpfront.Front, asks *askRecorder, sid, filePath string) {
 	t.Helper()
 
 	col := &noteCollector{}
 
 	prompt := fmt.Sprintf("Use the file-read tool to read %s, then reply with exactly: READ-OK", filePath)
 
-	stop, err := front.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: prompt}, col.sink)
+	stop, err := turnWithLatchDrain(t, ctx, front, asks, sid, prompt, col.sink)
 	if err != nil {
 		t.Fatalf("file-read tool turn: %v", err)
 	}
