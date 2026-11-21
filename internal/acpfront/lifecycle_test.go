@@ -37,6 +37,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -190,6 +191,204 @@ func assertResumeLegOrder(t *testing.T, tr fake.Transcript, sid string) {
 			"model binding persists backend-side, the resume leg must not re-bind",
 			setModels, resumeIdx)
 	}
+}
+
+// assertCodedInvalidParams asserts one coded JSON-RPC error in the
+// invalid-params class (the -32602 session-setup MUST rejections) without
+// pinning the message text.
+func assertCodedInvalidParams(t *testing.T, err error) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatal("expected a rejection, got success")
+	}
+
+	var reqErr *acp.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("rejection error = %T (%v), want a coded JSON-RPC RequestError", err, err)
+	}
+
+	if reqErr.Code != acpport.CodeInvalidParams {
+		t.Fatalf("rejection code = %d, want %d (invalid-params class); message %q",
+			reqErr.Code, acpport.CodeInvalidParams, reqErr.Message)
+	}
+}
+
+// TestResumeRecordsCwd locks WR-02 (plan 05-10): a resume carrying an
+// absolute Cwd records it for the reattached id, so the resumed session's
+// FIRST turn resolves an ABSOLUTE diff/location path in the tool card (the
+// Pitfall-5 shape on the resume path). The client cwd rides the SDK
+// ResumeSessionRequest.Cwd; at HEAD the adapter forwards only the session
+// id and the front never records the cwd, so the post-resume Edit card
+// renders the backend's relative path verbatim.
+func TestResumeRecordsCwd(t *testing.T) {
+	h := newPermissionFrontOpts(t, "full-cycle", PermissionScript{SelectedOptionID: permAllowOptionID}, nil)
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	mustInitialize(ctx, t, h)
+
+	openCwd := t.TempDir()
+
+	newResp, err := h.client.NewSession(ctx, acp.NewSessionRequest{Cwd: openCwd})
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+
+	sid := string(newResp.SessionId)
+
+	// The resume re-cwds the session: the post-resume turn must resolve
+	// against the RESUMED cwd, not the open one.
+	resumeCwd := t.TempDir()
+
+	if _, err := h.client.ResumeSession(ctx, acp.ResumeSessionRequest{
+		SessionId: acp.SessionId(sid),
+		Cwd:       resumeCwd,
+	}); err != nil {
+		t.Fatalf("session/resume: %v", err)
+	}
+
+	// The first post-resume turn runs the corpus row's tool legs: the
+	// scheduled Edit card must carry the diff path RESOLVED against the
+	// resumed cwd (absolute — Pitfall 5).
+	if _, err := h.client.Prompt(ctx, lifecyclePrompt(sid, "after resume")); err != nil {
+		t.Fatalf("post-resume prompt: %v", err)
+	}
+
+	var start *acp.SessionUpdateToolCall
+	for _, u := range h.Updates() {
+		if u.Update.ToolCall != nil && u.Update.ToolCall.ToolCallId == acp.ToolCallId("tc1") {
+			start = u.Update.ToolCall
+		}
+	}
+
+	if start == nil {
+		t.Fatal("the post-resume turn streamed no tool_call start for tc1")
+	}
+
+	wantPath := filepath.Join(resumeCwd, "src/main.go")
+
+	if len(start.Content) == 0 || start.Content[0].Diff == nil {
+		t.Fatalf("the tc1 start carries no diff content: %+v", start)
+	}
+
+	if got := start.Content[0].Diff.Path; got != wantPath {
+		t.Fatalf("post-resume edit diff path = %q, want %q (absolute, resolved against the RESUMED cwd — "+
+			"the resume must record the client cwd)", got, wantPath)
+	}
+}
+
+// TestResumeRejectsRelativeCwd locks WR-02's validation arm (plan 05-10):
+// a non-absolute (or empty) resume cwd answers the coded invalid-params
+// rejection BEFORE any backend call — a rejected resume never touches the
+// wire (the T-4-01 parity arm; the SDK contract makes resume cwd
+// MUST-be-absolute exactly like session/new's).
+func TestResumeRejectsRelativeCwd(t *testing.T) {
+	h := newTracerFront(t, "session-lifecycle")
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	mustInitialize(ctx, t, h)
+
+	sid := newLifecycleSession(ctx, t, h)
+
+	for name, cwd := range map[string]string{
+		"relative": "relative/path",
+		"empty":    "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := h.client.ResumeSession(ctx, acp.ResumeSessionRequest{
+				SessionId: acp.SessionId(sid),
+				Cwd:       cwd,
+			})
+			assertCodedInvalidParams(t, err)
+		})
+	}
+
+	// The parity arm on the back leg: neither rejected resume touched the
+	// backend wire — no session/resume frame at all.
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	if idxs := transcriptIndexes(tr, "in", `"method":"session/resume"`); len(idxs) != 0 {
+		t.Fatalf("back leg records %d session/resume frames for rejected resumes, want 0 "+
+			"(the absolute-cwd validation must precede any backend call)", len(idxs))
+	}
+}
+
+// TestResumeRejectedWhileClosing locks WR-03 (plan 05-10): session/resume
+// racing a close lands exactly one coded-clean rejection — the same
+// closing/closed family the prompt gate answers — and no new machine's
+// observers register (the leak arm: a Register after close's snapshot+
+// Remove would strand the new machine's fan-out entries). The shrunk
+// WithCloseTurnWait holds the closing window open deterministically (the
+// active turn outlives the deadline — the completion-quiet-window row has
+// no stop rule, so the close parks in the drain for the whole wait).
+func TestResumeRejectedWhileClosing(t *testing.T) {
+	sc := mustLoadScenario(t, "completion-quiet-window")
+
+	h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
+		front := acpfront.New(conn,
+			acpfront.WithVersion("0.0.0-dev"),
+			acpfront.WithModel(corpusModelSelection()),
+			acpfront.WithCloseTurnWait(300*time.Millisecond), // hold the closing window open
+		)
+
+		return acpport.NewAgent(front)
+	})
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	mustInitialize(ctx, t, h)
+
+	sid := newLifecycleSession(ctx, t, h)
+
+	// The active turn parks the close in its drain for the whole wait —
+	// the closing set stays marked across the window.
+	promptDone := startActiveTurn(ctx, t, h, sid)
+	_ = promptDone // resolves cancelled well after this test's asserts
+
+	notifPre, routerPre := h.conn.ObserverCounts()
+
+	closeDone := make(chan error, 1)
+
+	go func() {
+		_, err := h.client.CloseSession(ctx, acp.CloseSessionRequest{SessionId: acp.SessionId(sid)})
+		closeDone <- err
+	}()
+
+	// Land the resume INSIDE the closing window (the close marked the set
+	// within microseconds of starting; its teardown spans >= the 600ms of
+	// drain deadlines).
+	time.Sleep(100 * time.Millisecond)
+
+	_, err := h.client.ResumeSession(ctx, acp.ResumeSessionRequest{
+		SessionId: acp.SessionId(sid),
+		Cwd:       t.TempDir(),
+	})
+	assertCodedInvalidRequest(t, err) // the closing/closed rejection — same family as the prompt gate
+
+	if closeErr := <-closeDone; closeErr != nil {
+		t.Fatalf("session/close: %v", closeErr)
+	}
+
+	// WR-03's leak arm: exactly the machine's entries removed — a mid-close
+	// resume must never have registered a machine whose observers close's
+	// snapshot-based teardown cannot see.
+	if notif, router := h.conn.ObserverCounts(); notif != notifPre-1 || router != routerPre-1 {
+		t.Fatalf("post-close observer counts = (%d, %d), want exactly the machine's entries removed (%d, %d) — "+
+			"a resume racing the close registered a zombie machine", notif, router, notifPre-1, routerPre-1)
+	}
+
+	// The registry entry is released: a post-close prompt fails the coded
+	// ErrNoSession-class rejection — never a zombie session.
+	_, err = h.client.Prompt(ctx, lifecyclePrompt(sid, "post-close"))
+	assertCodedInvalidRequest(t, err)
 }
 
 // lifecycleStage is the close-probe prelude: open the session (+1/+1 on
