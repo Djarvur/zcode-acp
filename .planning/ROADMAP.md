@@ -152,7 +152,7 @@ Plans:
   3. A backend permission request reaches the client as `session/request_permission` with allow/reject options; the chosen outcome is forwarded to the backend, and an ACP-side cancel resolves pending requests as `cancelled`
   4. `authenticate{zai-api-key}` on a real account enables working turns, with success verified by reading registry state back — not by trusting the `provider/updateAccountConfig` ack
   5. `session/resume` reattaches a session without replay and `session/close` cleans up the child-side session; a full cycle — new → prompt with tool calls and a permission decision → resume → close — runs end-to-end on api-key
-**Plans**: 12 plans (9 executed + 3 gap closure)
+**Plans**: 10/12 plans executed (9 executed + 3 gap closure)
 Plans:
 **Wave 1**
 - [x] 05-01-PLAN.md — CORE-06 interaction responder policy object (deadlines, requestId dedupe, unknown -32601, runtime-prefs migration) + fake re-announce extension
@@ -181,7 +181,7 @@ Plans:
 
 **Gap closure** *(from 05-VERIFICATION.md gaps_found — CR-01 + WR-01..04 batch, the SC4 read-back fix, then the UAT retry; 05-REVIEW-DISPOSITION.md gates the retry on CR-01)*
 **Wave 1** *(05-10 and 05-11 are file-disjoint; zero overlap)*
-- [ ] 05-10-PLAN.md — Gap 2: CR-01 drainActiveTurn sawTurn fix + close-with-pending-permission lock test + WR-01..04 batch (join silence, resume cwd, resume closing gate, fan-in identity)
+- [x] 05-10-PLAN.md — Gap 2: CR-01 drainActiveTurn sawTurn fix + close-with-pending-permission lock test + WR-01..04 batch (join silence, resume cwd, resume closing gate, fan-in identity)
 - [ ] 05-11-PLAN.md — Gap 1: guarded zero-spend read-back diagnostic (TestReadbackDiagnosis) + authenticate chain fixed to the field-verified surface + fake oracle alignment
 
 **Wave 2** *(blocked on 05-10 + 05-11 — the disposition-ledger gate)*
@@ -224,7 +224,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
-| 5. Interactions & Full Chat Cycle (api-key) | 9/9 | In Progress | - |
+| 5. Interactions & Full Chat Cycle (api-key) | 10/12 | In Progress | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
 
