@@ -57,13 +57,6 @@ const (
 	// cancel-after-complete stays silent: no response frame exists to await,
 	// so the settle is the honest quiet before the silence assert.
 	cancelSettle = 300 * time.Millisecond
-
-	// slotHoldReverseID is the pending permission reverse's wire id in the
-	// TestCancelFanInOnlyWhenSlotHeld flow: the corpus row's fake-N counter
-	// covers BOTH creates' runtime-preferences reverses (fake-1 for session
-	// A, fake-2 for session B) before B's send issues the permission
-	// reverse (fake-3) — deterministic per the row.
-	slotHoldReverseID = "fake-3"
 )
 
 // assertNoRequestCancelled scans the whole tee (both directions) for a
@@ -336,6 +329,37 @@ func inFrameCount(lines []TeeLine) int {
 	return n
 }
 
+// newSlotStage composes the slot-gate drive (plan 05-10 WR-04): the
+// permission-cancel row over the REAL front bridge, the gate-held client
+// script, and the front captured for direct exported-seam Cancel drives.
+func newSlotStage(t *testing.T, gate chan struct{}) (*FrontHarness, *acpfront.Front) {
+	t.Helper()
+
+	sc := mustLoadScenario(t, "permission-cancel")
+
+	var front *acpfront.Front
+
+	h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
+		front = acpfront.New(conn,
+			acpfront.WithVersion("0.0.0-dev"),
+			acpfront.WithModel(corpusModelSelection()),
+		)
+
+		opts := []interact.Option{
+			interact.WithPermissionForwarder(interact.NewPermissionBridge(front.PermissionForward()).Forward),
+		}
+
+		responder := interact.NewResponder(opts...)
+		conn.OnRequest = responder.Serve // hook contract: before any frame flows
+
+		return acpport.NewAgent(front)
+	})
+
+	h.rec.SetPermissionScript(PermissionScript{Gate: gate})
+
+	return h, front
+}
+
 // TestCancelFanInOnlyWhenSlotHeld locks the WR-04/CR-01 cancel alignment
 // (plan 05-10): Front.Cancel's permission fan-in fires only while a turn of
 // THIS session holds the front-wide slot — the same semantics drainActive-
@@ -367,27 +391,7 @@ func TestCancelFanInOnlyWhenSlotHeld(t *testing.T) {
 
 	gate := make(chan struct{})
 
-	sc := mustLoadScenario(t, "permission-cancel")
-
-	var front *acpfront.Front
-
-	h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
-		front = acpfront.New(conn,
-			acpfront.WithVersion("0.0.0-dev"),
-			acpfront.WithModel(corpusModelSelection()),
-		)
-
-		opts := []interact.Option{
-			interact.WithPermissionForwarder(interact.NewPermissionBridge(front.PermissionForward()).Forward),
-		}
-
-		responder := interact.NewResponder(opts...)
-		conn.OnRequest = responder.Serve // hook contract: before any frame flows
-
-		return acpport.NewAgent(front)
-	})
-
-	h.rec.SetPermissionScript(PermissionScript{Gate: gate})
+	h, front := newSlotStage(t, gate)
 
 	ctx, cancel := h.ExchangeCtx()
 	defer cancel()
@@ -496,4 +500,93 @@ func assertDanglingAskNote(t *testing.T, tr fake.Transcript) {
 
 	t.Fatalf("the dangling ask left no unanswered note on the transcript — " +
 		"the surviving-ask artifact is missing (was the ask cancelled after all?)")
+}
+
+// TestCancelFanInStaleArmSkips locks the displaced-prompt cancel's
+// containment (plan 05-10 WR-04, the observable contract): turn 1's SDK ctx
+// is cancelled by the second prompt's registration while turn 1 is active —
+// the fan-in's genuine arm cancels exactly THAT turn — and a LATER turn on
+// the same machine completes untouched: the identity re-check (and the
+// release-time goroutine reap) keeps the stale arm from ever reaching a
+// later turn. The genuine displaced-prompt cancel itself stays locked by
+// testFrontSlotRejection; this lock adds the later-turn containment over
+// the corpus row's completing second send.
+//
+// Drive note (plan-05-10 refinement): the HEAD bug's harmful interleaving
+// (a descheduled arm waking past release + re-acquisition) is a scheduler
+// race with no deterministic drive through the public surface — the arm's
+// own turn context closes at release, so a cancel arriving after the
+// boundary finds the goroutine already reaped. This test locks the
+// reachable contract end-to-end; the skip arm's identity check is locked
+// deterministically by TestCancelFanInOnlyWhenSlotHeld's slot-gate (the
+// same f.turnPump/f.turnSession identity semantics).
+func TestCancelFanInStaleArmSkips(t *testing.T) {
+	gate := make(chan struct{})
+
+	h := newPermissionFrontOpts(t, "permission-cancel", PermissionScript{Gate: gate}, nil)
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	sid := openPermissionSession(ctx, t, h)
+
+	// Turn 1 parks on the pending ask; its SDK ctx dies at the second
+	// prompt's registration (the SDK displacement).
+	prompt1Done := make(chan promptOutcome, 1)
+
+	go func() {
+		resp, err := h.client.Prompt(ctx, acp.PromptRequest{
+			SessionId: acp.SessionId(sid),
+			Prompt:    []acp.ContentBlock{acp.TextBlock("hi")},
+		})
+		prompt1Done <- promptOutcome{resp: resp, err: err}
+	}()
+
+	awaitPermissionAsk(t, h)
+
+	// Displace turn 1: the second prompt is rejected by the held slot, and
+	// turn 1 resolves cancelled through the genuine displaced arm.
+	_, err := h.client.Prompt(ctx, acp.PromptRequest{
+		SessionId: acp.SessionId(sid),
+		Prompt:    []acp.ContentBlock{acp.TextBlock("second")},
+	})
+	assertRejectedInvalidRequest(t, err)
+
+	outcome := waitPermissionOutcome(t, prompt1Done)
+
+	if outcome.err != nil || outcome.resp.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("displaced turn outcome = (%v, %v), want a cancelled success",
+			outcome.resp.StopReason, outcome.err)
+	}
+
+	// A LATER turn on the same machine completes untouched: whatever the
+	// displaced fan-in arm did, it must never reach past the turn boundary.
+	prompt3, err := h.client.Prompt(ctx, acp.PromptRequest{
+		SessionId: acp.SessionId(sid),
+		Prompt:    []acp.ContentBlock{acp.TextBlock("third")},
+	})
+	if err != nil {
+		t.Fatalf("later prompt: %v", err)
+	}
+
+	if prompt3.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("later prompt stopReason = %q, want end_turn (the stale arm must not cancel a later turn)",
+			prompt3.StopReason)
+	}
+
+	// Exactly ONE session/stop on the back leg — the displaced turn's own
+	// cancel; a stale cancel of the later turn would fire a second.
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	if stops := len(transcriptIndexes(tr, "in", `"method":"session/stop"`)); stops != 1 {
+		t.Fatalf("back leg records %d session/stop frames, want exactly 1 (the displaced turn's cancel — "+
+			"a stale arm firing past the boundary would stop the later turn too)", stops)
+	}
 }

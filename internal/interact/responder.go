@@ -231,15 +231,16 @@ func (r *Responder) Serve(ctx context.Context, env zcode.Envelope) (any, *zcode.
 			// ANY shape to a still-registered id would reject the pending
 			// ask — the server result-schema-parses reply payloads
 			// (server.ts resolveClientRequest; a payload-less frame fails
-			// parse → "Invalid response"). No post-release frame can be
-			// ordered after the primary's reply through the OnRequest
-			// seam (the conn writes the reply after Serve returns, so the
-			// release-before-reply ordering race is unwinnable from
-			// here), and a parked goroutine adds no per-frame state the
+			// parse → "Invalid response"). The silence is STRUCTURAL, not
+			// a shutdown race (plan 05-10 WR-01): this arm returns
+			// (nil, nil, true) and the conn's reply funnel drops a
+			// neither-result-nor-error answer outright — a JSON-RPC
+			// response carries exactly one of result/error — so the bare
+			// id-echo cannot be framed even in the cancelBase→rw.Close
+			// window. A parked goroutine adds no per-frame state the
 			// conn has not already spent (the demux spawns one goroutine
-			// per request frame regardless). Silence is the only safe
-			// join posture: the server silently drops replies to
-			// already-cleaned ids — we simply never send them.
+			// per request frame regardless). The server silently drops
+			// replies to already-cleaned ids — we simply never send them.
 			<-ctx.Done()
 
 			return nil, nil, true

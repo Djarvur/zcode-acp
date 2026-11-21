@@ -489,7 +489,24 @@ func (c *Conn) recordRouterEvent(ev RouterEvent) {
 
 // replyRequest delivers a reverse-request answer on the bypass lane
 // (dialect §1: answering from the queue would deadlock the pairing).
+//
+// WR-01 (plan 05-10): an answer carrying NEITHER result NOR error is
+// dropped structurally — a JSON-RPC response carries exactly one of
+// result/error, so the payload-less bare id-echo (Reply with a nil result
+// marshals {"id":X}) is forbidden: framing it at a still-registered pending
+// ask would reject it ("Invalid response" at the server's result-schema
+// parse). The parked dedupe-join arm's (nil, nil, true) is therefore
+// SILENCE BY CONSTRUCTION at conn close — no shutdown race the writer must
+// lose.
 func (c *Conn) replyRequest(id *ID, result any, werr *WireError) {
+	if result == nil && werr == nil {
+		// Structural silence: the id key only — request params never log.
+		slog.Warn("zcode: reverse-request answer carried neither result nor error; dropped (structural silence)",
+			"id", id.Key())
+
+		return
+	}
+
 	var err error
 
 	if werr != nil {

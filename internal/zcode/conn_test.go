@@ -1304,6 +1304,26 @@ func fireCipherExpiry(t *testing.T, peerEnd *pipeEnd, deadline time.Duration, pe
 
 // snapshotRouterOrder returns a copy of the delivery-order log.
 
+// silenceStage composes the WR-01 drive (plan 05-10): a conn whose
+// OnRequest answers with the scripted handler, the peer end for request
+// injects, and the recorded peer lines.
+func silenceStage(
+	t *testing.T,
+	answer func(context.Context, zcode.Envelope) (any, *zcode.WireError, bool),
+) (peer *pipeEnd, lines <-chan string) {
+	t.Helper()
+
+	connEnd, peerEnd := connPipes()
+	t.Cleanup(func() { _ = peerEnd.Close() })
+
+	conn := zcode.NewConn(connEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	conn.OnRequest = answer
+
+	return peerEnd, drainPeer(t, peerEnd)
+}
+
 // TestReplyStructuralSilence locks the WR-01 structural join silence (plan
 // 05-10): a reverse-request answer carrying NEITHER result NOR error is
 // dropped structurally at the reply funnel — a JSON-RPC response carries
@@ -1314,19 +1334,12 @@ func fireCipherExpiry(t *testing.T, peerEnd *pipeEnd, deadline time.Duration, pe
 // OnRequest seam's (nil, nil, true) shape verbatim — the parked join's
 // return — served through handleRequest → replyRequest.
 func TestReplyStructuralSilence(t *testing.T) {
+	joinArm := func(context.Context, zcode.Envelope) (any, *zcode.WireError, bool) {
+		return nil, nil, true // the parked dedupe-join posture: handled, nothing to say
+	}
+
 	t.Run("nil-nil answer writes no frame", func(t *testing.T) {
-		connEnd, peerEnd := connPipes()
-		t.Cleanup(func() { _ = peerEnd.Close() })
-
-		conn := zcode.NewConn(connEnd)
-		t.Cleanup(func() { _ = conn.Close() })
-
-		lines := drainPeer(t, peerEnd)
-
-		// The parked dedupe-join posture: handled, nothing to say.
-		conn.OnRequest = func(_ context.Context, _ zcode.Envelope) (any, *zcode.WireError, bool) {
-			return nil, nil, true
-		}
+		peerEnd, lines := silenceStage(t, joinArm)
 
 		injectLine(t, peerEnd, `{"id":7,"method":"interaction/requestPermission","params":{"sessionId":"s"}}`)
 
@@ -1343,17 +1356,9 @@ func TestReplyStructuralSilence(t *testing.T) {
 	})
 
 	t.Run("genuine result arm delivers", func(t *testing.T) {
-		connEnd, peerEnd := connPipes()
-		t.Cleanup(func() { _ = peerEnd.Close() })
-
-		conn := zcode.NewConn(connEnd)
-		t.Cleanup(func() { _ = conn.Close() })
-
-		lines := drainPeer(t, peerEnd)
-
-		conn.OnRequest = func(_ context.Context, _ zcode.Envelope) (any, *zcode.WireError, bool) {
+		peerEnd, lines := silenceStage(t, func(context.Context, zcode.Envelope) (any, *zcode.WireError, bool) {
 			return map[string]any{"decision": "allow"}, nil, true
-		}
+		})
 
 		injectLine(t, peerEnd, `{"id":8,"method":"interaction/requestPermission","params":{"sessionId":"s"}}`)
 
@@ -1365,17 +1370,9 @@ func TestReplyStructuralSilence(t *testing.T) {
 	})
 
 	t.Run("genuine error arm delivers", func(t *testing.T) {
-		connEnd, peerEnd := connPipes()
-		t.Cleanup(func() { _ = peerEnd.Close() })
-
-		conn := zcode.NewConn(connEnd)
-		t.Cleanup(func() { _ = conn.Close() })
-
-		lines := drainPeer(t, peerEnd)
-
-		conn.OnRequest = func(_ context.Context, _ zcode.Envelope) (any, *zcode.WireError, bool) {
+		peerEnd, lines := silenceStage(t, func(context.Context, zcode.Envelope) (any, *zcode.WireError, bool) {
 			return nil, &zcode.WireError{Code: -32021, Message: "Client request cancelled"}, true
-		}
+		})
 
 		injectLine(t, peerEnd, `{"id":9,"method":"interaction/requestPermission","params":{"sessionId":"s"}}`)
 

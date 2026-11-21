@@ -346,10 +346,26 @@ func (f *Front) Prompt(
 
 	defer release()
 
+	// WR-04 (plan 05-10): the fan-in carries the turn's identity — the pump
+	// pointer acquireTurn published under the slot lock. Captured right
+	// after acquisition: the slot is ours until the deferred release runs,
+	// so this is THIS turn's pump by construction.
+	pump := f.turnPumpFor()
+
 	go func() { // cancel fan-in: either source triggers exactly one machine.Cancel
 		select {
 		case <-sdkCtx.Done():
-			st.Machine.Cancel() // idempotent (Phase 3: repeats no-op)
+			// The identity re-check under the slot lock (plan 05-10 WR-04):
+			// a descheduled arm that runs past the turn boundary (release
+			// already nilled the slot, a later turn owns it) must never
+			// cancel the later turn as cancelled — skip silently.
+			f.turnMu.Lock()
+			mine := f.turnPump == pump
+			f.turnMu.Unlock()
+
+			if mine {
+				st.Machine.Cancel() // idempotent (Phase 3: repeats no-op)
+			}
 		case <-turnCtx.Done():
 		}
 	}()
@@ -401,12 +417,14 @@ func (f *Front) Prompt(
 // touches the turn context — cancelling it would surface the SDK's -32800
 // error instead of the success stopReason (Pitfall 2, turnctx.go).
 //
-// TOOL-02 cancel fan-in (plan 05-02): after machine.Cancel, every
-// in-flight permission bridge of the turn is cancelled too (→ -32021
-// replies to the backend's pending asks) — a cancelled turn leaves no
-// pending bridge silently dangling while the server re-announces forever
-// (T-5-05, Pitfall 2). One turn per front, so the bridge's whole pending
-// table belongs to the cancelling turn.
+// TOOL-02 cancel fan-in (plan 05-02): the in-flight permission bridges are
+// cancelled with the turn (→ -32021 replies to the backend's pending asks)
+// — a cancelled turn leaves no pending bridge silently dangling while the
+// server re-announces forever (T-5-05, Pitfall 2). WR-04/CR-01 alignment
+// (plan 05-10): the fan-in fires only while a turn of THIS session holds
+// the front-wide slot — the same semantics drainActiveTurn's sawTurn
+// reports on the close path; the pending table belongs to the
+// slot-holder's turn, so a cancel for a slot-free session fans nothing in.
 func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 	_ = ctx
 
@@ -415,10 +433,32 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 		return acpport.NewInvalidRequest("session/cancel: %v: %s", err, sessionID)
 	}
 
+	// Observe the slot BEFORE the cancel (WR-04/CR-01, plan 05-10): release
+	// nils the fields the moment the turn resolves, so a post-cancel
+	// observation would miss a turn the cancel itself resolved.
+	f.turnMu.Lock()
+	slotHeld := f.turnActive && f.turnSession == sessionID
+	f.turnMu.Unlock()
+
 	st.Machine.Cancel()
-	f.perm.cancelPendingForTurn()
+
+	if slotHeld {
+		f.perm.cancelPendingForTurn()
+	}
 
 	return nil
+}
+
+// turnPumpFor returns the active turn's pump pointer under the slot lock —
+// the per-turn identity the cancel fan-in re-checks (plan 05-10 WR-04).
+// Prompt captures it right after acquisition; only Prompt's own deferred
+// release can nil the slot before the turn's end, so the capture is this
+// turn's pump by construction.
+func (f *Front) turnPumpFor() *turnPump {
+	f.turnMu.Lock()
+	defer f.turnMu.Unlock()
+
+	return f.turnPump
 }
 
 // recordCwd stores one session's validated absolute cwd (the T-4-01 guard
