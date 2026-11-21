@@ -359,12 +359,27 @@ func (f *Front) Prompt(
 			// a descheduled arm that runs past the turn boundary (release
 			// already nilled the slot, a later turn owns it) must never
 			// cancel the later turn as cancelled — skip silently.
+			//
+			// WR-06 (plan 05-15): when the turn IS ours, its pending
+			// permission bridges fan in WITH it (the 05-02 prohibition —
+			// a cancelled turn leaves every pending bridge answered
+			// -32021, never silently dangling while the server
+			// re-announces). The take rides the SAME turnMu section as the
+			// identity re-check, so check-and-take is atomic — no
+			// deschedule window can sweep a later turn's fresh ask. Lock
+			// ordering is one-way turnMu → bridge.mu (T-5-38); the cancels
+			// fire outside any lock, after machine.Cancel.
 			f.turnMu.Lock()
 			mine := f.turnPump == pump
+			take := []context.CancelFunc(nil)
+			if mine {
+				take = f.perm.takePendingCancels(params.SessionID)
+			}
 			f.turnMu.Unlock()
 
 			if mine {
 				st.Machine.Cancel() // idempotent (Phase 3: repeats no-op)
+				fireTakenPendings(take)
 			}
 		case <-turnCtx.Done():
 		}

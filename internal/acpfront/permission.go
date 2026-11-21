@@ -117,12 +117,23 @@ func (b *permissionBridge) removePending(requestID string) {
 	delete(b.pending, requestID)
 }
 
-// cancelPendingForTurn cancels every in-flight round-trip (the Front.
-// Cancel fan-in — pending bridges never outlive their turn). Cancels run
-// outside the lock; each entry's forward observes the cancellation through
-// its own derived context exactly once.
-func (b *permissionBridge) cancelPendingForTurn() {
+// takePendingCancels snapshots and deletes the named session's pending
+// cancels (delete-under-lock, exactly-once — a cancelled entry that raced
+// the answer can never fire twice; the caller FIRES the cancels outside
+// any lock, each entry's forward observing the cancellation through its
+// own derived context exactly once). The session parameter is the WR-07
+// scope key: in this intermediate commit the table is still front-wide
+// keyed by requestID, so the sweep covers every session's pendings — the
+// session-scoped table (map[sessionID]map[requestID]cancel) lands with
+// plan 05-15 Task 2's very next commit, closing the transient front-wide
+// window this commit records.
+//
+//nolint:unparam // sessionID is inert until Task 2's table re-key (WR-07) — the signature is final now to avoid churn
+func (b *permissionBridge) takePendingCancels(sessionID string) []context.CancelFunc {
+	_ = sessionID
+
 	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	cancels := make([]context.CancelFunc, 0, len(b.pending))
 	for id, cancel := range b.pending {
@@ -130,8 +141,14 @@ func (b *permissionBridge) cancelPendingForTurn() {
 		delete(b.pending, id)
 	}
 
-	b.mu.Unlock()
+	return cancels
+}
 
+// fireTakenPendings logs and fires the cancels a take returned — the ONE
+// home of the fan-in's discriminator log and the fire loop (takes happen
+// under whatever lock section owns the observation; the fires always run
+// outside any lock).
+func fireTakenPendings(cancels []context.CancelFunc) {
 	if len(cancels) > 0 {
 		slog.Info("acpfront: permission pendings cancelled by turn cancel", "count", len(cancels))
 	}
@@ -139,6 +156,13 @@ func (b *permissionBridge) cancelPendingForTurn() {
 	for _, cancel := range cancels {
 		cancel()
 	}
+}
+
+// cancelPendingForTurn cancels every in-flight round-trip (the Front.
+// Cancel fan-in — pending bridges never outlive their turn). Delegates to
+// take + fire so the log/message have exactly one home.
+func (b *permissionBridge) cancelPendingForTurn() {
+	fireTakenPendings(b.takePendingCancels(""))
 }
 
 // permissionAskDrainWait bounds the wire-order barrier the ask barrier
