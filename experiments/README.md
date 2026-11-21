@@ -210,6 +210,13 @@ config at run time; write the raw capture outside the repo; scrub into
     Branch evidence: (c) — the create reply IS the registry read-back surface; the state.updated patch surface does not
     fire for push+refresh on desktop 3.18.2. Capture: experiments/captures/EXP-READBACK-DIAG-01.jsonl (scrubbed,
     scan-secrets clean). The EXP-APIKEY-CYCLE-01 row stays PENDING for the guarded REAL RUN re-run (05-12 human checkpoint).
+  - **Attempt 2 (2026-11-21 09:38 UTC capture, human-run per the 05-12 checkpoint) — auth leg PASSED (read-back proven), tool-turn leg FAILED on the desktop turn latch. Real spend: one tiny completed turn.**
+    Discovery 3.18.2 unpacked-appimage, rev-44 builtin matched; authenticate{zai-api-key} proven by the registry read-back verdict — the 05-11 branch-(c) fix is field-verified working
+    (apicycle_test.go:205); session/new + D-03 subscribe gate + setModel zai-api/GLM-5.3-Flash; mid-turn cipher decrypt asks answered from the keyring (value_len=815, plaintext_len=555); the
+    tiny tool-less turn COMPLETED end_turn with zero tool frames (apicycle_test.go:207) — the run's only model spend; the file-read tool turn was then refused by the desktop — "another prompt
+    is already running (this agent runs one turn at a time)" (apicycle_test.go:208) → test FAIL at 10.34s; teardown read-loop warning benign (post-failure drain).
+    Capture: experiments/captures/EXP-APIKEY-CYCLE-02.jsonl (scrubbed, scan-secrets clean; header V-EXP id EXP-APIKEY-CYCLE-01 is the test-locked captureID — file -02 preserves attempt-1's
+    capture byte-intact). The row stays PENDING for a passing run; the phase stays gaps_found (next gap: the guarded test needs a turn-latch drain between sends).
   (planned 2026-11-20; this row records the PLANNED spend — the end-of-phase
   verification run appends the actuals + verdict line beneath it)
   — planned spend (the D-05 minimum): one registry read-back (no turn) + two tiny
