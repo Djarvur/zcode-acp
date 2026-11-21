@@ -80,6 +80,14 @@ type server struct {
 	nextRev  atomic.Int64
 	closed   chan struct{}
 	ruleMu   sync.Mutex
+	latchMu  sync.Mutex
+
+	// latchUntil is the expiry instant of the scripted turn latch (zero time
+	// = never armed): a session/send arriving before it is answered with the
+	// scenario's latch_refusal without consuming rule budget (plan 05-13 —
+	// the desktop's one-turn-at-a-time refusal window).
+	latchUntil time.Time
+
 	errMu    sync.Mutex
 	firstErr error
 }
@@ -173,9 +181,20 @@ func (s *server) dispatch(env zcode.Envelope) {
 }
 
 // handleRequest serves one host request: the rule's side effects in order,
-// then the reply — echoing the request id verbatim (dialect §1).
+// then the reply — echoing the request id verbatim (dialect §1). While a
+// latch window is armed, a session/send is answered with the scenario's
+// latch_refusal (zero delay) and returns WITHOUT consulting ruleFor — the
+// refusal consumes no rule budget, so the drained retry finds the next rule
+// fresh (plan 05-13; only the send method is modeled — the desktop latches
+// prompts, not host calls).
 func (s *server) handleRequest(env zcode.Envelope) {
 	defer s.wg.Done()
+
+	if env.Method == zcode.MethodSessionSend && s.latchArmed() && s.sc.LatchRefusal != nil {
+		s.writeReply(env.ID, s.sc.LatchRefusal, 0)
+
+		return
+	}
 
 	rule := s.ruleFor(env.Method)
 
@@ -187,6 +206,31 @@ func (s *server) handleRequest(env zcode.Envelope) {
 
 	s.runSideEffects(rule.SideEffects)
 	s.writeReply(env.ID, rule.Reply, rule.DelayMs)
+
+	if rule.LatchMs > 0 {
+		s.armLatch(time.Now().Add(time.Duration(rule.LatchMs) * time.Millisecond))
+	}
+}
+
+// latchArmed reports whether a turn latch window is currently armed
+// (now < latchUntil). Guarded by latchMu: request handlers are concurrent
+// (one goroutine per dispatched request).
+func (s *server) latchArmed() bool {
+	s.latchMu.Lock()
+	defer s.latchMu.Unlock()
+
+	return time.Now().Before(s.latchUntil)
+}
+
+// armLatch extends the latch window until until — the completion rule's
+// reply-write instant plus its latch_ms (armed AFTER the reply is on the
+// wire, mirroring the desktop's post-completion refusal window,
+// EXP-APIKEY-CYCLE-02.jsonl:118-119).
+func (s *server) armLatch(until time.Time) {
+	s.latchMu.Lock()
+	defer s.latchMu.Unlock()
+
+	s.latchUntil = until
 }
 
 // ruleFor finds the scenario's request rule for a method with remaining

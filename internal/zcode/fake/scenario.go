@@ -24,7 +24,15 @@ type Scenario struct {
 	Name          string        `json:"name"`
 	OnRequest     []RequestRule `json:"on_request"`
 	UnknownMethod *Reply        `json:"unknown_method"`
-	EOFDrainMs    int           `json:"eof_drain_ms"`
+
+	// LatchRefusal is the reply the engine answers a session/send with while
+	// a latch window is armed — the desktop's one-turn-at-a-time refusal
+	// (EXP-APIKEY-CYCLE-02.jsonl:119 verbatim shape). Required whenever any
+	// rule carries latch_ms > 0; the refusal consumes no rule budget, so the
+	// drained retry finds the next rule fresh (plan 05-13).
+	LatchRefusal *Reply `json:"latch_refusal,omitempty"`
+
+	EOFDrainMs int `json:"eof_drain_ms"`
 }
 
 // RequestRule answers one request method: the reply envelope payload plus
@@ -38,6 +46,14 @@ type RequestRule struct {
 	DelayMs     int          `json:"delay_ms"`
 	Reply       *Reply       `json:"reply"`
 	SideEffects []SideEffect `json:"side_effects"`
+
+	// LatchMs, when positive, arms a turn latch for this many milliseconds
+	// after the rule's reply is written: a session/send arriving inside the
+	// window is answered with the scenario's latch_refusal WITHOUT consuming
+	// any rule budget (the drained retry must find the next rule fresh).
+	// Only the send method is modeled — the desktop latches prompts, not
+	// host calls (plan 05-13).
+	LatchMs int `json:"latch_ms,omitempty"`
 
 	// matched counts rule matches at serve time (guarded by the server's
 	// ruleMu — handler goroutines are concurrent); never serialized.
@@ -135,6 +151,12 @@ func (s *Scenario) validate() error {
 		}
 	}
 
+	if s.LatchRefusal != nil {
+		if err := s.LatchRefusal.validate("latch_refusal"); err != nil {
+			return err
+		}
+	}
+
 	if len(s.OnRequest) == 0 {
 		// A scenario must declare how it terminates: with no request rules,
 		// the eof_drain_ms window is the only declared end (dialect §1 EOF
@@ -150,6 +172,11 @@ func (s *Scenario) validate() error {
 	for i := range s.OnRequest {
 		if err := s.OnRequest[i].validate(i); err != nil {
 			return err
+		}
+
+		if s.OnRequest[i].LatchMs > 0 && s.LatchRefusal == nil {
+			return fmt.Errorf("%w: on_request[%d].latch_ms requires a scenario-level latch_refusal "+
+				"(an armed latch window must have a scripted refusal)", errInvalidScenario, i)
 		}
 	}
 
@@ -168,6 +195,10 @@ func (r *RequestRule) validate(idx int) error {
 
 	if r.Times < 0 {
 		return fmt.Errorf("%w: on_request[%d].times must be >= 0", errInvalidScenario, idx)
+	}
+
+	if r.LatchMs < 0 {
+		return fmt.Errorf("%w: on_request[%d].latch_ms must be >= 0", errInvalidScenario, idx)
 	}
 
 	if r.Reply == nil {

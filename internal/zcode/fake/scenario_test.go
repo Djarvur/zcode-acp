@@ -415,4 +415,12 @@ func TestScenarioAcceptsLatch(t *testing.T) {
 	if len(sc.OnRequest) != 1 {
 		t.Fatalf("on_request rules = %d, want 1", len(sc.OnRequest))
 	}
+
+	if got := sc.OnRequest[0].LatchMs; got != 2000 {
+		t.Fatalf("latch_ms = %d, want 2000", got)
+	}
+
+	if sc.LatchRefusal == nil || sc.LatchRefusal.Error == nil || sc.LatchRefusal.Error.Code != -32010 {
+		t.Fatalf("latch_refusal = %+v, want the -32010 error reply", sc.LatchRefusal)
+	}
 }
