@@ -169,9 +169,12 @@ func (f *Front) CloseSession(ctx context.Context, sessionID string) error {
 	// re-cancels a turn that sneaked in at the slot).
 	if f.drainActiveTurn(sessionID, st) {
 		// Pitfall 2: the cancelled turn's pending permission bridges must
-		// not dangle — one turn per front, so the whole pending table was
-		// that turn's (the same fan-in Front.Cancel performs).
-		f.perm.cancelPendingForTurn()
+		// not dangle — the session-scoped sweep (plan 05-15 WR-07) cancels
+		// exactly the closing session's pendings, never another session's
+		// in-flight asks. No atomic take is needed here: the closing gate
+		// predates the drain, so no same-session turn can register after
+		// it — scoping contains the cross-session case.
+		f.perm.cancelPendingForSession(sessionID)
 	}
 
 	// Step 2: best-effort backend close — teardown continues even when the

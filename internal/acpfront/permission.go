@@ -9,28 +9,40 @@ import (
 )
 
 // The front half of the TOOL-02 permission bridge (plan 05-02): the
-// in-flight pending table and the client round-trip. One entry per backend
-// requestId holds the round-trip's cancel func (published under one mutex —
-// the turnctx.go acquireTurn discipline: complete-or-none state); Front.
-// Cancel's fan-in cancels every pending entry so a bridge never outlives
-// its turn (→ -32021 replies, T-5-05), and each entry is deleted under the
-// same lock on return (delete-under-lock exactly-once, the call.go
-// pendingTable discipline). The map is bounded by one entry per in-flight
-// ask — growth is capped by the responder's per-method deadline.
+// in-flight pending table and the client round-trip. The table is
+// SESSION-SCOPED (plan 05-15 WR-07): map[sessionID]map[requestID]cancel —
+// one inner entry per backend requestId holds the round-trip's cancel
+// func (published under one mutex — the turnctx.go acquireTurn
+// discipline: complete-or-none state); the cancel fan-ins take exactly
+// the named session's bucket so a bridge never outlives its turn (→
+// -32021 replies, T-5-05) and never crosses sessions (a foreign
+// session's in-flight ask survives a cancel/close of another session),
+// and each entry is deleted under the same lock on return
+// (delete-under-lock exactly-once, the call.go pendingTable discipline;
+// empty buckets are deleted so the table stays bounded). Growth is capped
+// by one entry per in-flight ask — bounded further by the responder's
+// per-method deadline.
+//
+// Lock ordering (T-5-38, plan 05-15): the one-way order turnMu → b.mu.
+// The cancel fan-in callers take pendings under the SAME turnMu section
+// that owns the slot observation / pump-identity re-check and fire the
+// cancels outside any lock; every bridge method below acquires b.mu ONLY
+// and never turnMu (PermissionForward releases turnMu before entering
+// forward), so no cycle can form.
 
 // permissionBridge is the Front-owned bridge component; the connection-
 // bound PermissionSender binds at acpport construction (the sinkBinder
 // discipline — before any frame flows).
 type permissionBridge struct {
 	mu      sync.Mutex
-	pending map[string]context.CancelFunc
+	pending map[string]map[string]context.CancelFunc
 	send    acpport.PermissionSender
 }
 
 // newPermissionBridge builds the bridge with an unbound sender and an
 // empty pending table.
 func newPermissionBridge() *permissionBridge {
-	return &permissionBridge{pending: make(map[string]context.CancelFunc)}
+	return &permissionBridge{pending: make(map[string]map[string]context.CancelFunc)}
 }
 
 // bindSender attaches the connection-bound sender; called once by
@@ -69,13 +81,13 @@ func (b *permissionBridge) forward(ctx context.Context, ask acpport.PermissionAs
 
 	tracked := ask.RequestID != ""
 	if tracked {
-		b.addPending(ask.RequestID, cancel)
+		b.addPending(ask.SessionID, ask.RequestID, cancel)
 	}
 
 	outcome, err := send(pctx, ask)
 
 	if tracked {
-		b.removePending(ask.RequestID)
+		b.removePending(ask.SessionID, ask.RequestID)
 	}
 
 	cancel() // outside any lock: releases the entry's derived context either way
@@ -99,47 +111,67 @@ func (b *permissionBridge) forward(ctx context.Context, ask acpport.PermissionAs
 	return outcome, nil
 }
 
-// addPending registers one in-flight round-trip's cancel func.
-func (b *permissionBridge) addPending(requestID string, cancel context.CancelFunc) {
+// addPending registers one in-flight round-trip's cancel func under its
+// session's bucket (the ask's SessionID is the WR-07 scope key).
+func (b *permissionBridge) addPending(sessionID, requestID string, cancel context.CancelFunc) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.pending[requestID] = cancel
+	bucket, ok := b.pending[sessionID]
+	if !ok {
+		bucket = make(map[string]context.CancelFunc)
+		b.pending[sessionID] = bucket
+	}
+
+	bucket[requestID] = cancel
 }
 
 // removePending deletes one in-flight entry (delete-under-lock — the
 // exactly-once discipline: a cancelled entry that raced the answer can
-// never fire twice).
-func (b *permissionBridge) removePending(requestID string) {
+// never fire twice) and the session's bucket when it empties (the
+// bounded-table house discipline).
+func (b *permissionBridge) removePending(sessionID, requestID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	delete(b.pending, requestID)
+	bucket, ok := b.pending[sessionID]
+	if !ok {
+		return
+	}
+
+	delete(bucket, requestID)
+
+	if len(bucket) == 0 {
+		delete(b.pending, sessionID)
+	}
 }
 
-// takePendingCancels snapshots and deletes the named session's pending
-// cancels (delete-under-lock, exactly-once — a cancelled entry that raced
-// the answer can never fire twice; the caller FIRES the cancels outside
-// any lock, each entry's forward observing the cancellation through its
-// own derived context exactly once). The session parameter is the WR-07
-// scope key: in this intermediate commit the table is still front-wide
-// keyed by requestID, so the sweep covers every session's pendings — the
-// session-scoped table (map[sessionID]map[requestID]cancel) lands with
-// plan 05-15 Task 2's very next commit, closing the transient front-wide
-// window this commit records.
-//
-//nolint:unparam // sessionID is inert until Task 2's table re-key (WR-07) — the signature is final now to avoid churn
+// takePendingCancels snapshots and deletes ONLY the named session's
+// pending cancels (delete-under-lock, exactly-once — a cancelled entry
+// that raced the answer can never fire twice; empty-bucket cleanup keeps
+// the table bounded; the caller FIRES the cancels outside any lock, each
+// entry's forward observing the cancellation through its own derived
+// context exactly once). Session scoping is the WR-07 closure: a fan-in
+// for one session can never sweep a foreign session's (or a later turn's
+// fresh) ask, and the takes on the Front.Cancel / mine-arm call sites run
+// under the SAME turnMu section as the slot observation / pump-identity
+// re-check — check-and-take is atomic, so no deschedule window exists.
 func (b *permissionBridge) takePendingCancels(sessionID string) []context.CancelFunc {
-	_ = sessionID
-
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	cancels := make([]context.CancelFunc, 0, len(b.pending))
-	for id, cancel := range b.pending {
-		cancels = append(cancels, cancel)
-		delete(b.pending, id)
+	bucket, ok := b.pending[sessionID]
+	if !ok {
+		return nil
 	}
+
+	cancels := make([]context.CancelFunc, 0, len(bucket))
+	for id, cancel := range bucket {
+		cancels = append(cancels, cancel)
+		delete(bucket, id)
+	}
+
+	delete(b.pending, sessionID)
 
 	return cancels
 }
@@ -158,11 +190,13 @@ func fireTakenPendings(cancels []context.CancelFunc) {
 	}
 }
 
-// cancelPendingForTurn cancels every in-flight round-trip (the Front.
-// Cancel fan-in — pending bridges never outlive their turn). Delegates to
-// take + fire so the log/message have exactly one home.
-func (b *permissionBridge) cancelPendingForTurn() {
-	fireTakenPendings(b.takePendingCancels(""))
+// cancelPendingForSession cancels every in-flight round-trip of ONE
+// session (the close-path fan-in — pending bridges never outlive their
+// turn; session scoping contains the sweep to the closing session,
+// WR-07). Delegates to take + fire so the log/message have exactly one
+// home.
+func (b *permissionBridge) cancelPendingForSession(sessionID string) {
+	fireTakenPendings(b.takePendingCancels(sessionID))
 }
 
 // permissionAskDrainWait bounds the wire-order barrier the ask barrier

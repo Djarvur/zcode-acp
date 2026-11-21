@@ -352,38 +352,7 @@ func (f *Front) Prompt(
 	// so this is THIS turn's pump by construction.
 	pump := f.turnPumpFor()
 
-	go func() { // cancel fan-in: either source triggers exactly one machine.Cancel
-		select {
-		case <-sdkCtx.Done():
-			// The identity re-check under the slot lock (plan 05-10 WR-04):
-			// a descheduled arm that runs past the turn boundary (release
-			// already nilled the slot, a later turn owns it) must never
-			// cancel the later turn as cancelled — skip silently.
-			//
-			// WR-06 (plan 05-15): when the turn IS ours, its pending
-			// permission bridges fan in WITH it (the 05-02 prohibition —
-			// a cancelled turn leaves every pending bridge answered
-			// -32021, never silently dangling while the server
-			// re-announces). The take rides the SAME turnMu section as the
-			// identity re-check, so check-and-take is atomic — no
-			// deschedule window can sweep a later turn's fresh ask. Lock
-			// ordering is one-way turnMu → bridge.mu (T-5-38); the cancels
-			// fire outside any lock, after machine.Cancel.
-			f.turnMu.Lock()
-			mine := f.turnPump == pump
-			take := []context.CancelFunc(nil)
-			if mine {
-				take = f.perm.takePendingCancels(params.SessionID)
-			}
-			f.turnMu.Unlock()
-
-			if mine {
-				st.Machine.Cancel() // idempotent (Phase 3: repeats no-op)
-				fireTakenPendings(take)
-			}
-		case <-turnCtx.Done():
-		}
-	}()
+	go f.watchCancelFanIn(sdkCtx, turnCtx, pump, st, params.SessionID)
 
 	//nolint:contextcheck // the turn ctx is front-owned BY CONTRACT (Pattern 5,
 	// turnctx.go): deriving it from sdkCtx would surface the SDK's -32800
@@ -438,8 +407,12 @@ func (f *Front) Prompt(
 // server re-announces forever (T-5-05, Pitfall 2). WR-04/CR-01 alignment
 // (plan 05-10): the fan-in fires only while a turn of THIS session holds
 // the front-wide slot — the same semantics drainActiveTurn's sawTurn
-// reports on the close path; the pending table belongs to the
-// slot-holder's turn, so a cancel for a slot-free session fans nothing in.
+// reports on the close path; a cancel for a slot-free session fans
+// nothing in. WR-07 (plan 05-15): the fan-in is SESSION-SCOPED and atomic
+// with the observation — the slotHeld check and the pendings take run
+// under ONE turnMu section, so a descheduled handler can never sweep a
+// later turn's (or another session's) fresh ask; the cancels fire outside
+// any lock, after machine.Cancel.
 func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 	_ = ctx
 
@@ -450,18 +423,69 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 
 	// Observe the slot BEFORE the cancel (WR-04/CR-01, plan 05-10): release
 	// nils the fields the moment the turn resolves, so a post-cancel
-	// observation would miss a turn the cancel itself resolved.
+	// observation would miss a turn the cancel itself resolved. The take
+	// rides the SAME section (WR-07 — check-and-take is atomic; lock
+	// ordering one-way turnMu → bridge.mu, T-5-38).
 	f.turnMu.Lock()
 	slotHeld := f.turnActive && f.turnSession == sessionID
+	take := []context.CancelFunc(nil)
+	if slotHeld {
+		take = f.perm.takePendingCancels(sessionID)
+	}
 	f.turnMu.Unlock()
 
 	st.Machine.Cancel()
 
 	if slotHeld {
-		f.perm.cancelPendingForTurn()
+		fireTakenPendings(take)
 	}
 
 	return nil
+}
+
+// watchCancelFanIn is the prompt's cancel fan-in goroutine body (D-05):
+// either cancel source triggers exactly one machine.Cancel. The contexts
+// ride as arguments, never struct fields (containedctx); the SDK ctx is
+// only selected on for its Done arm — deriving anything from it would
+// surface the SDK's -32800 error instead of the cancelled success
+// (Pattern 5, turnctx.go).
+//
+// The identity re-check under the slot lock (plan 05-10 WR-04): a
+// descheduled arm that runs past the turn boundary (release already nilled
+// the slot, a later turn owns it) must never cancel the later turn as
+// cancelled — skip silently.
+//
+// WR-06 (plan 05-15): when the turn IS ours, its pending permission
+// bridges fan in WITH it (the 05-02 prohibition — a cancelled turn leaves
+// every pending bridge answered -32021, never silently dangling while the
+// server re-announces). The take rides the SAME turnMu section as the
+// identity re-check, so check-and-take is atomic — no deschedule window
+// can sweep a later turn's fresh ask. Lock ordering is one-way
+// turnMu → bridge.mu (T-5-38); the cancels fire outside any lock, after
+// machine.Cancel (idempotent, Phase 3: repeats no-op).
+func (f *Front) watchCancelFanIn(
+	sdkCtx context.Context,
+	turnCtx context.Context,
+	pump *turnPump,
+	st core.Session,
+	sessionID string,
+) {
+	select {
+	case <-sdkCtx.Done():
+		f.turnMu.Lock()
+		mine := f.turnPump == pump
+		take := []context.CancelFunc(nil)
+		if mine {
+			take = f.perm.takePendingCancels(sessionID)
+		}
+		f.turnMu.Unlock()
+
+		if mine {
+			st.Machine.Cancel() // idempotent (Phase 3: repeats no-op)
+			fireTakenPendings(take)
+		}
+	case <-turnCtx.Done():
+	}
 }
 
 // turnPumpFor returns the active turn's pump pointer under the slot lock —

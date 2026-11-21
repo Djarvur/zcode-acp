@@ -469,23 +469,12 @@ func TestCancelFanInOnlyWhenSlotHeld(t *testing.T) {
 			outcome.resp.StopReason, outcome.err)
 	}
 
-	// Bounded settle before the single transcript snapshot: the fake
-	// materializes its transcript only at Serve return (EOF drain —
-	// dialect §1), so the back leg cannot be polled live. The bound is
-	// keyed to the corpus row's own reverse deadline (timeout_ms 500): by
-	// the time it elapses the -32021 reply has landed (the fan-in fired —
-	// millisecond scale) or the fake recorded the honest unanswered note
-	// (the bridge dangled — the RED signal this test exists to fail on).
-	time.Sleep(backLegSettle)
-
-	tr, trErr := h.Transcript(t)
-	if trErr != nil {
-		t.Fatalf("fake transcript: %v", trErr)
-	}
-
 	// The contract: the displaced turn's pending bridge fanned in at the
-	// displacement boundary — exactly one -32021 reply, no dangling ask.
-	assertCancelledFanInBackLeg(t, tr)
+	// displacement boundary — exactly one -32021 reply, no dangling ask
+	// (assertDisplacedFanInBackLeg: bounded settle keyed to the corpus
+	// row's own reverse deadline, then the single transcript snapshot —
+	// the fake materializes it only at Serve return).
+	tr := assertDisplacedFanInBackLeg(t, h)
 
 	// Exactly-once preserved (D-05): ONE success response with stopReason
 	// cancelled, no agent-sent -32800 anywhere (the client-side -32800 for
@@ -511,14 +500,6 @@ func (b *safeLogBuffer) Write(p []byte) (int, error) {
 	defer b.mu.Unlock()
 
 	return b.buf.Write(p)
-}
-
-// contains reports whether the captured log carries the substring.
-func (b *safeLogBuffer) contains(substr string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return strings.Contains(b.buf.String(), substr)
 }
 
 // count reports how many captured log LINES carry the substring — the
@@ -752,25 +733,11 @@ func testCancelFanInSessionScope(t *testing.T) {
 	awaitPermissionAsk(t, h)
 
 	// The FOREIGN session's round-trip parks directly through the exported
-	// PermissionForward seam (the same seam the interact Responder wiring
-	// drives), behind the same scripted client gate as the real ask. The
-	// drive captures both the outcome and its own context.
-	foreignCtx, foreignCancel := context.WithCancel(ctx)
+	// PermissionForward seam, behind the same scripted client gate as the
+	// real ask. The drive captures both the outcome and its own context.
+	foreignCtx, foreignCancel, foreignOutcome, foreignErr :=
+		parkForeignPermissionRoundTrip(ctx, t, front)
 	defer foreignCancel()
-
-	foreignOutcome := make(chan acpport.PermissionOutcome, 1)
-	foreignErr := make(chan error, 1)
-
-	go func() {
-		outcome, err := front.PermissionForward()(foreignCtx, acpport.PermissionAsk{
-			SessionID:  foreignScopeSessionID,
-			RequestID:  foreignScopeRequestID,
-			ToolCallID: "tc-foreign",
-			ToolName:   "Inert",
-		})
-		foreignOutcome <- outcome
-		foreignErr <- err
-	}()
 
 	awaitSecondPermissionAsk(t, h)
 
@@ -794,8 +761,8 @@ func testCancelFanInSessionScope(t *testing.T) {
 	}
 
 	if outcome.Cancelled {
-		t.Fatalf("the FOREIGN session's pending round-trip read cancelled — the fan-in swept past "+
-			"its session (the front-wide table, WR-07); want the client decision "+
+		t.Fatalf("the FOREIGN session's pending round-trip read cancelled — the fan-in swept past " +
+			"its session (the front-wide table, WR-07); want the client decision " +
 			"(session scope spares foreign sessions)")
 	}
 
@@ -809,9 +776,19 @@ func testCancelFanInSessionScope(t *testing.T) {
 	}
 
 	// The real ask's fan-in artifact on the back leg: exactly one -32021
-	// reply (bounded settle — the fake materializes its transcript only at
-	// Serve return; backLegSettle outlasts the row's 500ms reverse
-	// deadline either way).
+	// reply.
+	assertDisplacedFanInBackLeg(t, h)
+}
+
+// assertDisplacedFanInBackLeg settles past the corpus row's reverse
+// deadline and locks the real ask's -32021 fan-in artifact on the single
+// transcript snapshot (the fake materializes its transcript only at Serve
+// return — backLegSettle outlasts the row's 500ms reverse deadline either
+// way, so the snapshot is final: the reply landed or the honest unanswered
+// note did).
+func assertDisplacedFanInBackLeg(t *testing.T, h *FrontHarness) fake.Transcript {
+	t.Helper()
+
 	time.Sleep(backLegSettle)
 
 	tr, trErr := h.Transcript(t)
@@ -820,6 +797,8 @@ func testCancelFanInSessionScope(t *testing.T) {
 	}
 
 	assertCancelledFanInBackLeg(t, tr)
+
+	return tr
 }
 
 // testCancelFanInSlotFreeSkip is the re-homed WR-04/CR-01 skip lock with
@@ -894,6 +873,37 @@ func testCancelFanInSlotFreeSkip(t *testing.T) {
 	if outcome.Cancelled {
 		t.Fatalf("the parked round-trip read cancelled — a slot-free cancel must never sweep (WR-04/CR-01)")
 	}
+}
+
+// parkForeignPermissionRoundTrip parks one FOREIGN session's round-trip
+// through the exported PermissionForward seam (the same seam the interact
+// Responder wiring drives) on a derived context, returning the drive
+// context, its cancel, and the outcome/error capture channels.
+func parkForeignPermissionRoundTrip(ctx context.Context, t *testing.T, front *acpfront.Front) (
+	driveCtx context.Context,
+	driveCancel context.CancelFunc,
+	outcomeCh <-chan acpport.PermissionOutcome,
+	errCh <-chan error,
+) {
+	t.Helper()
+
+	driveCtx, driveCancel = context.WithCancel(ctx)
+
+	outcomeC := make(chan acpport.PermissionOutcome, 1)
+	errC := make(chan error, 1)
+
+	go func() {
+		outcome, err := front.PermissionForward()(driveCtx, acpport.PermissionAsk{
+			SessionID:  foreignScopeSessionID,
+			RequestID:  foreignScopeRequestID,
+			ToolCallID: "tc-foreign",
+			ToolName:   "Inert",
+		})
+		outcomeC <- outcome
+		errC <- err
+	}()
+
+	return driveCtx, driveCancel, outcomeC, errC
 }
 
 // awaitSecondPermissionAsk blocks until the client captured its SECOND
