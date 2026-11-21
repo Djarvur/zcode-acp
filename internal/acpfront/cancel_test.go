@@ -28,7 +28,9 @@ package acpfront_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -519,6 +521,23 @@ func (b *safeLogBuffer) contains(substr string) bool {
 	return strings.Contains(b.buf.String(), substr)
 }
 
+// count reports how many captured log LINES carry the substring — the
+// discriminator asserts counts, never boolean-contains.
+func (b *safeLogBuffer) count(substr string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	n := 0
+
+	for _, line := range strings.Split(b.buf.String(), "\n") {
+		if strings.Contains(line, substr) {
+			n++
+		}
+	}
+
+	return n
+}
+
 // backLegSettle bounds the settle before a single transcript snapshot (the
 // fake materializes its transcript only at Serve return — the back leg
 // cannot be polled live, dialect §1 EOF facts). The bound is keyed to the
@@ -653,5 +672,246 @@ func TestCancelFanInStaleArmSkips(t *testing.T) {
 	if stops := len(transcriptIndexes(tr, "in", `"method":"session/stop"`)); stops != 1 {
 		t.Fatalf("back leg records %d session/stop frames, want exactly 1 (the displaced turn's cancel — "+
 			"a stale arm firing past the boundary would stop the later turn too)", stops)
+	}
+}
+
+// WR-07 session-scoped fan-in locks (plan 05-15 Task 2). Constants local
+// to TestCancelFanInSkipAndScope's drives.
+const (
+	// foreignScopeSessionID / foreignScopeRequestID arm the session-scope
+	// subtest's FOREIGN ask: a distinct session id string drives the scope
+	// discriminator deterministically (registry-distinct sessions are
+	// impossible over one fake — every corpus create returns the same
+	// backend id — but a foreign SessionID in the pending table is exactly
+	// the shape the scoping must spare).
+	foreignScopeSessionID = "sess_foreign_other"
+	foreignScopeRequestID = "perm-foreign-1"
+
+	// slotFreeRequestID arms the slot-free subtest's parked round-trip.
+	slotFreeRequestID = "perm-slotfree-1"
+
+	// fanInLogLine is the discriminator log's stable substring (the
+	// fan-in's structural log — occurrences are COUNTED, never
+	// boolean-contains).
+	fanInLogLine = "permission pendings cancelled by turn cancel"
+)
+
+// TestCancelFanInSkipAndScope locks the WR-07 session-scoped fan-in (plan
+// 05-15 Task 2) on the two arms the pending-table re-key must preserve:
+//
+//   - session scope spares foreign sessions: with a turn of session S
+//     active and its own ask pending, a second round-trip parked directly
+//     through the exported PermissionForward seam for a FOREIGN session id
+//     survives front.Cancel(S) — the fan-in answers S's own pending ask
+//     -32021 and never touches the foreign round-trip, which resolves as
+//     the client decision on gate release (its derived context never
+//     cancelled). At HEAD the front-wide sweep cancels the foreign
+//     round-trip — the RED.
+//   - slot free spares parked pendings: the RE-HOMED WR-04/CR-01 skip lock
+//     (formerly TestCancelFanInOnlyWhenSlotHeld's negative-log tail,
+//     dropped in the plan-05-15 enshrining rewrite) — with NO active turn,
+//     a round-trip parked for the session's OWN id survives front.Cancel:
+//     the discriminator log count is unchanged and the round-trip resolves
+//     normally on gate release. A pending actually present while the slot
+//     is free gives the lock back its discriminating power.
+func TestCancelFanInSkipAndScope(t *testing.T) {
+	t.Run("session scope spares foreign sessions", testCancelFanInSessionScope)
+	t.Run("slot free spares parked pendings", testCancelFanInSlotFreeSkip)
+}
+
+// testCancelFanInSessionScope drives the session-scope discriminator: turn
+// 1 parks on its own ask; a FOREIGN session's round-trip parks behind the
+// same scripted client gate through the exported seam; front.Cancel(sid)
+// (the genuine slot-held arm) must fan in exactly the session's own bridge.
+func testCancelFanInSessionScope(t *testing.T) {
+	gate := make(chan struct{})
+
+	h, front := newSlotStage(t, gate)
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	sid := openPermissionSession(ctx, t, h)
+
+	// Turn 1 parks on its own pending ask (the session's bridge — the one
+	// the genuine arm must fan in).
+	prompt1Done := make(chan promptOutcome, 1)
+
+	go func() {
+		resp, err := h.client.Prompt(ctx, acp.PromptRequest{
+			SessionId: acp.SessionId(sid),
+			Prompt:    []acp.ContentBlock{acp.TextBlock("hi")},
+		})
+		prompt1Done <- promptOutcome{resp: resp, err: err}
+	}()
+
+	awaitPermissionAsk(t, h)
+
+	// The FOREIGN session's round-trip parks directly through the exported
+	// PermissionForward seam (the same seam the interact Responder wiring
+	// drives), behind the same scripted client gate as the real ask. The
+	// drive captures both the outcome and its own context.
+	foreignCtx, foreignCancel := context.WithCancel(ctx)
+	defer foreignCancel()
+
+	foreignOutcome := make(chan acpport.PermissionOutcome, 1)
+	foreignErr := make(chan error, 1)
+
+	go func() {
+		outcome, err := front.PermissionForward()(foreignCtx, acpport.PermissionAsk{
+			SessionID:  foreignScopeSessionID,
+			RequestID:  foreignScopeRequestID,
+			ToolCallID: "tc-foreign",
+			ToolName:   "Inert",
+		})
+		foreignOutcome <- outcome
+		foreignErr <- err
+	}()
+
+	awaitSecondPermissionAsk(t, h)
+
+	// The genuine arm: the session holds the slot — the fan-in must answer
+	// THE SESSION'S ask -32021 and spare the foreign round-trip (WR-07).
+	if err := front.Cancel(ctx, sid); err != nil {
+		t.Fatalf("cancel (slot held): %v", err)
+	}
+
+	// Whatever survived parks no more — the foreign round-trip resolves as
+	// the client decision.
+	close(gate)
+
+	outcome := <-foreignOutcome
+	if err := <-foreignErr; err != nil {
+		t.Fatalf("foreign round-trip errored: %v", err)
+	}
+
+	if foreignCtx.Err() != nil {
+		t.Fatalf("the foreign drive context was cancelled — a sweep reached past the session scope")
+	}
+
+	if outcome.Cancelled {
+		t.Fatalf("the FOREIGN session's pending round-trip read cancelled — the fan-in swept past "+
+			"its session (the front-wide table, WR-07); want the client decision "+
+			"(session scope spares foreign sessions)")
+	}
+
+	// The displaced turn still resolves exactly once as the cancelled
+	// success (the genuine arm's machine.Cancel landed).
+	promptRes := waitPermissionOutcome(t, prompt1Done)
+
+	if promptRes.err != nil || promptRes.resp.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("displaced turn outcome = (%v, %v), want a cancelled success",
+			promptRes.resp.StopReason, promptRes.err)
+	}
+
+	// The real ask's fan-in artifact on the back leg: exactly one -32021
+	// reply (bounded settle — the fake materializes its transcript only at
+	// Serve return; backLegSettle outlasts the row's 500ms reverse
+	// deadline either way).
+	time.Sleep(backLegSettle)
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	assertCancelledFanInBackLeg(t, tr)
+}
+
+// testCancelFanInSlotFreeSkip is the re-homed WR-04/CR-01 skip lock with
+// full discriminating power: the session is registered but IDLE (no prompt
+// ever ran — the slot is free) and a round-trip is actually parked through
+// the exported seam; front.Cancel must skip the fan-in entirely (the
+// discriminator log count unchanged) and the parked round-trip resolves
+// normally on gate release.
+func testCancelFanInSlotFreeSkip(t *testing.T) {
+	// Capture the default logger: the fan-in's structural log is the
+	// discriminator — occurrences are counted, never boolean-contains.
+	var buf safeLogBuffer
+
+	origLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(origLog) })
+
+	gate := make(chan struct{})
+
+	h, front := newSlotStage(t, gate)
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	// The session is open but IDLE — no prompt, the slot is free.
+	sid := openPermissionSession(ctx, t, h)
+
+	// A round-trip parks for the session's OWN id (a pending actually
+	// present while the slot is free — the shape the old negative-log
+	// tail could never construct).
+	outcomeCh := make(chan acpport.PermissionOutcome, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		outcome, err := front.PermissionForward()(ctx, acpport.PermissionAsk{
+			SessionID:  sid,
+			RequestID:  slotFreeRequestID,
+			ToolCallID: "tc-idle",
+			ToolName:   "Inert",
+		})
+		outcomeCh <- outcome
+		errCh <- err
+	}()
+
+	awaitPermissionAsk(t, h)
+
+	before := buf.count(fanInLogLine)
+
+	if err := front.Cancel(ctx, sid); err != nil {
+		t.Fatalf("cancel (slot free): %v", err)
+	}
+
+	if after := buf.count(fanInLogLine); after != before {
+		t.Fatalf("the slot-free cancel fanned pendings in (fan-in log fired %d → %d occurrences) — "+
+			"Front.Cancel's fan-in must fire only while a turn of THIS session holds the slot (WR-04/CR-01)",
+			before, after)
+	}
+
+	// The parked round-trip survives: on gate release it resolves as the
+	// client decision (its derived context never cancelled).
+	close(gate)
+
+	outcome := <-outcomeCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("parked round-trip errored: %v", err)
+	}
+
+	if outcome.Cancelled {
+		t.Fatalf("the parked round-trip read cancelled — a slot-free cancel must never sweep (WR-04/CR-01)")
+	}
+}
+
+// awaitSecondPermissionAsk blocks until the client captured its SECOND
+// request_permission ask (bounded) — the foreign round-trip's park point.
+func awaitSecondPermissionAsk(t *testing.T, h *FrontHarness) {
+	t.Helper()
+
+	deadline := time.After(permWait)
+
+	for {
+		if len(h.rec.PermissionAsks()) >= 2 {
+			return
+		}
+
+		select {
+		case <-time.After(2 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("the foreign ask never reached the client within the wait bound")
+		}
 	}
 }
