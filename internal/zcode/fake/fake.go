@@ -75,12 +75,12 @@ type server struct {
 	trMu sync.Mutex
 	tr   Transcript
 
-	revMu    sync.Mutex
-	reverse  map[string]chan zcode.Envelope
-	nextRev  atomic.Int64
-	closed   chan struct{}
-	ruleMu   sync.Mutex
-	latchMu  sync.Mutex
+	revMu   sync.Mutex
+	reverse map[string]chan zcode.Envelope
+	nextRev atomic.Int64
+	closed  chan struct{}
+	ruleMu  sync.Mutex
+	latchMu sync.Mutex
 
 	// latchUntil is the expiry instant of the scripted turn latch (zero time
 	// = never armed): a session/send arriving before it is answered with the
@@ -222,7 +222,7 @@ func (s *server) latchArmed() bool {
 	return time.Now().Before(s.latchUntil)
 }
 
-// armLatch extends the latch window until until — the completion rule's
+// armLatch arms the latch window to expire at until — the completion rule's
 // reply-write instant plus its latch_ms (armed AFTER the reply is on the
 // wire, mirroring the desktop's post-completion refusal window,
 // EXP-APIKEY-CYCLE-02.jsonl:118-119).
