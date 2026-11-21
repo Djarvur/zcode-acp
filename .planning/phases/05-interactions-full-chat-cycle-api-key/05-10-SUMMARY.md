@@ -270,3 +270,9 @@ None — no external service configuration required.
 ---
 *Phase: 05-interactions-full-chat-cycle-api-key*
 *Completed: 2026-11-21*
+
+## Self-Check: PASSED
+
+- All 7 task/lint commits verified as ancestors of HEAD (b2c8aaa, e0b2c74, 134cfe0, 14b4a53, 6b18a20, 1d3b8a1, 456364e) + the SUMMARY/docs commit (5d6c1d7).
+- All 11 touched files exist on disk (responder_test.go intentionally unmodified — its suite stayed green unmodified).
+- Plan gate + wave gate (`mise run ci`) green at authoring time; all `<verify>` commands logged above with their results.
