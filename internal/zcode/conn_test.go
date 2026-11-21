@@ -1303,3 +1303,86 @@ func fireCipherExpiry(t *testing.T, peerEnd *pipeEnd, deadline time.Duration, pe
 }
 
 // snapshotRouterOrder returns a copy of the delivery-order log.
+
+// TestReplyStructuralSilence locks the WR-01 structural join silence (plan
+// 05-10): a reverse-request answer carrying NEITHER result NOR error is
+// dropped structurally at the reply funnel — a JSON-RPC response carries
+// exactly one of result/error, so the payload-less bare id-echo the parked
+// dedupe-join arm produced in the cancelBase→rw.Close window (WR-01) is
+// forbidden on the wire. The two genuine arms stay locked: a non-nil
+// result and a wire error each deliver their frame. The drive is the
+// OnRequest seam's (nil, nil, true) shape verbatim — the parked join's
+// return — served through handleRequest → replyRequest.
+func TestReplyStructuralSilence(t *testing.T) {
+	t.Run("nil-nil answer writes no frame", func(t *testing.T) {
+		connEnd, peerEnd := connPipes()
+		t.Cleanup(func() { _ = peerEnd.Close() })
+
+		conn := zcode.NewConn(connEnd)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		lines := drainPeer(t, peerEnd)
+
+		// The parked dedupe-join posture: handled, nothing to say.
+		conn.OnRequest = func(_ context.Context, _ zcode.Envelope) (any, *zcode.WireError, bool) {
+			return nil, nil, true
+		}
+
+		injectLine(t, peerEnd, `{"id":7,"method":"interaction/requestPermission","params":{"sessionId":"s"}}`)
+
+		// The bare id-echo is forbidden: zero reply bytes within the quiet
+		// window (the negative assertion's honest observation window).
+		time.Sleep(graceWindow)
+
+		select {
+		case line := <-lines:
+			t.Fatalf("the nil-nil answer framed %q (the bare id-echo WR-01 forbids — "+
+				"a JSON-RPC response carries exactly one of result/error)", line)
+		default:
+		}
+	})
+
+	t.Run("genuine result arm delivers", func(t *testing.T) {
+		connEnd, peerEnd := connPipes()
+		t.Cleanup(func() { _ = peerEnd.Close() })
+
+		conn := zcode.NewConn(connEnd)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		lines := drainPeer(t, peerEnd)
+
+		conn.OnRequest = func(_ context.Context, _ zcode.Envelope) (any, *zcode.WireError, bool) {
+			return map[string]any{"decision": "allow"}, nil, true
+		}
+
+		injectLine(t, peerEnd, `{"id":8,"method":"interaction/requestPermission","params":{"sessionId":"s"}}`)
+
+		got := waitLines(t, lines, 1, testTimeout)
+
+		if !strings.Contains(got[0], `"id":8`) || !strings.Contains(got[0], `"result"`) {
+			t.Fatalf("genuine result arm framed %s, want the id echo with a result payload", got[0])
+		}
+	})
+
+	t.Run("genuine error arm delivers", func(t *testing.T) {
+		connEnd, peerEnd := connPipes()
+		t.Cleanup(func() { _ = peerEnd.Close() })
+
+		conn := zcode.NewConn(connEnd)
+		t.Cleanup(func() { _ = conn.Close() })
+
+		lines := drainPeer(t, peerEnd)
+
+		conn.OnRequest = func(_ context.Context, _ zcode.Envelope) (any, *zcode.WireError, bool) {
+			return nil, &zcode.WireError{Code: -32021, Message: "Client request cancelled"}, true
+		}
+
+		injectLine(t, peerEnd, `{"id":9,"method":"interaction/requestPermission","params":{"sessionId":"s"}}`)
+
+		got := waitLines(t, lines, 1, testTimeout)
+
+		if !strings.Contains(got[0], `"id":9`) || !strings.Contains(got[0], `"error"`) {
+			t.Fatalf("genuine error arm framed %s, want the id echo with an error payload", got[0])
+		}
+	})
+}

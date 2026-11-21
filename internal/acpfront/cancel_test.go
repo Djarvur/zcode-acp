@@ -27,14 +27,20 @@ package acpfront_test
 // send-refused-32010 corpus row.
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
 
+	"github.com/Djarvur/zcode-acp/internal/acpfront"
 	"github.com/Djarvur/zcode-acp/internal/acpport"
+	"github.com/Djarvur/zcode-acp/internal/interact"
+	"github.com/Djarvur/zcode-acp/internal/zcode"
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
 
@@ -51,6 +57,13 @@ const (
 	// cancel-after-complete stays silent: no response frame exists to await,
 	// so the settle is the honest quiet before the silence assert.
 	cancelSettle = 300 * time.Millisecond
+
+	// slotHoldReverseID is the pending permission reverse's wire id in the
+	// TestCancelFanInOnlyWhenSlotHeld flow: the corpus row's fake-N counter
+	// covers BOTH creates' runtime-preferences reverses (fake-1 for session
+	// A, fake-2 for session B) before B's send issues the permission
+	// reverse (fake-3) — deterministic per the row.
+	slotHoldReverseID = "fake-3"
 )
 
 // assertNoRequestCancelled scans the whole tee (both directions) for a
@@ -321,4 +334,166 @@ func inFrameCount(lines []TeeLine) int {
 	}
 
 	return n
+}
+
+// TestCancelFanInOnlyWhenSlotHeld locks the WR-04/CR-01 cancel alignment
+// (plan 05-10): Front.Cancel's permission fan-in fires only while a turn of
+// THIS session holds the front-wide slot — the same semantics drainActive-
+// Turn's sawTurn reports on the close path. The deterministic drive stages
+// the slot-free state with a pending ask still registered: turn 1 parks on
+// the pending ask, the SDK's second-prompt displacement cancels it (the
+// fan-in goroutine's machine.Cancel — that arm never fans pendings), the
+// turn resolves and RELEASES the slot, leaving the ask dangling with the
+// slot free. The session cancel must then SKIP the fan-in — the pending
+// bridge survives (the discriminator is the fan-in's own structural log,
+// which fires synchronously inside the cancel call; on the wire the ask
+// rides to the fake's honest unanswered note). At HEAD the fan-in is
+// unconditional and the log fires. With the slot held, the existing
+// TestPermissionCancel behavior is unchanged (the genuine arm).
+//
+// Note on the plan's "another session" flavor: every corpus create returns
+// the SAME deterministic backend id (sess_fix1), so two registry-distinct
+// sessions are impossible over one fake — the slot-free-with-dangling-pending
+// state exercises the identical slotHeld=false skip arm.
+func TestCancelFanInOnlyWhenSlotHeld(t *testing.T) {
+	// Capture the default logger: the fan-in's structural log is the
+	// deterministic discriminator (it fires synchronously inside the
+	// cancel call, before any teardown race can interfere).
+	var buf safeLogBuffer
+
+	origLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(origLog) })
+
+	gate := make(chan struct{})
+
+	sc := mustLoadScenario(t, "permission-cancel")
+
+	var front *acpfront.Front
+
+	h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
+		front = acpfront.New(conn,
+			acpfront.WithVersion("0.0.0-dev"),
+			acpfront.WithModel(corpusModelSelection()),
+		)
+
+		opts := []interact.Option{
+			interact.WithPermissionForwarder(interact.NewPermissionBridge(front.PermissionForward()).Forward),
+		}
+
+		responder := interact.NewResponder(opts...)
+		conn.OnRequest = responder.Serve // hook contract: before any frame flows
+
+		return acpport.NewAgent(front)
+	})
+
+	h.rec.SetPermissionScript(PermissionScript{Gate: gate})
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	sid := openPermissionSession(ctx, t, h)
+
+	// Turn 1 parks on the pending ask (the client holds the gate).
+	prompt1Done := make(chan promptOutcome, 1)
+
+	go func() {
+		resp, err := h.client.Prompt(ctx, acp.PromptRequest{
+			SessionId: acp.SessionId(sid),
+			Prompt:    []acp.ContentBlock{acp.TextBlock("hi")},
+		})
+		prompt1Done <- promptOutcome{resp: resp, err: err}
+	}()
+
+	awaitPermissionAsk(t, h)
+
+	// The SDK displacement: the second prompt's registration cancels turn
+	// 1's SDK ctx — the fan-in goroutine machine.Cancels turn 1 (its
+	// genuine arm), the turn resolves cancelled and the slot RELEASES. The
+	// second prompt itself is rejected by the held slot (one clean
+	// invalid-request).
+	_, err := h.client.Prompt(ctx, acp.PromptRequest{
+		SessionId: acp.SessionId(sid),
+		Prompt:    []acp.ContentBlock{acp.TextBlock("second")},
+	})
+	assertRejectedInvalidRequest(t, err)
+
+	// Turn 1 resolved cancelled (the displacement's machine.Cancel landed
+	// through the stop rule's cancelled patch) — the slot is FREE and the
+	// pending ask dangles.
+	outcome := waitPermissionOutcome(t, prompt1Done)
+
+	if outcome.err != nil || outcome.resp.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("displaced turn outcome = (%v, %v), want a cancelled success",
+			outcome.resp.StopReason, outcome.err)
+	}
+
+	// The cancel with NO slot held, driven DIRECTLY on the front (the
+	// exported seam — no SDK prompt-registration state in the way): the
+	// fan-in must be SKIPPED — the dangling ask survives.
+	if err := front.Cancel(ctx, sid); err != nil {
+		t.Fatalf("cancel (slot free): %v", err)
+	}
+
+	// The discriminator: the fan-in's structural log must NOT have fired —
+	// a cancel for a session that holds no slot fans no pendings in
+	// (WR-04/CR-01; at HEAD the unconditional fan-in logs count=1 here).
+	if fired := buf.contains("permission pendings cancelled by turn cancel"); fired {
+		t.Fatalf("the slot-free cancel fanned the pending bridge in (fan-in log fired) — " +
+			"Front.Cancel's fan-in must fire only while a turn of THIS session holds the slot (WR-04/CR-01)")
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	// The wire artifact of the surviving ask: the fake's honest note — the
+	// reverse rode to its 500ms deadline unanswered (the ask was never
+	// cancelled by anything in this flow).
+	assertDanglingAskNote(t, tr)
+}
+
+// safeLogBuffer is a mutex-guarded slog sink (the fan-in log fires on the
+// cancel caller's goroutine; the read is the test goroutine — same
+// goroutine in this test, but the guard keeps -race honest).
+type safeLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+// contains reports whether the captured log carries the substring.
+func (b *safeLogBuffer) contains(substr string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return strings.Contains(b.buf.String(), substr)
+}
+
+// assertDanglingAskNote locks the surviving-ask wire artifact: the fake
+// recorded the reverse's honest unanswered note (it rode to its deadline
+// with no reply — nothing cancelled the dangling bridge).
+func assertDanglingAskNote(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	for _, line := range tr.Lines {
+		if line.Dir == fake.DirNote && strings.Contains(line.JSON, "unanswered at") &&
+			strings.Contains(line.JSON, permReverseID) {
+			return
+		}
+	}
+
+	t.Fatalf("the dangling ask left no unanswered note on the transcript — " +
+		"the surviving-ask artifact is missing (was the ask cancelled after all?)")
 }
