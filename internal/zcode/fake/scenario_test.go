@@ -348,3 +348,71 @@ func TestLoadScenarioAcceptsReannounce(t *testing.T) {
 		t.Fatalf("reannounce = %+v, want {count:2, interval_ms:40}", reverse.Reannounce)
 	}
 }
+
+// TestScenarioLatchRequiresRefusal: a rule carrying latch_ms > 0 without a
+// scenario-level latch_refusal arms a window that has no scripted refusal —
+// the refused send could not be answered. Rejected, naming both the rule's
+// latch_ms field and the missing latch_refusal (plan 05-13, fail-loud).
+func TestScenarioLatchRequiresRefusal(t *testing.T) {
+	path := writeInvalidScenario(t, `{
+	  "name": "latch-without-refusal",
+	  "on_request": [{"method": "session/send", "latch_ms": 2000, "reply": {"result": {}}}],
+	  "eof_drain_ms": 100
+	}`)
+
+	assertScenarioRejected(t, path, "latch_ms", "latch_refusal")
+}
+
+// TestScenarioRejectsInvalidNegativeLatchMs: a negative latch_ms is
+// meaningless — rejected, naming the latch_ms field.
+func TestScenarioRejectsInvalidNegativeLatchMs(t *testing.T) {
+	path := writeInvalidScenario(t, `{
+	  "name": "negative-latch",
+	  "on_request": [{"method": "session/send", "latch_ms": -5, "reply": {"result": {}}}],
+	  "latch_refusal": {"error": {"code": -32010, "message": "A prompt is already running for this session"}},
+	  "eof_drain_ms": 100
+	}`)
+
+	assertScenarioRejected(t, path, "latch_ms")
+}
+
+// TestScenarioRejectsInvalidLatchRefusalWithoutPayload: a latch_refusal
+// carrying neither result nor error cannot answer the refused send —
+// rejected, naming the latch_refusal field.
+func TestScenarioRejectsInvalidLatchRefusalWithoutPayload(t *testing.T) {
+	path := writeInvalidScenario(t, `{
+	  "name": "latch-refusal-empty",
+	  "on_request": [{"method": "session/send", "reply": {"result": {}}}],
+	  "latch_refusal": {},
+	  "eof_drain_ms": 100
+	}`)
+
+	assertScenarioRejected(t, path, "latch_refusal")
+}
+
+// TestScenarioAcceptsLatch: a well-formed latch pair (a rule latch_ms plus
+// the scenario-level latch_refusal error reply) parses — the lingering-latch
+// corpus row's scripting shape (plan 05-13).
+func TestScenarioAcceptsLatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "latch.json")
+	content := `{
+	  "name": "latch-ok",
+	  "on_request": [{"method": "session/send", "times": 1, "latch_ms": 2000,
+	                  "reply": {"result": {"accepted": true}}}],
+	  "latch_refusal": {"error": {"code": -32010,
+	                              "message": "A prompt is already running for this session"}},
+	  "eof_drain_ms": 100
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write scenario: %v", err)
+	}
+
+	sc, err := fake.LoadScenario(path)
+	if err != nil {
+		t.Fatalf("scenario with a well-formed latch pair must load: %v", err)
+	}
+
+	if len(sc.OnRequest) != 1 {
+		t.Fatalf("on_request rules = %d, want 1", len(sc.OnRequest))
+	}
+}

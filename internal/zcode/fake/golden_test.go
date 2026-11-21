@@ -123,6 +123,13 @@ const (
 	// authReadbackWait bounds the auth-apikey row's read-back Await (the
 	// surfaces are already on the wire when the driver awaits).
 	authReadbackWait = 5 * time.Second
+
+	// lingeringLatchSettle is how long the lingering-latch driver waits out
+	// the desktop's one-turn-at-a-time latch before the drained retry: the
+	// scenario's 2000 ms latch window plus scheduling margin (≈ the real
+	// drain's latch-plus-margin discipline). The sleep sits between
+	// wire-gated steps, so the frame sequence stays byte-deterministic.
+	lingeringLatchSettle = 2500 * time.Millisecond
 )
 
 // corpusAuthModels returns the personal zai-api models the auth-apikey
@@ -267,6 +274,7 @@ func goldenDrivers() map[string]driverFunc {
 		"auth-apikey":                driveAuthApikey,
 		"runtime-headers-answer":     driveRuntimeHeadersAnswer,
 		"full-cycle":                 driveFullCycle,
+		"lingering-latch-32010":      driveLingeringLatch32010,
 	}
 }
 
@@ -1244,6 +1252,48 @@ func fullCycleAuthLeg(ctx context.Context, d *exchangeDriver) {
 	if !rb.Applied {
 		t.Fatalf("read-back verdict applied = false (revision %q) — the ack is never the verdict", rb.Revision)
 	}
+}
+
+// driveLingeringLatch32010: the lingering-latch corpus row (plan 05-13) —
+// the front preamble, then send-1 whose rule acks with EARLY completion
+// surfaces (running→idle state patches, reason prompt_completed) and arms
+// the desktop's one-turn-at-a-time latch for latch_ms; the immediate send-2
+// inside the window is refused -32010 (the EXP-APIKEY-CYCLE-02.jsonl:119
+// refusal verbatim: "A prompt is already running for this session") WITHOUT
+// consuming rule budget; after latch release send-3 matches the next rule
+// fresh and is accepted with turn-2 completion surfaces — the drained
+// recovery attempt 3's test demands.
+func driveLingeringLatch32010(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx) // send-1: ack + early completion surfaces, arms the latch
+
+	d.waitStatePatch("idle")
+
+	params := map[string]any{
+		wireKeySessionID: fixSessionID,
+		wireKeyContent:   sendContent,
+	}
+
+	_, err := d.call(ctx, zcode.MethodSessionSend, params)
+
+	var callErr *zcode.CallError
+	if !errors.As(err, &callErr) {
+		d.t.Fatalf("send-2 inside the latch window must be refused with a wire error, got %v", err)
+	}
+
+	if callErr.Err.Code != zcode.CodeConcurrency {
+		d.t.Fatalf("send-2 error code = %d, want %d (-32010)", callErr.Err.Code, zcode.CodeConcurrency)
+	}
+
+	// Latch drain: wait out the window plus margin before the retry — the
+	// corpus rehearsal of the real-tier turnWithLatchDrain discipline.
+	time.Sleep(lingeringLatchSettle)
+
+	h.send(ctx) // send-3 after release: accepted, turn-2 completion surfaces
+
+	d.waitStatePatch("idle")
 }
 
 // assertResumeSnapshot digs result.session.sessionId out of the resume
