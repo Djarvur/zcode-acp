@@ -1,8 +1,8 @@
 ---
 phase: 05-interactions-full-chat-cycle-api-key
-verified: 2026-11-21T10:05:00Z
+verified: 2026-11-21T21:10:00Z
 status: gaps_found
-score: 10/13 must-haves verified
+score: 12/13 must-haves verified
 covered_files:
   - ".golangci.yml"
   - ".planning/phases/05-interactions-full-chat-cycle-api-key/05-01-PLAN.md"
@@ -35,6 +35,8 @@ covered_files:
   - "cmd/zcode-acp/testdata/responder-e2e.json"
   - "experiments/README.md"
   - "experiments/captures/EXP-APIKEY-CYCLE-01.jsonl"
+  - "experiments/captures/EXP-APIKEY-CYCLE-02.jsonl"
+  - "experiments/captures/EXP-APIKEY-CYCLE-03.jsonl"
   - "experiments/scan-secrets.sh"
   - "go.mod"
   - "go.sum"
@@ -94,6 +96,7 @@ covered_files:
   - "internal/zcode/fake/testdata/golden/complete-then-cancel.golden"
   - "internal/zcode/fake/testdata/golden/completion-quiet-window.golden"
   - "internal/zcode/fake/testdata/golden/full-cycle.golden"
+  - "internal/zcode/fake/testdata/golden/lingering-latch-32010.golden"
   - "internal/zcode/fake/testdata/golden/newsession-orphan-close.golden"
   - "internal/zcode/fake/testdata/golden/no-reasoning.golden"
   - "internal/zcode/fake/testdata/golden/part-delta-streaming.golden"
@@ -111,6 +114,7 @@ covered_files:
   - "internal/zcode/fake/testdata/scenarios/complete-then-cancel.json"
   - "internal/zcode/fake/testdata/scenarios/completion-quiet-window.json"
   - "internal/zcode/fake/testdata/scenarios/full-cycle.json"
+  - "internal/zcode/fake/testdata/scenarios/lingering-latch-32010.json"
   - "internal/zcode/fake/testdata/scenarios/newsession-orphan-close.json"
   - "internal/zcode/fake/testdata/scenarios/no-reasoning.json"
   - "internal/zcode/fake/testdata/scenarios/part-delta-streaming.json"
@@ -126,167 +130,171 @@ covered_files:
   - "mise.toml"
   - "test/realdesktop/apicycle_test.go"
   - "test/realdesktop/doc.go"
-covered_digest: "v4:sha256:9f8123e537da01fb0fbaecaa458dce3b2227c8a04a07eae4de7fc0172788cc6e"
-behavior_unverified: 1
+  - "test/realdesktop/readbackdiag_test.go"
+covered_digest: "v4:sha256:9374438d93b92d052554cf4fb69e8e7805a8103dd06518742d4605a67c4dbe6b"
+behavior_unverified: 0
 overrides_applied: 0
 unverified_prohibitions: 1
 re_verification:
-  previous_status: human_needed
-  previous_score: 11/13
-  gaps_closed: []
+  previous_status: gaps_found
+  previous_score: 10/13
+  gaps_closed:
+    - "Gap 1 — SC4's real-account half: the authenticate read-back now latches on the field-verified surface (probe-create reply's settings.model.available, plan 05-11 branch (c), EXP-READBACK-DIAG-01) and is FIELD-PROVEN: REAL RUN attempt 3 PASSED 49.43s on the real 3.18.2 account (2026-11-21, human-run per the 05-14 blocking-human checkpoint); UAT item 1 recorded pass, ledger row flipped to actuals, scrubbed capture EXP-APIKEY-CYCLE-03.jsonl committed"
+    - "Gap 2 — CR-01 close-path permission fan-in: drainActiveTurn now reports sawTurn (true on both the successful-drain and deadline arms, false only on an idle close — lifecycle.go:221-260) and CloseSession fans the pendings in on exactly that signal (:170-175); locked red-first by TestCloseWithPendingPermissionCancelled (exactly-one -32021 reply) and TestCloseDeadlineArmFansPendingIn (1ns seam); delta review confirms closed with wire locks"
   gaps_remaining:
-    - "REAL RUN UAT item 1 (live authenticate read-back) — attempt 1 FAILED (commit d15a745); retry gated by gap 1 (read-back surface) and gap 2 (CR-01) fixes"
-    - "REAL RUN UAT item 2 (evidence recording: scrub + ledger flip) — pending the passing run"
-  regressions:
-    - "Truth 7 (close-path permission fan-in) — prior pass VERIFIED, now FAILED (partial): the prior evidence verified wiring PRESENCE at lifecycle.go:135, not return semantics; 05-REVIEW CR-01 (confirmed first-hand this pass) shows the fan-in is skipped on exactly the successful-drain path. Code unchanged since a4e0483 — the prior verdict was incomplete, not a code regression."
+    - "Truth 7's no-dangling-bridge invariant — NEW gap 3 (WR-06): the SDK displaced-prompt arm resolves the turn but never fans its pending permission bridge in; the bridge rides the 300s responder deadline then answers deny for a cancelled turn. Deterministic, client-triggerable, and enshrined as expected behavior by committed tests (TestCancelFanInOnlyWhenSlotHeld + assertDanglingAskNote)"
+  regressions: []
 gaps:
-  - truth: "SC4: authenticate{zai-api-key} on a REAL account enables working turns, with success verified by reading registry state back — the real-account half is field-FAILED: the read-back never confirms on real desktop 3.18.2"
-    status: failed
-    reason: "UAT attempt 1 (2026-11-21, orchestrator-run, commit d15a745) reached the real account: updateAccountConfig acked {status:received, providerCount:0}, refreshRegistry acked {refreshed:true}, the desktop applied runtime headers in its own refresh loop — but NO state.updated registry patch and no create-reply surface arrived within the 30 s window, so awaitRegistryContains timed out → ErrRegistryNotConfirmed → authenticate errored and zero turns ran (zero model spend). The fake-tier read-back surface does not exist on the real 3.18.2 wire; the machinery is honest (it failed loud instead of faking success — the 05-07 prohibitions held), but the must-have behavior is observably false on the real account."
+  - truth: "05-02: deny-by-default AND no permission bridge outlives its turn — every pending bridge of a cancelled turn is cancelled by the cancel fan-in"
+    status: partial
+    reason: "The deny-by-default half holds everywhere (test-locked). The no-dangling invariant now holds on TWO of THREE cancel paths: the close path (CR-01 fixed, two wire-locked tests) and the ACP session/cancel path (slot-gated, test-locked). The third path — the SDK displaced-prompt arm (front.go:355-371, the fan-in goroutine's sdkCtx/mine arm) — fires machine.Cancel only: no cancelPendingForTurn runs on it, release() fans nothing in, so a turn cancelled by the client's second-prompt displacement leaves its in-flight interaction/requestPermission bridge dangling to the 300s responder deadline (DefaultPermissionDeadline, responder.go:41-43), then the responder answers DENY for an already-cancelled turn while the desktop's ask loop stays live (05-REVIEW.md WR-06: 'the one remaining arm that violates the contract'). Unlike CR-01 the session stays open, so the wire stays coherent — but the letter of the 05-02 truth and prohibition is violated on a deterministic, client-triggerable flow (any ACP client that double-prompts while an ask is pending), and the committed test TestCancelFanInOnlyWhenSlotHeld + assertDanglingAskNote (cancel_test.go:382-503) locks the dangling artifact in as EXPECTED behavior. Prior-pass precedent: the identical bounded-dangling shape (300s deadline then deny) failed this truth when the path was the close path; the displacement path earns the same verdict."
     artifacts:
-      - path: "internal/hostsvc/readback.go"
-        issue: "awaitRegistryContains polls state.updated / create-reply surfaces the real desktop never emits for this push (fake-tier-oracle mismatch)"
-      - path: "internal/acpfront/auth.go"
-        issue: "the honest chain is correct by construction; its terminal read-back step cannot confirm against the real 3.18.2 desktop"
+      - path: "internal/acpfront/front.go"
+        issue: "the fan-in goroutine's mine arm (:362-368) cancels the machine but not the pendings — the review's fix shape fans cancelPendingForTurn() in on the same arm (safe: the slot re-check guarantees the table belongs to this turn when mine is true)"
+      - path: "internal/acpfront/cancel_test.go"
+        issue: "TestCancelFanInOnlyWhenSlotHeld (:382-463) + assertDanglingAskNote (:491-503) enshrine the dangling ask as the expected wire artifact — the slot-free skip they lock stays correct, but the displaced turn's -32021 must replace the dangling note for the displacement-with-pending case"
     missing:
-      - "Diagnose which candidate cause applies (per 05-UAT.md item 1): (a) basedOnZCodeBuiltinRevision hash mismatch (runtime self-reports 0.17.1 vs 3.18.2 path-derived hash) → dialect §8 silent discard; (b) empty-providers snapshot treated as nothing-to-apply and never patched; (c) the read-back surface should be the first session/create reply (settings.model.available), not a state.updated wait — resolve via a scrubbed-capture experiment on the real desktop before changing the verdict logic"
-      - "Fix the read-back chain to the field-verified surface, keep the ack-never-trusted discipline (05-06/05-07 prohibitions), update the fake oracle to the corrected wire truth, then re-run the guarded REAL RUN (UAT item 1) to green"
-  - truth: "05-02: no permission bridge outlives its turn — the cancel fan-in fires on EVERY cancelled-turn path (CR-01: CloseSession skips it when the drain succeeds)"
-    status: failed
-    reason: "drainActiveTurn (internal/acpfront/lifecycle.go:178-213) returns FALSE after a successful drain — iteration 1 finds the active turn, cancels, waits on done; done closes only inside release() after turnActive was cleared; the loop re-enters with done==nil and returns false (line 192). The only return true is the deadline-elapsed failure path (line 205). CloseSession (lifecycle.go:131-136) gates f.perm.cancelPendingForTurn() behind that inverted return, so a close-with-active-turn cancels the turn but SKIPS the permission fan-in — the pending bridge dangles until the responder's 300 s permission deadline, then frames a deny at an already-closed backend session. Front.Cancel (front.go:396-404) performs the same fan-in unconditionally, proving the asymmetry is not deliberate. No test covers close-with-pending-permission (lifecycle_test.go has no permission-reverse close test — grep confirmed this pass). Confirmed first-hand in code this pass; matches 05-REVIEW.md CR-01 (disposition: open, gates the REAL RUN retry)."
-    artifacts:
-      - path: "internal/acpfront/lifecycle.go"
-        issue: "drainActiveTurn reports the opposite of its documented contract on the normal path (return false at :192 after a successful drain; caller gates the fan-in on it at :131-136)"
-      - path: "internal/acpfront/lifecycle_test.go"
-        issue: "no close-with-pending-permission test — TestCloseTeardown/TestCloseWhileTurnActiveRace run turns with no permission reverse"
-    missing:
-      - "Fix drainActiveTurn to report whether an active turn of THIS session was observed and cancelled (sawTurn), not whether the drain timed out (the 05-REVIEW.md CR-01 fix shape)"
-      - "Add the lock test: close a session whose active turn holds a pending permission ask; assert the pendings are cancelled (-32021 on the fake transcript or pending-count zero) — per the 05-02 prohibition 'MUST NOT let a permission bridge outlive its turn'"
-      - "Batch WR-01..04 with this close-path fix per 05-REVIEW-DISPOSITION.md before the REAL RUN retry"
-behavior_unverified_items:
-  - truth: "SC5: the full cycle — new → prompt with tool calls and a permission decision → resume → close — runs end-to-end ON THE REAL api-key account (live half; fake tier fully proven)"
-    test: "After gaps 1-2 close: run the canonical guarded command (ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run TestAPIKeyFullCycle ./test/realdesktop/) per 05-USER-SETUP.md and record the evidence trail (scrub to experiments/captures/EXP-APIKEY-CYCLE-01.jsonl, V-EXP id, ledger actuals — UAT item 2)"
-    expected: "The cycle completes on the real account with zero orphans: authenticate confirmed by the (corrected) read-back, two tiny turns, resume reattaches without replay, close tears down cleanly, post-close prompt rejected"
-    why_human: "Real credentials, unlocked keyring, ledgered quota spend on the real 3.18.2 desktop — the guarded double guard makes the live path unrunnable in CI by contract; the fake tier cannot observe the real desktop's surfaces (that mismatch is exactly what attempt 1 proved)"
-human_verification:
-  - test: "END-OF-PHASE REAL RUN retry (UAT item 1, 05-UAT.md linkage preserved — currently FAIL recorded for attempt 1): FIRST land the gap-closure fixes (auth read-back surface per gap 1; CR-01 drainActiveTurn + close-with-pending-permission test per gap 2 — the disposition ledger gates the retry on CR-01), then per 05-USER-SETUP.md: export ZCODE_ACP_API_KEY from the local ZCode desktop config (never commit), confirm the keyring unlocks (path-string-hash secret-tool check, field-verified in the corrected 05-USER-SETUP.md), set ZCODE_ACP_RAW_CAPTURE outside the repo, and run ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run TestAPIKeyFullCycle ./test/realdesktop/"
-    expected: "PASS — authenticate proven by the registry read-back verdict (never the ack), one tiny tool-less turn + one file-read tool turn complete, session/resume (re-issued subscribe, no replay), session/close (clean teardown, post-close prompt rejected), staged shutdown zero orphans; runtime-headers ask answered by the wired key source (CORE-06); the mid-turn cipher ask answered from the keyring (D-06 real-tier proof)"
-    why_human: "External-service integration on a real account: real credentials, unlocked GNOME keyring, ledgered quota spend (EXP-APIKEY-CYCLE-01, D-05 minimum) — the double guard keeps CI away by design, and the real desktop's surfaces are observable only by running against it"
-  - test: "Evidence recording after the passing run (UAT item 2): node experiments/scrub-capture.mjs <raw-capture> experiments/captures/EXP-APIKEY-CYCLE-01.jsonl --redact-path <workspace>; bash experiments/scan-secrets.sh; flip the Phase-5 ledger row in experiments/README.md from PENDING to actuals (attempt-1 fail line already recorded; append the passing run's spend + verdict)"
-    expected: "Scrubbed capture lands with the V-EXP id, scan-secrets exits clean, the ledger row records the passing run's actuals (spend, never credentials)"
-    why_human: "Credential hygiene and quota accounting are human judgment acts on machine-local material; the scrub-first pipeline cannot decide by itself what the raw capture contains"
+      - "Fan the pendings in on the mine arm (05-REVIEW.md WR-06 fix: st.Machine.Cancel() + f.perm.cancelPendingForTurn() under the same identity re-check)"
+      - "Update the enshrining test: keep the slot-free-skip assertion; add a displacement-with-pending case asserting the -32021 reply for the displaced turn's bridge"
+      - "Optionally batch WR-07's session-scoped pending table (cancelPendingForSession) — it kills the stale-sweep race deterministically on all three call sites (Cancel, CloseSession, the WR-06 arm) and makes the table-ownership assumption true at fire time"
+behavior_unverified_items: []
+advisory:
+  - finding: "WR-05: resume's closing gate is TOCTOU — two reachable interleavings (close completing between resume's entry gate and re-check; Register landing in close's Get→mark gap) can still leak machine observers / register a zombie (05-REVIEW.md, delta finding; supersedes prior WR-03)"
+    category: architectural
+    reason: "Narrow race window on files untouched since the prior verification timestamp (git: 0 commits to lifecycle.go/front.go after 2026-11-21T10:05:00Z) — new-scope review finding with no failing test; recorded in the disposition ledger (open), feeds the hardening cycle"
+    evidence_status: "none provided (review-derived interleaving analysis; not reproduced by a test)"
+  - finding: "WR-07: Cancel's slot-gate snapshot can sweep a later turn's pendings after a deschedule (observe-before-cancel, front.go:436-449) — a silent wrong deny wire-indistinguishable from a client decision"
+    category: architectural
+    reason: "Requires a deschedule spanning a full turn unwind plus a next-turn ask registration — narrow race, no failing test, same class as the prior pass's WR-04 (warning, not scored); the disposition ledger carries it open with the session-scoped-table fix shape"
+    evidence_status: "none provided (review-derived interleaving analysis; not reproduced by a test)"
+  - finding: "IN-04..07 (review infos): single-shot probe before Await can miss a late-applying push; fake arms the latch after the reply write (golden flake class); realdesktop ask tap logs from conn goroutines; readbackdiag capture opener repeats the IN-02 born-OUTSIDE class"
+    category: other
+    reason: "Hardening backlog per the disposition ledger — none observed in the field-proven attempt-3 run"
+    evidence_status: "none provided"
 ---
 
 # Phase 5: Interactions & Full Chat Cycle (api-key) — Verification Report
 
 **Phase Goal:** On a real z.ai account via api-key, a client gets a complete chat cycle — streamed tool calls, permission decisions answered from the client, working session lifecycle — with the host-managed interaction responder always on.
-**Verified:** 2026-11-21T10:05:00Z
+**Verified:** 2026-11-21T21:10:00Z
 **Status:** gaps_found
-**Re-verification:** Yes — stale-verification refresh (prior report 2026-11-20T16:36:59Z, human_needed; covered evidence changed after it was written and two new evidence sources — the failed REAL RUN and today's deep review — bear directly on must-haves)
+**Re-verification:** Yes — third gap-closure round since the last gaps_found verdict (prior report stamped 2026-11-21T10:05:00Z; this pass re-verified everything first-hand on the current tree)
 
-## Why This Refresh Changed the Verdict
+## What Changed Since the Last Verdict
 
-No implementation code changed since the prior verification (git confirms the tree is byte-identical from a4e0483 through HEAD for internal/, cmd/, test/ — only docs and the scrubbed capture landed). What changed is EVIDENCE, and two prior claims do not survive it:
+Three gap-closure cycles landed (05-10, 05-11, 05-13/05-14) plus a fresh delta review (05-REVIEW.md rewritten, base af5a1ed..HEAD, 23 files):
 
-1. **SC4's real half moved from unexercised to field-FAILED.** The prior pass honestly marked it PRESENT_BEHAVIOR_UNVERIFIED. The REAL RUN (UAT attempt 1, commit d15a745) then exercised it and it failed: the authenticate read-back never confirms on the real 3.18.2 desktop → ErrRegistryNotConfirmed → zero turns. The phase goal's opening clause — "On a real z.ai account via api-key" — is observably not met today.
-2. **Truth 7's close-path half was falsified by review.** The prior pass verified the fan-in's wiring PRESENCE at lifecycle.go:135. 05-REVIEW.md CR-01 — confirmed first-hand this pass by reading `drainActiveTurn` (lifecycle.go:178-213) and its caller (:131-136) — shows the return value is inverted, so the fan-in is skipped exactly when a turn was actually cancelled on close. The prior verdict was incomplete; this pass corrects it.
+1. **Gap 1 (SC4's real-account half) is CLOSED and FIELD-PROVEN.** The read-back verdict now latches on the real desktop's true surface — the first `session/create` reply's `settings.model.available`, offered through `probeCreateReadback` (auth.go:165-167, :193-229 → `watcher.OfferCreateReply`, readback.go:79-81), never the ack. REAL RUN attempt 3 (2026-11-21, human-run per the 05-14 blocking-human checkpoint) **PASSED 49.43s** on the real 3.18.2 account: authenticate read-back proven, tiny tool-less turn + file-read tool turn (TOOL-01 frames live), resume without replay, close with post-close prompt rejected, zero orphans. UAT item 1 = pass; the ledger row flipped from PENDING to actuals (first passing run); scrubbed capture EXP-APIKEY-CYCLE-03.jsonl committed (449/449 lines scrubbed, scan-secrets exit 0).
+2. **Gap 2 (CR-01) is CLOSED with structural locks.** `drainActiveTurn` reports `sawTurn` — true on BOTH the successful-drain and deadline-elapsed arms, false only when no turn of the session was ever observed (lifecycle.go:221-260, read first-hand this pass) — and `CloseSession` fans the permission pendings in on exactly that signal (:170-175). Locked red-first by `TestCloseWithPendingPermissionCancelled` (exactly one reply, the -32021 cancelled error, stop-before-close order) and `TestCloseDeadlineArmFansPendingIn` (1ns seam). The delta review confirms: CR-01/WR-01/WR-02/WR-04 fixed; 0 critical.
+3. **One must-have remains FAILED — and it is a NEW, named gap (WR-06).** The delta review surfaced that the SDK displaced-prompt arm of Prompt's cancel fan-in resolves the turn but never fans its pending permission bridge in — the bridge rides the 300s deadline then answers deny for a cancelled turn. Deterministic, client-triggerable, and **enshrined as expected behavior by committed tests**. Truth 7's invariant is observably false on that arm (details in the truths table and Gap Summary). Per the refresh directive, this is reported unsoftened: in my judgment the WR-06 arm violates the 05-02 truth/prohibition it sits under (the review itself binds it to "TOOL-02 on that arm"), so truth 7 fails again — this time on the displacement path, with the close and cancel paths now sound.
+4. **The prior human-verification items are DISCHARGED.** 05-UAT.md records 2/2 pass (attempt 3 verdict + evidence recording with human confirmation); the guarded run's double guard re-verified this pass (no-tag → `[no test files]`; tag-without-env → honest SKIP 0.006s).
 
-Everything else the prior pass verified remains verified: every phase-critical package was re-run green under -race on this exact tree this pass.
+**Note on the prior report's stamp:** git shows the 05-10/05-11 fixes (e0b2c74..a154ff8, 07:39–08:41Z) predate the prior report's `verified:` 10:05:00Z timestamp — its "tree byte-identical from a4e0483" / "CR-01 confirmed first-hand this pass" narrative therefore describes the PRE-fix tree. This pass does not rely on that narrative: every truth below was re-verified against the current tree, with all owning packages re-run green under `-race` this pass (acpfront 26.2s, hostsvc 1.2s, interact 2.1s, zcode+fake+turn+core+acpport green, cmd 3.3s).
 
-**Status rationale.** The refresh directive said to mark human_needed if human items remain. Two must-have truths are now FAILED (field-proven auth gap; first-hand-confirmed CR-01), and the Step-9 decision tree puts gaps_found ahead of human_needed when FAILED truths exist — gaps_found is also what routes the CR-01/read-back fixes into a closure plan, which the disposition ledger requires before the UAT retry. The UAT linkage is preserved intact (05-UAT.md untouched; its items 1-2 are the human_verification section below). Both statuses block phase advancement; gaps_found additionally preserves the failing truths for `/gsd:plan-phase --gaps`.
+**Status rationale.** Step 9's decision tree puts gaps_found ahead of human_needed and passed when a must-have truth is FAILED. Truth 7's displacement-arm violation is exactly such a failure — observed and locked by the project's own test tier. Everything else the phase owns now verifies, including both prior gaps and the live full cycle. The remaining open warnings (WR-05 TOCTOU, WR-07 stale sweep — narrow races) and infos are recorded, consistent with the prior pass's treatment of race-window warnings; they do not independently fail a truth.
 
 ## Goal Achievement
 
 ### User Flow Coverage (MVP)
 
-ROADMAP marks this phase `mode: mvp`; the goal is outcome-phrased and fails the `user-story.validate` guard (same as phases 01-04 — this milestone's uniform precedent of deriving the flow table from the roadmap contract applies).
+ROADMAP marks this phase `mode: mvp`; the goal is outcome-phrased and fails the `user-story.validate` guard (`valid: false`, re-run this pass) — the milestone's uniform precedent of deriving the flow table from the roadmap contract applies.
 
 | # | Step | Expected | Evidence in Codebase | Status |
 |---|------|----------|---------------------|--------|
-| 1 | Client authenticates with a z.ai api-key (fake tier) | `authenticate{zai-api-key}` → `{}` ONLY after the registry read-back verdict; missing key → honest coded error naming `ZCODE_ACP_API_KEY`; no desktop-config fallback | TestAuthenticate 5 arms green (acpfront pkg re-run green 23.3s -race this pass); auth-apikey + runtime-headers-answer goldens replay green (zcode/fake 4.9s); auth.go chain read first-hand (prior pass + unchanged tree) | ✓ (fake tier) |
-| 2 | Client authenticates on the REAL account | Read-back confirms on real desktop 3.18.2 and turns work | **FIELD-FAILED**: UAT attempt 1 — acks received, no state.updated patch in 30 s → ErrRegistryNotConfirmed, zero turns, zero spend (05-UAT.md item 1, experiments/README.md ledger) | ✗ FAILED (gap 1) |
-| 3 | Client opens a session | `session/new{cwd}` → create+subscribe+setModel; Phase-4 contracts intact | setmodel-followup golden replay green this pass; front.go NewSession unchanged | ✓ |
-| 4 | Agent streams tool use | `tool_call`/`tool_call_update` with title, kind, status transitions, absolute-path diffs | TestToolLifecycle + backpressure + a4e0483 sites green under -race this pass; tool-lifecycle + full-cycle goldens replay green | ✓ |
-| 5 | Backend asks permission; client decides | `session/request_permission` with backend options verbatim; chosen option's response forwarded byte-verbatim; ACP-side cancel → `-32021` | TestPermission* green under -race this pass; permission-allow/cancel goldens replay green; fan-in unconditional on the Front.Cancel path (front.go:396-404 read first-hand) | ✓ (ACP-cancel path) |
-| 6 | Client resumes a session | `session/resume` reattaches: re-issued subscribe, NO setModel, NO replay | lifecycle.go:55-99 read first-hand; TestResume green this pass; session-lifecycle golden green. Open review caveats: WR-02 (client cwd dropped → relative diff paths on resumed sessions), WR-03 (resume ungated on the closing set → close-vs-resume observer-leak race) — both confirmed first-hand in code this pass | ✓ (tests) / ⚠ open WR-02, WR-03 |
-| 7 | Client closes a session | Ordered teardown; post-close prompt rejected; close-vs-prompt race one outcome | TestCloseTeardown + TestCloseWhileTurnActiveRace green under -race this pass; closing-gate read first-hand. **But the close-path permission fan-in is broken (CR-01)**: drainActiveTurn returns false after a successful drain (lifecycle.go:192), so `cancelPendingForTurn()` at :135 is skipped exactly when a turn was cancelled — pending bridge dangles to the 300 s deadline | ✗ FAILED (gap 2 — close-with-pending-permission) |
-| 8 | Full cycle composed (fake tier) | authenticate → new → prompt(tool+permission) → end_turn → resume → close, golden-locked | TestFullCycle green under -race this pass (acpfront 23.3s); full-cycle golden replay green | ✓ |
-| 9 | Full cycle live on the REAL api-key account | Same cycle on the real install; scrubbed capture + V-EXP + ledger actuals | Blocked upstream at step 2 (authenticate fails); guarded test exists and skips honestly (re-verified this pass); UAT item 2 pending | ⚠️ human (items below) |
+| 1 | Client authenticates with a z.ai api-key (fake tier) | `authenticate{zai-api-key}` → `{}` ONLY after the registry read-back verdict; missing key → honest coded error naming `ZCODE_ACP_API_KEY` | TestAuthenticate arms green (acpfront -race 26.2s this pass); branch-(c) lock `testAuthProbeCreateSurface` green — acks but NO state.updated, success ONLY via the probe create's settings.model.available, probe pair order locked on the transcript (auth_test.go:274-308) | ✓ (fake tier) |
+| 2 | Client authenticates on the REAL account | Read-back confirms on real desktop 3.18.2 and turns work | **FIELD-PROVEN**: attempt 3 PASS — authenticate read-back proven (branch-(c) surface); attempts 1-2 failures drove the fix; ledger row at actuals | ✓ (live) |
+| 3 | Client opens a session | `session/new{cwd}` → create+subscribe+setModel | setmodel-followup golden replay green (zcode/fake 7.5s this pass); attempt 3: session/new + D-03 subscribe gate + setModel zai-api/GLM-5.3-Flash ok (live) | ✓ |
+| 4 | Agent streams tool use | `tool_call`/`tool_call_update` with title, kind, status transitions, diffs | TestToolLifecycle + backpressure green under -race this pass; tool-lifecycle + full-cycle goldens green; attempt 3: file-read tool frames pending→in_progress→completed (live, TOOL-01) | ✓ |
+| 5 | Backend asks permission; client decides | `session/request_permission` with backend options; outcome forwarded; cancel → -32021 | TestPermission* green under -race this pass; permission-allow/cancel goldens green; close-path fan-in now locked (CR-01 fix). Open arm: the SDK displaced-prompt path dangles the bridge (WR-06 — truth 7's gap) | ✓ (on its stated paths) / ✗ displacement arm |
+| 6 | Client resumes a session | `session/resume` reattaches: re-issued subscribe, NO setModel, NO replay; cwd recorded | TestResume + TestResumeRecordsCwd green this pass (WR-02 fixed: cwd seam end-to-end); attempt 3: resume reattached, no replay (live). Open race caveat: WR-05 TOCTOU (narrow, recorded) | ✓ |
+| 7 | Client closes a session | Ordered teardown; post-close prompt rejected; close-with-pending-permission fans the bridge in (-32021) | TestCloseTeardown + TestCloseWhileTurnActiveRace + **TestCloseWithPendingPermissionCancelled** + **TestCloseDeadlineArmFansPendingIn** green under -race this pass (CR-01 fixed); attempt 3: close clean, post-close prompt rejected, zero orphans (live) | ✓ |
+| 8 | Full cycle composed (fake tier) | authenticate → new → prompt(tool+permission) → end_turn → resume → close, golden-locked | TestFullCycle green under -race this pass; full-cycle + lingering-latch-32010 goldens replay green (the new fake latch models the desktop's one-turn-at-a-time refusal honestly) | ✓ |
+| 9 | Full cycle live on the REAL api-key account | Same cycle on the real install; scrubbed capture + ledger actuals | **FIELD-PROVEN**: attempt 3 PASS 49.43s — full cycle through the drained test; EXP-APIKEY-CYCLE-03.jsonl committed scrubbed; ledger at actuals; the desktop's true completion surfaces (turn-completed / prompt_completed ~16.5s after our end_turn) recorded as future-work data, cycle proven regardless | ✓ (live) |
 
 ### Observable Truths
 
-Merged from ROADMAP SC1-SC5 (contract) + the nine PLAN frontmatter must_haves (clusters T6-T13), same structure as the prior pass. Score: 10/13 — two FAILED (SC4 real half; truth 7's close-path half), one PRESENT_BEHAVIOR_UNVERIFIED (SC5 live half).
+Same 13-truth set as the prior pass (ROADMAP SC1-SC5 contract + nine PLAN frontmatter clusters). Score: **12/13** — both prior FAILED truths and the prior behavior-unverified truth now verify; truth 7 fails on the newly-surfaced WR-06 displacement arm.
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | SC1: every server→host `interaction/*` answered promptly — dedupe, per-method deadlines, unknown → -32601, never a crash | ✓ VERIFIED | interact pkg green under -race this pass (2.05s): TestResponderContract (unknown→-32601 naming the method; deadlines; adjacency/empty probes), TestResponderDedupeRace; reannounce-dedupe + unknown-host-method + user-input-decline goldens replay through a real Conn (zcode/fake 4.9s green); production wiring `conn.OnRequest = responder.Serve` before traffic (main.go:252, re-grepped this pass) |
-| 2 | SC2: tool use streams as tool_call/tool_call_update with title, kind, status transitions, file diffs | ✓ VERIFIED | acpfront pkg green under -race this pass (23.3s incl. TestToolLifecycle, TestStreamBackpressure, TestStreamBeforeStopReason); tool-lifecycle + full-cycle goldens replay green; stream.go unchanged since prior first-hand read |
-| 3 | SC3: backend permission ask reaches the client with allow/reject options; chosen outcome forwarded; ACP-side cancel resolves pending as cancelled | ✓ VERIFIED | TestPermissionBridge/Cancel/CancelRace/Expiry green under -race this pass; permission-allow golden byte-verbatim + permission-cancel -32021 replay green; the ACP-cancel fan-in is unconditional in Front.Cancel (front.go:396-404, read first-hand this pass). Scope note: SC3's cancel path is Front.Cancel — the CLOSE path fan-in is truth 7's failure, not this truth's claim |
-| 4 | SC4: `authenticate{zai-api-key}` on a REAL account enables working turns, success verified by registry read-back, never the ack | ✗ FAILED | Fake-tier machinery verified (TestAuthenticate ack-negative arm, hostsvc green 1.2s -race this pass). Real-account half FIELD-FAILED: UAT attempt 1 (d15a745) — updateAccountConfig acked {status:received, providerCount:0}, refreshRegistry acked {refreshed:true}, desktop applied runtime headers in its own loop, but no state.updated patch / create-reply surface within 30 s → ErrRegistryNotConfirmed → zero turns, zero spend. The fake oracle's read-back surface does not exist on the real 3.18.2 wire (gap 1) |
-| 5 | SC5: resume reattaches without replay, close cleans up; the full cycle runs end-to-end on api-key | ⚠️ PRESENT_BEHAVIOR_UNVERIFIED | Fake-tier cycle fully proven this pass (TestFullCycle green under -race; session-lifecycle golden; TestResume/TestCloseTeardown/TestCloseWhileTurnActiveRace green). Live half unexercised — blocked upstream at authenticate by truth 4's field failure; the guarded run is the pending human act. Review adds open resume/close-path caveats (WR-02 cwd drop, WR-03 closing-gate absence — both confirmed first-hand) that the live run will also exercise |
-| 6 | 05-01: per-method deadlines (15 s runtime-prefs, 300 s permission → deny, runtime-headers coded error until key); user-input → {action:decline}; bypass lane; RouterEvent expiry records | ✓ VERIFIED | Responder policy table unchanged; interact green -race this pass; user-input-decline + runtime-preferences goldens replay green; structural-log locks green |
-| 7 | 05-02: deny-by-default (unknown/missing optionId, malformed outcome, expiry → deny or -32021, NEVER allow); no bridge outlives its turn (cancel fan-in) | ✗ FAILED (partial) | Deny-by-default half verified (denyAnswer/cancelledWireError paths, TestPermissionExpiry/CancelRace green this pass). The no-dangling-bridge invariant HOLDS on the Front.Cancel path (unconditional fan-in, test-locked) but is BROKEN on the CloseSession path: drainActiveTurn's inverted return (lifecycle.go:192 vs contract at :173-175) skips `cancelPendingForTurn()` (:135) exactly when a turn was cancelled; no close-with-pending-permission test exists. Matches 05-REVIEW CR-01, disposition open, gates the REAL RUN retry (gap 2) |
-| 8 | 05-03/05-05: router fan-out (WR-01), observer removes (WR-07), registry Remove consumer, WR-04 error-path orphan close, close-vs-prompt race gate (T-5-12) | ✓ VERIFIED | machine.go fan-out registration + CloseObservers consumed at lifecycle.go:88-89,159; registry Remove :158; closing-gate gates Prompt (front.go:318) and acquireTurn (turnctx.go:384); all packages green this pass; newsession-orphan-close golden green. Scope note: the claimed close-vs-PROMPT race gate holds; the close-vs-RESUME gap is review WR-03 (open warning, unproven by test either way) — recorded, not scored here |
-| 9 | 05-04 + a4e0483: WR-03 pump (non-blocking enqueue, keep-latest coalescing, byte ceiling fail-loud, flush-before-stopReason; a4e0483 fix sites locked) | ✓ VERIFIED | All locked tests green in the acpfront -race run this pass (TestStreamBackpressure 3 legs; TestStreamBeforeStopReason; full-cycle golden started-card-before-ask) |
-| 10 | 05-06: strict snapshot envelope with EXACT-revision formula REUSED from supervisor.BuiltinRevision; read-back never the ack; runtime-headers success shape only from the injected key | ✓ VERIFIED | hostsvc green -race this pass (1.2s) incl. the ack-mismatch negative; snapshot.go:135 reuse + :258 handler unchanged; runtime-headers-answer golden green. The FIELD gap is the surface the read-back waits on (truth 4 / gap 1) — the machinery itself behaved exactly as this truth specifies, at both tiers (on the real wire it honestly errored instead of trusting the ack) |
-| 11 | 05-07: honest authenticate chain (record→push→refresh→read-back→{}), no-key coded error naming the env var, interruptible clean retry, CredentialDecrypt seam, hygiene locks, binary wires the stack before traffic | ✓ VERIFIED | acpfront + interact + cmd all green under -race this pass; wiring re-grepped (main.go:246-252, :294); hygiene held IN THE FIELD: the failed real run errored loud (ErrRegistryNotConfirmed) instead of fabricating success, and scan-secrets exits 0 on the tree incl. the new scrubbed capture (re-run this pass) |
-| 12 | 05-08: fake-tier FULL cycle — one continuous composition, golden-locked, nothing hangs/drops/fabricates | ✓ VERIFIED | TestFullCycle green under -race this pass (within the 23.3s acpfront run); full-cycle golden replay green (zcode/fake 4.9s) |
-| 13 | 05-09: guarded real-tier test (double guard; skips ~2 ms; default suite untouched); quota ledger row exists before any run; no credential material in repo | ✓ VERIFIED | Re-ran both guard checks this pass: no-tag build → `[no test files]` (file excluded); `-tags realdesktop` without env → honest SKIP in 0.00s. Ledger row now honestly records attempt-1 failure (experiments/README.md, commit d15a745) and stays PENDING for the passing run; scrubbed capture (10 lines) present with zero key-pattern matches; scan-secrets exit 0 this pass |
+| 1 | SC1: every server→host `interaction/*` answered promptly — dedupe, per-method deadlines, unknown → -32601, never a crash | ✓ VERIFIED | interact pkg green -race this pass (2.05s); reannounce-dedupe + unknown-host-method + user-input-decline goldens replay green (zcode/fake 7.5s); production wiring `conn.OnRequest = responder.Serve` before traffic (main.go:252, re-grepped this pass); WR-01's join-silence now structural (conn replyRequest drops nil-nil answers) |
+| 2 | SC2: tool use streams as tool_call/tool_call_update with title, kind, status transitions, file diffs | ✓ VERIFIED | acpfront green -race this pass (26.2s incl. TestToolLifecycle, TestStreamBackpressure, TestStreamBeforeStopReason); goldens green; TOOL-01 frames observed live in attempt 3 |
+| 3 | SC3: backend permission ask reaches the client with allow/reject options; chosen outcome forwarded; ACP-side cancel resolves pending as cancelled | ✓ VERIFIED | TestPermissionBridge/Cancel/CancelRace/Expiry green under -race this pass; permission-allow byte-verbatim + permission-cancel -32021 goldens green. Scope note: SC3's stated paths (bridge + ACP-cancel) hold; the SDK-displacement dangling is truth 7's failure, not this truth's claim |
+| 4 | SC4: `authenticate{zai-api-key}` on a REAL account enables working turns, success verified by registry read-back, never the ack | ✓ VERIFIED (field-proven) | Machinery: probe-create arm read first-hand (auth.go:165-167, :193-229) — verdict remains `watcher.Await`; the probe is evidence, never the verdict; write-once latch (readback.go:146-148); ack-mismatch negative still green (hostsvc 1.2s -race). Field: attempt 3 PASS on the real account — read-back proven, turns ran (UAT item 1 pass, ledger actuals, EXP-APIKEY-CYCLE-03 committed scrubbed, scan-secrets 0) |
+| 5 | SC5: resume reattaches without replay, close cleans up; the full cycle runs end-to-end on api-key | ✓ VERIFIED (field-proven live half) | Fake tier: TestFullCycle/TestResume/TestCloseTeardown green under -race; session-lifecycle golden green. Live half: attempt 3 — resume same session no replay, close clean + post-close prompt rejected, staged shutdown zero orphans (kill(-pgid,0) ESRCH). The prior PRESENT_BEHAVIOR_UNVERIFIED flag is discharged by the recorded field run |
+| 6 | 05-01: per-method deadlines (15 s runtime-prefs, 300 s permission → deny, runtime-headers coded error until key); user-input → {action:decline}; bypass lane; RouterEvent expiry records | ✓ VERIFIED | Responder policy table unchanged; interact green -race this pass; user-input-decline + runtime-preferences goldens green; runtime-headers answered from the wired key source live in attempt 3 |
+| 7 | 05-02: deny-by-default (unknown/missing optionId, malformed outcome, expiry → deny or -32021, NEVER allow); no bridge outlives its turn (cancel fan-in) | ✗ FAILED (partial) | Deny-by-default half verified (denyAnswer/cancelledWireError paths, TestPermissionExpiry/CancelRace green this pass). No-dangling invariant now holds on the close path (CR-01 fixed: sawTurn + two wire-locked tests, first-hand read + green -race) and the ACP-cancel path (slot-gated, TestCancelFanInOnlyWhenSlotHeld locks the gate) — but is VIOLATED on the SDK displaced-prompt arm (front.go:362-368, machine.Cancel without the pendings fan-in): the bridge dangles to the 300s deadline then answers deny for a cancelled turn; the enshrining tests assert the dangling artifact as expected (WR-06, 05-REVIEW.md :85-99) |
+| 8 | 05-03/05-05: router fan-out (WR-01), observer removes (WR-07), registry Remove consumer, WR-04 error-path orphan close, close-vs-prompt race gate (T-5-12) | ✓ VERIFIED | machine.go fan-out + CloseObservers consumed at lifecycle.go:88-89,118-120,159,198; registry Remove :197; closing gate gates Prompt (front.go:334) and acquireTurn; all packages green this pass; newsession-orphan-close golden green. The claimed close-vs-PROMPT gate holds; the close-vs-RESUME TOCTOU is WR-05 (advisory, recorded — not scored here) |
+| 9 | 05-04 + a4e0483: WR-03 pump (non-blocking enqueue, keep-latest coalescing, byte ceiling fail-loud, flush-before-stopReason; a4e0483 fix sites locked) | ✓ VERIFIED | All locked tests green in the acpfront -race run this pass; WR-04's pump-identity re-check sound per delta review (release nils the slot under the same lock) |
+| 10 | 05-06: strict snapshot envelope with EXACT-revision formula REUSED from supervisor; read-back never the ack; runtime-headers success shape only from the injected key | ✓ VERIFIED | hostsvc green -race this pass incl. the ack-mismatch negative; snapshot reuse intact (snapshot.go:121 readBuiltinRevision / supervisor.BuiltinRevision formula); the machinery's honesty held through all three field attempts (errord loud, never trusted the ack); the 05-11 correction made the surface field-true |
+| 11 | 05-07: honest authenticate chain (record→push→refresh→read-back→{}), no-key coded error naming the env var, interruptible clean retry, CredentialDecrypt seam, hygiene locks, binary wires the stack before traffic | ✓ VERIFIED | acpfront + interact + cmd green under -race this pass; wiring re-grepped (main.go:246-252, :294); hygiene held IN THE FIELD across three runs (every failure errored loud; cipher asks answered from the keyring live, value_len=815); scan-secrets exit 0 on the tree incl. all three scrubbed captures (re-run this pass) |
+| 12 | 05-08: fake-tier FULL cycle — one continuous composition, golden-locked, nothing hangs/drops/fabricates | ✓ VERIFIED | TestFullCycle green under -race this pass; full-cycle golden green; the 05-13 fake latch addition is test-double-side only (zero production-contract change — git: no commits to acpfront/hostsvc/interact/acpport/turn/cmd since the prior stamp) and its lingering-latch-32010 row replays green |
+| 13 | 05-09: guarded real-tier test (double guard; skips honestly; default suite untouched); quota ledger; no credential material in repo | ✓ VERIFIED | Guards re-run this pass: no-tag → `[no test files]` exit 0; tag-without-env → honest SKIP 0.006s. Ledger row at ACTUALS on the passing run (experiments/README.md:195); EXP-APIKEY-CYCLE-03.jsonl committed (449 lines, scrub markers present, zero credential shapes — my independent pattern scan hit only the public builtin-revision hash and databaseId hex, and scan-secrets exits 0); captureID discipline preserved (-01/-02 byte-intact) |
 
-**Score:** 10/13 truths verified (1 present, behavior-unverified — SC5's live half; 2 FAILED — SC4's real half and truth 7's close-path half)
+**Score:** 12/13 truths verified (0 present-behavior-unverified — both field truths now carry recorded live evidence; 1 FAILED partial — truth 7's displacement arm)
 
-**Prohibitions (21 across all plans):** 20 hold — re-confirmed where re-runnable this pass (deny paths test-locked; goldens byte-lock traceability; auth success only on read-back — the field run PROVED this discipline by failing loud; double guard re-run; scan-secrets 0; no debt markers re-grepped). **1 FLAGGED:** 05-02's "MUST NOT let a permission bridge outlive its turn" is violated on the close-with-active-turn path (CR-01, gap 2). `unverified_prohibitions: 1`.
+**Prohibitions (21 across all plans):** 20 hold — re-confirmed where re-runnable this pass (deny paths test-locked; goldens byte-lock traceability; auth success only on read-back — held through three field runs; double guard re-run; scan-secrets 0 incl. three captures; zero debt markers re-grepped across the phase's files). **1 FLAGGED:** 05-02's "MUST NOT let a permission bridge outlive its turn" is violated on the SDK displaced-prompt arm (WR-06) — and unlike a merely-unverified prohibition, this one is OBSERVED-violated by the project's own committed test, which locks the dangling artifact as expected. `unverified_prohibitions: 1`.
 
 ### Required Artifacts
 
-The implementation tree is byte-identical to the prior pass (git: zero non-doc diffs a4e0483..HEAD across internal/, cmd/, test/), and the prior pass verified all 27 plan-declared artifact paths first-hand (the `verify.artifacts` verb's 0/0 on inline-format plan artifacts is a vacuous parse, not a negative verdict). No artifact regressed; the substantive first-hand evidence carries over and the owning packages re-ran green this pass. New/changed evidence artifacts:
+All 27 previously-verified artifact paths carry over (the 05-10/05-11 fixes touched lifecycle.go, front.go, auth.go, readback.go, conn.go, responder.go, agent.go + their tests — all re-verified this pass, all owning packages green under -race). New/changed artifacts:
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| internal/acpfront/lifecycle.go | resume/close contracts | ✗ DEFECT (CR-01) | Teardown order correct; drainActiveTurn return semantics inverted (:178-213 vs contract :173-175; caller :131-136) — gap 2 |
-| internal/acpport/agent.go | resume delegate | ⚠ open WR-02 | ResumeSession forwards only the session id (:375-384); `params.Cwd` dropped → no `cwds` entry on resume → relative diff paths (Pitfall-5 shape on the resume path) |
-| experiments/README.md | quota ledger | ✓ VERIFIED | Row honestly records attempt-1 failure with actuals (zero spend) and stays PENDING for the passing run — commit d15a745 |
-| experiments/captures/EXP-APIKEY-CYCLE-01.jsonl | scrubbed capture | ✓ VERIFIED | 10 lines; zero key-pattern matches; scan-secrets clean (re-run this pass) |
-| 05-USER-SETUP.md | human run instructions | ✓ VERIFIED | Keyring check corrected to the field-verified path-string-hash form (commit eac7365) |
-| 05-REVIEW.md + 05-REVIEW-DISPOSITION.md | deep review + ledger | ✓ VERIFIED | 8 findings (1C/4W/3I), all open, CR-01 gating the retry — both re-read this pass; CR-01/WR-02/WR-03/WR-04 confirmed first-hand in code |
+| internal/acpfront/lifecycle.go | sawTurn drain semantics + close fan-in | ✓ VERIFIED (fix) | CR-01 fixed: sawTurn true on both arms, false only on idle close (:221-260); fan-in fires on the signal (:170-175); second drain re-check unchanged; order intact. First-hand read this pass; green under -race |
+| internal/acpfront/lifecycle_test.go | close-with-pending-permission locks | ✓ VERIFIED | TestCloseWithPendingPermissionCancelled (:584) — exactly ONE reply on the pending reverse, the -32021 cancelled error, stop-before-close order; TestCloseDeadlineArmFansPendingIn (:686) — the deadline arm fans in via the WithCloseTurnWait 1ns seam. Both green under -race |
+| internal/hostsvc/readback.go | field-verified read-back surface | ✓ VERIFIED (fix) | OfferCreateReply (:79-81) + registryModels digs settings.model.available[].ref (:216-253) alongside patch.providers; write-once latch; notConfirmed's coded negative names the field-verified surface and EXP-READBACK-DIAG-01 (:173-180). First-hand read this pass |
+| internal/acpfront/auth.go | probe-create read-back arm | ✓ VERIFIED (fix) | WatchRegistry BEFORE traffic (:142), Applied() gates probe necessity only (:165-167), OfferCreateReply BEFORE the id dig (:214-216), best-effort probe close, every failure structurally logged and skips its step; verdict stays Await (:173). First-hand read this pass |
+| internal/acpfront/auth_test.go | branch-(c) corrected-surface lock | ✓ VERIFIED | testAuthProbeCreateSurface (:274-308): fake acks but emits NO state.updated (the field-verified real-desktop shape) — authenticate succeeds ONLY via the probe create's settings.model.available; exactly-one probe pair, refresh→create→close order locked on the transcript. Red-first proven (f308edf RED → a154ff8 GREEN) |
+| internal/acpfront/front.go | WR-04 fan-in identity re-check + Cancel slot gate | ✓ VERIFIED (with WR-06 open) | The re-check (:362-368) cannot cancel a later turn (TestCancelFanInStaleArmSkips locks containment); Cancel's slot gate (:439-447) locks the slot-free skip. OPEN: the mine arm still omits the pendings fan-in (WR-06 — gap 3) |
+| internal/acpfront/cancel_test.go | slot-gate + (problematically) the dangling artifact | ✗ ENSHRINES GAP 3 | TestCancelFanInOnlyWhenSlotHeld (:382-463) locks the correct slot-free skip AND asserts assertDanglingAskNote (:491-503) — the displaced turn's ask riding to its deadline unanswered — as the expected wire artifact |
+| internal/zcode/fake/fake.go + scenario.go | fake engine turn latch (05-13) | ✓ VERIFIED | Test-double-side only; latch schema validated fail-loud; lingering-latch-32010 corpus row + golden replay green (zcode/fake 7.5s this pass); zero production-contract change (git-verified) |
+| test/realdesktop/apicycle_test.go | guarded cycle + latch drain (05-13) | ✓ VERIFIED | Double guard intact (:183-189); ask-tap settle + bounded invalid-request-only retry (8 attempts/120s, errors.As on code, never message text); exhaustion returns the loud hypothesis-(b) sentinel; stage assertions mirror the attempt-3 PASS exactly (:241-268) |
+| experiments/captures/EXP-APIKEY-CYCLE-03.jsonl | scrubbed attempt-3 capture | ✓ VERIFIED | 449/449 lines; 427 scrub markers (<uuid-N>, [REDACTED-CREDENTIAL], <path>); header carries builtinRevision + capture id; zero credential shapes (independent pattern scan hit only the public revision hash/databaseId); scan-secrets exit 0 |
+| experiments/README.md | quota ledger at actuals | ✓ VERIFIED | Row :195 flipped PENDING → PASSED with attempt-3 actuals (D-05 minimum spend) + verdict line; attempts 1-2 records intact beneath |
+| 05-REVIEW.md + 05-REVIEW-DISPOSITION.md | rewritten delta review + ledger | ✓ VERIFIED | Delta (af5a1ed..HEAD, 23 files): 0C/3W/4I; CR-01/WR-01/02/04 fixed with locks (first-hand-verified per the review's own -race/golden/secret runs + my re-runs); WR-03 superseded by WR-05; WR-06/WR-07 + IN-04..07 open — both re-read this pass and spot-verified against the code |
 
 ### Key Link Verification
 
-The `verify.key-links` verb's filename-literal matcher yields structural false negatives on Go sources (prior pass diagnosed: it greps for the target file path string inside the source, which Go's package-import model never contains). All 25 declared links were verified first-hand in the prior pass on this identical tree; the load-bearing production wiring was re-grepped this pass:
+The filename-literal matcher limitation on Go sources stands (prior pass diagnosis). The load-bearing links were re-grepped/re-read first-hand this pass; the tree's previously-verified links carry over for files untouched since their verifying pass (git: zero commits to acpfront/hostsvc/interact/acpport/turn/cmd core files after the prior stamp — only fake.go/apicycle_test.go/testdata changed, in the 05-13 test-tier latch work):
 
 | From | To | Via | Status | Details |
 |------|----|----|--------|---------|
-| internal/interact/responder.go | internal/zcode/conn.go | OnRequest seam | WIRED | main.go:252 `conn.OnRequest = responder.Serve` before traffic (re-grepped this pass) |
-| cmd/zcode-acp/main.go | internal/interact (forwarder/keys/cipher) | constructor seams | WIRED | main.go:246-248 WithPermissionForwarder / WithRuntimeHeadersKeySource / WithCredentialDecrypt; :294 NewStaticKey (re-grepped this pass) |
-| internal/acpfront/front.go | internal/acpfront/permission.go | cancel fan-in | WIRED but GATED-WRONG on close | front.go:403 unconditional (correct); lifecycle.go:135 gated behind the inverted drainActiveTurn return (gap 2) |
-| all other 22 declared links | — | — | WIRED (carried) | Tree identical to the pass that verified them first-hand; owning packages green this pass |
+| cmd/zcode-acp/main.go | internal/interact (forwarder/keys/cipher) | constructor seams | WIRED | main.go:246-248 WithPermissionForwarder/WithRuntimeHeadersKeySource/WithCredentialDecrypt; :294 NewStaticKey; :252 conn.OnRequest = responder.Serve (re-grepped this pass) |
+| internal/acpfront/auth.go | internal/hostsvc/readback.go | probe-create surface | WIRED | WatchRegistry :142 → Applied() gate :165 → OfferCreateReply :216 → Await verdict :173 (read first-hand) |
+| internal/acpfront/lifecycle.go | internal/acpfront/permission.go | close fan-in | WIRED (fixed) | lifecycle.go:170-174 — gated on sawTurn (the CR-01 fix); both lock tests green |
+| internal/acpfront/front.go | internal/acpfront/permission.go | cancel fan-in | WIRED, one arm INCOMPLETE | Front.Cancel :445-447 wired + slot-gated; the Prompt mine arm :366-368 cancels the machine only (WR-06 — gap 3) |
+| all other declared links | — | — | WIRED (carried) | Owning packages re-ran green under -race this pass |
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 |----------|--------------|--------|--------------------|--------|
-| permission bridge | client outcome | ACP client selection | forwarded byte-verbatim (golden) | ✓ FLOWING |
-| tool stream | tool frames | backend tool.updated envelopes | golden-locked traceability | ✓ FLOWING |
-| authenticate verdict | registry surfaces | state.updated / create-reply via conn observer | fake tier ✓; real 3.18.2 desktop never emits the awaited surface → verdict never confirms | ✗ DISCONNECTED (real tier — gap 1) |
-| runtime-headers reply | apiKey material | injected KeySource | success shape only with key | ✓ FLOWING |
-| full-cycle frames | whole-cycle wire | scripted corpus row | golden-locked | ✓ FLOWING (fake tier) |
-| resumed-session diffs | cwd resolution | `cwds` map | resume never records cwd → resolution degrades to relative paths | ⚠ (WR-02) |
+| authenticate verdict | registry surfaces | state.updated patches OR probe create-reply's settings.model.available | field-proven on the real desktop (attempt 3) | ✓ FLOWING (both tiers) |
+| permission bridge | client outcome | ACP client selection | forwarded byte-verbatim (golden); live cipher/allow decisions in attempt 3 | ✓ FLOWING |
+| displaced turn's bridge | client outcome | none — the mine arm never fans in | dangles to the 300s deadline, deny framed for a cancelled turn | ✗ DISCONNECTED on that arm (gap 3) |
+| tool stream | tool frames | backend tool lifecycle events | golden-locked; live frames observed (call_3692… completed) | ✓ FLOWING |
+| full-cycle frames | whole-cycle wire | scripted corpus row (fake) / real desktop (live) | golden-locked + field-proven | ✓ FLOWING |
+| runtime-headers reply | apiKey material | injected KeySource | success shape only with key; live-answered in attempt 3 | ✓ FLOWING |
+| resumed-session diffs | cwd resolution | `cwds` map | WR-02 fixed: resume records the client cwd (TestResumeRecordsCwd green; zero-wire-frame parity arm) | ✓ FLOWING |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| CORE-06 + 05-02 bridge machinery (SC1/SC3 fake tier) | `go test ./internal/interact/ -race -count=1` | ok 2.048s | ✓ PASS |
-| AUTH-01 machinery (snapshot/read-back/runtime-headers) | `go test ./internal/hostsvc/ -race -count=1` | ok 1.226s | ✓ PASS |
-| Front machinery: tool/permission/auth/lifecycle/full-cycle (SC2/SC3/SC4/SC5 fake tier) | `go test ./internal/acpfront/ -race -count=1` | ok 23.343s | ✓ PASS |
-| Corpus rows + goldens through real Conn | `go test ./internal/zcode/... ./internal/turn/ ./internal/core/ -count=1` | all ok (fake 4.922s) | ✓ PASS |
-| Binary E2E incl. wired responder | `go test ./cmd/zcode-acp/ -race -count=1` | ok 3.112s | ✓ PASS |
+| CORE-06 + 05-02 bridge machinery (SC1/SC3 fake tier) | `go test ./internal/interact/ -race -count=1` | ok 2.053s | ✓ PASS |
+| AUTH-01 machinery incl. probe-create surface | `go test ./internal/hostsvc/ -race -count=1` | ok 1.215s | ✓ PASS |
+| Front machinery: tool/permission/auth/lifecycle/full-cycle + CR-01 locks + WR-04/06 tests (SC2-SC5 fake tier) | `go test ./internal/acpfront/ -race -count=1` | ok 26.150s | ✓ PASS |
+| Corpus rows + goldens through real Conn (incl. lingering-latch-32010) | `go test ./internal/zcode/... ./internal/turn/ ./internal/core/ ./internal/acpport/ -count=1` | all ok (fake 7.537s) | ✓ PASS |
+| Binary E2E incl. wired responder | `go test ./cmd/zcode-acp/ -race -count=1` | ok 3.300s | ✓ PASS |
 | Guarded real-tier test: default build exclusion | `go test ./test/realdesktop/ -count=1` | `[no test files]` exit 0 | ✓ PASS |
-| Guarded real-tier test: tag without env | `go test -tags realdesktop ./test/realdesktop/ -count=1 -run TestAPIKeyFullCycle -v` | SKIP 0.00s, honest manual-only message | ✓ PASS (honest skip) |
-| Credential hygiene on the current tree (incl. new capture) | `bash experiments/scan-secrets.sh` | exit 0; capture has zero key-pattern lines | ✓ PASS |
-| CR-01 first-hand code verification | read lifecycle.go:103-213 + front.go:396-404 | inverted return confirmed; fan-in skipped on successful drain; Front.Cancel unconditional | ✗ CONFIRMED DEFECT |
-| Close-with-pending-permission test coverage | grep lifecycle_test.go | zero permission-reverse close tests | ✗ COVERAGE HOLE |
-| Live run on the real account | guarded command | NOT re-run — attempt 1 failed (d15a745); retry gated on gaps 1-2 | ? → human item 1 |
+| Guarded real-tier test: tag without env | `go test -tags realdesktop ./test/realdesktop/ -count=1 -run TestAPIKeyFullCycle` | ok 0.006s — honest skip | ✓ PASS (honest skip) |
+| Credential hygiene on the current tree (three captures) | `bash experiments/scan-secrets.sh` | exit 0 | ✓ PASS |
+| CR-01 fix first-hand verification | read lifecycle.go:140-260 + front.go Cancel | sawTurn semantics correct on all arms; fan-in fires on both | ✓ PASS |
+| CR-01 lock tests exist and exercise the invariant | enumerate + green -race run | TestCloseWithPendingPermissionCancelled + TestCloseDeadlineArmFansPendingIn present, green | ✓ PASS |
+| WR-06 first-hand verification | read front.go:355-371 + cancel_test.go:382-503 | mine arm cancels machine only; committed test asserts the dangling ask as expected | ✗ CONFIRMED DEFECT (gap 3) |
+| Read-back surface lock red-first provenance | git f308edf (RED) → a154ff8 (GREEN) | red-first chain intact | ✓ PASS |
+| Live run on the real account | guarded command, human-run per the 05-14 checkpoint | attempt 3 PASS 49.43s — recorded in 05-UAT.md + ledger + scrubbed capture (NOT re-run this pass; the guarded run is contractually manual-only) | ✓ PASS (recorded field evidence, discharged human item) |
 
 ### Probe Execution
 
@@ -296,56 +304,62 @@ No probe scripts declared or conventional (`scripts/*/tests/probe-*.sh` absent).
 
 | Requirement | Source Plan(s) | Description | Status | Evidence |
 |-------------|---------------|-------------|--------|----------|
-| AUTH-01 | 05-06, 05-07, 05-09 | api-key path: updateAccountConfig + requestProviderRuntimeHeaders answered correctly (registry state verified, not the ack) | ✗ BLOCKED (real tier) | Machinery satisfied at fake tier; the field run proves the read-back verdict cannot confirm on real desktop 3.18.2 → api-key does not yet enable working turns. NOTE: REQUIREMENTS.md marks AUTH-01 "[x] Complete" — that checkbox predates the field evidence and should be reverted by the closure work |
-| CORE-06 | 05-01, 05-02, 05-08, 05-09 | Host-managed interaction responder always on | ✓ SATISFIED | responder green -race + goldens + wired before traffic (main.go:252); held in the field (the wrapper answered/stayed honest through the failed run's window) |
-| SESS-01 | 05-03, 05-05, 05-08, 05-09 | resume (no replay) and close (child-side cleanup) | ✓ SATISFIED (tests) — open WR-02/WR-03 on the resume path | lifecycle contracts + tests green this pass; live confirmation rides UAT item 1 |
-| TOOL-01 | 05-04, 05-08, 05-09 | tool_call/tool_call_update streamed | ✓ SATISFIED | stream tap + pump; all locks green this pass |
-| TOOL-02 | 05-02, 05-08, 05-09 | permission bridged; cancelled outcome on ACP-side cancel | ✓ SATISFIED (ACP-cancel path) | TestPermission* green; goldens green. The close-path fan-in defect (CR-01) is tracked under the 05-02 plan prohibition / truth 7, not the requirement's stated behavior |
+| AUTH-01 | 05-06, 05-07, 05-09 (+05-10/05-11 gap plans) | api-key path: updateAccountConfig + requestProviderRuntimeHeaders answered correctly (registry state verified, not the ack) | ✓ SATISFIED (field-proven) | Machinery + corrected surface + REAL RUN attempt 3 PASS: authenticate read-back proven, turns ran, runtime-headers answered from the wired key source. REQUIREMENTS.md keeps AUTH-01 `[ ]` and Phase-5 traceability at "Gaps Found" — restoring those is the ORCHESTRATOR's post-verification act on this verdict (not this report's edit). Honest caveat: with this verdict gaps_found on truth 7, the requirement's own stated behavior is met; the traceability flip decision rests with the orchestrator |
+| CORE-06 | 05-01, 05-02, 05-08, 05-09 | Host-managed interaction responder always on | ✓ SATISFIED | responder green -race + goldens + wired before traffic; held live through attempt 3 (cipher asks answered from the keyring, runtime-headers answered) |
+| SESS-01 | 05-03, 05-05, 05-08, 05-09 | resume (no replay) and close (child-side cleanup) | ✓ SATISFIED | Both live-proven in attempt 3 + test-locked; WR-02 (resume cwd) fixed and locked; WR-05 TOCTOU narrow race recorded (advisory) |
+| TOOL-01 | 05-04, 05-08, 05-09 | tool_call/tool_call_update streamed | ✓ SATISFIED | Stream tap + pump locked green; tool frames observed live in attempt 3 (pending→in_progress→completed) |
+| TOOL-02 | 05-02, 05-08, 05-09 | permission bridged; cancelled outcome on ACP-side cancel | ✓ SATISFIED (stated behavior) — WR-06 caveat recorded | The requirement's stated behavior holds and is test-locked (bridge both directions; ACP-side cancel → -32021, now including the close path). The delta review binds WR-06's displacement arm to "TOOL-02 on that arm" — that arm's violation is carried by truth 7 / the 05-02 prohibition (same routing as the prior pass used for CR-01), not by the requirement's stated cancel path |
 
-Orphaned requirements: none — REQUIREMENTS.md maps exactly AUTH-01, CORE-06, SESS-01, TOOL-01, TOOL-02 to Phase 5, and every ID appears in plan frontmatter (05-09 carries all five; frontmatter and REQUIREMENTS.md agree — no divergence).
+Orphaned requirements: none — REQUIREMENTS.md maps exactly AUTH-01, CORE-06, SESS-01, TOOL-01, TOOL-02 to Phase 5, and every ID appears in plan frontmatter (re-extracted from all 14 plans this pass: AUTH-01 ×7, CORE-06 ×7, SESS-01 ×7, TOOL-01 ×5, TOOL-02 ×5; no divergence).
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |------|------|---------|----------|--------|
-| internal/acpfront/lifecycle.go | 178-213 (caller 131-136) | CR-01: drainActiveTurn inverted return → close skips permission fan-in on the path it exists for; no covering test | 🛑 Blocker | Pending permission bridge dangles to the 300 s deadline on close-with-active-turn, then denies at a closed backend session — the exact dangling-pending shape the fan-in exists to prevent (gap 2) |
-| internal/interact/responder.go | 225-249 | WR-01: parked dedupe-join arm can frame a bare id-echo reply in the cancelBase→rw.Close window, contradicting the never-send invariant | ⚠ Warning (open) | Nondeterministic payload-less frame at conn close with pending joins |
-| internal/acpport/agent.go + lifecycle.go | 375-384 / 55-99 | WR-02: resume drops the client cwd → relative diff/location paths on resumed sessions (Pitfall 5 on the resume path) | ⚠ Warning (open) | Broken tool cards on every resumed session's first turn with a relative backend path |
-| internal/acpfront/lifecycle.go | 55-99 | WR-03: resume not gated on the closing set → close-vs-resume race leaks machine observers / leaves a zombie registration | ⚠ Warning (open) | Observer leak + silent re-closable zombie under a racy interleaving |
-| internal/acpfront/front.go | 333-340 | WR-04: prompt cancel fan-in goroutine can cancel a later, unrelated turn when both ctx arms are ready | ⚠ Warning (open) | Narrow-window silent wrong-turn cancellation |
-| test/realdesktop/apicycle_test.go | 239-249, 508-541 | IN-01 malformed ZCODE_ACP_MODEL silently defaulted (real spend on unintended model); IN-02 raw-capture path not enforced outside repo | ℹ️ Info | Hardening backlog per disposition ledger |
-| cmd/zcode-acp/main.go | 307-314 | IN-03 shutdown select can mask a child crash with exit 0 | ℹ️ Info | Nondeterministic exit verdict only |
-| — | — | Debt markers (TBD/FIXME/XXX) | none | Zero matches re-grepped this pass |
+| internal/acpfront/front.go | 355-371 (mine arm :362-368) | WR-06: displaced-prompt fan-in cancels the machine but never fans the turn's pendings in — bridge dangles to the 300s deadline, deny answered for a cancelled turn; enshrined by cancel_test.go:382-503 | 🛑 Blocker (truth-7 violation, gap 3) | Deterministic on any client double-prompt displacement: the client never answers, the desktop's ask loop lives up to 300s, and a deny is framed for a turn that is already gone — the exact dangling shape the 05-02 prohibition forbids |
+| internal/acpfront/cancel_test.go | 439-462, 491-503 | Tests lock the dangling artifact as the EXPECTED wire shape ("the ask was never cancelled by anything in this flow") | 🛑 Blocker (part of gap 3) | A fixer preserving the enshrined artifact would keep the defect; the test must be updated with the fix |
+| internal/acpfront/lifecycle.go | 55-128 (resume) | WR-05: resume's closing gate TOCTOU — close completing between the entry gate and re-check, or Register landing in close's Get→mark gap, still leaks observers/zombie (supersedes WR-03) | ⚠ Warning (advisory) | Narrow race; unreachable in the field-proven run; disposition open |
+| internal/acpfront/front.go | 436-449 | WR-07: Cancel's observe-before-cancel sweep unguarded across deschedule — a later turn's fresh ask can be swept (-32021) in a deschedule window | ⚠ Warning (advisory) | Narrow race; silent wrong deny; session-scoped pending table is the deterministic fix shape |
+| test/realdesktop/apicycle_test.go | IN-01/IN-02 sites | Malformed ZCODE_ACP_MODEL silently defaulted; raw-capture born-OUTSIDE rule comment-only; IN-06 ask-tap logging goroutines; IN-07 readbackdiag opener | ℹ️ Info | Hardening backlog per disposition ledger |
+| cmd/zcode-acp/main.go | 307-314 | IN-03 shutdown select can mask a child crash with exit 0 (prior info, unchanged); IN-04/IN-05 review infos | ℹ️ Info | Nondeterministic exit verdict / golden flake class |
+| — | — | Debt markers (TBD/FIXME/XXX) | none | Zero matches re-grepped this pass across acpfront, hostsvc, interact, fake.go/scenario.go, realdesktop, cmd |
 
-### Deferred Items
+### Advisory (New Scope, Unevidenced)
 
-None. Checked phases 6-7 of the milestone: Phase 6 is the OAuth path (AUTH-02/03), Phase 7 is CI conformance/VM/docs — neither covers the api-key read-back surface fix (AUTH-01 is Phase 5's own requirement) nor the close-path fan-in fix. The REAL RUN is this phase's contract (05-09), not Phase 7's manual E2E. No gap is deferred.
+New-scope findings from Step 7 / the delta review with no deterministic evidence — reported, not blocking (evidence gate, re-verification mode).
+
+| # | Finding | Category | Why Advisory |
+|---|---------|----------|--------------|
+| 1 | WR-05 resume closing-gate TOCTOU | architectural | new-scope review interleaving analysis; files untouched since the prior verify-ts; no failing test; disposition open |
+| 2 | WR-07 Cancel stale-sweep race | architectural | new-scope review interleaving analysis; requires a deschedule spanning a full turn unwind; no failing test; disposition open (fix shape recorded) |
+| 3 | IN-04..07 | other | hardening backlog per the disposition ledger; none observed in the field-proven run |
+
+(Truth-level failures — WR-06/gap 3 — are NOT advisory: they enter through Step 3 truth verification against the carried must-have, which the evidence gate does not demote.)
 
 ### Human Verification Required
 
-### 1. End-of-phase REAL RUN retry on the real z.ai api-key account (EXP-APIKEY-CYCLE-01 — UAT item 1, attempt 1 FAIL recorded)
+None. The prior report's two human items are DISCHARGED with recorded evidence:
 
-**Test:** FIRST the gap-closure work lands (gap 1: auth read-back surface — diagnose via a scrubbed-capture experiment on the real desktop, then fix the verdict chain and the fake oracle; gap 2: CR-01 drainActiveTurn + the close-with-pending-permission lock test — the disposition ledger explicitly gates the retry on CR-01). Then per 05-USER-SETUP.md: export `ZCODE_ACP_API_KEY` from the local ZCode desktop config (never commit), confirm the keyring check resolves 43 bytes (path-string-hash form), set `ZCODE_ACP_RAW_CAPTURE` outside the repo, and run `ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run TestAPIKeyFullCycle ./test/realdesktop/`.
-**Expected:** PASS — authenticate proven by the registry read-back verdict (never the ack), one tiny tool-less turn + one file-read tool turn, session/resume (no replay), session/close (clean teardown, post-close prompt rejected), staged shutdown zero orphans; runtime-headers ask answered by the wired key source; mid-turn cipher ask answered from the keyring.
-**Why human:** Real credentials, unlocked keyring, ledgered quota spend on the real 3.18.2 desktop — the double guard keeps CI away by design; the fake tier structurally cannot observe the real desktop's surfaces (that mismatch is what attempt 1 proved).
+1. ~~REAL RUN retry (UAT item 1)~~ — **PASS recorded**: attempt 3, 2026-11-21, human-run per the 05-14 blocking-human checkpoint, PASS 49.43s on the real 3.18.2 account (authenticate read-back proven; tool-less turn + file-read tool turn; resume no-replay; close clean; zero orphans). Evidence: 05-UAT.md item 1, experiments/README.md ledger actuals, EXP-APIKEY-CYCLE-03.jsonl (scrubbed, committed).
+2. ~~Evidence recording (UAT item 2)~~ — **PASS recorded**: scrub-capture pipeline run, scan-secrets 0 (tree + staged diff), ledger row flipped to actuals, human-confirmed "evidence recorded" (05-UAT.md item 2).
 
-### 2. Evidence recording after the passing run (UAT item 2)
+The remaining work (gap 3) is code work — the WR-06 fix + test update — which is for the closure plan, not a human checkpoint.
 
-**Test:** `node experiments/scrub-capture.mjs <raw> experiments/captures/EXP-APIKEY-CYCLE-01.jsonl --redact-path <workspace>`; `bash experiments/scan-secrets.sh`; flip the Phase-5 ledger row in experiments/README.md to the passing run's actuals (spend + verdict line beneath the attempt-1 record).
-**Expected:** Scrubbed capture with the V-EXP id; scan-secrets clean; ledger row records the passing run's actuals (spend, never credentials).
-**Why human:** Credential hygiene and quota accounting are human judgment acts on machine-local material.
+### Deferred Items
+
+None. Checked phases 6-7 of the milestone: Phase 6 is the OAuth path (AUTH-02/03, MODEL-01/02), Phase 7 is CI conformance/VM/docs — neither covers the displaced-prompt fan-in fix (the 05-02 truth is Phase 5's own contract). The machine-side quiet-floor-vs-patch improvement (the attempt-3 observation that the desktop's true completion surfaces arrive ~16.5s after our end_turn) is future work by the project's own record and was never a must-have of this phase — the cycle is proven with the drain in place.
 
 ### Gaps Summary
 
-The phase's codebase deliverables remain solid — every phase-critical package re-ran green under -race on this tree this pass (interact 2.0s, hostsvc 1.2s, acpfront 23.3s, zcode/turn/core green, cmd 3.1s), the double guard holds, hygiene holds (scan-secrets 0 incl. the new scrubbed capture), zero debt markers. But the phase GOAL is not achieved: two must-have truths failed on evidence gathered since the prior report.
+Both gaps from the last verdict are genuinely closed, and the closes are the strongest kind: code read first-hand, red-first test locks, and a passing field run on the real account with the full evidence trail. The live full cycle — the phase goal's opening clause "On a real z.ai account via api-key" — now observably works: authenticate proven by the registry read-back (never the ack), streamed tool calls live, resume without replay, clean close, zero orphans, 49.43s, ledgered spend.
 
-**Gap 1 — the real-account authenticate read-back (SC4's defining half, field-proven failing).** The fake-tier oracle promised a read-back surface (state.updated registry patches / create-reply model surfaces) that the real 3.18.2 desktop never emits for this push: attempt 1 got acks and even saw the desktop apply runtime headers in its own loop, but the 30 s read-back window expired empty → ErrRegistryNotConfirmed → zero turns. This is exactly the failure mode the honest chain was designed to surface (it refused to trust the ack — the 05-06/05-07 prohibitions held under field conditions), but the verdict chain's surface assumption is wrong for the real wire. Three candidate causes are recorded in 05-UAT.md (basedOn hash path mismatch → §8 silent discard; empty-providers nothing-to-apply; create-reply as the true surface); a capture experiment on the real desktop must resolve which before the fix.
+**Gap 3 (the one remaining gap) — the SDK displaced-prompt arm of the cancel fan-in (WR-06).** When a client's second prompt displaces an active one while a permission ask is pending, the fan-in goroutine's mine arm fires `machine.Cancel()` only: no `cancelPendingForTurn()` runs on that arm, and `release()` fans nothing in either. The displaced turn's pending bridge therefore rides the responder's 300s permission deadline and is answered **deny** for a turn that was already cancelled — while the desktop's ask loop stays live. This is not a narrow race: it is deterministic, reachable by ordinary client behavior, and — the part that makes it a truth failure rather than a hardening note — the committed test tier asserts the dangling ask as the EXPECTED wire artifact. Truth 7's invariant ("no permission bridge outlives its turn — every pending bridge of a cancelled turn is cancelled by the fan-in") is observably false on this arm, exactly as it was on the close path before CR-01 was fixed. The delta review says it plainly: "the one remaining arm that violates the contract."
 
-**Gap 2 — the close-path permission fan-in (CR-01, confirmed first-hand).** `drainActiveTurn` returns false after a successful drain, so `CloseSession` skips `cancelPendingForTurn()` exactly when a turn was cancelled — a pending permission ask dangles to the 300 s deadline and then denies at a closed backend session. The same fan-in is unconditional on the Front.Cancel path, so the asymmetry is a defect, not a design. No test covers close-with-pending-permission. The disposition ledger correctly gates the REAL RUN retry on this fix (a real close-with-pending-ask mid-run would wedge the cycle).
+The fix is small and the review provides the shape: fan `cancelPendingForTurn()` in on the mine arm under the same identity re-check (safe — the re-check guarantees the table belongs to this turn when mine is true), and update the enshrining test: keep the correct slot-free-skip assertion, replace the displaced turn's dangling-note expectation with a -32021 assertion. WR-07's session-scoped pending table batches cleanly with it and would make the table-ownership assumption true at fire time on all three call sites.
 
-Both gaps are in-scope for this phase (AUTH-01 and the permission/lifecycle half of the goal). The closure plan MUST cite 05-REVIEW-DISPOSITION.md (all 8 findings open; CR-01 gates the retry; WR-01..04 batch with the close-path fix). Grouped root causes: gap 1 is the auth/read-back concern (hostsvc/auth + real-desktop dialect), gap 2 is the close/permission teardown concern (acpfront lifecycle) — two focused work items, then UAT items 1-2 re-run.
+Everything else holds: 12/13 truths verified, 20/21 prohibitions, all guards and hygiene green, both field truths carrying recorded live evidence. The phase advances to one focused closure plan (citing 05-REVIEW-DISPOSITION.md, WR-06/WR-07), then re-verification.
 
 ---
 
-_Verified: 2026-11-21T10:05:00Z_
+_Verified: 2026-11-21T21:10:00Z_
 _Verifier: Claude (gsd-verifier)_
