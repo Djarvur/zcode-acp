@@ -38,11 +38,13 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 
 	"github.com/Djarvur/zcode-acp/internal/acpfront"
 	"github.com/Djarvur/zcode-acp/internal/acpport"
+	"github.com/Djarvur/zcode-acp/internal/interact"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
@@ -471,6 +473,84 @@ func assertCloseWithPendingBackLeg(t *testing.T, tr fake.Transcript) {
 	}
 
 	assertCloseAfterStop(t, tr)
+}
+
+// TestCloseDeadlineArmFansPendingIn locks the deadline arm of the fixed
+// drainActiveTurn contract (plan 05-10): a turn still active past the close
+// wait reports sawTurn=true (a turn WAS observed — the review's fix shape
+// returns true on both arms) and the permission fan-in still fires
+// best-effort — the -32021 cancelled reply reaches the backend even though
+// the teardown proceeded before the turn fully unwound. The shrunk
+// WithCloseTurnWait (1ns) makes the deadline arm deterministic: the first
+// drain iteration finds the active turn, cancels, and the elapsed deadline
+// returns true before any unwind could win the race.
+func TestCloseDeadlineArmFansPendingIn(t *testing.T) {
+	gate := make(chan struct{})
+
+	sc := mustLoadScenario(t, "permission-cancel")
+
+	h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
+		front := acpfront.New(conn,
+			acpfront.WithVersion("0.0.0-dev"),
+			acpfront.WithModel(corpusModelSelection()),
+			acpfront.WithCloseTurnWait(time.Nanosecond),
+		)
+
+		opts := []interact.Option{
+			interact.WithPermissionForwarder(interact.NewPermissionBridge(front.PermissionForward()).Forward),
+		}
+
+		responder := interact.NewResponder(opts...)
+		conn.OnRequest = responder.Serve // hook contract: before any frame flows
+
+		return acpport.NewAgent(front)
+	})
+
+	h.rec.SetPermissionScript(PermissionScript{Gate: gate})
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	mustInitialize(ctx, t, h)
+
+	sid := openPermissionSession(ctx, t, h)
+
+	promptDone := make(chan promptOutcome, 1)
+
+	go func() {
+		resp, err := h.client.Prompt(ctx, acp.PromptRequest{
+			SessionId: acp.SessionId(sid),
+			Prompt:    []acp.ContentBlock{acp.TextBlock("hi")},
+		})
+		promptDone <- promptOutcome{resp: resp, err: err}
+	}()
+
+	awaitPermissionAsk(t, h)
+
+	if _, err := h.client.CloseSession(ctx, acp.CloseSessionRequest{SessionId: acp.SessionId(sid)}); err != nil {
+		t.Fatalf("session/close: %v", err)
+	}
+
+	// The deadline-arm close still cancels the turn (best-effort): the
+	// machine cancel landed and the prompt resolves cancelled as a SUCCESS.
+	outcome := waitPromptOutcome(t, promptDone)
+	if outcome.err != nil {
+		t.Fatalf("cancelled-by-close prompt must answer as a success response, got error: %v", outcome.err)
+	}
+
+	if outcome.resp.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("stopReason = %q, want %q (the deadline arm still cancels the turn)", outcome.resp.StopReason, acp.StopReasonCancelled)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	// The same close-path artifact as the successful-drain arm: the fan-in
+	// fired best-effort past the deadline — the -32021 cancelled reply with
+	// the teardown wire order intact.
+	assertCloseWithPendingBackLeg(t, tr)
 }
 
 // assertCloseAfterStop locks the teardown wire order: exactly one

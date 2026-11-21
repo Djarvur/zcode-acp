@@ -171,12 +171,18 @@ func (f *Front) CloseSession(ctx context.Context, sessionID string) error {
 // drainActiveTurn cancels the session's active turn (machine.Cancel —
 // idempotent, no-op when idle) and waits bounded for the turn to unwind
 // (the slot's done channel closes when release has flushed). It reports
-// whether a turn of THIS session was actually cancelled, so the caller
-// only cancels permission bridges that belong to it. A turn of another
-// session (the front-wide slot) never blocks this session's close beyond
-// the check.
+// whether a turn of THIS session was observed and cancelled (sawTurn):
+// true on BOTH the successful-drain arm and the deadline-elapsed arm (a
+// turn WAS observed; the caller's permission fan-in fires best-effort past
+// the deadline), false only when no turn of this session was ever observed
+// — so the caller only cancels permission bridges that belong to it
+// (CR-01, plan 05-10: the fan-in fires exactly when a turn of the session
+// was cancelled, never on an idle close). A turn of another session (the
+// front-wide slot) never blocks this session's close beyond the check.
 func (f *Front) drainActiveTurn(sessionID string, st core.Session) bool {
-	deadline := time.Now().Add(closeTurnWait)
+	deadline := time.Now().Add(f.closeWait())
+
+	sawTurn := false
 
 	for {
 		f.turnMu.Lock()
@@ -189,8 +195,10 @@ func (f *Front) drainActiveTurn(sessionID string, st core.Session) bool {
 		f.turnMu.Unlock()
 
 		if done == nil {
-			return false // no active turn for this session — nothing to wait out
+			return sawTurn // false = no turn of this session ever ran; true = observed, cancelled, drained
 		}
+
+		sawTurn = true
 
 		// Cancel fires first (re-cancels a sneaked second turn —
 		// machine.Cancel is idempotent per turn and a new turn is a new
@@ -210,4 +218,15 @@ func (f *Front) drainActiveTurn(sessionID string, st core.Session) bool {
 		case <-time.After(remain):
 		}
 	}
+}
+
+// closeWait returns the effective close-teardown wait for an active turn:
+// the injected override (WithCloseTurnWait — the plan-05-10 deadline-arm
+// test seam) or the closeTurnWait production default.
+func (f *Front) closeWait() time.Duration {
+	if f.closeWaitOverride > 0 {
+		return f.closeWaitOverride
+	}
+
+	return closeTurnWait
 }

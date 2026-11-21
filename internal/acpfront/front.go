@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/core"
@@ -99,6 +100,12 @@ type Front struct {
 	// (WithStreamCeiling; zero → the documented default at pump build).
 	streamCeiling int
 
+	// closeWaitOverride overrides the close teardown's bounded active-turn
+	// wait (lifecycle.go closeTurnWait) when set — the plan-05-10
+	// deadline-arm test seam (WithCloseTurnWait); zero keeps the
+	// production default.
+	closeWaitOverride time.Duration
+
 	// auth is the injected authenticate machinery (plan 05-07, WithAuth):
 	// the configured key binding, the resolved install, and the read-back
 	// want list. Nil until wired — authenticate answers the honest no-key
@@ -138,6 +145,15 @@ func WithModel(sel ModelSelection) Option {
 // never a hang, never a silent drop.
 func WithStreamCeiling(bytes int) Option {
 	return func(f *Front) { f.streamCeiling = bytes }
+}
+
+// WithCloseTurnWait overrides the close teardown's bounded active-turn wait
+// (lifecycle.go closeTurnWait). Plan-05-10 test seam: the deadline arm of
+// drainActiveTurn (a turn still active past the wait reports sawTurn and the
+// permission fan-in fires best-effort) is exercised with a shrunk wait;
+// production wiring never sets it.
+func WithCloseTurnWait(d time.Duration) Option {
+	return func(f *Front) { f.closeWaitOverride = d }
 }
 
 // New returns a Front owning conn and registers the delta tap on the
