@@ -224,3 +224,10 @@ None — no external service configuration required (zero-spend plan; no REAL RU
 ---
 *Phase: 05-interactions-full-chat-cycle-api-key*
 *Completed: 2026-11-21*
+
+## Self-Check: PASSED
+
+- Created files exist on disk: lingering-latch-32010.json + lingering-latch-32010.golden (FOUND)
+- All 6 commits are ancestors of HEAD: 0590778, 8f59510, 7c10d37, e0dc0a6, 34df7a6, 1765db1 (FOUND)
+- Evaluation scope resolved: 6 commits on this branch for plan 05-13 (plan-subjects source)
+- All `<verify>` chains re-run green on the finished tree; TDD gate sequence recorded (RED 0590778 precedes GREEN 8f59510; classifier RED_EVIDENCE_OK)
