@@ -206,7 +206,7 @@ func TestAPIKeyFullCycle(t *testing.T) {
 	sid := newSessionLeg(t, ctx, front, ws)
 	toollessTurnLeg(t, ctx, front, sid)
 	toolTurnLeg(t, ctx, front, sid, readTarget)
-	resumeLeg(t, ctx, front, sid)
+	resumeLeg(t, ctx, front, sid, ws)
 	closeLeg(t, ctx, front, sid)
 
 	// Staged shutdown via the supervisor, then the zero-orphan proof.
@@ -822,12 +822,16 @@ func toolTurnLeg(t *testing.T, ctx context.Context, front *acpfront.Front, sid, 
 // resumeLeg reattaches the same backend session (SESS-01): the returned id
 // must be the SAME session (reattach, not a new session) and nil error
 // proves the re-issued desktop-continuous subscribe was accepted (the D-03
-// gate applies to a reattached session exactly as to a new one). No replay
-// is fabricated by construction — the client sees only future turns.
-func resumeLeg(t *testing.T, ctx context.Context, front *acpfront.Front, sid string) {
+// gate applies to a reattached session exactly as to a new one). The
+// workspace cwd rides the widened seam (plan 05-10 WR-02 — the SDK
+// ResumeSessionRequest.Cwd contract makes it MUST-be-absolute; the front
+// validates and records it so post-resume tool paths resolve absolute).
+// No replay is fabricated by construction — the client sees only future
+// turns.
+func resumeLeg(t *testing.T, ctx context.Context, front *acpfront.Front, sid string, cwd string) {
 	t.Helper()
 
-	resumed, err := front.ResumeSession(ctx, sid)
+	resumed, err := front.ResumeSession(ctx, sid, cwd)
 	if err != nil {
 		t.Fatalf("session/resume: %v", err)
 	}

@@ -43,8 +43,13 @@ type Handlers interface {
 	// (SESS-01, plan 05-05): the backend reply is the create-shaped full
 	// snapshot, so the id the front returns digs out through the same
 	// path session/new uses. No setModel follow-up, no replay of
-	// pre-resume history (D-04) — the contracts live in the front.
-	ResumeSession(ctx context.Context, sessionID string) (string, error)
+	// pre-resume history (D-04) — the contracts live in the front. The
+	// cwd rides the SDK ResumeSessionRequest.Cwd and MUST be absolute
+	// (the session-setup MUST — the front validates it before any
+	// backend call, the T-4-01 parity guard, and records it so the
+	// resumed session's tool diff/location paths resolve absolute;
+	// plan 05-10 WR-02).
+	ResumeSession(ctx context.Context, sessionID string, cwd string) (string, error)
 
 	// CloseSession runs the session teardown (SESS-01, plan 05-05):
 	// cancel-then-close-then-release, best-effort on the backend leg —

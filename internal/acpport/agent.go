@@ -371,12 +371,14 @@ func (a *agentAdapter) ListSessions(
 // The SDK's resume response carries no session id — the reattached id is
 // the request's own, so the Handlers return value is validated non-empty
 // (a front that failed loud already errored) and the response stays the
-// SDK zero value. Front errors are coded via wireError, never passed raw.
+// SDK zero value. The request's Cwd rides through verbatim (plan 05-10
+// WR-02 — the SDK contract makes it MUST-be-absolute; the front validates
+// and records it). Front errors are coded via wireError, never passed raw.
 func (a *agentAdapter) ResumeSession(
 	ctx context.Context,
 	params acp.ResumeSessionRequest,
 ) (acp.ResumeSessionResponse, error) {
-	if _, err := a.h.ResumeSession(ctx, string(params.SessionId)); err != nil {
+	if _, err := a.h.ResumeSession(ctx, string(params.SessionId), string(params.Cwd)); err != nil {
 		return acp.ResumeSessionResponse{}, wireError(err)
 	}
 

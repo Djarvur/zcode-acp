@@ -357,12 +357,13 @@ func assertMethodNotFound(t *testing.T, err error, method string) {
 // request's own), and a front seam error surfaces coded via wireError —
 // never raw (A5).
 func TestLifecycleDelegation(t *testing.T) {
-	t.Run("resume delegates the session id", func(t *testing.T) {
+	t.Run("resume delegates the session id and cwd", func(t *testing.T) {
 		h := newScriptedHandlers()
 		adapter := acpport.NewAgent(h)
 
 		resp, err := adapter.ResumeSession(context.Background(), acp.ResumeSessionRequest{
 			SessionId: acp.SessionId(testSessionID),
+			Cwd:       testCwd,
 		})
 		if err != nil {
 			t.Fatalf("ResumeSession: %v", err)
@@ -370,6 +371,12 @@ func TestLifecycleDelegation(t *testing.T) {
 
 		if len(h.resumeCalls) != 1 || h.resumeCalls[0] != testSessionID {
 			t.Fatalf("Handlers.ResumeSession calls = %v, want exactly [%s]", h.resumeCalls, testSessionID)
+		}
+
+		// The client cwd rides through verbatim (plan 05-10 WR-02): the
+		// front validates it absolute and records it for the reattached id.
+		if len(h.resumeCwdCalls) != 1 || h.resumeCwdCalls[0] != testCwd {
+			t.Fatalf("Handlers.ResumeSession cwd calls = %v, want exactly [%s]", h.resumeCwdCalls, testCwd)
 		}
 
 		marshaled, marshalErr := json.Marshal(resp)
@@ -501,6 +508,11 @@ func TestLifecycleDelegationWire(t *testing.T) {
 
 	if len(h.resumeCalls) != 1 || h.resumeCalls[0] != testSessionID {
 		t.Fatalf("Handlers.ResumeSession calls = %v, want exactly [%s]", h.resumeCalls, testSessionID)
+	}
+
+	// The wire cwd rode through verbatim (plan 05-10 WR-02).
+	if len(h.resumeCwdCalls) != 1 || h.resumeCwdCalls[0] != testCwd {
+		t.Fatalf("Handlers.ResumeSession cwd calls = %v, want exactly [%s]", h.resumeCwdCalls, testCwd)
 	}
 
 	if len(h.closeCalls) != 1 || h.closeCalls[0] != testSessionID {
@@ -1653,6 +1665,7 @@ type scriptedHandlers struct {
 	sinkErrs        []error
 	cancelCalls     []string
 	resumeCalls     []string
+	resumeCwdCalls  []string
 	closeCalls      []string
 	authCalls       []string
 }
@@ -1725,14 +1738,17 @@ func (s *scriptedHandlers) Cancel(ctx context.Context, sessionID string) error {
 	return s.cancelErr
 }
 
-// ResumeSession records the session id and replays the canned reattached
-// id (SESS-01, plan 05-05 — the lifecycle pair delegate through the same
-// translate-call-code path as the other advertised methods).
-func (s *scriptedHandlers) ResumeSession(ctx context.Context, sessionID string) (string, error) {
+// ResumeSession records the session id and the client cwd (plan 05-10
+// WR-02 — the adapter forwards the SDK request's Cwd verbatim) and replays
+// the canned reattached id (SESS-01, plan 05-05 — the lifecycle pair
+// delegate through the same translate-call-code path as the other
+// advertised methods).
+func (s *scriptedHandlers) ResumeSession(ctx context.Context, sessionID string, cwd string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.resumeCalls = append(s.resumeCalls, sessionID)
+	s.resumeCwdCalls = append(s.resumeCwdCalls, cwd)
 
 	if s.resumeErr != nil {
 		return "", s.resumeErr

@@ -3,6 +3,7 @@ package acpfront
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
@@ -51,10 +52,34 @@ const closeTurnWait = 10 * time.Second
 // ResumeSession reattaches one backend session (SESS-01). The id comes
 // back through the create-shaped snapshot dig-out; the caller-supplied id
 // is validated passable (a non-empty string — a rejected resume never
-// touches the backend wire, T-5-13).
-func (f *Front) ResumeSession(ctx context.Context, sessionID string) (string, error) {
+// touches the backend wire, T-5-13). The cwd rides the SDK
+// ResumeSessionRequest.Cwd and MUST be absolute (the session-setup MUST —
+// validated BEFORE any backend call, the T-4-01 parity guard, plan 05-10
+// WR-02) and is recorded for the reattached id so the session's tool
+// diff/location paths resolve absolute (Pitfall 5 off the resume path).
+// A resume racing a close is rejected coded-clean at entry and re-checked
+// just before Register — no machine observer leak, no zombie registration
+// (plan 05-10 WR-03).
+func (f *Front) ResumeSession(ctx context.Context, sessionID string, cwd string) (string, error) {
 	if sessionID == "" {
 		return "", acpport.NewInvalidParams("session/resume: sessionId must not be empty")
+	}
+
+	// WR-02 (plan 05-10): the spec's session-setup contract makes cwd
+	// MUST-be-absolute — the empty case folds in, exactly like the
+	// session/new T-4-01 guard. A rejected resume never touches the
+	// backend wire.
+	if !filepath.IsAbs(cwd) {
+		return "", acpport.NewInvalidParams(
+			"session/resume: cwd must be absolute (spec session-setup MUST), got %q", cwd)
+	}
+
+	// WR-03 (plan 05-10): the SESS-01 race gate at entry — a session
+	// mid-teardown takes the resume as the clean coded rejection (the same
+	// message family as the prompt gate), never a mid-close reattach
+	// racing the release steps.
+	if f.isClosing(sessionID) {
+		return "", acpport.NewInvalidRequest("session/resume: %s: the session is closing or closed", sessionID)
 	}
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionResume, map[string]any{
@@ -68,6 +93,12 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID string) (string, er
 	if err != nil {
 		return "", err
 	}
+
+	// WR-02 (plan 05-10): the client cwd anchors the reattached id the
+	// moment createSessionID confirms it — the first post-resume turn
+	// resolves absolute diff/location paths (acquireTurn's
+	// sessionCwdLocked read).
+	f.recordCwd(sid, cwd)
 
 	// The re-issued subscribe (the D-03 gate applies to a reattached
 	// session exactly as to a new one — session/event pushes are gated on
@@ -86,6 +117,14 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID string) (string, er
 	// this the old machine's fan-out entries would leak).
 	if prev, getErr := f.registry.Get(sid); getErr == nil && prev.Machine != nil {
 		prev.Machine.CloseObservers()
+	}
+
+	// WR-03 (plan 05-10): the mandatory re-check immediately before
+	// Register — a resume that entered before close marked the set can
+	// never register its machine into a session mid-teardown (the Register
+	// after close's snapshot+Remove window is the observer-leak arm).
+	if f.isClosing(sessionID) {
+		return "", acpport.NewInvalidRequest("session/resume: %s: the session is closing or closed", sessionID)
 	}
 
 	// The machine registers on the conn's fan-out AFTER the tap — the same
