@@ -152,7 +152,7 @@ Plans:
   3. A backend permission request reaches the client as `session/request_permission` with allow/reject options; the chosen outcome is forwarded to the backend, and an ACP-side cancel resolves pending requests as `cancelled`
   4. `authenticate{zai-api-key}` on a real account enables working turns, with success verified by reading registry state back — not by trusting the `provider/updateAccountConfig` ack
   5. `session/resume` reattaches a session without replay and `session/close` cleans up the child-side session; a full cycle — new → prompt with tool calls and a permission decision → resume → close — runs end-to-end on api-key
-**Plans**: 9/9 plans executed
+**Plans**: 12 plans (9 executed + 3 gap closure)
 Plans:
 **Wave 1**
 - [x] 05-01-PLAN.md — CORE-06 interaction responder policy object (deadlines, requestId dedupe, unknown -32601, runtime-prefs migration) + fake re-announce extension
@@ -178,6 +178,14 @@ Plans:
 
 **Wave 8** *(blocked on Wave 7 completion)*
 - [x] 05-09-PLAN.md — Guarded real tier (TestAPIKeyFullCycle, double guard) + quota ledger; real run = end-of-phase verification
+
+**Gap closure** *(from 05-VERIFICATION.md gaps_found — CR-01 + WR-01..04 batch, the SC4 read-back fix, then the UAT retry; 05-REVIEW-DISPOSITION.md gates the retry on CR-01)*
+**Wave 1** *(05-10 and 05-11 are file-disjoint; zero overlap)*
+- [ ] 05-10-PLAN.md — Gap 2: CR-01 drainActiveTurn sawTurn fix + close-with-pending-permission lock test + WR-01..04 batch (join silence, resume cwd, resume closing gate, fan-in identity)
+- [ ] 05-11-PLAN.md — Gap 1: guarded zero-spend read-back diagnostic (TestReadbackDiagnosis) + authenticate chain fixed to the field-verified surface + fake oracle alignment
+
+**Wave 2** *(blocked on 05-10 + 05-11 — the disposition-ledger gate)*
+- [ ] 05-12-PLAN.md — REAL RUN UAT retry (attempt 2, human-gated blocking checkpoint) + evidence recording (scrub, scan-secrets, ledger flip); AUTONOMOUS: false
 
 ### Phase 6: OAuth Coding-Plan Path & Model Picker
 **Goal**: Users on an individual coding plan can authenticate through the official OAuth chain end-to-end, and any client can see and switch model and thought level from the live provider registry.
