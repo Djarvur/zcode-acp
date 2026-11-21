@@ -60,7 +60,7 @@ const closeTurnWait = 10 * time.Second
 // A resume racing a close is rejected coded-clean at entry and re-checked
 // just before Register — no machine observer leak, no zombie registration
 // (plan 05-10 WR-03).
-func (f *Front) ResumeSession(ctx context.Context, sessionID string, cwd string) (string, error) {
+func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (string, error) {
 	if sessionID == "" {
 		return "", acpport.NewInvalidParams("session/resume: sessionId must not be empty")
 	}

@@ -378,7 +378,7 @@ func (a *agentAdapter) ResumeSession(
 	ctx context.Context,
 	params acp.ResumeSessionRequest,
 ) (acp.ResumeSessionResponse, error) {
-	if _, err := a.h.ResumeSession(ctx, string(params.SessionId), string(params.Cwd)); err != nil {
+	if _, err := a.h.ResumeSession(ctx, string(params.SessionId), params.Cwd); err != nil {
 		return acp.ResumeSessionResponse{}, wireError(err)
 	}
 

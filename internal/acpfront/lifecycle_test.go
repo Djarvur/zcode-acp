@@ -267,7 +267,7 @@ func TestResumeRecordsCwd(t *testing.T) {
 		t.Fatal("the post-resume turn streamed no tool_call start for tc1")
 	}
 
-	wantPath := filepath.Join(resumeCwd, "src/main.go")
+	wantPath := filepath.Join(resumeCwd, "src", "main.go")
 
 	if len(start.Content) == 0 || start.Content[0].Diff == nil {
 		t.Fatalf("the tc1 start carries no diff content: %+v", start)
@@ -733,12 +733,10 @@ func TestCloseDeadlineArmFansPendingIn(t *testing.T) {
 	// The deadline-arm close still cancels the turn (best-effort): the
 	// machine cancel landed and the prompt resolves cancelled as a SUCCESS.
 	outcome := waitPromptOutcome(t, promptDone)
-	if outcome.err != nil {
-		t.Fatalf("cancelled-by-close prompt must answer as a success response, got error: %v", outcome.err)
-	}
 
-	if outcome.resp.StopReason != acp.StopReasonCancelled {
-		t.Fatalf("stopReason = %q, want %q (the deadline arm still cancels the turn)", outcome.resp.StopReason, acp.StopReasonCancelled)
+	if outcome.err != nil || outcome.resp.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("deadline-arm close outcome = (%v, %v), want the cancelled success "+
+			"(the deadline arm still cancels the turn)", outcome.resp.StopReason, outcome.err)
 	}
 
 	tr, trErr := h.Transcript(t)

@@ -1743,7 +1743,7 @@ func (s *scriptedHandlers) Cancel(ctx context.Context, sessionID string) error {
 // the canned reattached id (SESS-01, plan 05-05 — the lifecycle pair
 // delegate through the same translate-call-code path as the other
 // advertised methods).
-func (s *scriptedHandlers) ResumeSession(ctx context.Context, sessionID string, cwd string) (string, error) {
+func (s *scriptedHandlers) ResumeSession(ctx context.Context, sessionID, cwd string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
