@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 12
+open_count: 13
 waived_count: 0
 fixed_count: 1
-total_count: 13
-last_updated: 2026-11-21T08:45:58.318Z
+total_count: 14
+last_updated: 2026-11-21T10:08:55.578Z
 ---
 
 # Broken Windows Ledger
@@ -28,6 +28,7 @@ last_updated: 2026-11-21T08:45:58.318Z
 | 11 | 05 | unrun-verify | test/realdesktop/apicycle_test.go |  | END-OF-PHASE REAL RUN: TestAPIKeyFullCycle against the live z.ai api-key account (guarded tier, orchestrator-run, quota-ledgered per experiments/README.md Phase-5 row + 05-USER-SETUP.md) — the D-06 live-keyring decrypt and the registry read-back verdict are proven only by this run | open |  | 2026-11-20T15:56:11.062Z |  |
 | 12 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:52.672Z |  |
 | 13 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:58.318Z |  |
+| 14 | 05 | unmet-truth | test/realdesktop/apicycle_test.go | 208 | REAL RUN attempt 2 (EXP-APIKEY-CYCLE-02): file-read tool turn refused by the desktop turn latch ('another prompt is already running') — the real-tier full cycle remains unproven; auth read-back leg field-proven; next gap plan must add a turn-latch drain between sends | open |  | 2026-11-21T10:08:55.578Z |  |
 
 ````json
 [
@@ -197,6 +198,19 @@ last_updated: 2026-11-21T08:45:58.318Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-21T08:45:58.318Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 14,
+    "kind": "unmet-truth",
+    "phase": "05",
+    "file": "test/realdesktop/apicycle_test.go",
+    "line": 208,
+    "description": "REAL RUN attempt 2 (EXP-APIKEY-CYCLE-02): file-read tool turn refused by the desktop turn latch ('another prompt is already running') — the real-tier full cycle remains unproven; auth read-back leg field-proven; next gap plan must add a turn-latch drain between sends",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-21T10:08:55.578Z",
     "resolved_at": null,
     "milestone": "v0.20.0"
   }
