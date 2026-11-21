@@ -207,6 +207,10 @@ None - no external service configuration required.
 - WR-05 (resume TOCTOU) intentionally remains open in the disposition ledger — advisory, separate arm, feeds the hardening cycle.
 - REQUIREMENTS.md (AUTH-01) and the truth-7 flip remain the orchestrator's post-verification acts.
 
+## Self-Check: PASSED
+
+All seven claimed files exist on disk; all five commit hashes (a7f67f9, 7f18358, b358cfa, 8add9e6, 8c0cbd5) verified as ancestors of HEAD. Both RED evidence records re-validated through `gsd_run check tdd-red-evidence` (RED_EVIDENCE_OK × 2). Full gate re-ran green on the committed tree: acpfront -race ok, fake corpus ok, vet/build ok, lint 0 issues, scope gate scope-clean.
+
 ---
 *Phase: 05-interactions-full-chat-cycle-api-key*
 *Completed: 2026-11-22*

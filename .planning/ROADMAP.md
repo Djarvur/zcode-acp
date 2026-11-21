@@ -152,7 +152,7 @@ Plans:
   3. A backend permission request reaches the client as `session/request_permission` with allow/reject options; the chosen outcome is forwarded to the backend, and an ACP-side cancel resolves pending requests as `cancelled`
   4. `authenticate{zai-api-key}` on a real account enables working turns, with success verified by reading registry state back — not by trusting the `provider/updateAccountConfig` ack
   5. `session/resume` reattaches a session without replay and `session/close` cleans up the child-side session; a full cycle — new → prompt with tool calls and a permission decision → resume → close — runs end-to-end on api-key
-**Plans**: 15 plans (14 executed + 1 pending gap closure)
+**Plans**: 15/15 plans executed (14 executed + 1 pending gap closure)
 Plans:
 **Wave 1**
 - [x] 05-01-PLAN.md — CORE-06 interaction responder policy object (deadlines, requestId dedupe, unknown -32601, runtime-prefs migration) + fake re-announce extension
@@ -195,7 +195,7 @@ Plans:
 
 **Gap closure cycle 4** *(from the 2026-11-21T21:10Z re-verification — 12/13, gap 3: the SDK displaced-prompt fan-in arm dangles the permission bridge to the 300s deadline then answers deny for a cancelled turn; 05-REVIEW-DISPOSITION.md WR-06, with WR-07 batched)*
 **Wave 1**
-- [ ] 05-15-PLAN.md — WR-06 red-first: enshrining-test rewrite (cancel_test.go dangle assertions inverted to demand the -32021 fan-in) → mine-arm pendings fan-in (front.go, pump-identity re-check preserved) + WR-07 batched: session-scoped pending table with atomic takes on all three cancel arms (front.go Cancel, mine arm, lifecycle.go close); zero-spend (fake tier + unit only), no new real-run checkpoint
+- [x] 05-15-PLAN.md — WR-06 red-first: enshrining-test rewrite (cancel_test.go dangle assertions inverted to demand the -32021 fan-in) → mine-arm pendings fan-in (front.go, pump-identity re-check preserved) + WR-07 batched: session-scoped pending table with atomic takes on all three cancel arms (front.go Cancel, mine arm, lifecycle.go close); zero-spend (fake tier + unit only), no new real-run checkpoint
 
 ### Phase 6: OAuth Coding-Plan Path & Model Picker
 **Goal**: Users on an individual coding plan can authenticate through the official OAuth chain end-to-end, and any client can see and switch model and thought level from the live provider registry.
@@ -234,7 +234,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 2. Scaffold & CI Bootstrap | 5/5 | Complete    | 2026-11-19 |
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
-| 5. Interactions & Full Chat Cycle (api-key) | 14/14 | In Progress | - |
+| 5. Interactions & Full Chat Cycle (api-key) | 15/15 | In Progress | - |
 | 6. OAuth Coding-Plan Path & Model Picker | 0/TBD | Not started | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
 
