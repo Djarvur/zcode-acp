@@ -16,9 +16,12 @@ package acpfront_test
 // tee-line substring constant — never paraphrased.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 
@@ -36,6 +39,17 @@ const (
 	teeSendMethod      = `"method":"session/send"`
 	teeSubscribeMethod = `"method":"session/subscribe"`
 	teeEmptyResult     = `"result":{}`
+	teeForkMethod      = `"method":"session/fork"`
+
+	// teeNotFoundMessage is the -32601 decline frame's message literal (the
+	// SDK's NewMethodNotFound map — byte-locked, never paraphrased).
+	teeNotFoundMessage = `"message":"Method not found"`
+
+	// sessRawProbeID is the raw-frame probe's JSON-RPC id (the set_model row
+	// the pinned SDK cannot send — the id is chosen far from the SDK
+	// client's small-integer counter so the reply can never collide with a
+	// pending typed call).
+	sessRawProbeID = "77007"
 )
 
 // sessDeleteSessionID is the inline delete scenario's fixed backend session
@@ -190,4 +204,342 @@ func assertSessDeleteTeardownWire(t *testing.T, tr fake.Transcript) {
 		t.Fatalf("back leg records %d session/send frames, want 0 (the delete teardown runs no turn traffic)",
 			len(sends))
 	}
+}
+
+// TestSessionDeleteUnknownSilentSuccess locks SESS-02's silent-success arm
+// (plan 07-03, D-01): session/delete on an id the front does not hold —
+// never opened, the empty string, or already closed — answers the empty
+// result {} IMMEDIATELY and sends ZERO backend frames (the runtime owns
+// real deletion; there is nothing on the back leg to delete). The spec's
+// "SHOULD succeed silently" semantics for unknown sessions, byte-locked.
+//
+// RED at plan time: today's -32601 unadvertised default answers every id —
+// the unknown-id row fails on the error envelope (the fork/decline rows'
+// pre-implementation passes are the SDK defaults, recorded honestly as
+// CONFIRM-GREEN-DEFAULT per the 05-08 precedent).
+func TestSessionDeleteUnknownSilentSuccess(t *testing.T) {
+	t.Run("unknown id sends nothing", func(t *testing.T) {
+		h := newSessCompatFront(t, sessDeleteScenario())
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		mustInitialize(ctx, t, h)
+
+		assertSessDeleteSilentSuccess(ctx, t, h, "sess_never_opened")
+	})
+
+	t.Run("empty id sends nothing", func(t *testing.T) {
+		h := newSessCompatFront(t, sessDeleteScenario())
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		mustInitialize(ctx, t, h)
+
+		assertSessDeleteSilentSuccess(ctx, t, h, "")
+	})
+
+	t.Run("already-closed id sends nothing", func(t *testing.T) {
+		h := newSessCompatFront(t, sessDeleteScenario())
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		mustInitialize(ctx, t, h)
+
+		newResp, err := h.client.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatalf("session/new: %v", err)
+		}
+
+		sid := string(newResp.SessionId)
+
+		if _, err := h.client.CloseSession(ctx, acp.CloseSessionRequest{SessionId: acp.SessionId(sid)}); err != nil {
+			t.Fatalf("session/close: %v", err)
+		}
+
+		assertSessDeleteSilentSuccess(ctx, t, h, sid)
+
+		// The closed id's teardown ran exactly once: the transcript holds the
+		// EXPLICIT close's single session/close frame — the delete answered {}
+		// without a second close (an unknown-after-release id never re-runs
+		// the teardown).
+		tr, trErr := h.Transcript(t)
+		if trErr != nil {
+			t.Fatalf("fake transcript: %v", trErr)
+		}
+
+		if closes := transcriptIndexes(tr, "in", teeCloseMethod); len(closes) != 1 {
+			t.Fatalf("back leg records %d session/close frames, want exactly 1 "+
+				"(the explicit close; the delete's silent-success arm adds none)", len(closes))
+		}
+	})
+}
+
+// sessTeeReply finds the agent→client reply frame matching the request at
+// reqIdx by JSON-RPC id. Unlike authTeeResponse it ACCEPTS frames whose
+// payload carries a "method" key — the decline frames' data.method does —
+// so the decline rows can lock their replies.
+func sessTeeReply(t *testing.T, lines []TeeLine, reqIdx int) TeeLine {
+	t.Helper()
+
+	var req struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(lines[reqIdx].JSON), &req); err != nil {
+		t.Fatalf("decode request frame: %v (%s)", err, lines[reqIdx].JSON)
+	}
+
+	idKey := `"id":` + string(req.ID) + ","
+
+	for _, line := range lines {
+		if line.Dir == "in" && strings.Contains(line.JSON, idKey) {
+			return line
+		}
+	}
+
+	t.Fatalf("no reply frame matching %s on the tee", idKey)
+
+	return TeeLine{}
+}
+
+// assertSessDeleteSilentSuccess drives one delete-unknown arm and locks its
+// wire shape: the typed reply is the empty result {} (never an error
+// envelope) and the back leg gained ZERO frames for the arm.
+func assertSessDeleteSilentSuccess(ctx context.Context, t *testing.T, h *FrontHarness, sid string) {
+	t.Helper()
+
+	if _, err := h.client.DeleteSession(ctx, acp.DeleteSessionRequest{SessionId: acp.SessionId(sid)}); err != nil {
+		t.Fatalf("session/delete on the unregistered id %q must answer the silent success, got error: %v", sid, err)
+	}
+
+	lines := h.ACPLines()
+	reqIdx := teeLineIndex(t, lines, "out", teeDeleteMethod, "session/delete request")
+	respLine := sessTeeReply(t, lines, reqIdx)
+
+	if strings.Contains(respLine.JSON, `"error"`) {
+		t.Fatalf("session/delete response carries an error frame (the -32601 default): %s", respLine.JSON)
+	}
+
+	if !strings.Contains(respLine.JSON, teeEmptyResult) {
+		t.Fatalf("session/delete response = %s, want the empty {} result", respLine.JSON)
+	}
+}
+
+// TestSessionForkDeclineByteLocked locks SESS-02's fork decline (plan 07-03,
+// D-01/T-07-10): the SDK client's typed fork call answers the SDK's graceful
+// decline byte-shape — code -32601, message "Method not found", data
+// {"method":"session/fork"} — never a crash path, never a faked success.
+//
+// CONFIRM-GREEN-DEFAULT at plan time (05-08 precedent): the wire shape
+// already holds via the SDK dispatcher's optional-interface default (the
+// adapter did not implement AgentUnstableForkSession). The GREEN makes the
+// arm EXPLICIT (UnstableForkSession on the adapter returning
+// unadvertised(AgentMethodSessionFork)) — byte-identical to the default by
+// construction, testable without relying on the type-assert path.
+func TestSessionForkDeclineByteLocked(t *testing.T) {
+	h := newSessCompatFront(t, sessDeleteScenario())
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	mustInitialize(ctx, t, h)
+
+	if _, err := h.client.UnstableForkSession(ctx, acp.UnstableForkSessionRequest{
+		SessionId: acp.SessionId(sessDeleteSessionID),
+		Cwd:       t.TempDir(),
+	}); err != nil {
+		assertSessDeclineError(t, err, acp.AgentMethodSessionFork)
+	} else {
+		t.Fatal("session/fork must decline, got success (T-07-10: the decline is the honest shape)")
+	}
+
+	lines := h.ACPLines()
+	reqIdx := teeLineIndex(t, lines, "out", teeForkMethod, "session/fork request")
+
+	assertSessDeclineFrame(t, sessTeeReply(t, lines, reqIdx), acp.AgentMethodSessionFork)
+}
+
+// TestUncoveredMethodDeclines is the D-02 sweep's remaining rows (plan
+// 07-03, SESS-03): every DISC-02 method the wrapper does not implement
+// answers its protocol-correct decline byte-locked on the wire —
+// set_mode/list/load via the adapter's -32601 defaults (their defaults ARE
+// the contract; the rows LOCK them) and session/set_model via the SDK
+// connection fallback (schema 1.25.0 has no agent dispatch case — the row
+// proves the wire shape Orca would see if it ever sent it; the frame is
+// injected raw because the pinned SDK's client cannot send it).
+//
+// CONFIRM-GREEN-DEFAULT at plan time (05-08 precedent): all four rows pass
+// pre-implementation via the SDK/adapter defaults — the GREEN adds no new
+// arms for them, only the explicit fork arm of the sibling test.
+func TestUncoveredMethodDeclines(t *testing.T) {
+	h := newSessCompatFront(t, sessDeleteScenario())
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	mustInitialize(ctx, t, h)
+
+	tests := sessDeclineTable(ctx, t, h)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.call(); err != nil {
+				assertSessDeclineError(t, err, tt.method)
+			} else {
+				t.Fatalf("%s must decline, got success", tt.method)
+			}
+
+			lines := h.ACPLines()
+			reqIdx := teeLineIndex(t, lines, "out", `"method":"`+tt.method+`"`, tt.method+" request")
+
+			assertSessDeclineFrame(t, sessTeeReply(t, lines, reqIdx), tt.method)
+		})
+	}
+
+	t.Run("set_model raw frame declines via the SDK fallback", func(t *testing.T) {
+		sessRawSetModelDecline(t, h)
+	})
+}
+
+// sessDeclineCase is one typed decline row of the D-02 sweep table: the
+// method's wire name and the typed client call that must decline.
+type sessDeclineCase struct {
+	name   string
+	method string
+	call   func() error
+}
+
+// sessDeclineTable builds the typed decline rows (the call closures capture
+// the harness's client and its bounded exchange ctx).
+func sessDeclineTable(ctx context.Context, t *testing.T, h *FrontHarness) []sessDeclineCase {
+	t.Helper()
+
+	return []sessDeclineCase{
+		{
+			name:   "set_mode declines naming the method",
+			method: acp.AgentMethodSessionSetMode,
+			call: func() error {
+				_, err := h.client.SetSessionMode(ctx, acp.SetSessionModeRequest{
+					SessionId: acp.SessionId(sessDeleteSessionID),
+					ModeId:    "mode-x",
+				})
+
+				return err
+			},
+		},
+		{
+			name:   "list declines naming the method",
+			method: acp.AgentMethodSessionList,
+			call: func() error {
+				_, err := h.client.ListSessions(ctx, acp.ListSessionsRequest{})
+
+				return err
+			},
+		},
+		{
+			name:   "load declines naming the method",
+			method: acp.AgentMethodSessionLoad,
+			call: func() error {
+				_, err := h.client.LoadSession(ctx, acp.LoadSessionRequest{
+					SessionId:  acp.SessionId(sessDeleteSessionID),
+					Cwd:        t.TempDir(),
+					McpServers: []acp.McpServer{},
+				})
+
+				return err
+			},
+		},
+	}
+}
+
+// sessRawSetModelDecline is the set_model row's body: the raw request rides
+// the tee's client-side write leg (the pinned SDK client has no
+// session/set_model surface — the injection is the row's only route to the
+// wire) and the reply frame byte-locks the SDK fallback's decline.
+func sessRawSetModelDecline(t *testing.T, h *FrontHarness) {
+	t.Helper()
+
+	raw := `{"jsonrpc":"2.0","id":` + sessRawProbeID + `,"method":"session/set_model",` +
+		`"params":{"sessionId":"` + sessDeleteSessionID + `",` +
+		`"model":{"providerId":"` + corpusProviderID + `","modelId":"` + corpusModelID + `"}}}` + "\n"
+
+	if _, err := h.tee.Write([]byte(raw)); err != nil {
+		t.Fatalf("inject the raw session/set_model frame: %v", err)
+	}
+
+	reply := waitSessRawReply(t, h, `"id":`+sessRawProbeID)
+
+	assertSessDeclineFrame(t, reply, "session/set_model")
+}
+
+// assertSessDeclineError byte-locks one typed decline error (the SDK's
+// RequestError the client decodes): code -32601, message "Method not
+// found", data.method naming the declined method — never paraphrased.
+func assertSessDeclineError(t *testing.T, err error, method string) {
+	t.Helper()
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("%s decline = %T (%v), want a coded RequestError", method, err, err)
+	}
+
+	if rerr.Code != -32601 {
+		t.Fatalf("%s decline code = %d, want -32601 (MethodNotFound)", method, rerr.Code)
+	}
+
+	var data map[string]string
+	if jsonErr := json.Unmarshal(rerr.Data, &data); jsonErr != nil {
+		t.Fatalf("decode %s decline data: %v (%s)", method, jsonErr, rerr.Data)
+	}
+
+	if data["method"] != method {
+		t.Fatalf("%s decline data method = %q, want %q (byte-locked, never paraphrased)",
+			method, data["method"], method)
+	}
+}
+
+// assertSessDeclineFrame byte-locks one decline frame on the RAW tee line:
+// the -32601 code, the exact message literal, and the data.method string —
+// the wire truth Orca's matchers would read.
+func assertSessDeclineFrame(t *testing.T, reply TeeLine, method string) {
+	t.Helper()
+
+	if !strings.Contains(reply.JSON, `"code":-32601`) {
+		t.Fatalf("decline frame code drift: %s", reply.JSON)
+	}
+
+	if !strings.Contains(reply.JSON, teeNotFoundMessage) {
+		t.Fatalf("decline frame message drift (want %s): %s", teeNotFoundMessage, reply.JSON)
+	}
+
+	wantData := `"data":{"method":"` + method + `"}`
+	if !strings.Contains(reply.JSON, wantData) {
+		t.Fatalf("decline frame data drift (want %s): %s", wantData, reply.JSON)
+	}
+}
+
+// waitSessRawReply polls the recorded tee for the reply frame carrying
+// idKey (the raw-frame rows' response — no SDK call object exists to
+// await), bounded by the composed-tier wait; fails the test when none
+// arrives.
+func waitSessRawReply(t *testing.T, h *FrontHarness, idKey string) TeeLine {
+	t.Helper()
+
+	deadline := time.Now().Add(tracerWait)
+
+	for time.Now().Before(deadline) {
+		for _, line := range h.ACPLines() {
+			if line.Dir == "in" && strings.Contains(line.JSON, idKey) {
+				return line
+			}
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("no reply frame matching %s arrived on the tee within the wait bound", idKey)
+
+	return TeeLine{}
 }

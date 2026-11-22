@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestSessionDeleteUnknown|TestSessionForkDecline|TestUncoveredMethodDeclines' ./internal/acpfront/",
+  "exitCode": 0,
+  "output": "ok  \tgithub.com/Djarvur/zcode-acp/internal/acpfront\t1.146s",
+  "targetTest": "TestSessionDeleteUnknownSilentSuccess, TestSessionForkDeclineByteLocked, TestUncoveredMethodDeclines",
+  "targetFile": "internal/acpfront/sesscompat_test.go",
+  "expected": "Per the plan's RED expectations: the delete-unknown row RED-fails (the plan assumed only the registered arm had landed); the fork/set_mode/list/load/set_model rows land CONFIRM-GREEN-DEFAULT (the SDK dispatcher/adapter defaults ARE the decline contract, and the GREEN makes the fork arm explicit, not the shape different)",
+  "actual": "ALL rows pass pre-Task-2-GREEN. (1) The delete-unknown row passes because Task 1's GREEN (76c04d0) already implemented Front.DeleteSession's BOTH arms verbatim per its action text (\"registry.Get fails -> return nil immediately\") — the plan's Task-2 premise (\"the delete-unknown row RED-fails today\") was written against the pre-Task-1 state; Task 1's committed GREEN consumed that RED. (2) The fork/set_mode/list/load/set_model rows pass via the SDK optional-interface/adapter defaults exactly as the plan's CONFIRM-GREEN-DEFAULT branch anticipates. A first run's only failures were a test-helper bug (authTeeResponse filters reply frames carrying a method key — the decline data does), fixed with the sessTeeReply helper; the fixed run is this record",
+  "semanticAssessment": "CONFIRM-GREEN-DEFAULT (05-08 precedent, recorded honestly): no behavior row RED-fails at Task-2 entry — the delete-unknown RED was consumed by Task 1's GREEN commit (76c04d0, in-sequence), and the decline rows lock SDK-default shapes the plan declares the contract. The genuine Task-2 GREEN is the EXPLICIT fork arm (grep-verified baseline 0 @HEAD), not a wire-shape change"
+}

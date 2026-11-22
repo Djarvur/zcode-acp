@@ -439,6 +439,32 @@ func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 	}
 }
 
+// TestForkArmIsExplicit locks the plan 07-03 Task-2 GREEN's production
+// change: the adapter implements the SDK's OPTIONAL AgentUnstableForkSession
+// interface explicitly, returning unadvertised(AgentMethodSessionFork) —
+// byte-identical to the dispatcher's type-assert default, but self-documenting
+// and testable without relying on the default path (T-07-10: the honest
+// -32601 decline is the contract; the explicit arm keeps it that way even if
+// the SDK's default arm ever shifts).
+//
+// RED at Task-2 entry: the adapter implements no UnstableForkSession — the
+// type-assert fails at the planned assertion.
+func TestForkArmIsExplicit(t *testing.T) {
+	var target any = acpport.NewAgent(newScriptedHandlers())
+
+	forker, ok := target.(acp.AgentUnstableForkSession)
+	if !ok {
+		t.Fatalf("agentAdapter must implement AgentUnstableForkSession explicitly " +
+			"(the decline arm must not ride the SDK's type-assert default)")
+	}
+
+	_, err := forker.UnstableForkSession(context.Background(), acp.UnstableForkSessionRequest{
+		SessionId: acp.SessionId(testSessionID),
+		Cwd:       testCwd,
+	})
+	assertMethodNotFound(t, err, acp.AgentMethodSessionFork)
+}
+
 // assertMethodNotFound asserts one coded -32601 error naming the method.
 func assertMethodNotFound(t *testing.T, err error, method string) {
 	t.Helper()

@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestForkArmIsExplicit' ./internal/acpport/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestForkArmIsExplicit (0.00s)\n    agent_test.go:457: agentAdapter must implement AgentUnstableForkSession explicitly (the decline arm must not ride the SDK's type-assert default)\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpport\t0.009s\nFAIL",
+  "targetTest": "TestForkArmIsExplicit",
+  "targetFile": "internal/acpport/agent_test.go",
+  "expected": "The adapter must implement the SDK's optional AgentUnstableForkSession interface explicitly (UnstableForkSession returning unadvertised(acp.AgentMethodSessionFork), byte-identical to the dispatcher default) and answer the coded -32601 naming \"session/fork\" from the explicit arm. Pre-implementation (HEAD 76c04d0, grep baseline 0) the adapter implements no such method — the type-assert must fail on exactly that",
+  "actual": "Exactly that: the type-assert failed at the planned Fatalf (\"must implement AgentUnstableForkSession explicitly\") — the wire-shape rows that pass via the SDK default are separately recorded in 07-03-task2-confirm-green.json (INVALID_RED unexpected_green, honest)",
+  "semanticAssessment": "VALID RED - the target test executed and failed on its planned assertion (the explicit-arm absence at the type-assert) for the intended reason; the test compiles and runs (no build failure — the interface type-assert is a runtime check), the failure is deterministic, and the GREEN change it authorizes is precisely the explicit UnstableForkSession method on agentAdapter"
+}
