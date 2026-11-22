@@ -201,6 +201,29 @@ Field proof of the translation's necessity: the 2026-11-22 Orca card reproductio
 the wrapper translated only `part.delta`, which the desktop never sends [V-RPT private field
 notes — the QA-03 field report].
 
+**The completion-side reconcile (the no-delta reply path, QA-03 second half):** the delta stream
+itself is not guaranteed per turn — the same prompt (`Reply with the single word: ok`) produced
+streaming `model.streaming` turns on some desktop runs and turns that completed `end_turn` with
+ZERO deltas on others (the clean-build field turn emitted zero client frames; the reply text
+existed only in the backend's message store) [V-RPT private field notes — the QA-03 field
+report]. A streaming-only translation therefore leaves such turns with an empty client reply.
+The wrapper's reconcile closes that path: when a turn resolves completed and ZERO
+`agent_message_chunk` were emitted during the turn, the wrapper polls `session/messages` ONCE
+(bounded read; the idle-window poll shape — params `{sessionId}`, result carries the messages
+projection), extracts the LAST `role:"assistant"` entry's `type:"text"` parts (concatenated in
+part order; the `reasoning`/`step-start`/`step-finish`/`timeline` parts are never message text),
+and emits it as ONE `agent_message_chunk` BEFORE the stopReason reply leaves — the chunk rides
+the same flush as any streamed delta. The projection wire truth (capture-verbatim scrubbed):
+the completed turn's poll carried the reply as the last `messages[]` entry with
+`info.role:"assistant"`, `info.finish:"stop"`, and parts `step-start` → `reasoning` (thinking
+text) → `text` (`"ok"` — the reply) → `step-finish` [V-EXP EXP-CODINGPLAN-CYCLE-01]. Honesty
+arms: deltas DID stream → the reconcile never fires (no duplicate); the poll fails, or the
+projection carries no assistant reply, or no `type:"text"` parts → NO fabricated chunk and the
+stopReason still leaves (the client sees the honest empty reply + `end_turn`, never a hang).
+The machine's own idle-window polls cannot source this text: their poll results are consumed as
+presence/time evidence only — content never interpreted, nothing stored — and the poll loop is
+joined before the turn resolves, so the reconcile reads the surface once at completion.
+
 **Completion half — `V-SRC-only` (bundle source enumeration; limitation above applies):**
 
 | Signal | Where it lives | Evidence |
@@ -327,7 +350,7 @@ First-class section per D-01: everything above documents the **shipped 3.18.2** 
 | `[V-EXP EXP-SUBSCRIBE-01]` | `experiments/captures/EXP-SUBSCRIBE-01.jsonl` (E1, 2026-11-19, no quota): per-method subscribe verdicts (session/subscribe accepted; session/events accepted; v4/conversation/subscribe refused -32603 with the real params schema), idle-boot envelope surface (`startup/storageState` ×5 with `sequence`, `session/lifecycle/changed` ×2 with `revision`, `process/mcpTelemetry` ×6), host-obligation traffic at create (`session/requestRuntimePreferences` answered minimal; `interaction/requestOfficialMcpAuthHeaders` ×6 answered -32601), integer-client-id/string-server-id echoes. |
 | `[V-EXP EXP-TURN-01]` | `experiments/captures/EXP-TURN-01.jsonl` (E2, 2026-11-19, 3 tiny sends / 0 completed): live turn-start signal table (turn-started kinds with `turnId`, `state.updated` running-patch, `session/event` seq envelopes, v4 telemetry + contextComposition), create/setModel/send verdicts (`setModel` refused -32603 "Reasoning level is required"), mid-turn `interaction/requestCredentialCipher` decrypt obligation, the D-05 degradation record (limitation + quota honesty, quoted in section 5), and the source-enumeration block (turn.completed/failed counts, kind literals, 25-name v4 taxonomy). |
 | `[V-EXP EXP-WORKSPACEKEY-01]` | `experiments/captures/EXP-WORKSPACEKEY-01.jsonl` (E3, plan 01-01): create-time host obligations (`session/requestRuntimePreferences` — unanswered ⇒ creates fail -32603), `workspaceKey` host-opaque acceptance; read-back surface (`provider/refreshRegistry` → `{"refreshed":true}`). |
-| `[V-EXP EXP-CODINGPLAN-CYCLE-01]` | `experiments/captures/EXP-CODINGPLAN-CYCLE-01.jsonl` (the Phase-6 guarded coding-plan full-cycle run, plan 06-08 — attempt 1 raw capture, 2026-11-22, scrubbed via the canonical scrubber with the scratch prefixes redacted): the failed attempt whose create fired `interaction/requestOfficialMcpAuthHeaders`, got the shim's -32601 error envelope back (`:15-16`), and whose create reply's `settings` then carried only the builtin registry — the account models never surfaced, the registry read-back verdict timed out, and the authenticate attempt aborted. The wire-truth source for the section 3 subsection's reply shapes and the never--32601 policy; re-runs persist as monotonic `-02`/`-03` files under the same test-locked header id (the EXP-APIKEY-CYCLE precedent). |
+| `[V-EXP EXP-CODINGPLAN-CYCLE-01]` | `experiments/captures/EXP-CODINGPLAN-CYCLE-01.jsonl` (the Phase-6 guarded coding-plan full-cycle run, plan 06-08 — attempt 1 raw capture, 2026-11-22, scrubbed via the canonical scrubber with the scratch prefixes redacted): the failed attempt whose create fired `interaction/requestOfficialMcpAuthHeaders`, got the shim's -32601 error envelope back (`:15-16`), and whose create reply's `settings` then carried only the builtin registry — the account models never surfaced, the registry read-back verdict timed out, and the authenticate attempt aborted. The wire-truth source for the section 3 subsection's reply shapes and the never--32601 policy; ALSO the section 5 completion-side reconcile's projection wire truth (the completed turn's idle-window poll reply carried the reply text as the LAST `role:"assistant"` entry's `type:"text"` parts — poll id 24, the reconcile paragraph's extraction contract); re-runs persist as monotonic `-02`/`-03` files under the same test-locked header id (the EXP-APIKEY-CYCLE precedent). |
 | `[V-EXP EXP-APIKEY-CYCLE-01]` | `experiments/captures/EXP-APIKEY-CYCLE-01.jsonl` plus its monotonic re-run files `-02`/`-03` under the same test-locked header id (`"capture":"EXP-APIKEY-CYCLE-01"` on each first line): the guarded api-key full-cycle run family. `-01` (2026-11-20) the first guarded cycle; `-02` (2026-11-21 morning) the completed turn with NO terminal envelope in-window and the post-completion `-32010` latch (section 5 latch subsection); `-03` (2026-11-21 evening, scrubbed) two COMPLETED streaming turns — the section 5 delta-surface subsection's wire truth (model.streaming `payload.kind` deltas `:177`/`:218`/`:425`, the tool-args trio `:364`–`:366`), the terminal surface observed live (`turn.completed` `:227`), and the full desktop-continuous envelope surface (`deliveryKind`/`eventId`/`seq`/`sessionId`/`timestamp`/`traceId`/`turnId`/`type` on every `session/event`). |
 | `[V-EXP EXP-DISCOVERY-01]` | `experiments/captures/EXP-DISCOVERY-01.jsonl` (plan 01-05): pristine byte-compare of the probed bundle copy, canonical spawn line, localhost-listener decoys, per-version builtin revisions + revision-formula bundle literals and computed example. |
 | `[V-SRC bundle resources/app.asar#…]` | The installed desktop 3.18.2 app bundle (`resources/app.asar`), host-side side: the `interactionRequestOfficialMcpAuthHeaders` host handler anchors the `interaction/requestOfficialMcpAuthHeaders` reply shapes (the three RESULT forms, the origin trust check, `official_auth_unavailable` as the no-resolver decline) — re-derivable by unpacking the installed asar and grepping the handler name (section 3 subsection). |
