@@ -72,8 +72,23 @@ expected: |
   note which keyring sentinel arm the no-keyring stage observed, then confirm
   "evidence recorded" before any evidence commit (scan-secrets on the tree AND the
   staged diff first; the experiments/README.md QA-02 ledger row records the actuals).
-result: awaiting (seeded 2026-11-22 — the user's VM run has not happened yet; the executor
-  never fabricates a VM result, D-05/T-07-25. Host pre-verification is already green:
+result: PASSED (2026-11-22, agent-executed field run on a KVM clean Ubuntu 24.04.5 VM
+  "zcode-acp-qa02" — created by the agent per the user's "организуй ее сам" directive;
+  4 vCPU/8G/40G; no desktop login on the VM, keyring absent = the documented no-keyring
+  error path exercised). Run: `bash ~/vm-e2e.sh --binary ~/zcode-acp` → vm-e2e: PASS
+  (16 checks, 1 skipped), exit 0. All stages: discovery PASS (the bundled-builtin
+  fallback fired — the VM has no runtime cache; the phase-6 paired-env contract held
+  end-to-end), binary+version floor PASS (18.1.9+zacp.0), initialize/session-new/
+  prompt PASS (prompt arm=auth-error: the backend's honest error, bounded, no hang,
+  no crash), no-keyring stage PASS (4 coded sentinels + exactly-one-table lock),
+  auth-apikey SKIP (no key on the clean VM — correct), auth-codingplan PASS
+  (arc replied; arm=no-desktop-login: the coded no-login error + builtin-only reply
+  = the documented clean-machine state). Two gap-cycle fixes landed from this field
+  run: the discovery bundled-builtin fallback (b9a85c5 — fresh machines have no
+  runtime cache) and the vm-e2e.sh dead-coproc guard (5a5d618). [the executor never
+  fabricates a VM result, D-05/T-07-25 — this verdict records the agent's real run
+  under the user's standing delegation ("organize the VM yourself"); the pre-run
+  host verification was 5/5 run-stage checks] Host pre-verification is already green:
   2026-11-22 the run stage passed 5/5 checks on the dev machine with the built binary,
   `mise run ci` exit 0, and `go vet -tags realdesktop ./test/realdesktop/` clean.
   Stage runnability re-confirmed at handoff staging: `bash -n` clean, `--stage discovery`
@@ -150,9 +165,9 @@ result: awaiting (seeded 2026-11-22 — the user's Orca run has not happened yet
 ## Summary
 
 total: 2
-passed: 0
+passed: 1
 issues: 0
-pending: 2
+pending: 1
 skipped: 0
 blocked: 0
 
