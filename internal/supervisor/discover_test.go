@@ -27,11 +27,12 @@ const fixtureEndpointDir = "endpoint-78d7c3bef4024722642626fe3669a799"
 
 // documentedProbeNames returns the fixed probe set in the documented order
 // (install-discovery.md :93-97) extended with the runtime-provider-tree row
-// the spawn line needs; diagnostics preserve this order.
+// the spawn line needs and its install-side bundled fallback (the QA-02
+// fresh-machine completion, EXP-VM-QA02); diagnostics preserve this order.
 func documentedProbeNames() []string {
 	return []string{
 		"override", "xdg-entry", "appimage-glob", "unpacked-glob",
-		"dpkg", "opt-path", "rpm", "builtin-runtime",
+		"dpkg", "opt-path", "rpm", "builtin-runtime", "builtin-bundled",
 	}
 }
 
@@ -86,6 +87,24 @@ func writeRuntimeTree(t *testing.T, home string, versions []string, revs []int) 
 	}
 
 	return provider
+}
+
+// writeBundledBuiltin plants the bundled zcode-builtin.json inside the
+// install itself (resources/config/provider/zcode-builtin.json under the
+// bundle root) — the copy every shipped layout carries; field-verified in the
+// QA-02 VM's squashfs-root (EXP-VM-QA02). Returns the planted path.
+func writeBundledBuiltin(t *testing.T, root string, rev int) string {
+	t.Helper()
+	path := filepath.Join(root, "resources", "config", "provider", "zcode-builtin.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir bundled provider dir: %v", err)
+	}
+	body := fmt.Sprintf(`{"schemaVersion":1,"revision":%d}`, rev)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write bundled zcode-builtin.json: %v", err)
+	}
+
+	return path
 }
 
 // probeRow finds the diagnostics row for one probe name.
@@ -428,5 +447,95 @@ func TestDiscoverFindsNewestBuiltin(t *testing.T) {
 	row, ok := probeRow(probes, "builtin-runtime")
 	if !ok || !strings.Contains(row.Result, "3.18.2") {
 		t.Fatalf("builtin-runtime row must name the picked version: %+v", row)
+	}
+}
+
+func TestDiscoverBundledBuiltinFallback(t *testing.T) {
+	// The QA-02 field failure (EXP-VM-QA02): a fresh machine has no
+	// ~/.zcode/v2/runtime/provider cache, the builtin-runtime probe honestly
+	// misses, and the winner's BuiltinFile came back empty — ChildEnv then
+	// passes the personal path alone, the unpaired env form, and
+	// resolveNodeProviderRuntimePaths kills the worker at startup. Discovery
+	// completes order step 5 install-side: the BUNDLED copy under the winning
+	// root (resources/config/provider/zcode-builtin.json — present in the
+	// QA-02 VM's squashfs-root) feeds the builtin env path.
+	home := t.TempDir()
+	root := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
+	writeBundleTree(t, root)
+	bundled := writeBundledBuiltin(t, root, 44)
+
+	p := supervisor.Probers{
+		Home:    home,
+		AppDirs: func() []string { return []string{root} },
+	}
+	install, probes, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("unpacked tree with bundled builtin must resolve: %v", err)
+	}
+	if install.BuiltinFile != bundled {
+		t.Fatalf("fresh machine (no runtime cache) must fall back to the bundled builtin:\n got %q\nwant %q",
+			install.BuiltinFile, bundled)
+	}
+	row, ok := probeRow(probes, "builtin-bundled")
+	if !ok || !strings.Contains(row.Result, "found") || !strings.Contains(row.Result, bundled) {
+		t.Errorf("builtin-bundled row must record the bundled hit naming the path: %+v", row)
+	}
+}
+
+func TestDiscoverBuiltinStaysEmptyWithoutAnySource(t *testing.T) {
+	// Neither source exists — no runtime-provider tree, no bundled copy under
+	// the root: BuiltinFile stays empty and the install still resolves. The
+	// empty result is first-class and honest (install-discovery.md :34): the
+	// builtin-bundled diagnostics row carries the miss, never a guess.
+	home := t.TempDir()
+	root := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
+	writeBundleTree(t, root)
+
+	p := supervisor.Probers{
+		Home:    home,
+		AppDirs: func() []string { return []string{root} },
+	}
+	install, probes, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("the install itself must still resolve: %v", err)
+	}
+	if install.BuiltinFile != "" {
+		t.Fatalf("no runtime cache and no bundled copy: BuiltinFile must stay empty, got %q",
+			install.BuiltinFile)
+	}
+	row, ok := probeRow(probes, "builtin-bundled")
+	if !ok || strings.Contains(row.Result, "found") {
+		t.Errorf("builtin-bundled row must record the honest miss: %+v", row)
+	}
+}
+
+func TestDiscoverRuntimeCacheWinsOverBundled(t *testing.T) {
+	// Both sources present: the runtime-cache copy wins — the existing
+	// precedence is unchanged and now locked (install-discovery.md :91: the
+	// runtime's registry revision is the ACTIVE-cache path hash, never the
+	// bundled resources copy's).
+	home := t.TempDir()
+	root := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
+	writeBundleTree(t, root)
+	writeBundledBuiltin(t, root, 44)
+	writeRuntimeTree(t, home, []string{"3.18.2"}, []int{44})
+
+	p := supervisor.Probers{
+		Home:    home,
+		AppDirs: func() []string { return []string{root} },
+	}
+	install, probes, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("root install plus runtime tree must resolve: %v", err)
+	}
+	wantBuiltin := filepath.Join(home, ".zcode", "v2", "runtime", "provider",
+		"linux-x86_64", "3.18.2", fixtureEndpointDir, "zcode-builtin.json")
+	if install.BuiltinFile != wantBuiltin {
+		t.Fatalf("the runtime-cache copy must win over the bundled copy:\n got %q\nwant %q",
+			install.BuiltinFile, wantBuiltin)
+	}
+	row, ok := probeRow(probes, "builtin-bundled")
+	if !ok || strings.Contains(row.Result, "found") {
+		t.Errorf("bundled row must not record a hit when the runtime cache resolved: %+v", row)
 	}
 }
