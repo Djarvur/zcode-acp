@@ -159,6 +159,48 @@ Verdict of experiment E1 against the shipped binary (idle session, no send), fro
 
 All `session/event` envelopes above carried `deliveryKind:"desktop-continuous"`, monotone `seq`, `turnId` and `traceId` [V-EXP EXP-TURN-01].
 
+### The model-response delta surface — `session/event` `model.streaming`, 3.18.2 [V-EXP EXP-APIKEY-CYCLE-01]
+
+The completed guarded runs (capture file `experiments/captures/EXP-APIKEY-CYCLE-03.jsonl`, the `-03`
+re-run under the test-locked header id per the capture-monotonicity rule — see its Sources row)
+recorded the first live STREAMING turns, and the carrier fact is load-bearing for any client-facing
+wrapper: **the model's reply text rides `session/event` envelopes with `type:"model.streaming"`
+(the desktop-continuous delivery kind as every `session/event` envelope), with the delta inside
+`params.payload` — NOT the `part.delta` type the 3.17.1-source v4 taxonomy names.** `part.delta`
+stayed ×0 on the wire across every committed capture: the taxonomy block is registration names,
+not observed traffic. Frame shape, capture-verbatim (scrubbed, `:177` — the turn's first delta):
+
+```json
+{"method":"session/event","params":{"deliveryKind":"desktop-continuous","eventId":"<uuid-69>","payload":{"assistantMessageId":"msg_mwqsxze9_<uuid-70>","delta":"The","done":false,"kind":"reasoning_delta"},"seq":7,"sessionId":"sess_<uuid-4>","timestamp":1795289387694,"traceId":"<uuid-5>","turnId":"turn_<uuid-9>","type":"model.streaming"}}
+```
+
+**The `payload.kind` vocabulary is a closed bundle enum.** The `model.streaming` payload schema
+(`assistantMessageId`/`delta`/`done`/`input` members; `kind` enum) reads verbatim in the bundle:
+`"start","finish","error","text_start","text_delta","text_end","reasoning_start","reasoning_delta",
+"reasoning_end","tool_input_start","tool_input_delta","tool_input_end","tool_call"`, registered as
+the `model.streaming` event schema alongside `part.delta` and `tool.updated` [V-SRC bundle
+resources/glm/zcode.cjs#model.streaming payload schema + registration; occurrence counts:
+`text_delta` ×25, `reasoning_delta` ×18, `tool_input_delta` ×19, `tool_input_start` ×13,
+`model.streaming` ×10]. Observed live on the `-03` capture: `reasoning_delta` (thinking text —
+first at `:177`, seven across turn 1), `text_delta` (reply text — `:218` `"ok"`, `:425`
+`"READ-OK"`), and the tool-args trio `tool_input_start`/`tool_input_delta`/`tool_input_end`
+(`:364`–`:366`; the delta carries the tool-call JSON `{"file_path":…}`).
+
+**Wrapper translation (the QA-03 contract):** per delta envelope, exactly ONE ACP client frame in
+arrival order — `kind:"text_delta"` → `session/update` `agent_message_chunk` with content
+`{type:"text", text:<delta>}`; `kind:"reasoning_delta"` → `agent_thought_chunk`; every other kind —
+the tool-args stream and the start/finish/error markers — is a desktop-UI fact, held from the
+client surface (tool cards ride the `tool.updated` stream, whose `scheduled` frame carries the
+full input). `payload.done` is not a completion signal in practice: every observed delta carried
+`done:false` (`"done":true` ×0 in the capture) — the turn-end verdict rides `turn.completed` /
+the quiet-window settle, and the wrapper emits no extra client frame on done. Stream shape:
+monotone per-session `seq`, `turnId` scoped per turn, deltas interleaved across
+`assistantMessageId`s; the client-visible chunk order is the arrival order (single demux path).
+Field proof of the translation's necessity: the 2026-11-22 Orca card reproduction completed
+`end_turn` (~9.3 s, real model reply) while the ACP client received ZERO `session/update` frames —
+the wrapper translated only `part.delta`, which the desktop never sends [V-RPT private field
+notes — the QA-03 field report].
+
 **Completion half — `V-SRC-only` (bundle source enumeration; limitation above applies):**
 
 | Signal | Where it lives | Evidence |
@@ -167,6 +209,15 @@ All `session/event` envelopes above carried `deliveryKind:"desktop-continuous"`,
 | Kind literals `turn-completed` / `turn-failed` / `turn-started` | typed event kinds, each schema carrying `turnId` — the completion events identify their turn [V-SRC bundle resources/glm/zcode.cjs#kind literals + `turnId` co-occurrence] [V-EXP EXP-TURN-01] | |
 | Full v4 event taxonomy (25 registration names) | `turn.started, turn.steerQueued, turn.steerDrained, turn.completed, turn.failed, message.upserted, message.removed, part.started, part.delta, part.upserted, part.removed, model.streaming, tool.updated, permission.requested, permission.resolved, userInput.requested, userInput.resolved, checkpoint.created, rewind.triggered, session.created, session.resumed, session.updated, session.titleUpdated, session.closed, streamRecovery.updated` — the taxonomy block is verbatim present in the bundle [V-SRC bundle resources/glm/zcode.cjs#v4 registration list] [V-EXP EXP-TURN-01] | |
 | How a host receives them | subscribe to the v4 conversation channel — whose real params E1 recorded: `{topic, connectionId, clientMode}` (section 4 refusal) — or consume `v4/conversation/frame` notifications [V-EXP EXP-SUBSCRIBE-01] [V-SRC bundle resources/glm/zcode.cjs#`v4/conversation/frame` ×2] | |
+
+**Correction (2026-11-22, the `-03` run): the terminal surface IS observed live now.** The first
+completed turn of the `-03` capture received `session/event` `type:"turn.completed"` on the
+desktop-continuous stream (`:227`, `seq` 14, ~1 s after the last delta, payload carrying
+`response`/`tokenCount`/`usage`/`toolCallCount`/`resultType:"success"`) — well inside the
+quiet-floor window, i.e. the terminal event resolves such turns before the quiet fallback fires.
+The `-02` run's no-terminal-in-window fact stands as recorded above; both facts together read:
+the terminal envelope may arrive and still be absent on some completed turns — a consumer keeps
+both signals armed.
 
 **Reliability column (planning input for Phase 4):**
 
@@ -277,6 +328,7 @@ First-class section per D-01: everything above documents the **shipped 3.18.2** 
 | `[V-EXP EXP-TURN-01]` | `experiments/captures/EXP-TURN-01.jsonl` (E2, 2026-11-19, 3 tiny sends / 0 completed): live turn-start signal table (turn-started kinds with `turnId`, `state.updated` running-patch, `session/event` seq envelopes, v4 telemetry + contextComposition), create/setModel/send verdicts (`setModel` refused -32603 "Reasoning level is required"), mid-turn `interaction/requestCredentialCipher` decrypt obligation, the D-05 degradation record (limitation + quota honesty, quoted in section 5), and the source-enumeration block (turn.completed/failed counts, kind literals, 25-name v4 taxonomy). |
 | `[V-EXP EXP-WORKSPACEKEY-01]` | `experiments/captures/EXP-WORKSPACEKEY-01.jsonl` (E3, plan 01-01): create-time host obligations (`session/requestRuntimePreferences` — unanswered ⇒ creates fail -32603), `workspaceKey` host-opaque acceptance; read-back surface (`provider/refreshRegistry` → `{"refreshed":true}`). |
 | `[V-EXP EXP-CODINGPLAN-CYCLE-01]` | `experiments/captures/EXP-CODINGPLAN-CYCLE-01.jsonl` (the Phase-6 guarded coding-plan full-cycle run, plan 06-08 — attempt 1 raw capture, 2026-11-22, scrubbed via the canonical scrubber with the scratch prefixes redacted): the failed attempt whose create fired `interaction/requestOfficialMcpAuthHeaders`, got the shim's -32601 error envelope back (`:15-16`), and whose create reply's `settings` then carried only the builtin registry — the account models never surfaced, the registry read-back verdict timed out, and the authenticate attempt aborted. The wire-truth source for the section 3 subsection's reply shapes and the never--32601 policy; re-runs persist as monotonic `-02`/`-03` files under the same test-locked header id (the EXP-APIKEY-CYCLE precedent). |
+| `[V-EXP EXP-APIKEY-CYCLE-01]` | `experiments/captures/EXP-APIKEY-CYCLE-01.jsonl` plus its monotonic re-run files `-02`/`-03` under the same test-locked header id (`"capture":"EXP-APIKEY-CYCLE-01"` on each first line): the guarded api-key full-cycle run family. `-01` (2026-11-20) the first guarded cycle; `-02` (2026-11-21 morning) the completed turn with NO terminal envelope in-window and the post-completion `-32010` latch (section 5 latch subsection); `-03` (2026-11-21 evening, scrubbed) two COMPLETED streaming turns — the section 5 delta-surface subsection's wire truth (model.streaming `payload.kind` deltas `:177`/`:218`/`:425`, the tool-args trio `:364`–`:366`), the terminal surface observed live (`turn.completed` `:227`), and the full desktop-continuous envelope surface (`deliveryKind`/`eventId`/`seq`/`sessionId`/`timestamp`/`traceId`/`turnId`/`type` on every `session/event`). |
 | `[V-EXP EXP-DISCOVERY-01]` | `experiments/captures/EXP-DISCOVERY-01.jsonl` (plan 01-05): pristine byte-compare of the probed bundle copy, canonical spawn line, localhost-listener decoys, per-version builtin revisions + revision-formula bundle literals and computed example. |
 | `[V-SRC bundle resources/app.asar#…]` | The installed desktop 3.18.2 app bundle (`resources/app.asar`), host-side side: the `interactionRequestOfficialMcpAuthHeaders` host handler anchors the `interaction/requestOfficialMcpAuthHeaders` reply shapes (the three RESULT forms, the origin trust check, `official_auth_unavailable` as the no-resolver decline) — re-derivable by unpacking the installed asar and grepping the handler name (section 3 subsection). |
 | `[V-SRC bundle resources/glm/zcode.cjs#…]` | The shipped 3.18.2 entrypoint bundle (V-SRC ground truth per D-01), probed at the unpacked-AppImage squashfs-root copy named in section 9 (pristine `cmp` vs `.orig`: identical, re-run 2026-11-19). Every anchor is re-derivable: method-name map via the section 2 extraction commands; occurrence counts via `grep -o <pattern> \| wc -l` (Pitfall 8: never `grep -c` on a minified bundle). Key anchors and observed counts: method map ×1 per string; v4 strings ×1 (`v4/conversation/frame` ×2); `state.updated` ×72; `startup/storageState` ×3; `session/lifecycle/changed` ×1; `process/mcpTelemetry` ×1; `session/event` ×3; `computer-use/operation-event` ×1; `v4/telemetry/event` ×1; `v4/conversation/contextCompositionChanged` ×1; `deliveryKind` ×61 / `desktop-continuous` ×15 / `web-remote-replayable` ×11; `workspaceKey` ×141; `reasoningLevel` ×184; error codes `-32700` ×2, `-32600` ×3, `-32601` ×5, `-32602` ×14, `-32603` ×4, `-32010` ×4, `-32020` ×8, `-32021` ×3, `-32022` ×5, `-32031` ×5; `"A prompt is already running"` ×1; `"Provider runtime headers were not applied"` ×2; `"Reasoning level is required"` ×1; `unrecognized_keys` ×81; `.strict()` ×1409; `18e4` ×5; `"session/delete"` ×0; `"turn.completed"` ×7 quoted / ×4 bare, `"turn.failed"` ×8 quoted / ×5 bare; error-code enum entries; ack `status:m.enum(["received","unchanged"])`; `sendError("invalid-message",-32600,…)` / `("parse-error",-32700,…)`. |
