@@ -170,10 +170,12 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 // builtin-table rule whose config.access.type is zhipu-account, each
 // {builtinModelIds: verbatim from the table, access {type, entitled true}};
 // states carries per provider {availability available, entitled true,
-// current true}. The rules come from the desktop's OWN bundled table — the
-// SAME install.BuiltinFile readBuiltinRevision opens (D-08's snapshot-side
-// twin: verbatim mirror, no renaming/reordering/model-list editing;
-// T-06-09). Entitlement is a decision the builder RECEIVES: entitled is the
+// current true}. The rules come from the desktop's OWN bundled table —
+// read and decoded ONCE by decodeBuiltinTable, so the revision and the
+// rules always describe the SAME table bytes (D-08 IN-01: an auto-update
+// swapping the file mid-build can never pair a fresh revision with stale
+// rules; D-08's snapshot-side twin: verbatim mirror, no renaming/reordering/
+// model-list editing; T-06-09). Entitlement is a decision the builder RECEIVES: entitled is the
 // caller's gate (production: setting.json selections/modes + store oauth
 // token, authored in 06-05) and a rejected family is omitted from providers
 // AND states entirely — the gate may only omit, never edit. A malformed
@@ -186,12 +188,10 @@ func (b *SnapshotBuilder) BuildAccount(
 	install supervisor.Install,
 	entitled func(family string) bool,
 ) (Snapshot, error) {
-	rev, err := readBuiltinRevision(install.BuiltinFile)
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: %w", err)
-	}
-
-	rules, err := readBuiltinProviderRules(install.BuiltinFile)
+	// ONE read + ONE decode feed both derived values (D-08 IN-01) — the
+	// revision stamped into basedOnZCodeBuiltinRevision and the rules
+	// mirrored into the overlay are the same table snapshot.
+	rev, rules, err := decodeBuiltinTable(install.BuiltinFile)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: %w", err)
 	}
@@ -252,21 +252,27 @@ type builtinProviderRule struct {
 	Family     string   // config.access.accountType — the entitlement-gate family
 }
 
-// readBuiltinProviderRules digs the account-provider rules out of the SAME
-// zcode-builtin.json readBuiltinRevision opens. Capture-verbatim camelCase
-// discipline — but UNLIKE the ack dig-outs, undecodable here is a coded
-// error, NOT absent: a malformed table (undecodable JSON, missing
+// decodeBuiltinTable reads the zcode-builtin.json at path ONCE and decodes
+// it ONCE into both the recorded revision number and the account-provider
+// rules — one snapshot of the file's bytes feeds both derived values, so a
+// desktop auto-update swapping the file between reads can never produce a
+// stale revision/rules pairing (D-08 IN-01; the SAME-read discipline Build's
+// empty-overlay builder applies to the revision alone). Capture-verbatim
+// camelCase discipline — but UNLIKE the ack dig-outs, undecodable here is a
+// coded error, NOT absent: a malformed table (undecodable JSON, missing
 // providerRules, a rule missing its access block) must fail the build, never
-// push a degraded overlay.
-func readBuiltinProviderRules(path string) ([]builtinProviderRule, error) {
+// push a degraded overlay. The coded classes are unchanged from the absorbed
+// rules reader.
+func decodeBuiltinTable(path string) (int, []builtinProviderRule, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read builtin provider rules: %w", err)
+		return 0, nil, fmt.Errorf("read builtin table %s: %w", path, err)
 	}
 
 	//nolint:tagliatelle // wire shape: the desktop's builtin-table keys are capture-verbatim camelCase
 	var parsed struct {
-		Config struct {
+		Revision int `json:"revision"`
+		Config   struct {
 			ProviderConfigRules struct {
 				ProviderRules []json.RawMessage `json:"providerRules"`
 			} `json:"providerConfigRules"`
@@ -274,12 +280,12 @@ func readBuiltinProviderRules(path string) ([]builtinProviderRule, error) {
 	}
 
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil, fmt.Errorf("builtin table %s: parse: %w", path, err)
+		return 0, nil, fmt.Errorf("builtin table %s: parse: %w", path, err)
 	}
 
 	rawRules := parsed.Config.ProviderConfigRules.ProviderRules
 	if rawRules == nil {
-		return nil, fmt.Errorf("builtin table %s: %w", path, errMissingProviderRules)
+		return 0, nil, fmt.Errorf("builtin table %s: %w", path, errMissingProviderRules)
 	}
 
 	rules := make([]builtinProviderRule, 0, len(rawRules))
@@ -287,13 +293,13 @@ func readBuiltinProviderRules(path string) ([]builtinProviderRule, error) {
 	for i, raw := range rawRules {
 		rule, err := digBuiltinRule(path, i, raw)
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 
 		rules = append(rules, rule)
 	}
 
-	return rules, nil
+	return parsed.Revision, rules, nil
 }
 
 // digBuiltinRule decodes one raw provider rule out of the builtin table and
