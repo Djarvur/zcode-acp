@@ -435,6 +435,23 @@ func (a *agentAdapter) DeleteSession(
 	return acp.DeleteSessionResponse{}, nil
 }
 
+// UnstableForkSession is the EXPLICIT fork decline arm (SESS-02, plan
+// 07-03, T-07-10): implementing the SDK's optional AgentUnstableForkSession
+// interface answers session/fork with the SAME graceful decline the
+// dispatcher's type-assert default produces — unadvertised(method) is
+// acp.NewMethodNotFound, the exact -32601 "Method not found" +
+// {"method":"session/fork"} frame — so the honest shape is self-documenting
+// and testable without relying on the default path, and can never drift
+// into a crash path or a faked success. Fork support is v2 scope; the
+// capability stays UNADVERTISED (Orca gates the call client-side and must
+// never start calling it — Pitfall 4).
+func (a *agentAdapter) UnstableForkSession(
+	ctx context.Context,
+	params acp.UnstableForkSessionRequest,
+) (acp.UnstableForkSessionResponse, error) {
+	return acp.UnstableForkSessionResponse{}, unadvertised(acp.AgentMethodSessionFork)
+}
+
 // ListSessions is unadvertised in Phase 4 — clean -32601 default.
 func (a *agentAdapter) ListSessions(
 	ctx context.Context,
