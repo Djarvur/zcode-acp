@@ -101,6 +101,102 @@ both auth stages, and the no-keyring error path asserted against the real
 binary. The wire-level protocol notes live under
 [docs/protocol/](docs/protocol/).
 
+## Connecting to preset-agent-only hosts (launch recipe)
+
+Orca's omp card is a preset agent: it is launched as `<program> omp ...`, and
+a host that only accepts preset agents wires it up through a per-agent
+command override. The whole integration is ONE override string plus ONE env
+mechanism, per auth path — nothing else to configure.
+
+### 1. The per-agent command override
+
+In the client's Settings, set the per-agent command override for the `omp`
+agent to (adjust the path to where you put the binary):
+
+```
+/path/to/zcode-acp omp
+```
+
+Mechanics worth knowing before you type it:
+
+- The string is shell-quoted-tokenized by the client: the first token is the
+  program, the rest are prefix arguments prepended before the card's own
+  arguments. `~/`-prefixed tokens are expanded against your home directory.
+- The tokenizer REJECTS env-assignment prefixes — `VAR=val cmd` is invalid,
+  as are `$`, backticks and shell metacharacters — so an API key can never
+  ride the override string. That rejection is why the env mechanism in step 3
+  exists.
+- A non-empty override satisfies the client's installed-detection check: no
+  binary named `omp` needs to exist in PATH.
+- The override is configured through the Settings UI; where the client
+  persists `agentCmdOverrides` underneath is a labeled known-unknown (the
+  manual QA-03 run confirms it) — do not rely on hand-editing a settings file.
+
+### 2. The version floor (check before wiring)
+
+The client probes the override as `<program> <prefix args> --version` — for
+this recipe that is `zcode-acp omp --version` — with a short timeout, and
+requires a semver >= 18.1.9 for the card's model selectors to resolve
+(>= 17.0.5 to install the card at all). This wrapper prints
+`zcode-acp 18.1.9+zacp.0` — the honest build-metadata form over the
+compatibility floor. Run the check yourself first:
+
+```
+zcode-acp omp --version
+```
+
+### 3. Environment, per auth path
+
+**API key path** — the wrapper needs `ZCODE_ACP_API_KEY` visible in its
+process environment, and the override string cannot carry it (the rejection
+rule above). Use ONE of these two mechanisms:
+
+- an `agentDefaultEnv` entry in the client's settings — a sibling of the
+  command-override setting — with the env name `ZCODE_ACP_API_KEY` and the
+  value `<your-key>` (your real key goes only into your own client settings,
+  never into any doc, script, or the override string); or
+- a two-line PATH shim that the override points at instead of the binary.
+  The export names the env var; the VALUE comes from a file only you own:
+
+  ```sh
+  #!/bin/sh
+  # ~/bin/zcode-acp-omp — PATH shim. Never embed a key here; the sourced
+  # file is yours and holds the real value: export ZCODE_ACP_API_KEY=<your-key>
+  . "$HOME"/.config/zcode-acp/env
+  exec /path/to/zcode-acp "$@"
+  ```
+
+  with the override set to `~/bin/zcode-acp-omp omp` — the `"$@"` already
+  carries the `omp` prefix argument and everything the client appends after
+  it.
+
+**Coding-plan path** — NO env at all: the desktop login is the credential.
+Requirements: the ZCode desktop installed and logged in to the individual
+coding plan, and an unlocked session keyring. A missing/locked keyring
+surfaces as the four coded sentinels from Troubleshooting — actionable
+messages, never a hang.
+
+### 4. Models: launch binding and live switching
+
+- A model picked in the client UI before launch rides `--model
+  providerId/modelId` and binds at session creation (launchesWithModel:true).
+  A reasoning level may accompany it via `--reasoning-level` or
+  `ZCODE_ACP_REASONING_LEVEL` (it requires `--model`; the level defaults to
+  the backend-confirmed shape when omitted).
+- `/model <name>` typed in the chat switches models live (a slash prompt the
+  wrapper resolves server-side). A refused switch renders the card's own
+  strings, byte-exact: `Unknown ACP model: <name>` for an unlisted model and
+  `No model selected.` when nothing is selected — carried as ACP error code
+  -32603 with the text in the error details, exactly the carriage the card's
+  matchers read.
+
+### 5. Client-set environment
+
+The client sets `PI_NO_PTY=1` for the omp card; this wrapper ignores it —
+ACP is a pipe protocol, no PTY is ever allocated. The card's agent-home
+variable (`PI_CODING_AGENT_DIR`) is client bookkeeping and does not affect
+the wrapper.
+
 ## CI
 
 Four GitHub Actions workflows run on this repository (shapes shared with the
