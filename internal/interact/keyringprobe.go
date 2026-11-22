@@ -212,10 +212,14 @@ func (p *keyringProber) classify(ctx context.Context) (string, error) {
 
 	stdout, stderr, execErr := p.exec(pctx, argv, env)
 
-	// 4. Classification, coarsest signals first. The probe's OWN bounded
-	// ctx state is authoritative for the timeout arm (the exec error's
-	// wording is an implementation detail). A cancelled PARENT ctx surfaces
-	// the cancellation, not a probe-class verdict. The autolaunch marker in
+	// 4. Classification, coarsest signals first, the SUCCESS arm ahead of
+	// the deadline arm (D-08 IN-03 / T-07-06): a lookup that answers
+	// successfully exactly at the boundary must classify ok — the deadline
+	// arm below it only claims the false-timeout verdict for lookups that
+	// did NOT hand back a usable answer. The probe's OWN bounded ctx state
+	// is authoritative for the timeout arm (the exec error's wording is an
+	// implementation detail). A cancelled PARENT ctx surfaces the
+	// cancellation, not a probe-class verdict. The autolaunch marker in
 	// stderr is the no-desktop-session class; everything else (rc≠0 or an
 	// empty answer) is the log-in hint. Success = rc 0 with a non-empty
 	// answer — the answer bytes themselves are discarded unread beyond the
@@ -225,11 +229,11 @@ func (p *keyringProber) classify(ctx context.Context) (string, error) {
 	case ctx.Err() != nil:
 		return probeClassCancelled, fmt.Errorf("keyring probe cancelled: %w", ctx.Err())
 
-	case errors.Is(pctx.Err(), context.DeadlineExceeded):
-		return probeClassTimeout, fmt.Errorf("%w (%s ceiling)", ErrKeyringLookupTimeout, p.timeout)
-
 	case execErr == nil && len(bytes.TrimSpace(stdout)) > 0:
 		return probeClassOK, nil
+
+	case errors.Is(pctx.Err(), context.DeadlineExceeded):
+		return probeClassTimeout, fmt.Errorf("%w (%s ceiling)", ErrKeyringLookupTimeout, p.timeout)
 
 	case execErr != nil && bytes.Contains(stderr, []byte(autolaunchMarker)):
 		return probeClassNoDesktopSession, fmt.Errorf("%w: %w", ErrKeyringNoDesktopSession, execErr)
