@@ -57,7 +57,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 
 ### Model & Thought-Level Picker
 
-- [ ] **MODEL-01**: `session/new` response returns `configOptions` (model + thought level) built from the live provider registry after auth
+- [x] **MODEL-01**: `session/new` response returns `configOptions` (model + thought level) built from the live provider registry after auth
 - [ ] **MODEL-02**: `session/set_config_option` maps to `session/setModel` / `session/setThoughtLevel`, re-emits full `configOptions` on change, keeps `currentValue` honest
 
 ### Verification (done-v1 criteria)
@@ -134,7 +134,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AUTH-02 | Phase 6 | Pending |
 | AUTH-03 | Phase 6 | Pending |
 | AUTH-04 | Phase 6 | Pending |
-| MODEL-01 | Phase 6 | Pending |
+| MODEL-01 | Phase 6 | Complete |
 | MODEL-02 | Phase 6 | Pending |
 | DOCS-01 | Phase 7 | Pending |
 | DOCS-02 | Phase 7 | Pending |
