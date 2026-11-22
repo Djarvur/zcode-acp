@@ -431,12 +431,16 @@ func (a *agentAdapter) ListSessions(
 }
 
 // ResumeSession delegates the reattach to Handlers (SESS-01, plan 05-05).
-// The SDK's resume response carries no session id — the reattached id is
-// the request's own, so the Handlers return value is validated non-empty
-// (a front that failed loud already errored) and the response stays the
-// SDK zero value. The request's Cwd rides through verbatim (plan 05-10
-// WR-02 — the SDK contract makes it MUST-be-absolute; the front validates
-// and records it). Front errors are coded via wireError, never passed raw.
+// The SDK's resume response carries no session id — the reattached id IS
+// the request's own — so the adapter delegates and discards the
+// Handlers-returned id (D-08 IN-02: no non-empty check happens here; the
+// front owns the validation — the sessionId must not be empty, the cwd must
+// be absolute, and the reattached id derives from the reply via the front's
+// createSessionID — with every refusal coded via wireError) and the
+// response stays the SDK zero value. The request's Cwd rides through
+// verbatim (plan 05-10 WR-02 — the SDK contract makes it MUST-be-absolute;
+// the front validates and records it). Front errors are coded via
+// wireError, never passed raw.
 func (a *agentAdapter) ResumeSession(
 	ctx context.Context,
 	params acp.ResumeSessionRequest,
