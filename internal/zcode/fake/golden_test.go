@@ -279,6 +279,8 @@ func goldenDrivers() map[string]driverFunc {
 		"runtime-headers-answer":     driveRuntimeHeadersAnswer,
 		"full-cycle":                 driveFullCycle,
 		"lingering-latch-32010":      driveLingeringLatch32010,
+		"config-option-set-model":    driveConfigOptionSetModel,
+		"config-option-thought":      driveConfigOptionThought,
 	}
 }
 
@@ -661,10 +663,10 @@ func driveFrontPreamble(ctx context.Context, d *exchangeDriver) {
 
 	setModelParams := map[string]any{
 		wireKeySessionID: fixSessionID,
-		"model": map[string]any{
+		corpusWireKeyModel: map[string]any{
 			"providerId": "zai-api",
 			"modelId":    "GLM-5.3-Flash",
-			"options":    map[string]any{"reasoningLevel": "high"},
+			"options":    map[string]any{"reasoningLevel": corpusCfgLevelHigh},
 		},
 		"persistAsWorkspaceLastUsed": false,
 	}
@@ -1162,6 +1164,17 @@ const (
 	// preambles create against (byte-deterministic).
 	corpusWorkspacePath = "/tmp/happy-turn-ws"
 
+	// corpusCfgOptionModel/corpusCfgOptionThought are the config-option
+	// rows' configId values; corpusCfgLevelHigh the shared confirmed level
+	// (goconst: the repeated capture-verbatim spellings extract to one
+	// source each).
+	corpusCfgOptionModel   = "model"
+	corpusCfgOptionThought = "thought_level"
+	corpusCfgLevelHigh     = "high"
+
+	// corpusWireKeyModel is the setModel params' model-object wire key.
+	corpusWireKeyModel = "model"
+
 	// cpCorpusAccountProvider/Family are the fixture builtin table's
 	// zhipu-account rule (the account overlay's single provider).
 	cpCorpusAccountProvider = "account:zai-individual-coding-plan"
@@ -1336,10 +1349,10 @@ func driveCodingPlanAuthCycle(ctx context.Context, d *exchangeDriver) {
 
 	if _, err := d.call(ctx, zcode.MethodSessionSetModel, map[string]any{
 		wireKeySessionID: cpCorpusSessionID,
-		"model": map[string]any{
+		corpusWireKeyModel: map[string]any{
 			"providerId": cpCorpusAccountProvider,
 			"modelId":    "GLM-5.3",
-			"options":    map[string]any{"reasoningLevel": "high"},
+			"options":    map[string]any{"reasoningLevel": corpusCfgLevelHigh},
 		},
 		"persistAsWorkspaceLastUsed": false,
 	}); err != nil {
@@ -1396,6 +1409,96 @@ func driveRuntimeHeadersAnswer(ctx context.Context, d *exchangeDriver) {
 
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.send(ctx)
+}
+
+// configOptionCorpusModelSelection is the configured selection both
+// config-option rows bind with (the session/new setModel follow-up fires;
+// its reply IS the confirmed snapshot the picker validates against).
+func configOptionCorpusModelSelection() acpfront.ModelSelection {
+	return acpfront.ModelSelection{
+		ProviderID:     "zai-api",
+		ModelID:        "GLM-5.3-Flash",
+		ReasoningLevel: corpusCfgLevelHigh,
+	}
+}
+
+// driveConfigOptionSetModel: the MODEL-02 model-switch corpus row (plan
+// 06-06) — the full front composition, the standard preamble, then the SDK
+// client's session/set_config_option with a LISTED model value: the
+// picker's setModel carries the CURRENT confirmed level (Pitfall 2 — a
+// switch must never silently drop it) and the reply confirms the new
+// current. The golden byte-locks both setModel payloads (the follow-up's
+// and the picker's — model object + the carried options.reasoningLevel +
+// explicit persistAsWorkspaceLastUsed:false) and the reply-triggered
+// sequencing.
+func driveConfigOptionSetModel(ctx context.Context, d *exchangeDriver) {
+	driveConfigOptionCorpus(ctx, d, corpusCfgOptionModel, "zai-api/GLM-5.3")
+}
+
+// driveConfigOptionThought: the MODEL-02 thought-level corpus row (plan
+// 06-06, locked OQ1) — the same preamble, then the thought-level ask: the
+// setModel path is the ONLY mutation frame (no dedicated setThoughtLevel
+// exists on the v1 wire), the confirmed model rides unchanged, and the
+// requested level travels in options.reasoningLevel; the reply confirms the
+// new thoughtLevel.current. The golden byte-locks that payload shape.
+func driveConfigOptionThought(ctx context.Context, d *exchangeDriver) {
+	driveConfigOptionCorpus(ctx, d, corpusCfgOptionThought, "medium")
+}
+
+// driveConfigOptionCorpus is the shared body of both config-option rows:
+// the FULL front composition (the Front with the configured selection
+// wrapped via acpport over a real SDK client — pipe ownership mirrors
+// drivePermissionAllow: the agent connection writes toClientW and reads
+// toAgentR; the client mirrors), the client-leg preamble (initialize →
+// session/new — create, subscribe, the setModel follow-up whose reply IS
+// the confirmed snapshot), then the session/set_config_option ask.
+func driveConfigOptionCorpus(ctx context.Context, d *exchangeDriver, configID, value string) {
+	t := d.t
+
+	toAgentR, toAgentW := io.Pipe()
+	toClientR, toClientW := io.Pipe()
+
+	t.Cleanup(func() {
+		for _, c := range []io.Closer{toAgentR, toAgentW, toClientR, toClientW} {
+			_ = c.Close()
+		}
+	})
+
+	//nolint:contextcheck // the Front derives its own process-lifetime base
+	// context by design (front.go New — the containedctx rule); the driver's
+	// ctx bounds only the back-leg calls.
+	front := acpfront.New(d.conn, acpfront.WithModel(configOptionCorpusModelSelection()))
+
+	// The construction order completes both bindings before any frame
+	// flows; the scripted permissionClient never sees an ask on these rows.
+	//nolint:dogsled // the front carries all three bindings; none is needed here
+	_, _, _ = acpport.NewAgentSideConnection(acpport.NewAgent(front), toClientW, toAgentR)
+
+	client := acp.NewClientSideConnection(&permissionClient{}, toAgentW, toClientR)
+
+	if _, err := client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	newResp, err := client.NewSession(ctx, acp.NewSessionRequest{Cwd: corpusWorkspacePath})
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+
+	if newResp.SessionId == "" {
+		t.Fatal("session/new returned an empty session id")
+	}
+
+	_, err = client.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
+		ValueId: &acp.SetSessionConfigOptionValueId{
+			SessionId: newResp.SessionId,
+			ConfigId:  acp.SessionConfigId(configID),
+			Value:     acp.SessionConfigValueId(value),
+		},
+	})
+	if err != nil {
+		t.Fatalf("set_config_option %s: %v", configID, err)
+	}
 }
 
 // driveFullCycle: the full-cycle corpus row (plan 05-08) — the ONE-scenario
