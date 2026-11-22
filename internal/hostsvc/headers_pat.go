@@ -5,7 +5,11 @@
 // the unauthenticated None — the static arm's unconfigured posture covers
 // the pre-auth ask) delegates byte-compatibly to the existing static-key
 // handler. Inside one coding-plan ask: the cached PAT answers with zero
-// mints, a rejectedProjectTokenFingerprint equal to the cached fingerprint
+// mints, a cache miss routes through the single-flight Ensure (a rider
+// landing in the D-05 re-mint window JOINS the in-flight mint instead of
+// answering login_required from a known-empty cache, WR-02; Ensure's
+// pre-network login check keeps the unauthenticated coded arm unchanged),
+// a rejectedProjectTokenFingerprint equal to the cached fingerprint
 // drops the cache and re-mints EXACTLY ONCE, a second consecutive rejection
 // surfaces the honest coded error (never an infinite loop), and an
 // expectedAccountScope mismatch refuses before any token is served (the
@@ -98,11 +102,9 @@ func PatHeadersSource(deps PatHeadersSourceDeps) interact.RuntimeHeadersKeySourc
 
 		pat, ok := deps.Minter.Cached(ctx)
 		if !ok || pat.Token == "" {
-			// The PAT-less arm (pre-auth or post-invalidate): the coded
-			// error naming the unauthenticated state — never an empty
-			// success arm, and the ask-side never mints into an
-			// unauthenticated state (the mint runs at authenticate, D-04).
-			return "", "", "", ErrPatLoginRequired
+			// The cache-miss arm (WR-02): the single-flight join — see
+			// patServeCacheMiss.
+			return patServeCacheMiss(ctx, deps.Minter, expectedScope, rejectedFP)
 		}
 
 		// The scope gate FIRST (T-06-22): a mismatching expectedAccountScope
@@ -157,6 +159,45 @@ func PatHeadersSource(deps PatHeadersSourceDeps) interact.RuntimeHeadersKeySourc
 		// recovery).
 		return pat.Token, pat.APIKeyID, pat.AccountScope, nil
 	}
+}
+
+// patServeCacheMiss answers one ask whose cache read missed (WR-02): route
+// the ask through the single-flight Ensure. A D-05 re-mint already in
+// flight means this ask WAITS for it and serves the same fresh token — a
+// known-empty cache can no longer answer the misleading login_required to a
+// logged-in user (the concurrent rider that lands in the invalidate→ensure
+// window joins the coalesced mint instead). With no desktop login at all,
+// Ensure's credential check precedes any network I/O and answers the SAME
+// coded ErrPatLoginRequired with zero HTTP (locked at the minter tier by
+// TestPatMinterLoginRequired), so the unauthenticated posture is unchanged:
+// the ask-side never mints into an unauthenticated state (the mint runs at
+// authenticate, D-04). The served fresh token passes the same two refusal
+// gates as the re-mint arm: the scope refusal first, then the
+// rejection-loop stop when the mint reproduced the rejected fingerprint
+// (never serve a known-rejected token).
+func patServeCacheMiss(
+	ctx context.Context, minter patMintSource, expectedScope, rejectedFP string,
+) (apiKey, apiKeyID, accountScope string, err error) {
+	fresh, err := minter.Ensure(ctx)
+	if err != nil {
+		// The minter's coded project_token errors pass through UNWRAPPED —
+		// the sentinel is the wire's match surface (consumers match the
+		// coded class, never the message prose); wrapping would hide it
+		// behind the responder's -32603 framing chain.
+		//
+		//nolint:wrapcheck // the coded pass-through IS the contract (sentinel matching at the deliver seam)
+		return "", "", "", err
+	}
+
+	if expectedScope != "" && expectedScope != fresh.AccountScope {
+		return "", "", "", ErrPatScopeInvalidated
+	}
+
+	if rejectedFP != "" && rejectedFP == fresh.Fingerprint {
+		return "", "", "", ErrPatRejectionLoop
+	}
+
+	return fresh.Token, fresh.APIKeyID, fresh.AccountScope, nil
 }
 
 // fallback serves the ask through the api-key fallback (the static arm); a
