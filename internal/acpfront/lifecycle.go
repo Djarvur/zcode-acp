@@ -109,6 +109,12 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (strin
 		wireKeySessionID: sid,
 		"deliveryKind":   "desktop-continuous",
 	}); err != nil {
+		// WR-04 (plan 07-01): the cwd recorded above must not leak — this
+		// path has no orphan close (the backend session pre-existed), so
+		// the drop rides the refusal return itself (the WR-07 bounding
+		// invariant holds on failure paths too).
+		f.dropCwd(sid)
+
 		return "", acpport.NewInternal("session/resume subscribe: %v", err)
 	}
 

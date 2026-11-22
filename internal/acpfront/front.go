@@ -826,14 +826,14 @@ func (f *Front) recordCwd(sessionID, cwd string) {
 // recordSettings stores one session's latest confirmed settings snapshot
 // (plan 06-04): session/new records the create reply's snapshot and again
 // the setModel follow-up's — the later reply overwrites, because the
-// follow-up reply IS the server-confirmed state (D-10).
+// follow-up reply IS the server-confirmed state (D-10). The store is
+// initialized by the ONLY constructor (New) and never reassigned — no
+// re-initialization lives here (IN-04, plan 07-01: the dead nil-guard is
+// gone; the sibling lazy-init of closing in CloseSession is load-bearing
+// and stays).
 func (f *Front) recordSettings(sessionID string, raw json.RawMessage) {
 	f.settingsMu.Lock()
 	defer f.settingsMu.Unlock()
-
-	if f.settings == nil {
-		f.settings = make(map[string]json.RawMessage)
-	}
 
 	f.settings[sessionID] = raw
 }
@@ -883,7 +883,15 @@ func (f *Front) isClosing(sessionID string) bool {
 // session down best-effort and logs structurally. It is the wire-level
 // close — NOT Front.CloseSession: the orphan deliberately holds no
 // registry entry (nothing to release; the machine was never constructed).
+// It DOES drop the session's recorded cwd/settings entries (WR-04, plan
+// 07-01): closeOrphan is the failure-path closer, so the WR-07 bounding
+// invariant belongs here — every post-create failure path leaves zero map
+// entries behind. The drops ride BEFORE the wire attempt so a failed
+// best-effort close cannot skip them.
 func (f *Front) closeOrphan(ctx context.Context, sessionID, stage string, cause error) {
+	f.dropCwd(sessionID)
+	f.dropSettings(sessionID)
+
 	if _, err := f.conn.Call(ctx, zcode.MethodSessionClose, map[string]any{"sessionId": sessionID}); err != nil {
 		slog.Warn("acpfront: orphan backend session close failed",
 			"session", sessionID, "stage", stage, "err", err)
