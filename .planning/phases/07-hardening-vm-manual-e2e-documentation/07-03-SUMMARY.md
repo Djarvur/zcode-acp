@@ -186,3 +186,10 @@ None - no external service configuration required.
 ---
 *Phase: 07-hardening-vm-manual-e2e-documentation*
 *Completed: 2026-11-22*
+
+## Self-Check: PASSED
+
+- Created files verified on disk: `internal/acpfront/sesscompat_test.go`, `.planning/tdd/07-03-task{1-red,2-red,2-confirm-green}.json`
+- All 6 commits verified as HEAD ancestors: `e7476f3`, `76c04d0`, `9e9ba7d`, `88df6c7`, `3c2a10a`, `b4a97df`
+- Commits measured from the persisted ledger (`gsd-plan-head-before-7-03` = `e7eb577`): 5 plan commits + 1 docs commit
+- Named rows green under `-race -count=3`; both packages green under `-race -count=1`; `mise run ci` green at wave close
