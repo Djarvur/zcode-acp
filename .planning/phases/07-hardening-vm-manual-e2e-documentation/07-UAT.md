@@ -175,7 +175,23 @@ result: awaiting (seeded 2026-11-22 — the user's Orca run has not happened yet
   The installed /home/nil/go/bin/zcode-acp is the fixed build (02:20). The user's
   GUI pass on both auth paths remains the QA-03 gate; the interim "successful"
   runs on the stale binary were the race's lucky side and are recorded as such in
-  the ledger (experiments/README.md, QA-03 gap cycle 3).)
+  the ledger (experiments/README.md, QA-03 gap cycle 3).
+
+  AGENT GUI-IN-VM RENDERING PASS (2026-11-23 02:35–03:00, per the user's recorded
+  delegation — the rendering check is the agent's, in a VM): on the qa02 clean VM,
+  Orca (fresh profile) + the omp card through its own onboarding UI (CDP-driven) +
+  the FIXED wrapper + the app-server override to cmd/fake-app-server (composed
+  auth+streaming corpus scenario). VERIFIED IN THE GUI by the agent's own eyes
+  (screenshot experiments/captures/qa03-gui-vm-two-turns.png): the chat renders
+  the user bubble, the Reasoning section (thought chunks), and the assistant reply
+  text for BOTH turns of one session — the reply text is the corpus deltas
+  verbatim ("Answer: done"), proving by construction the frames crossed
+  wrapper→card; closing the chat tab tears the wrapper down cleanly. ZERO API
+  spend (fake tier; the real-model leg was terminal-verified 8/8 on the host).
+  Remaining user-side items (tied to the real desktop login on the user's
+  machine): the account-model picker rendering and the /model switch on the real
+  account — or the user's acceptance of the piecewise verification above as the
+  QA-03 verdict.)
 
 ## Summary
 
