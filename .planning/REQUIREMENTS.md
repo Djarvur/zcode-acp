@@ -47,7 +47,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 - [x] **AUTH-01**: api-key path: `provider/updateAccountConfig` + `interaction/requestProviderRuntimeHeaders` answered correctly (registry state verified, not the ack)
 - [ ] **AUTH-02**: OAuth individual coding plan: registry snapshot with exact `zcode-builtin:<rev>:<sha256>` revision string, `interaction/requestCredentialCipher` (Secret Service key decryption on Ubuntu GNOME), PAT mint via api.z.ai chain, `requestAuth` response — only official paths
 - [ ] **AUTH-03**: `authenticate{methodId}` works for both advertised methods; account models appear after auth
-- [ ] **AUTH-04**: Missing keyring (headless/CI) fails with a clear error and does not hang the turn
+- [x] **AUTH-04**: Missing keyring (headless/CI) fails with a clear error and does not hang the turn
 
 ### Session Lifecycle (Orca-wide dialect)
 
@@ -133,7 +133,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TOOL-02 | Phase 5 | Complete |
 | AUTH-02 | Phase 6 | Pending |
 | AUTH-03 | Phase 6 | Pending |
-| AUTH-04 | Phase 6 | Pending |
+| AUTH-04 | Phase 6 | Complete |
 | MODEL-01 | Phase 6 | Complete |
 | MODEL-02 | Phase 6 | Pending |
 | DOCS-01 | Phase 7 | Pending |

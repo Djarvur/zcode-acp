@@ -208,7 +208,7 @@ Plans:
   3. On a machine without a keyring (headless/CI), auth fails fast with a clear actionable error and never hangs a turn
   4. After auth, `session/new` returns `configOptions` covering model and thought level, built from the live provider registry
   5. A client-side config-option change maps to `session/setModel` / `session/setThoughtLevel` on the wire, re-emits the full `configOptions` list, and `currentValue` always reflects the real session state
-**Plans**: 4/8 plans executed
+**Plans**: 5/8 plans executed
 
 Plans:
 **Wave 1**
@@ -218,7 +218,7 @@ Plans:
 - [x] 06-04-PLAN.md — configOptions translator + capability advertisement + session/new options (MODEL-01, D-08/D-09/D-10)
 
 **Wave 2** *(blocked on 06-01/02/03)*
-- [ ] 06-05-PLAN.md — Keyring probe (AUTH-04/D-02) + entitlement gate + coding-plan authenticate arm + corpus rows (AUTH-02/03)
+- [x] 06-05-PLAN.md — Keyring probe (AUTH-04/D-02) + entitlement gate + coding-plan authenticate arm + corpus rows (AUTH-02/03)
 
 **Wave 3** *(blocked on 06-04; golden_test.go ownership after 06-05)*
 - [ ] 06-06-PLAN.md — session/set_config_option handler: validate-first, level-carry setModel path, full-list re-emit (MODEL-02)
@@ -254,7 +254,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 15/15 | Complete    | 2026-11-22 |
-| 6. OAuth Coding-Plan Path & Model Picker | 4/8 | In Progress | - |
+| 6. OAuth Coding-Plan Path & Model Picker | 5/8 | In Progress | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
 
 ---
