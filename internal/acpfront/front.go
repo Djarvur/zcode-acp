@@ -661,13 +661,31 @@ func (f *Front) DeleteSession(ctx context.Context, sessionID string) error {
 // the normal turn path.
 //
 // The intercept runs BEFORE acquireTurn (the Prompt call site), so a
-// refused switch never holds the front-wide turn slot.
+// refused switch never holds the front-wide turn slot; the busy gate below
+// keeps that placement from becoming a bypass — mid-turn commands still
+// take the CORE-05 rejection instead of racing the slot.
 func (f *Front) promptModelSlash(
 	ctx context.Context, params acpport.PromptParams, sink acpport.UpdateSink,
 ) (acpport.StopReason, bool, error) {
 	selector, isCommand := modelSlashSelector(params.Text)
 	if !isCommand {
 		return "", false, nil
+	}
+
+	// WR-02 (07-REVIEW): the session-scoped busy gate. A command prompt
+	// issued while THIS session's turn is active takes the CORE-05
+	// turnActiveMessage rejection — the same surface any literal prompt
+	// gets from the slot — instead of issuing a mid-turn setModel mutation
+	// whose refusal would run the picker-refusal teardown (CloseSession →
+	// drainActiveTurn) and cancel the user's RUNNING turn. Session-scoped
+	// under the slot lock (the Cancel WR-07 discipline): another session's
+	// turn on the front-wide slot does not block this session's switch.
+	f.turnMu.Lock()
+	busy := f.turnActive && f.turnSession == params.SessionID
+	f.turnMu.Unlock()
+
+	if busy {
+		return "", true, acpport.NewInvalidRequest(turnActiveMessage)
 	}
 
 	if selector == "" {
