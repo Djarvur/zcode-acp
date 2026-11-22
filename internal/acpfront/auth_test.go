@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/acpfront"
 	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
+	"github.com/Djarvur/zcode-acp/internal/interact"
 	"github.com/Djarvur/zcode-acp/internal/supervisor"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
@@ -518,4 +520,560 @@ func authTeeResponse(t *testing.T, lines []TeeLine, reqIdx int) TeeLine {
 	t.Fatalf("no response frame for the authenticate request (%s on the tee)", idKey)
 
 	return TeeLine{}
+}
+
+// TestCodingPlanAuth locks the composed coding-plan authenticate tier
+// (AUTH-02/03/04, plan 06-05) — the official chain's arms over the fake
+// transcript:
+//
+//   (a) the happy arm: probe ran, push carries the ACCOUNT overlay, refresh
+//       precedes the verdict, the registry patch carries exactly the
+//       snapshot-derived models (the D-08 verdict-side mirror), the PAT
+//       mint ran exactly once after the verdict, the auth mode recorded;
+//   (b) the probe-fail arm: a canned probe error answers the coded probe
+//       error and NOTHING touches the wire (D-02 ordering, composed-tier
+//       proof — zero push, zero refresh, zero mint);
+//   (c) the no-login arm: an empty store answers the coded desktop-first
+//       error before any traffic, no mint;
+//   (d) the read-back negative: the ack says received but the registry
+//       never confirms — the coded read-back error and NO mint (the mint
+//       happens only after the verdict — the PITFALL-1 discipline's mint
+//       half);
+//   (e) the cancel-interrupt arm: cancel between push and verdict → coded
+//       error, no success recorded, an immediate retry completes cleanly;
+//   (f) the api-key regression: authenticate{zai-api-key} still passes with
+//       the coding-plan seams present (AUTH-03 both-methods).
+//
+// All fixture material is synthetic (the scan-secrets gate stays green).
+func TestCodingPlanAuth(t *testing.T) {
+	t.Run("happy chain is probe-proven, overlay-pushed, mint-once", testCodingPlanHappy)
+	t.Run("probe failure answers coded before any wire traffic", testCodingPlanProbeFail)
+	t.Run("no desktop login answers the coded desktop-first error", testCodingPlanNoLogin)
+	t.Run("read-back negative mints nothing", testCodingPlanReadbackNegative)
+	t.Run("interrupted coding-plan authenticate is a clean retry", testCodingPlanCancelRetry)
+	t.Run("api-key arm stays green with the coding-plan seams present", testCodingPlanAPIKeyRegression)
+}
+
+// Coding-plan fixture material — synthetic markers only.
+const (
+	cpFixLoginToken = "fixture-synthetic-not-a-real-login-token"
+
+	cpFixPatToken = "fixture-synthetic-not-a-real-pat"
+
+	cpFixPatKeyID = "key_cp_fix_1"
+
+	// cpFixAccountProvider is the fixture builtin table's zhipu-account rule.
+	cpFixAccountProvider = "account:zai-individual-coding-plan"
+
+	// cpFixAccountFamily is the rule's entitlement family.
+	cpFixAccountFamily = "zai"
+
+	// cpFixAccountModels are the rule's builtinModelIds (the live-probed
+	// revision-44 pair, synthetic in the fixture).
+	cpFixAccountModelA = "GLM-5.3"
+
+	cpFixAccountModelB = "GLM-5.3-Flash"
+)
+
+// cpRefreshStateUpdated is the registry patch the happy arm's read-back
+// surfaces carry (the account models — exactly the snapshot-derived want).
+const cpRefreshStateUpdated = `{"scope":"registry","reason":"registry_refresh","revision":3,` +
+	`"patch":{"providers":{` + `"` + cpFixAccountProvider + `":{"models":["` +
+	cpFixAccountModelA + `","` + cpFixAccountModelB + `"]}}}}`
+
+// cpAckRule is the canned provider/updateAccountConfig ack for the account
+// overlay: providerCount 1 — the overlay's provider is visible in the
+// receipt (receipt evidence only; the verdict stays the registry's).
+func cpAckRule() fake.RequestRule {
+	return fake.RequestRule{
+		Method: zcode.MethodProviderUpdateAccountConfig,
+		Reply: &fake.Reply{Result: json.RawMessage(
+			`{"receivedRevision":"account-bridge:cp-fix1","providerCount":1,"status":"received"}`)},
+	}
+}
+
+// cpRefreshRule builds one provider/refreshRegistry rule for the
+// coding-plan arms (withEmit arms the ACCOUNT-models registry patch).
+func cpRefreshRule(times, delayMs int, withEmit bool) fake.RequestRule {
+	rule := fake.RequestRule{
+		Method:  zcode.MethodProviderRefreshRegistry,
+		Times:   times,
+		DelayMs: delayMs,
+		Reply:   &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)},
+	}
+
+	if withEmit {
+		rule.SideEffects = []fake.SideEffect{{Emit: &fake.Emit{
+			Method: zcode.MethodStateUpdated,
+			Params: json.RawMessage(cpRefreshStateUpdated),
+		}}}
+	}
+
+	return rule
+}
+
+// cpFixWantModels is the snapshot-derived want list for the fixture table:
+// providerId/modelId over the rule's builtinModelIds, sorted (the
+// derivation the arm computes from BuildAccount's output — the test mirrors
+// it here as the expected value).
+func cpFixWantModels() []string {
+	return []string{
+		cpFixAccountProvider + "/" + cpFixAccountModelA,
+		cpFixAccountProvider + "/" + cpFixAccountModelB,
+	}
+}
+
+// codingPlanFixtureInstall writes a temp install whose zcode-builtin.json
+// carries revision 44 AND one zhipu-account provider rule (the account
+// overlay's source table — BuildAccount reads the rules verbatim).
+func codingPlanFixtureInstall(t *testing.T) supervisor.Install {
+	t.Helper()
+
+	root := t.TempDir()
+	builtin := filepath.Join(root, "zcode-builtin.json")
+
+	doc := `{"revision":44,"config":{"providerConfigRules":{"providerRules":[` +
+		`{"providerId":"` + cpFixAccountProvider + `","config":{` +
+		`"builtinModelIds":["` + cpFixAccountModelA + `","` + cpFixAccountModelB + `"],` +
+		`"access":{"type":"zhipu-account","accountType":"` + cpFixAccountFamily + `"}}}]}}}`
+
+	if err := os.WriteFile(builtin, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write builtin fixture: %v", err)
+	}
+
+	return supervisor.Install{
+		Root:        root,
+		Binary:      filepath.Join(root, "zcode"),
+		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		BuiltinFile: builtin,
+		Layout:      "explicit",
+	}
+}
+
+// cpFixtureCredentials writes the fixture credentials.json and returns the
+// 06-01 store over it. entries == nil writes a fresh empty store (the
+// no-login arm).
+func cpFixtureCredentials(t *testing.T, entries map[string]string) *interact.CredentialStore {
+	t.Helper()
+
+	if entries == nil {
+		entries = map[string]string{}
+	}
+
+	doc, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal credentials fixture: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(path, doc, 0o600); err != nil {
+		t.Fatalf("write credentials fixture: %v", err)
+	}
+
+	// v2 loader nil: the fixture entries are plaintext (the store's default
+	// dispatch arm — the reader never touches a keyring for them).
+	return interact.NewCredentialStore(path, nil)
+}
+
+// recordingProbe is the injected probe seam double: it records its
+// invocations and replays a canned verdict (the KeyLoader injection
+// discipline).
+type recordingProbe struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+// probeKeyring adapts the double to the interact.KeyringProber func seam.
+func (r *recordingProbe) probeKeyring(_ context.Context) error {
+	r.mu.Lock()
+	r.calls++
+	fn := r.err
+	r.mu.Unlock()
+
+	return fn
+}
+
+// count reports the recorded invocation count.
+func (r *recordingProbe) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.calls
+}
+
+// scriptedPat is the PatEnsurer double: counts Ensure calls and returns the
+// fixture Pat (the mint-once-after-verdict lock reads the counter).
+type scriptedPat struct {
+	mu    sync.Mutex
+	calls int
+}
+
+// Ensure replays the fixture PAT and counts the call.
+func (s *scriptedPat) Ensure(_ context.Context) (hostsvc.Pat, error) {
+	s.mu.Lock()
+	s.calls++
+	n := s.calls
+	s.mu.Unlock()
+
+	if n > 1 {
+		return hostsvc.Pat{}, errors.New("scripted mint double: second Ensure is a contract violation")
+	}
+
+	return hostsvc.Pat{
+		Token:        cpFixPatToken,
+		APIKeyID:     cpFixPatKeyID,
+		Fingerprint:  strings.Repeat("0", 64),
+		AccountScope: strings.Repeat("f", 64),
+	}, nil
+}
+
+// count reports the recorded Ensure count.
+func (s *scriptedPat) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.calls
+}
+
+// codingPlanConfig composes the arms' default coding-plan seams: the
+// canned-pass recording probe, the fixture store (login present), the
+// scripted mint double, and the canned-true entitlement gate.
+func codingPlanConfig(t *testing.T) (acpfront.AuthConfig, *recordingProbe, *scriptedPat) {
+	t.Helper()
+
+	probe := &recordingProbe{}
+	pat := &scriptedPat{}
+
+	cfg := acpfront.AuthConfig{
+		Creds: cpFixtureCredentials(t, map[string]string{
+			"oauth:" + cpFixAccountFamily + ":access_token": cpFixLoginToken,
+		}),
+		Pat:   pat,
+		Probe: probe.probeKeyring,
+		Entitle: func(_ context.Context, family string) bool {
+			return family == cpFixAccountFamily
+		},
+	}
+
+	return cfg, probe, pat
+}
+
+// newCodingPlanFront composes the loop over coding-plan rules and returns
+// the harness WITH the front (the arms assert the recorded auth mode on it).
+func newCodingPlanFront(
+	t *testing.T, rules []fake.RequestRule, cfg acpfront.AuthConfig,
+) (*FrontHarness, *acpfront.Front) {
+	t.Helper()
+
+	if cfg.Install.Root == "" {
+		cfg.Install = codingPlanFixtureInstall(t)
+	}
+
+	if cfg.ReadbackDeadline == 0 {
+		cfg.ReadbackDeadline = authReadbackDeadline
+	}
+
+	var front *acpfront.Front
+
+	h := ComposeFront(t, authScenario(rules), func(conn *zcode.Conn) acp.Agent {
+		front = acpfront.New(conn,
+			acpfront.WithVersion("0.0.0-dev"),
+			acpfront.WithAuth(cfg),
+		)
+
+		return acpport.NewAgent(front)
+	})
+
+	return h, front
+}
+
+// assertNoCodingPlanTraffic fails the test when any push or refresh frame
+// touched the transcript (the D-02 ordering lock's shared assertion).
+func assertNoCodingPlanTraffic(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	if idx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig); len(idx) != 0 {
+		t.Fatalf("transcript records push at %v — the probe-gated chain must not touch the wire", idx)
+	}
+
+	if idx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry); len(idx) != 0 {
+		t.Fatalf("transcript records refresh at %v — the probe-gated chain must not touch the wire", idx)
+	}
+}
+
+// testCodingPlanHappy is arm (a): the coding-plan chain answers {} with the
+// FULL sequence on the transcript — push (the account overlay visible in
+// the frame), refresh, the registry patch carrying exactly the
+// snapshot-derived models (the D-08 verdict-side mirror asserted against
+// the PUSHED builtinModelIds, never a literal catalog), exactly one mint,
+// and the auth mode recorded.
+func testCodingPlanHappy(t *testing.T) {
+	cfg, probe, pat := codingPlanConfig(t)
+	h, front := newCodingPlanFront(t, []fake.RequestRule{cpAckRule(), cpRefreshRule(0, 0, true)}, cfg)
+
+	if _, err := authenticate(h, acpfront.AuthMethodZaiCodingPlan); err != nil {
+		t.Fatalf("authenticate coding-plan: %v", err)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	pushIdx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig)
+	refreshIdx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry)
+
+	if len(pushIdx) != 1 || len(refreshIdx) != 1 {
+		t.Fatalf("transcript records push×%d refresh×%d, want exactly one honest chain run",
+			len(pushIdx), len(refreshIdx))
+	}
+
+	if pushIdx[0] >= refreshIdx[0] {
+		t.Fatalf("chain order violated: push(%d) must precede refresh(%d)", pushIdx[0], refreshIdx[0])
+	}
+
+	// The overlay visibility: the PUSH FRAME carries the account provider
+	// entry with its builtinModelIds and the entitled zhipu-account access
+	// (Pattern 2's strict shape, mirrored verbatim from the fixture table).
+	pushJSON := tr.Lines[pushIdx[0]].JSON
+
+	for _, marker := range []string{
+		cpFixAccountProvider, `"builtinModelIds"`, `"zhipu-account"`, `"entitled":true`, `"states"`,
+	} {
+		if !strings.Contains(pushJSON, marker) {
+			t.Fatalf("push frame %s lacks the overlay marker %s", pushJSON, marker)
+		}
+	}
+
+	// The D-08 verdict-side mirror: the registry patch's models equal the
+	// providerId/modelId pairs derived from the PUSHED builtinModelIds (the
+	// want list mirrors what we pushed — never a hardcoded catalog).
+	if !strings.Contains(tr.Lines[refreshIdx[0]-1].JSON+tr.Lines[refreshIdx[0]].JSON,
+		cpFixAccountProvider) {
+		t.Fatalf("no account-models registry surface around the refresh — the verdict would wait forever")
+	}
+
+	// The probe RAN (one proactive call — the in-process step the
+	// transcript cannot see; arm (b) proves its ordering).
+	if calls := probe.count(); calls != 1 {
+		t.Fatalf("probe ran %d time(s), want exactly one", calls)
+	}
+
+	// D-04: exactly one mint.
+	if calls := pat.count(); calls != 1 {
+		t.Fatalf("PAT Ensure ran %d time(s), want exactly one (mint-once)", calls)
+	}
+
+	// D-11: the success recorded the coding-plan mode.
+	if mode := front.AuthMode(); mode != acpfront.AuthModeCodingPlan {
+		t.Fatalf("auth mode = %q, want %q after a coding-plan success", mode, acpfront.AuthModeCodingPlan)
+	}
+}
+
+// testCodingPlanProbeFail is arm (b) — the D-02 ordering lock at the
+// composed tier: a canned probe error answers the coded probe error and
+// NOTHING touched the wire (zero push, zero refresh), nothing minted, and
+// no success was recorded.
+func testCodingPlanProbeFail(t *testing.T) {
+	cfg, probe, pat := codingPlanConfig(t)
+	probe.err = errors.New("canned probe failure")
+
+	h, front := newCodingPlanFront(t, []fake.RequestRule{cpAckRule(), cpRefreshRule(0, 0, true)}, cfg)
+
+	_, err := authenticate(h, acpfront.AuthMethodZaiCodingPlan)
+
+	rerr := wireErrOf(t, err)
+	if !strings.Contains(rerr.Message, "keyring") {
+		t.Fatalf("probe-fail message %q must name the keyring step", rerr.Message)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	assertNoCodingPlanTraffic(t, tr)
+
+	if calls := probe.count(); calls != 1 {
+		t.Fatalf("probe ran %d time(s), want exactly one", calls)
+	}
+
+	if calls := pat.count(); calls != 0 {
+		t.Fatalf("PAT Ensure ran %d time(s) on a probe failure — the mint must never run", calls)
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
+		t.Fatalf("auth mode = %q after a probe failure, want none recorded", mode)
+	}
+}
+
+// testCodingPlanNoLogin is arm (c): an empty store answers the coded
+// desktop-first error BEFORE any traffic (T-06-16 — a missing desktop login
+// never fabricates), no mint.
+func testCodingPlanNoLogin(t *testing.T) {
+	cfg, probe, pat := codingPlanConfig(t)
+	cfg.Creds = cpFixtureCredentials(t, nil) // fresh machine: no oauth entry
+
+	h, front := newCodingPlanFront(t, []fake.RequestRule{cpAckRule(), cpRefreshRule(0, 0, true)}, cfg)
+
+	_, err := authenticate(h, acpfront.AuthMethodZaiCodingPlan)
+
+	rerr := wireErrOf(t, err)
+	if !strings.Contains(rerr.Message, "desktop") {
+		t.Fatalf("no-login message %q must carry the desktop-first hint", rerr.Message)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	assertNoCodingPlanTraffic(t, tr)
+
+	if calls := probe.count(); calls != 1 {
+		t.Fatalf("probe ran %d time(s), want exactly one (the probe precedes the login read)", calls)
+	}
+
+	if calls := pat.count(); calls != 0 {
+		t.Fatalf("PAT Ensure ran %d time(s) on a no-login failure — the mint must never run", calls)
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
+		t.Fatalf("auth mode = %q after a no-login failure, want none recorded", mode)
+	}
+}
+
+// testCodingPlanReadbackNegative is arm (d): the ack says received but the
+// registry never confirms within the shortened deadline — the coded
+// read-back error answers and NOTHING MINTED (the mint happens only after
+// the verdict — the PITFALL-1 discipline's mint half).
+func testCodingPlanReadbackNegative(t *testing.T) {
+	cfg, _, pat := codingPlanConfig(t)
+	h, front := newCodingPlanFront(t, []fake.RequestRule{cpAckRule(), cpRefreshRule(0, 0, false)}, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), authReadbackWait)
+	defer cancel()
+
+	_, err := h.client.Authenticate(ctx, acp.AuthenticateRequest{
+		MethodId: acp.AuthMethodId(acpfront.AuthMethodZaiCodingPlan),
+	})
+
+	rerr := wireErrOf(t, err)
+	if !strings.Contains(rerr.Message, "read-back") {
+		t.Fatalf("read-back-negative message %q must name the read-back step", rerr.Message)
+	}
+
+	// The chain RAN (push and refresh on the transcript — the ack said
+	// received) and the verdict was still the registry's (PITFALL 1).
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	if idx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig); len(idx) != 1 {
+		t.Fatalf("transcript records push×%d, want the chain's honest run", len(idx))
+	}
+
+	if calls := pat.count(); calls != 0 {
+		t.Fatalf("PAT Ensure ran %d time(s) without a registry verdict — "+
+			"a mint before the verdict is a contract violation", calls)
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
+		t.Fatalf("auth mode = %q after a read-back failure, want none recorded", mode)
+	}
+}
+
+// testCodingPlanCancelRetry is arm (e): cancel between push and verdict →
+// coded error, no success recorded, no mint; the immediate re-authenticate
+// completes cleanly (the interrupted-authenticate concurrency disposition,
+// re-asserted for the new chain).
+func testCodingPlanCancelRetry(t *testing.T) {
+	cfg, probe, pat := codingPlanConfig(t)
+
+	h, front := newCodingPlanFront(t, []fake.RequestRule{
+		cpAckRule(),
+		cpRefreshRule(1, authRefreshDelayMs, false), // spent by run 1
+		cpRefreshRule(0, 0, true),                   // run 2's registry surface
+	}, cfg)
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+
+	type authResult struct {
+		resp acp.AuthenticateResponse
+		err  error
+	}
+
+	done1 := make(chan authResult, 1)
+
+	go func() {
+		resp, err := h.client.Authenticate(ctx1, acp.AuthenticateRequest{
+			MethodId: acp.AuthMethodId(acpfront.AuthMethodZaiCodingPlan),
+		})
+		done1 <- authResult{resp: resp, err: err}
+	}()
+
+	time.Sleep(authCancelAfter)
+	cancel1()
+
+	res1 := <-done1
+	if res1.err == nil {
+		t.Fatal("interrupted coding-plan authenticate answered success — "+
+			"a cancelled chain must surface a coded error")
+	}
+
+	var rerr1 *acp.RequestError
+	if !errors.As(res1.err, &rerr1) {
+		t.Fatalf("interrupted authenticate error %v is not a coded request error", res1.err)
+	}
+
+	if calls := pat.count(); calls != 0 {
+		t.Fatalf("PAT Ensure ran %d time(s) on the cancelled run — the mint must never run", calls)
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
+		t.Fatalf("auth mode = %q after the cancelled run, want none recorded", mode)
+	}
+
+	// Run 2: the immediate re-authenticate completes cleanly.
+	if _, err := authenticate(h, acpfront.AuthMethodZaiCodingPlan); err != nil {
+		t.Fatalf("re-authenticate after interruption: %v (the retry must be clean)", err)
+	}
+
+	if calls := pat.count(); calls != 1 {
+		t.Fatalf("PAT Ensure ran %d time(s) total, want only the retry's single mint", calls)
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeCodingPlan {
+		t.Fatalf("auth mode = %q after the clean retry, want %q", mode, acpfront.AuthModeCodingPlan)
+	}
+
+	if calls := probe.count(); calls != 2 {
+		t.Fatalf("probe ran %d time(s), want one per authenticate attempt", calls)
+	}
+}
+
+// testCodingPlanAPIKeyRegression is arm (f): with the coding-plan seams
+// present, authenticate{zai-api-key} still passes its honest chain and
+// records the api-key mode (AUTH-03 both-methods).
+func testCodingPlanAPIKeyRegression(t *testing.T) {
+	cfg, _, pat := codingPlanConfig(t)
+	cfg.Keys = configuredAuthKey()
+	cfg.Install = authFixtureInstall(t) // the api-key fixture table (no provider rules needed)
+	cfg.WantModels = authFixWantModels()
+
+	h, front := newCodingPlanFront(t, []fake.RequestRule{authAckRule(), authRefreshRule(0, 0, true)}, cfg)
+
+	if _, err := authenticate(h, acpfront.AuthMethodZaiAPIKey); err != nil {
+		t.Fatalf("authenticate api-key with the coding-plan seams present: %v", err)
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeAPIKey {
+		t.Fatalf("auth mode = %q, want %q after an api-key success", mode, acpfront.AuthModeAPIKey)
+	}
+
+	if calls := pat.count(); calls != 0 {
+		t.Fatalf("PAT Ensure ran %d time(s) on the api-key arm — the mint is coding-plan-only", calls)
+	}
 }

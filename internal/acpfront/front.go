@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
@@ -56,6 +57,14 @@ type Front struct {
 	// for in-flight client round-trips plus the connection-bound sender
 	// bound at acpport construction (permission.go).
 	perm *permissionBridge
+
+	// authMode records the authenticate outcome the runtime-headers source
+	// selects on (D-11, plan 06-05): AuthModeNone until an authenticate
+	// arm's read-back-proven success stores its mode (a failed or cancelled
+	// authenticate records nothing — no half-authenticated state is
+	// observable). Atomic: reads ride any goroutine; the Authenticate
+	// dispatch is the single write point.
+	authMode atomic.Value
 
 	// turnMu guards the front-wide turn slot (the single-active-turn
 	// invariant) and the active turn's tap-facing emitter — the closure

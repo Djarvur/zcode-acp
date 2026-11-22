@@ -11,6 +11,7 @@ import (
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
+	"github.com/Djarvur/zcode-acp/internal/interact"
 	"github.com/Djarvur/zcode-acp/internal/supervisor"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
@@ -40,14 +41,65 @@ const (
 	AuthMethodZaiCodingPlan = "zai-individual-coding-plan"
 )
 
+// AuthMode is the recorded authenticate outcome the runtime-headers source
+// selects on (D-11, plan 06-05): the coding-plan arm records
+// AuthModeCodingPlan at its success tail, the api-key arm AuthModeAPIKey —
+// a cancelled or failed authenticate records NOTHING (no half-authenticated
+// state is observable; the interruptibility contract). The field lives on
+// the Front (atomic — reads ride any goroutine; writes happen only inside
+// the Authenticate dispatch after an arm's read-back-proven success).
+const (
+	AuthModeNone       = ""
+	AuthModeAPIKey     = "api-key"
+	AuthModeCodingPlan = "coding-plan"
+)
+
+// authModeFor maps the advertised method id to its recorded mode value (the
+// dispatch's single mapping point).
+func authModeFor(methodID string) string {
+	if methodID == AuthMethodZaiCodingPlan {
+		return AuthModeCodingPlan
+	}
+
+	return AuthModeAPIKey
+}
+
+// AuthMode returns the recorded authenticate outcome (D-11): one of the
+// AuthMode constants. The runtime-headers source (plan 06-07) selects its
+// answerer on this value.
+func (f *Front) AuthMode() string {
+	if v, ok := f.authMode.Load().(string); ok {
+		return v
+	}
+
+	return AuthModeNone
+}
+
+// recordAuthMode stores one successful authenticate's mode (the dispatch's
+// single write point — arms never store).
+func (f *Front) recordAuthMode(mode string) {
+	f.authMode.Store(mode)
+}
+
 // errAPIKeyUnconfigured is the honest no-key arm (OQ4): the coded error
 // names the env var — the one disposition that never fabricates, never
 // falls back to reading the desktop's own config store.
 var errAPIKeyUnconfigured = errors.New(
 	"authenticate zai-api-key: no api key configured (set ZCODE_ACP_API_KEY or pass --api-key)")
 
+// PatEnsurer is the consumer-side PAT mint seam (D-04, plan 06-05): the
+// coding-plan authenticate arm calls Ensure EXACTLY ONCE, AFTER the
+// registry read-back verdict (a mint before the verdict is a contract
+// violation — the ack is never the verdict). Production wires the
+// *hostsvc.PatMinter at cmd (plan 06-07); tests inject scripted doubles.
+type PatEnsurer interface {
+	// Ensure returns a current PAT, minting through the official chain when
+	// the cache is stale or absent (the minter owns caching + single-flight).
+	Ensure(ctx context.Context) (hostsvc.Pat, error)
+}
+
 // AuthConfig is the authenticate machinery the cmd wiring injects before
-// any frame flows: the configured key binding (the D-05 config source),
+// any frame flow: the configured key binding (the D-05 config source),
 // the resolved install (the snapshot's exact-revision builtin formula
 // reads its zcode-builtin.json), and the read-back want list (the
 // providerId/modelId identifiers the registry surfaces must carry — the
@@ -71,6 +123,27 @@ type AuthConfig struct {
 	// shorten it to exercise the coded read-back-negative arm without
 	// racing the client's own context.
 	ReadbackDeadline time.Duration
+
+	// Creds is the desktop credential store (06-01) the coding-plan arm
+	// reads its login from (D-12: the desktop login IS the credential —
+	// no user-supplied wrapper config). Nil on api-key-only wirings.
+	Creds *interact.CredentialStore
+
+	// Pat is the PAT mint seam (D-04: mint once at authenticate, after the
+	// verdict; in-process only). Nil on api-key-only wirings; a nil seam on
+	// the coding-plan path answers the coded internal error naming the
+	// missing wiring.
+	Pat PatEnsurer
+
+	// Probe is the proactive keyring probe seam (D-02, OQ3 lock): run
+	// BEFORE any snapshot traffic; a failure answers the coded actionable
+	// error and nothing touches the wire. Nil on api-key-only wirings.
+	Probe interact.KeyringProber
+
+	// Entitle is the production entitlement gate (familysel.go wired as a
+	// seam): the family decision the account overlay builder receives —
+	// the gate may only omit families, never edit entries.
+	Entitle func(ctx context.Context, family string) bool
 }
 
 // WithAuth injects the authenticate machinery (the plan 05-07 option on
