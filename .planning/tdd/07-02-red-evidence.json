@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestKeyringProbeClassify' ./internal/interact/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestKeyringProbeClassifyDeadlineBoundarySuccess (0.08s)\n    keyringprobe_classify_internal_test.go:87: boundary-timed success classified \"timeout\" (err keyring probe: keyring lookup did not answer within its bound (80ms ceiling)) \u2014 want \"ok\" with nil error (IN-03: the success arm must win over the deadline arm)\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/interact\t0.187s\nFAIL",
+  "targetTest": "TestKeyringProbeClassifyDeadlineBoundarySuccess",
+  "targetFile": "internal/interact/keyringprobe_classify_internal_test.go",
+  "expected": "The boundary arm fails on its planned IN-03 assertion: with execErr nil, non-blank stdout, and the probe's bounded ctx already past its deadline, the test expects probeClassOK with nil error but the current code classifies probeClassTimeout (deadline arm evaluated before the success arm); the parent-cancel, timeout-on-empty, marker, and default regression locks pass unchanged",
+  "actual": "Exactly that: --- FAIL: TestKeyringProbeClassifyDeadlineBoundarySuccess classified \"timeout\" with the ErrKeyringLookupTimeout wrap \u2014 want \"ok\" with nil error; no other failures; the complete output ends with the package summary line FAIL\\tgithub.com/Djarvur/zcode-acp/internal/interact\t0.187s",
+  "semanticAssessment": "VALID RED - the target test executed and failed on the planned IN-03 assertion for the intended reason (the deadline arm wins over a boundary-timed success); the test compiles and runs (no build/load/setup failure); the passing sibling tests are the designed regression locks pinning the other arms' current order"
+}
