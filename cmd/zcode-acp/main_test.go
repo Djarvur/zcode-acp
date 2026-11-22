@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,12 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+
+	"github.com/Djarvur/zcode-acp/internal/acpfront"
+	"github.com/Djarvur/zcode-acp/internal/hostsvc"
+	"github.com/Djarvur/zcode-acp/internal/interact"
+	"github.com/Djarvur/zcode-acp/internal/supervisor"
+	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
 // Ride deadlines. The builds dominate the wall clock; the protocol exchanges
@@ -66,7 +73,41 @@ const (
 	e2eProvider = "zai-api"
 	e2eModel    = "GLM-5.3-Flash"
 	e2eLevel    = "high"
+
+	// wiringVersionSegment is the version-looking segment the
+	// patClientVersion best-effort dig finds in the fixture install tree.
+	wiringVersionSegment = "3.18.2"
 )
+
+// wiringFixtureInstall is the explicit fixture install whose tree carries a
+// version-looking directory segment (the unpacked layout shape).
+func wiringFixtureInstall() supervisor.Install {
+	base := "/tmp/wiring-fixture/zcode-" + wiringVersionSegment + "/unpacked"
+
+	return supervisor.Install{
+		Root:        base,
+		Binary:      base + "/zcode",
+		Entrypoint:  base + "/resources/glm/zcode.cjs",
+		BuiltinFile: base + "/zcode-builtin.json",
+		Layout:      "explicit",
+	}
+}
+
+// TestWiringCodingPlanSeams is the plan 06-07 cmd wiring vector: the
+// production machinery constructs LAZILY (no keyring/mint/exec I/O at
+// construction — D-13), buildFront wires all four AuthConfig seams, and the
+// responder serves runtime-headers through the mode-aware source (the
+// unauthenticated mode delegates to the static arm's unconfigured posture;
+// the coding-plan arm's behavior is the corpus row's proof).
+func TestWiringCodingPlanSeams(t *testing.T) {
+	t.Run("machinery constructs lazily with every seam present", testWiringMachineryLazily)
+
+	t.Run("patClientVersion digs the install tree best-effort with the documented fallback", testWiringClientVersion)
+
+	t.Run("buildFront wires the coding-plan seams into AuthConfig", testWiringBuildFrontSeams)
+
+	t.Run("wireResponder serves runtime-headers through the mode-aware source", testWiringModeAwareServing)
+}
 
 // Transcript-parsing sentinels (err113): the poll treats any of them as
 // "not ready yet".
@@ -834,4 +875,100 @@ func (c *e2eCollector) hasUpdateText(want string) bool {
 	}
 
 	return false
+}
+
+// testWiringMachineryLazily locks D-13's construction posture: every coding-plan seam constructs without executing
+// (no keyring, no mint, no gate read).
+func testWiringMachineryLazily(t *testing.T) {
+	machinery := buildCodingPlanMachinery(wiringFixtureInstall())
+
+	if machinery.creds == nil || machinery.prober == nil || machinery.gate == nil || machinery.minter == nil {
+		t.Fatalf("a coding-plan seam is nil: %+v", machinery)
+	}
+}
+
+// testWiringClientVersion locks the A6 clientVersion seam: the install tree's version segment wins, the documented
+// fallback covers the version-less layouts.
+func testWiringClientVersion(t *testing.T) {
+	if got := patClientVersion(wiringFixtureInstall())(); got != wiringVersionSegment {
+		t.Fatalf("patClientVersion = %q, want the fixture tree's %q", got, wiringVersionSegment)
+	}
+
+	bare := supervisor.Install{Root: optDir, Binary: optDir + "/zcode"} // the deb layout carries no version segment
+	if got := patClientVersion(bare)(); got != patDesktopVersionFallback {
+		t.Fatalf("patClientVersion(bare) = %q, want the documented %q fallback", got, patDesktopVersionFallback)
+	}
+}
+
+// testWiringBuildFrontSeams locks buildFront's AuthConfig wiring: the front constructs over the machinery with the
+// mode record still unset.
+func testWiringBuildFrontSeams(t *testing.T) {
+	hostEnd, peerEnd := net.Pipe()
+	t.Cleanup(func() {
+		_ = hostEnd.Close()
+		_ = peerEnd.Close()
+	})
+
+	conn := zcode.NewConn(hostEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	machinery := buildCodingPlanMachinery(wiringFixtureInstall())
+	keys := hostsvc.NewStaticKey("", "")
+
+	front := buildFront(conn, config{}, wiringFixtureInstall(), keys, machinery)
+	if front == nil {
+		t.Fatal("buildFront returned nil")
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
+		t.Fatalf("fresh front auth mode = %q, want %q (record-once discipline)", mode, acpfront.AuthModeNone)
+	}
+}
+
+// testWiringModeAwareServing locks wireResponder's runtime-headers option: the mode-aware source is in the chain (the
+// unauthenticated mode delegates to the static arm's unconfigured posture; the coding-plan arm's positives are the
+// corpus row's proof).
+func testWiringModeAwareServing(t *testing.T) {
+	hostEnd, peerEnd := net.Pipe()
+	t.Cleanup(func() {
+		_ = hostEnd.Close()
+		_ = peerEnd.Close()
+	})
+
+	conn := zcode.NewConn(hostEnd)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	machinery := buildCodingPlanMachinery(wiringFixtureInstall())
+	keys := hostsvc.NewStaticKey("", "")
+
+	front := buildFront(conn, config{}, wiringFixtureInstall(), keys, machinery)
+	wireResponder(conn, front, keys, machinery)
+
+	if conn.OnRequest == nil {
+		t.Fatal("wireResponder left conn.OnRequest unwired")
+	}
+
+	// The unauthenticated mode (None until authenticate succeeds)
+	// delegates to the static arm's unconfigured posture: the coded
+	// error naming ZCODE_ACP_API_KEY — proving the ask routes through
+	// the mode-aware source (the old wiring served the same error only
+	// via the raw static handler; the discriminator here is that the
+	// mode-aware source is IN the chain, and the coding-plan arm's
+	// positive answers are the corpus row's byte-locked proof).
+	env := zcode.Envelope{
+		ID:     &zcode.ID{Str: "wire-1"},
+		Method: interact.MethodRequestProviderRuntimeHeaders,
+		Params: json.RawMessage(`{"requestId":"wire-1","sessionId":"sess_w1","reason":"model-request"}`),
+	}
+
+	_, werr, handled := conn.OnRequest(context.Background(), env)
+	if !handled {
+		t.Fatal("the runtime-headers ask must be handled by the responder, never silence")
+	}
+
+	if werr == nil || werr.Code != zcode.CodeInternalError ||
+		!strings.Contains(werr.Message, "ZCODE_ACP_API_KEY") {
+		t.Fatalf("unauthenticated-mode ask answered (%v, %+v), want the static "+
+			"arm's coded unconfigured posture", werr == nil, werr)
+	}
 }

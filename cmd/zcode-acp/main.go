@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -208,13 +209,112 @@ func credentialsPath() string {
 	return filepath.Join(home, ".zcode", "v2", "credentials.json")
 }
 
+// settingPath is the desktop setting.json the production entitlement gate
+// reads (the ~/.zcode/v2/setting.json resolver joining credentialsPath's
+// posture). Missing home resolution yields an empty path — the gate's
+// missing-setting arm degrades honestly (familysel.go's T-06-16 posture),
+// never a phantom read.
+func settingPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	return filepath.Join(home, ".zcode", "v2", "setting.json")
+}
+
+// patDesktopVersionFallback is the reference's documented desktop-version
+// fallback (ref installedAppVersion's "0.0.0") — patClientVersion's answer
+// when the install tree carries no version-looking segment (A6: no
+// server-side validation is documented; the real run confirms).
+const patDesktopVersionFallback = "0.0.0"
+
+// desktopVersionPattern digs the version-looking segment out of an install
+// path segment (the layout names carry it — e.g. zcode-3.18.2/unpacked,
+// ZCode-3.18.2.AppImage; the reference's installedAppVersion(appBundlePath())
+// best-effort port). Best-effort by design: a false-positive segment would
+// only shape the mint chain's clientVersion diagnostic field (A6 — the
+// server validates nothing documented).
+var desktopVersionPattern = regexp.MustCompile(`\d+\.\d+(\.\d+)?`)
+
+// desktopVersion digs the desktop version out of the resolved install
+// paths, deepest segment first — "" when nothing matches.
+func desktopVersion(inst supervisor.Install) string {
+	paths := []string{inst.Binary, inst.Root, inst.Entrypoint}
+
+	for _, path := range paths {
+		segs := strings.Split(path, string(filepath.Separator))
+
+		for i := len(segs) - 1; i >= 0; i-- {
+			if v := desktopVersionPattern.FindString(segs[i]); v != "" {
+				return v
+			}
+		}
+	}
+
+	return ""
+}
+
+// patClientVersion resolves the mint chain's clientVersion seam input (the
+// DESKTOP's version per the reference's posture): the best-effort install
+// dig when present, the documented fallback otherwise. Lazy by contract —
+// the minter calls it only when a mint actually runs.
+func patClientVersion(inst supervisor.Install) func() string {
+	return func() string {
+		if v := desktopVersion(inst); v != "" {
+			return v
+		}
+
+		return patDesktopVersionFallback
+	}
+}
+
+// codingPlanMachinery is the composed coding-plan machinery (plan 06-07,
+// D-12: NO new user configuration — the desktop login IS the credential;
+// ZCODE_ACP_API_KEY stays the api-key credential unchanged). Every member
+// executes lazily: the prober and the store's v2 loader exec only when
+// authenticate/asks arrive, the minter's chain runs only when a mint is
+// needed, the gate reads setting.json only when the overlay builds (D-13:
+// CI never constructs a keyring call).
+type codingPlanMachinery struct {
+	creds  *interact.CredentialStore
+	prober interact.KeyringProber
+	gate   *interact.EntitlementGate
+	minter *hostsvc.PatMinter
+}
+
+// buildCodingPlanMachinery constructs the coding-plan machinery over the
+// production seams: the 06-01 credential store (the v2 decrypt loader over
+// the SAME secret-tool binary + credentials path the cipher seam uses), the
+// D-02 proactive keyring prober, the production entitlement gate over
+// settingPath, and the 06-02 PAT minter (official origin default; the
+// desktop-version clientVersion seam). Construction performs no I/O.
+func buildCodingPlanMachinery(inst supervisor.Install) *codingPlanMachinery {
+	env := interact.ScrubbedEnv(os.Environ())
+
+	creds := interact.NewCredentialStore(credentialsPath(),
+		interact.NewSecretToolKeyLoader(secretToolBin, credentialsPath(), env))
+
+	return &codingPlanMachinery{
+		creds:  creds,
+		prober: interact.NewKeyringProber(secretToolBin, credentialsPath(), env),
+		gate:   interact.NewEntitlementGate(settingPath(), creds),
+		minter: hostsvc.NewPatMinter(
+			hostsvc.WithPatClientVersion(patClientVersion(inst)),
+			hostsvc.WithPatCredentials(creds),
+		),
+	}
+}
+
 // buildFront constructs the Front over the resolved config and install:
 // the agentInfo version, the optional model selection, and the AUTH-01
 // authenticate machinery (the key binding, the install for the snapshot
-// formula, the derived read-back want list). The delta tap registers on
-// the conn's ordered fan-out here — before any machine exists.
+// formula, the derived read-back want list, and — plan 06-07 — the
+// coding-plan seams: store, prober, gate, minter). The delta tap registers
+// on the conn's ordered fan-out here — before any machine exists.
 func buildFront(
 	conn *zcode.Conn, cfg config, inst supervisor.Install, keys hostsvc.KeySource,
+	machinery *codingPlanMachinery,
 ) *acpfront.Front {
 	opts := []acpfront.Option{acpfront.WithVersion(version)}
 	if cfg.model != nil {
@@ -225,26 +325,38 @@ func buildFront(
 		Keys:       keys,
 		Install:    inst,
 		WantModels: readbackModels(cfg.model),
+		Creds:      machinery.creds,
+		Pat:        machinery.minter,
+		Probe:      machinery.prober,
+		Entitle:    machinery.gate.Entitled,
 	}))
 
 	return acpfront.New(conn, opts...)
 }
 
 // wireResponder builds the D-01 responder over the full policy table (plan
-// 05-07 wiring) and assigns conn.OnRequest before the ACP connection
-// exists and before any traffic starts — the Conn hook contract (frames
-// flow only after the client speaks first; the app-server itself sends
-// nothing unprompted at boot). The policy table carries the whole phase
-// stack: the 05-02 permission bridge forwards interaction/requestPermission
-// to the ACP client, the 05-06 key source serves the runtime-headers answer
-// from the recorded key, and the D-06 decrypt seam answers real cipher asks
-// from the login keyring — the loader EXECUTES only when a cipher ask
-// actually arrives (CI never runs this binary against a keyring;
-// keyring-locked machines degrade to the honest {ok:false} decline).
-func wireResponder(conn *zcode.Conn, front *acpfront.Front, keys hostsvc.KeySource) {
+// 05-07 wiring; plan 06-07 swaps the runtime-headers option to the
+// mode-aware PAT source) and assigns conn.OnRequest before the ACP
+// connection exists and before any traffic starts — the Conn hook contract
+// (frames flow only after the client speaks first; the app-server itself
+// sends nothing unprompted at boot). The policy table carries the whole
+// phase stack: the 05-02 permission bridge forwards
+// interaction/requestPermission to the ACP client, the mode-aware source
+// selects the recorded auth mode (D-11: api-key delegates to the static-key
+// handler byte-compatibly, coding-plan serves the PAT answer from the
+// in-process cache with the D-05 exactly-one re-mint and the scope
+// refusal), and the D-06 decrypt seam answers real cipher asks from the
+// login keyring — every injected seam EXECUTES only when its ask actually
+// arrives (CI never runs this binary against a keyring; keyring-locked
+// machines degrade to the honest coded declines).
+func wireResponder(conn *zcode.Conn, front *acpfront.Front, keys hostsvc.KeySource, machinery *codingPlanMachinery) {
 	responder := interact.NewResponder(
 		interact.WithPermissionForwarder(interact.NewPermissionBridge(front.PermissionForward()).Forward),
-		interact.WithRuntimeHeadersKeySource(hostsvc.RuntimeHeadersHandler(keys)),
+		interact.WithRuntimeHeadersKeySource(hostsvc.PatHeadersSource(hostsvc.PatHeadersSourceDeps{
+			Minter:         machinery.minter,
+			Mode:           front.AuthMode,
+			APIKeyFallback: hostsvc.RuntimeHeadersHandler(keys),
+		})),
 		interact.WithCredentialDecrypt(interact.NewCredentialDecrypt(
 			interact.NewSecretToolKeyLoader(secretToolBin, credentialsPath(), interact.ScrubbedEnv(os.Environ())))),
 	)
@@ -290,12 +402,17 @@ func run(cfg config) error {
 	// authenticate machinery, the runtime-headers answer, and the snapshot
 	// builder alike — in-memory only, never logged, never committed (D-05);
 	// an empty key answers authenticate's honest coded error naming
-	// ZCODE_ACP_API_KEY (OQ4).
+	// ZCODE_ACP_API_KEY (OQ4). The coding-plan machinery composes beside it
+	// (plan 06-07, D-12: the desktop login IS that path's credential — no
+	// new user configuration), lazily executing only when authenticate or
+	// asks arrive (D-13).
 	keys := hostsvc.NewStaticKey(cfg.apiKey, "")
 
-	front := buildFront(conn, cfg, inst, keys)
+	machinery := buildCodingPlanMachinery(inst)
 
-	wireResponder(conn, front, keys)
+	front := buildFront(conn, cfg, inst, keys, machinery)
+
+	wireResponder(conn, front, keys, machinery)
 
 	// The ACP agent connection owns os.Stdin/os.Stdout from here: the SDK
 	// reads requests and writes every response frame — nothing else touches

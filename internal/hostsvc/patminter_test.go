@@ -1359,6 +1359,9 @@ func TestPatMemoryOnly(t *testing.T) {
 	}
 
 	srcPath := filepath.Join(filepath.Dir(thisFile), "patminter.go")
+	if !filepath.IsAbs(srcPath) { // -trimpath: the module-relative path; the test binary's cwd IS the package dir
+		srcPath = "patminter.go"
+	}
 
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, srcPath, nil, 0)

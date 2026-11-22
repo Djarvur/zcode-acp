@@ -277,6 +277,7 @@ func goldenDrivers() map[string]driverFunc {
 		"coding-plan-auth-cycle":     driveCodingPlanAuthCycle,
 		cpCorpusProbeFailName:        driveCodingPlanProbeFail,
 		"runtime-headers-answer":     driveRuntimeHeadersAnswer,
+		"runtime-headers-pat":        driveRuntimeHeadersPat,
 		"full-cycle":                 driveFullCycle,
 		"lingering-latch-32010":      driveLingeringLatch32010,
 		"config-option-set-model":    driveConfigOptionSetModel,
@@ -308,6 +309,7 @@ func goldenNormalizers() map[string]func([]byte) []byte {
 	return map[string]func([]byte) []byte{
 		"coding-plan-auth-cycle": normalizeCodingPlanCorpus,
 		cpCorpusProbeFailName:    normalizeCodingPlanCorpus,
+		"runtime-headers-pat":    normalizeCodingPlanCorpus,
 	}
 }
 
@@ -1317,9 +1319,10 @@ func driveCodingPlanAuthCycle(ctx context.Context, d *exchangeDriver) {
 	// byte-locked two-field shape (the widening's byte-compat regression —
 	// plan 06-07 Task 1 keeps this row's reply bytes identical).
 	responder := interact.NewResponder(
-		interact.WithRuntimeHeadersKeySource(func(_ context.Context, _ interact.Request) (string, string, string, error) {
-			return syntheticFixtureKey, syntheticFixtureKeyID, "", nil
-		}),
+		interact.WithRuntimeHeadersKeySource(
+			func(_ context.Context, _ interact.Request) (string, string, string, error) {
+				return syntheticFixtureKey, syntheticFixtureKeyID, "", nil
+			}),
 		interact.WithCredentialDecrypt(interact.NewCredentialDecrypt(corpusFixtureKeyLoader{})),
 	)
 	d.conn.OnRequest = responder.Serve
@@ -1392,6 +1395,169 @@ func driveCodingPlanProbeFail(ctx context.Context, d *exchangeDriver) {
 	// the lock.
 	if _, err := d.call(ctx, "corpus/probe-fail-canary", map[string]any{}); err == nil {
 		d.t.Fatal("the canary must record the scripted unknown-method error")
+	}
+}
+
+// The runtime-headers-pat row's fixture constants (plan 06-07 Task 3): the
+// synthetic PAT pair, their key ids, the account scope (unchanged across the
+// re-ask — the scope digest covers the login, not the token), and
+// fingerprint(PAT-A) as a FIXTURE CONSTANT (not secret-derived — the shape
+// is what the byte-lock pins, never a real credential, T-5-15).
+const (
+	patCorpusTokenA = "zc-synthetic-pat-a-corpus-fixture"
+	patCorpusTokenB = "zc-synthetic-pat-b-corpus-fixture"
+	patCorpusKeyA   = "key_pat_corpus_a"
+	patCorpusKeyB   = "key_pat_corpus_b"
+
+	patCorpusScopeA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	patCorpusFPA    = "4444444444444444444444444444444444444444444444444444444444444444"
+
+	// patCorpusFPB is fingerprint(PAT-B) — fixture constant like PAT-A's.
+	patCorpusFPB = "5555555555555555555555555555555555555555555555555555555555555555"
+
+	// patCorpusSessionID is the row's fixed session id (goconst: the
+	// driver's repeated capture-verbatim spelling extracts to one source).
+	patCorpusSessionID = "sess_rhp1"
+
+	// The wire-key literals the driver's params maps carry (goconst: each
+	// repeated capture-verbatim spelling extracts to one source — the
+	// corpusWireKeyModel precedent).
+	corpusWireKeyWorkspace     = "workspace"
+	corpusWireKeyWorkspacePath = "workspacePath"
+	corpusWireKeyWorkspaceKey  = "workspaceKey"
+	corpusWireKeyProviderID    = "providerId"
+	corpusWireKeyModelID       = "modelId"
+	corpusWireKeyOptions       = "options"
+	corpusWireKeyLevel         = "reasoningLevel"
+	corpusWireKeyPersist       = "persistAsWorkspaceLastUsed"
+)
+
+// corpusPatMinter is the runtime-headers-pat row's test-side minter double:
+// the ONE surface both the front's PatEnsurer seam and the responder's
+// mode-aware source orchestrate (one cache, one lifecycle — the production
+// composition). Ensure scripts the mint sequence (authenticate installs
+// PAT-A; the re-ask's Ensure installs PAT-B) and Invalidate drops the cache
+// — the invalidate-then-remint sequence the row byte-locks (the 05-07
+// test-injection discipline; synthetic shapes only).
+type corpusPatMinter struct {
+	mu    sync.Mutex
+	cache hostsvc.Pat
+	warm  bool
+	mints int
+}
+
+// Cached reports the scripted cache state.
+func (m *corpusPatMinter) Cached(_ context.Context) (hostsvc.Pat, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.cache, m.warm
+}
+
+// Ensure mints the scripted sequence: call 1 (authenticate) installs PAT-A,
+// call 2 (the fingerprint re-ask) installs PAT-B.
+func (m *corpusPatMinter) Ensure(_ context.Context) (hostsvc.Pat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.mints++
+
+	if m.mints == 1 {
+		m.cache = hostsvc.Pat{
+			Token:        patCorpusTokenA,
+			APIKeyID:     patCorpusKeyA,
+			Fingerprint:  patCorpusFPA,
+			AccountScope: patCorpusScopeA,
+		}
+	} else {
+		m.cache = hostsvc.Pat{
+			Token:        patCorpusTokenB,
+			APIKeyID:     patCorpusKeyB,
+			Fingerprint:  patCorpusFPB,
+			AccountScope: patCorpusScopeA,
+		}
+	}
+
+	m.warm = true
+
+	return m.cache, nil
+}
+
+// Invalidate drops the cached token (the source's re-mint trigger).
+func (m *corpusPatMinter) Invalidate(string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.warm = false
+}
+
+// mintsCount reports the recorded Ensure count.
+func (m *corpusPatMinter) mintsCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.mints
+}
+
+// driveRuntimeHeadersPat replays the runtime-headers PAT row (plan 06-07
+// Task 3, AUTH-02/D-05): the front's coding-plan chain (probe-pass canned →
+// overlay push → registry verdict → mint-once through the corpusPatMinter)
+// warms the cache, then the turn's send fires TWO scripted runtime-headers
+// asks — ask 1 plain (the cached PAT-A answer, zero mints) and ask 2 the
+// rejected-fingerprint re-ask (Invalidate + EXACTLY ONE Ensure → PAT-B,
+// same scope). The responder wires the mode-aware source over the SAME
+// double the front minted through; the mode record selects at ask time.
+func driveRuntimeHeadersPat(ctx context.Context, d *exchangeDriver) {
+	t := d.t
+	patMinter := &corpusPatMinter{}
+
+	//nolint:contextcheck // the Front derives its own process-lifetime base
+	// context by design (front.go New — the containedctx rule); the driver's
+	// ctx bounds only the back-leg calls.
+	front := acpfront.New(d.conn, acpfront.WithAuth(acpfront.AuthConfig{
+		Install: codingPlanCorpusInstall(t),
+		Probe:   func(_ context.Context) error { return nil }, // canned probe-pass
+		Creds:   corpusCreds(t),
+		Pat:     patMinter,
+		Entitle: func(_ context.Context, family string) bool { return family == cpCorpusAccountFamily },
+	}))
+
+	// Hook contract: the mode-aware source is assigned before any frame
+	// flows; the unauthenticated None mode would delegate to the static
+	// arm's unconfigured posture until authenticate records coding-plan.
+	responder := interact.NewResponder(interact.WithRuntimeHeadersKeySource(
+		hostsvc.PatHeadersSource(hostsvc.PatHeadersSourceDeps{
+			Minter:         patMinter,
+			Mode:           front.AuthMode,
+			APIKeyFallback: hostsvc.RuntimeHeadersHandler(hostsvc.NewStaticKey("", "")),
+		})))
+	d.conn.OnRequest = responder.Serve
+
+	if err := front.Authenticate(ctx, acpfront.AuthMethodZaiCodingPlan); err != nil {
+		t.Fatalf("authenticate coding-plan: %v", err)
+	}
+
+	if calls := patMinter.mintsCount(); calls != 1 {
+		t.Fatalf("authenticate minted %d time(s), want exactly one (mint-once, D-04)", calls)
+	}
+
+	// The post-auth preamble over the coding-plan session (create reply
+	// carries the account-provider settings; setModel binds the account
+	// model).
+	drivePatCorpusPreamble(ctx, d)
+
+	if _, err := d.call(ctx, zcode.MethodSessionSend, map[string]any{
+		wireKeySessionID: patCorpusSessionID,
+		"content":        "Reply with exactly: OK",
+	}); err != nil {
+		t.Fatalf("session/send: %v", err)
+	}
+
+	// The semantic belt: the two asks left exactly the D-05 footprint —
+	// authenticate's mint + the one re-mint (expect_answer already
+	// byte-compared PAT-A then PAT-B per ask).
+	if calls := patMinter.mintsCount(); calls != 2 {
+		t.Fatalf("the re-ask left %d total mints, want exactly 2 (authenticate + the one re-mint)", calls)
 	}
 }
 
@@ -1501,6 +1667,41 @@ func driveConfigOptionCorpus(ctx context.Context, d *exchangeDriver, configID, v
 	})
 	if err != nil {
 		t.Fatalf("set_config_option %s: %v", configID, err)
+	}
+}
+
+// drivePatCorpusPreamble drives the runtime-headers-pat row's post-auth
+// preamble: create (the reply carries the account-provider settings),
+// subscribe, and the setModel binding the account model.
+func drivePatCorpusPreamble(ctx context.Context, d *exchangeDriver) {
+	t := d.t
+
+	if _, err := d.call(ctx, zcode.MethodSessionCreate, map[string]any{
+		corpusWireKeyWorkspace: map[string]any{
+			corpusWireKeyWorkspacePath: corpusWorkspacePath,
+			corpusWireKeyWorkspaceKey:  corpusWorkspacePath,
+		},
+	}); err != nil {
+		t.Fatalf("session/create: %v", err)
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, map[string]any{
+		wireKeySessionID:    patCorpusSessionID,
+		wireKeyDeliveryKind: deliveryDesktopContinuous,
+	}); err != nil {
+		t.Fatalf("session/subscribe: %v", err)
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSetModel, map[string]any{
+		wireKeySessionID: patCorpusSessionID,
+		corpusWireKeyModel: map[string]any{
+			corpusWireKeyProviderID: cpCorpusAccountProvider,
+			corpusWireKeyModelID:    "GLM-5.3",
+			corpusWireKeyOptions:    map[string]any{corpusWireKeyLevel: corpusCfgLevelHigh},
+		},
+		corpusWireKeyPersist: false,
+	}); err != nil {
+		t.Fatalf("session/setModel: %v", err)
 	}
 }
 

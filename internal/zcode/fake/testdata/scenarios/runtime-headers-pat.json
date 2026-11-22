@@ -1,0 +1,123 @@
+{
+  "name": "runtime-headers-pat",
+  "on_request": [
+    {
+      "method": "provider/updateAccountConfig",
+      "reply": {"result": {"receivedRevision": "account-bridge:cp-fix1", "providerCount": 1, "status": "received"}}
+    },
+    {
+      "method": "provider/refreshRegistry",
+      "reply": {"result": {"refreshed": true}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"scope": "registry", "reason": "registry_refresh", "revision": 3,
+                       "patch": {"providers": {"account:zai-individual-coding-plan": {"models": ["GLM-5.3", "GLM-5.3-Flash"]}}}}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/create",
+      "reply": {
+        "result": {
+          "session": {"sessionId": "sess_rhp1"},
+          "protocol": {"name": "ZCode Protocol", "version": 1},
+          "settings": {
+            "model": {
+              "current": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+              "available": [
+                {"ref": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+                 "label": "GLM-5.3", "providerLabel": "zai",
+                 "reasoning": {"levels": [{"value": "high", "label": "High"}, {"value": "medium", "label": "Medium"}],
+                               "defaultLevel": "high"}},
+                {"ref": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3-Flash"},
+                 "label": "GLM-5.3-Flash", "providerLabel": "zai"}
+              ]
+            },
+            "thoughtLevel": {
+              "enabled": true, "current": "high", "defaultLevel": "high",
+              "available": [{"value": "high", "label": "High"}, {"value": "medium", "label": "Medium"}]
+            }
+          }
+        }
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_rhp1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {"sessionId": "sess_rhp1", "scope": "runtime-materialization"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"nativeSearchEnhancementsEnabled": false, "memoryEnabled": false}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_rhp1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {"result": {"sessionId": "sess_rhp1", "eventSeq": 0, "events": []}}
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {}}
+    },
+    {
+      "method": "session/send",
+      "reply": {"result": {"accepted": true, "sessionId": "sess_rhp1", "stateRevision": 1}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "running"}, "reason": "prompt_started", "revision": 1, "scope": "session",
+                       "sessionId": "sess_rhp1", "type": "state.updated"}
+          }
+        },
+        {
+          "reverse": {
+            "method": "interaction/requestProviderRuntimeHeaders",
+            "params": {"requestId": "rhp-ask-1", "sessionId": "sess_rhp1",
+                       "workspace": {"workspacePath": "/tmp/happy-turn-ws"},
+                       "modelSelection": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+                       "providerId": "zhipu-account", "reason": "model-request"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"headersApplied": true,
+                                          "requestAuth": {"apiKey": "zc-synthetic-pat-a-corpus-fixture",
+                                                           "apiKeyId": "key_pat_corpus_a",
+                                                           "accountScope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
+          }
+        },
+        {
+          "reverse": {
+            "method": "interaction/requestProviderRuntimeHeaders",
+            "params": {"requestId": "rhp-ask-2", "sessionId": "sess_rhp1",
+                       "workspace": {"workspacePath": "/tmp/happy-turn-ws"},
+                       "modelSelection": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+                       "providerId": "zhipu-account", "reason": "model-request",
+                       "expectedAccountScope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                       "rejectedProjectTokenFingerprint": "4444444444444444444444444444444444444444444444444444444444444444"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"headersApplied": true,
+                                          "requestAuth": {"apiKey": "zc-synthetic-pat-b-corpus-fixture",
+                                                           "apiKeyId": "key_pat_corpus_b",
+                                                           "accountScope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
+          }
+        }
+      ]
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

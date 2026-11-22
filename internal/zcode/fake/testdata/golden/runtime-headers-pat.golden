@@ -1,0 +1,22 @@
+in	{"id":1,"method":"provider/updateAccountConfig","params":{"basedOnZCodeBuiltinRevision":"zcode-builtin:44:cp-corpus-fixture-hash","providers":{"account:zai-individual-coding-plan":{"access":{"entitled":true,"type":"zhipu-account"},"builtinModelIds":["GLM-5.3","GLM-5.3-Flash"]}},"revision":"account-bridge:cp-fix1","states":{"account:zai-individual-coding-plan":{"availability":"available","current":true,"entitled":true}}}}
+out	{"id":1,"result":{"receivedRevision":"account-bridge:cp-fix1","providerCount":1,"status":"received"}}
+in	{"id":2,"method":"provider/refreshRegistry","params":{"reason":"account-config-sync"}}
+out	{"method":"state.updated","params":{"scope":"registry","reason":"registry_refresh","revision":3,"patch":{"providers":{"account:zai-individual-coding-plan":{"models":["GLM-5.3","GLM-5.3-Flash"]}}}}}
+out	{"id":2,"result":{"refreshed":true}}
+in	{"id":3,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/happy-turn-ws","workspacePath":"/tmp/happy-turn-ws"}}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_rhp1","state":"starting","generation":1,"revision":1,"lastError":null}}
+out	{"id":"fake-1","method":"session/requestRuntimePreferences","params":{"sessionId":"sess_rhp1","scope":"runtime-materialization"}}
+in	{"id":"fake-1","result":{"memoryEnabled":false,"nativeSearchEnhancementsEnabled":false}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_rhp1","state":"ready","generation":1,"revision":2,"lastError":null}}
+out	{"id":3,"result":{"session":{"sessionId":"sess_rhp1"},"protocol":{"name":"ZCode Protocol","version":1},"settings":{"model":{"current":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},"available":[{"ref":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},"label":"GLM-5.3","providerLabel":"zai","reasoning":{"levels":[{"value":"high","label":"High"},{"value":"medium","label":"Medium"}],"defaultLevel":"high"}},{"ref":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3-Flash"},"label":"GLM-5.3-Flash","providerLabel":"zai"}]},"thoughtLevel":{"enabled":true,"current":"high","defaultLevel":"high","available":[{"value":"high","label":"High"},{"value":"medium","label":"Medium"}]}}}}
+in	{"id":4,"method":"session/subscribe","params":{"deliveryKind":"desktop-continuous","sessionId":"sess_rhp1"}}
+out	{"id":4,"result":{"sessionId":"sess_rhp1","eventSeq":0,"events":[]}}
+in	{"id":5,"method":"session/setModel","params":{"model":{"modelId":"GLM-5.3","options":{"reasoningLevel":"high"},"providerId":"account:zai-individual-coding-plan"},"persistAsWorkspaceLastUsed":false,"sessionId":"sess_rhp1"}}
+out	{"id":5,"result":{}}
+in	{"id":6,"method":"session/send","params":{"content":"Reply with exactly: OK","sessionId":"sess_rhp1"}}
+out	{"method":"state.updated","params":{"patch":{"status":"running"},"reason":"prompt_started","revision":1,"scope":"session","sessionId":"sess_rhp1","type":"state.updated"}}
+out	{"id":"fake-2","method":"interaction/requestProviderRuntimeHeaders","params":{"requestId":"rhp-ask-1","sessionId":"sess_rhp1","workspace":{"workspacePath":"/tmp/happy-turn-ws"},"modelSelection":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},"providerId":"zhipu-account","reason":"model-request"}}
+in	{"id":"fake-2","result":{"headersApplied":true,"requestAuth":{"accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","apiKey":"zc-synthetic-pat-a-corpus-fixture","apiKeyId":"key_pat_corpus_a"}}}
+out	{"id":"fake-3","method":"interaction/requestProviderRuntimeHeaders","params":{"requestId":"rhp-ask-2","sessionId":"sess_rhp1","workspace":{"workspacePath":"/tmp/happy-turn-ws"},"modelSelection":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"},"providerId":"zhipu-account","reason":"model-request","expectedAccountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rejectedProjectTokenFingerprint":"4444444444444444444444444444444444444444444444444444444444444444"}}
+in	{"id":"fake-3","result":{"headersApplied":true,"requestAuth":{"accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","apiKey":"zc-synthetic-pat-b-corpus-fixture","apiKeyId":"key_pat_corpus_b"}}}
+out	{"id":6,"result":{"accepted":true,"sessionId":"sess_rhp1","stateRevision":1}}
