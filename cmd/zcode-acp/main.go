@@ -18,7 +18,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -229,30 +228,13 @@ func settingPath() string {
 // server-side validation is documented; the real run confirms).
 const patDesktopVersionFallback = "0.0.0"
 
-// desktopVersionPattern digs the version-looking segment out of an install
-// path segment (the layout names carry it — e.g. zcode-3.18.2/unpacked,
-// ZCode-3.18.2.AppImage; the reference's installedAppVersion(appBundlePath())
-// best-effort port). Best-effort by design: a false-positive segment would
-// only shape the mint chain's clientVersion diagnostic field (A6 — the
-// server validates nothing documented).
-var desktopVersionPattern = regexp.MustCompile(`\d+\.\d+(\.\d+)?`)
-
 // desktopVersion digs the desktop version out of the resolved install
-// paths, deepest segment first — "" when nothing matches.
+// paths, deepest segment first — "" when nothing matches. It delegates to
+// supervisor.InstallAppVersion: the PAT mint chain's clientVersion seam and
+// the effective-revision resolver's appVersion input must never drift apart
+// (one dig, two consumers).
 func desktopVersion(inst supervisor.Install) string {
-	paths := []string{inst.Binary, inst.Root, inst.Entrypoint}
-
-	for _, path := range paths {
-		segs := strings.Split(path, string(filepath.Separator))
-
-		for i := len(segs) - 1; i >= 0; i-- {
-			if v := desktopVersionPattern.FindString(segs[i]); v != "" {
-				return v
-			}
-		}
-	}
-
-	return ""
+	return supervisor.InstallAppVersion(inst)
 }
 
 // patClientVersion resolves the mint chain's clientVersion seam input (the

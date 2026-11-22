@@ -3,6 +3,7 @@ package hostsvc_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
@@ -129,10 +130,16 @@ func TestAccountBuildUsesEffectiveRevision(t *testing.T) {
 	}
 
 	for providerID, modelIDs := range wantZhipuProviders() {
-		entry, ok := providers[providerID]
+		entry, ok := providers[providerID].(map[string]any)
 		if !ok {
-			t.Fatalf("providers missing %q — the overlay must still mirror the recorded table", providerID)
+			t.Fatalf("providers[%q] = %v (%T), want an entry map — the overlay must mirror the recorded table",
+				providerID, providers[providerID], providers[providerID])
 		}
-		assertModelIDsVerbatim(t, providerID, entry.(map[string]any)["builtinModelIds"], modelIDs)
+
+		gotIDs, _ := entry["builtinModelIds"].([]string)
+		if !slices.Equal(gotIDs, modelIDs) {
+			t.Fatalf("providers[%q] builtinModelIds = %v, want the table's %v verbatim (rules source unchanged)",
+				providerID, gotIDs, modelIDs)
+		}
 	}
 }
