@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -v -run 'TestResumeCloseInterleave|TestRegisterIfOpen' ./internal/acpfront/",
+  "exitCode": 0,
+  "output": "=== RUN   TestResumeCloseInterleave\n--- PASS: TestResumeCloseInterleave (5.69s)\n=== RUN   TestRegisterIfOpen\n--- PASS: TestRegisterIfOpen (0.10s)\nPASS\nok  \tgithub.com/Djarvur/zcode-acp/internal/acpfront\t6.830s",
+  "targetTest": "TestResumeCloseInterleave",
+  "targetFile": "internal/acpfront/lifecycle_internal_test.go",
+  "expected": "FAIL on the WR-05 leak arm: a resume success that registered into a session whose teardown already completed (the microsecond re-check-to-Register window landing under the 2000-iteration stress)",
+  "actual": "PASS across all 2000 iterations - the pre-fix re-check-to-Register window did not land (close's whole teardown cannot fit inside the ~2us NewMachine span; the re-check reads the same closingMu-guarded mark WR-03 set)",
+  "semanticAssessment": "CONFIRM-UNREPRODUCED - the plan's own anticipated branch: 'the plan ANTICIPATES the branch where the microsecond window does not land pre-fix - if Test 1 observes green pre-fix, record that honestly as CONFIRM-UNREPRODUCED in the RED evidence (the 05-08 CONFIRM-GREEN precedent; never fabricate a RED), keep Test 2 as the contract lock, and proceed.' Both tests ran for real (2000-iteration stress + the serialization lock) and passed against the current inline sequence. No failing assertion was manufactured. Test 2 locks the serialization contract; the GREEN section makes the invariant structural."
+}

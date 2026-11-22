@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 14
+open_count: 15
 waived_count: 0
 fixed_count: 1
-total_count: 15
-last_updated: 2026-11-22T04:52:07.817Z
+total_count: 16
+last_updated: 2026-11-22T11:36:17.784Z
 ---
 
 # Broken Windows Ledger
@@ -30,6 +30,7 @@ last_updated: 2026-11-22T04:52:07.817Z
 | 13 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:58.318Z |  |
 | 14 | 05 | unmet-truth | test/realdesktop/apicycle_test.go | 208 | REAL RUN attempt 2 (EXP-APIKEY-CYCLE-02): file-read tool turn refused by the desktop turn latch ('another prompt is already running') — the real-tier full cycle remains unproven; auth read-back leg field-proven; next gap plan must add a turn-latch drain between sends | open |  | 2026-11-21T10:08:55.578Z |  |
 | 15 | 6 | unrun-verify | test/realdesktop/codingplan_test.go |  | TestCodingPlanFullCycle real-account run is the human-gated end-of-phase UAT (D-12/D-13): executor prepared harness+runbook+ledger row PENDING; the run executes under human control at phase verification, never autonomously, never CI | open |  | 2026-11-22T04:52:07.817Z |  |
+| 16 | 7 | deviation | .planning/tdd/07-01-task1-red.json |  | Task-1 RED landed as the plan-sanctioned CONFIRM-UNREPRODUCED branch: both WR-05 tests pass pre-fix (window cannot land), classifier verdict INVALID_RED unexpected_green persisted in the record; tasks 2-3 produced genuine RED_EVIDENCE_OK REDs | open |  | 2026-11-22T11:36:17.784Z |  |
 
 ````json
 [
@@ -225,6 +226,19 @@ last_updated: 2026-11-22T04:52:07.817Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-22T04:52:07.817Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 16,
+    "kind": "deviation",
+    "phase": "7",
+    "file": ".planning/tdd/07-01-task1-red.json",
+    "line": null,
+    "description": "Task-1 RED landed as the plan-sanctioned CONFIRM-UNREPRODUCED branch: both WR-05 tests pass pre-fix (window cannot land), classifier verdict INVALID_RED unexpected_green persisted in the record; tasks 2-3 produced genuine RED_EVIDENCE_OK REDs",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-22T11:36:17.784Z",
     "resolved_at": null,
     "milestone": "v0.20.0"
   }
