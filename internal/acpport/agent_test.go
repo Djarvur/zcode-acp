@@ -49,6 +49,12 @@ const (
 	testSessionID    = "sess_1"
 	backendSessionID = "sess_backend"
 	testCwd          = "/tmp/ws"
+
+	// cfgFixtureModel is the delegation tests' canned model value and the
+	// config-option fixture id (goconst: the repeated capture-verbatim
+	// spellings extract to one source each).
+	cfgFixtureModel = "zai-api/GLM-5.3"
+	cfgOptionModel  = "model"
 )
 
 // errRawFront is the deliberately non-seam error in the coding table: a
@@ -247,7 +253,7 @@ func TestNewSessionAssemblesConfigOptions(t *testing.T) {
 	// account prefix — D-11's both-paths posture).
 	newSessionConfigOptions := []acpport.ConfigOptionDef{
 		{
-			ID:           "model",
+			ID:           cfgOptionModel,
 			Name:         "Model",
 			Category:     acpport.ConfigCategoryModel,
 			CurrentValue: "zai-api/GLM-5.3-Flash",
@@ -382,7 +388,7 @@ func assertHonestFrame(t *testing.T, resp acp.InitializeResponse) {
 	}
 }
 
-// TestUnadvertisedMethodsAnswerMethodNotFound drives the five unadvertised
+// TestUnadvertisedMethodsAnswerMethodNotFound drives the four unadvertised
 // stable methods and asserts each answers the clean -32601 default naming
 // the method (Pitfall 6) — and that the Handlers fake was never touched
 // (the defaults are adapter-side). Authenticate is NOT in this table: it is
@@ -391,6 +397,9 @@ func assertHonestFrame(t *testing.T, resp acp.InitializeResponse) {
 // TestAuthenticateHonestError). SessionResume/SessionClose
 // left the table with plan 05-05: the SESS-01 lifecycle pair became real
 // delegates (TestLifecycleDelegation locks the delegation contract).
+// SessionSetConfigOption left the table with plan 06-06: the config-options
+// mutation became a real delegate (TestSetConfigOptionDelegation locks the
+// delegation contract).
 func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 	h := newScriptedHandlers()
 	adapter := acpport.NewAgent(h)
@@ -412,11 +421,6 @@ func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 		}},
 		{acp.AgentMethodSessionList, func() error {
 			_, err := adapter.ListSessions(ctx, acp.ListSessionsRequest{})
-
-			return err
-		}},
-		{acp.AgentMethodSessionSetConfigOption, func() error {
-			_, err := adapter.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{})
 
 			return err
 		}},
@@ -699,7 +703,7 @@ func jsonRPCErrorFrame(t *testing.T, raw, method string) *struct {
 }
 
 // TestUnadvertisedStableMethodsAnswerNotFound (plan 04-03 lock) drives the
-// five unadvertised stable methods through a REAL agent-side connection
+// four unadvertised stable methods through a REAL agent-side connection
 // with raw JSON-RPC frames: each must answer the clean -32601 default
 // naming the method on the actual wire (Pitfall 6 — capability omission
 // stops legitimate clients, but the dispatcher still routes), and the
@@ -707,15 +711,14 @@ func jsonRPCErrorFrame(t *testing.T, raw, method string) *struct {
 // Authenticate is NOT in this table: it is advertised per D-02 and answers
 // the authenticate delegation (TestAuthenticateDelegation, plan 05-07).
 // SessionResume/SessionClose left the table with plan 05-05 (the SESS-01
-// delegates; TestLifecycleDelegationWire locks the wire shape).
+// delegates; TestLifecycleDelegationWire locks the wire shape), and
+// SessionSetConfigOption left it with plan 06-06 (the config-options
+// delegate; TestSetConfigOptionDelegation locks the delegation contract).
 func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
 	h := newScriptedHandlers()
 
 	probe := newConnectionProbe(t, h)
 
-	// Minimal params per method — session/set_config_option is a union whose
-	// default (value-id) variant needs its keys; everything else decodes the
-	// empty object.
 	tests := []struct {
 		method string
 		params string
@@ -723,7 +726,6 @@ func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
 		{acp.AgentMethodLogout, "{}"},
 		{acp.AgentMethodSessionDelete, "{}"},
 		{acp.AgentMethodSessionList, "{}"},
-		{acp.AgentMethodSessionSetConfigOption, `{"configId":"c","sessionId":"s","value":"v"}`},
 		{acp.AgentMethodSessionSetMode, "{}"},
 	}
 
@@ -1040,23 +1042,25 @@ func assertUnmappedReasonLoud(t *testing.T, req acp.PromptRequest) {
 // -32602 reaches the client with its code intact (never degraded to
 // -32603; the RequestError stays unwrapped), and a raw error codes
 // internal (A5).
+//
+//nolint:funlen // each subtest is a full delegation lock; splitting would scatter the coding table
 func TestSetConfigOptionDelegation(t *testing.T) {
 	t.Run("delegates the verbatim triple and assembles the response", func(t *testing.T) {
 		h := newScriptedHandlers()
 		h.setConfigOptions = []acpport.ConfigOptionDef{
 			{
-				ID:           "model",
+				ID:           cfgOptionModel,
 				Name:         "Model",
 				Category:     acpport.ConfigCategoryModel,
-				CurrentValue: "zai-api/GLM-5.3",
+				CurrentValue: cfgFixtureModel,
 				Options: []acpport.SelectOptionDef{
-					{Value: "zai-api/GLM-5.3", Name: "GLM-5.3"},
+					{Value: cfgFixtureModel, Name: "GLM-5.3"},
 				},
 			},
 		}
 
 		resp, err := acpport.NewAgent(h).SetSessionConfigOption(context.Background(),
-			setConfigOptionAsk(testSessionID, "model", "zai-api/GLM-5.3"))
+			setConfigOptionAsk(testSessionID, cfgOptionModel, cfgFixtureModel))
 		if err != nil {
 			t.Fatalf("SetSessionConfigOption: %v", err)
 		}
@@ -1068,7 +1072,7 @@ func TestSetConfigOptionDelegation(t *testing.T) {
 
 		got := h.setConfigCalls[0]
 
-		if got.sessionID != testSessionID || got.configID != "model" || got.value != "zai-api/GLM-5.3" {
+		if got.sessionID != testSessionID || got.configID != cfgOptionModel || got.value != cfgFixtureModel {
 			t.Fatalf("Handlers call = %+v, want the wire triple verbatim", got)
 		}
 
@@ -1100,8 +1104,19 @@ func TestSetConfigOptionDelegation(t *testing.T) {
 		h.setConfigErr = errRawFront
 
 		_, err := acpport.NewAgent(h).SetSessionConfigOption(context.Background(),
-			setConfigOptionAsk(testSessionID, "model", "zai-api/GLM-5.3"))
-		assertCodedInternal(t, err, errRawFront.Error())
+			setConfigOptionAsk(testSessionID, cfgOptionModel, cfgFixtureModel))
+
+		// The A5 internal mapping: the class is -32603 with the SDK's generic
+		// message (the detail rides data — the same shape the authenticate
+		// delegation's plain-error arm locks); never raw, never -32601.
+		var rerr *acp.RequestError
+		if !errors.As(err, &rerr) {
+			t.Fatalf("raw error must surface as a coded RequestError, got %T: %v", err, err)
+		}
+
+		if rerr.Code != acpport.CodeInternal {
+			t.Fatalf("raw error code = %d, want %d (internal class)", rerr.Code, acpport.CodeInternal)
+		}
 	})
 }
 

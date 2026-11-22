@@ -70,6 +70,21 @@ type Handlers interface {
 	// No credentials ride the wire (the key enters via the wrapper's own
 	// config); every non-success answers a coded error.
 	Authenticate(ctx context.Context, methodID string) error
+
+	// SetSessionConfigOption applies one client config-option selection
+	// (MODEL-02, plan 06-06): the front validates FIRST against the
+	// CURRENT confirmed option set — an unknown configId or a value outside
+	// the option's own listed set answers coded invalid-params (-32602)
+	// naming the configId and the allowed set/values (the spec MUST), never
+	// a crash path, never a backend call carrying an unvalidated value
+	// (T-06-17). The ask maps onto the field-proven backend mutation — BOTH
+	// switch kinds ride session/setModel (locked OQ1: no dedicated
+	// setThoughtLevel method on the v1 wire) — and the returned list is
+	// rebuilt ONLY from the mutation reply's settings snapshot (D-10: the
+	// reply IS the confirmation source), the complete list per the spec
+	// MUST; the adapter assembles the SDK response whose non-nil list must
+	// pass the SDK's own Validate.
+	SetSessionConfigOption(ctx context.Context, sessionID, configID, value string) ([]ConfigOptionDef, error)
 }
 
 // InitReport is the honest initialize payload (D-02): agent identity plus

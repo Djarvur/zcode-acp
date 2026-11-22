@@ -16,9 +16,11 @@ import (
 
 // agentAdapter implements the SDK's 12-method acp.Agent surface over a
 // Handlers impl (RESEARCH Pattern 1, the D-01 seam): the advertised
-// methods and the SESS-01 lifecycle pair (ResumeSession/CloseSession —
-// plain requests per the SDK's dispatcher, no capability flag) translate
-// the neutral vocabulary, the five remaining unadvertised stable methods
+// methods, the SESS-01 lifecycle pair (ResumeSession/CloseSession —
+// plain requests per the SDK's dispatcher, no capability flag), and the
+// config-options mutation (SetSessionConfigOption — plan 06-06, the
+// sessionCapabilities.options advertisement's serviced method) translate
+// the neutral vocabulary, the four remaining unadvertised stable methods
 // answer acp.NewMethodNotFound (-32601, Pitfall 6) — matching the SDK's
 // own optional-interface behavior — and authenticate (advertised per
 // D-02) delegates through Handlers: the front's honest chain (AUTH-01,
@@ -446,12 +448,50 @@ func (a *agentAdapter) ResumeSession(
 	return acp.ResumeSessionResponse{}, nil
 }
 
-// SetSessionConfigOption is unadvertised in Phase 4 — clean -32601 default.
+// SetSessionConfigOption delegates the advertised config-options mutation
+// through the neutral Handlers surface (MODEL-02, plan 06-06 — the -32601
+// unadvertised default replaced, the Authenticate delegation shape): the
+// wire triple (sessionId/configId/value) rides verbatim, the full
+// re-emitted list assembles through the SDK select variant exclusively, and
+// every front error codes via wireError — never raw, never the misleading
+// -32601 default (D-02 honesty). A boolean-variant ask translates to the
+// empty value id: this build advertises select options only, so the front's
+// membership validation answers the coded -32602 naming the option's own
+// listed set.
 func (a *agentAdapter) SetSessionConfigOption(
 	ctx context.Context,
 	params acp.SetSessionConfigOptionRequest,
 ) (acp.SetSessionConfigOptionResponse, error) {
-	return acp.SetSessionConfigOptionResponse{}, unadvertised(acp.AgentMethodSessionSetConfigOption)
+	var (
+		sessionID string
+		configID  string
+		value     string
+	)
+
+	switch {
+	case params.ValueId != nil:
+		sessionID = string(params.ValueId.SessionId)
+		configID = string(params.ValueId.ConfigId)
+		value = string(params.ValueId.Value)
+	case params.Boolean != nil:
+		sessionID = string(params.Boolean.SessionId)
+		configID = string(params.Boolean.ConfigId)
+	default:
+		return acp.SetSessionConfigOptionResponse{}, acp.NewRequestError(
+			CodeInvalidParams, "session/set_config_option: params carry neither a value id nor a boolean variant", nil)
+	}
+
+	options, err := a.h.SetSessionConfigOption(ctx, sessionID, configID, value)
+	if err != nil {
+		return acp.SetSessionConfigOptionResponse{}, wireError(err)
+	}
+
+	selects := configOptionSelects(options)
+	if selects == nil {
+		selects = []acp.SessionConfigOption{} // the spec MUST + the SDK Validate: the list is required
+	}
+
+	return acp.SetSessionConfigOptionResponse{ConfigOptions: selects}, nil
 }
 
 // SetSessionMode is unadvertised in Phase 4 — clean -32601 default.

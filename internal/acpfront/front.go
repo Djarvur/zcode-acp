@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -464,6 +465,107 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 	}
 
 	return nil
+}
+
+// SetSessionConfigOption applies one client config-option selection
+// (MODEL-02, plan 06-06): validate FIRST against the CURRENT confirmed
+// option set — the client's configId/value are untrusted input, and the
+// -32602 arms name the configId and the allowed set/values so the client
+// can re-render its picker (T-06-17: no backend call ever carries an
+// unvalidated value). The closed-session gate rides the established SESS-01
+// posture (isClosing — the T-5-12 race-gate parity with prompt/resume), and
+// the confirmed-settings store is the validation source: a session with no
+// confirmed snapshot (never opened, or torn down — dropSettings rode the
+// SESS-01 teardown beside dropCwd) answers -32602, never a panic. A valid
+// ask returns the full confirmed option list; the backend mutation arms
+// (the locked OQ1 setModel path, the reply-built re-emit) land with plan
+// 06-06 Task 2.
+func (f *Front) SetSessionConfigOption(
+	ctx context.Context, sessionID, configID, value string,
+) ([]acpport.ConfigOptionDef, error) {
+	if f.isClosing(sessionID) {
+		return nil, acpport.NewInvalidRequest(
+			"session/set_config_option: %s: the session is closing or closed", sessionID)
+	}
+
+	raw, ok := f.latestSettings(sessionID)
+	if !ok {
+		return nil, acpport.NewInvalidParams(
+			"session/set_config_option: %s: no confirmed settings to validate against (unknown session)", sessionID)
+	}
+
+	s, parsed := ParseSettings(raw)
+	if !parsed {
+		return nil, acpport.NewInternal(
+			"session/set_config_option: %s: the confirmed settings snapshot does not decode", sessionID)
+	}
+
+	options := BuildConfigOptions(s)
+
+	def := configOptionByID(options, configID)
+	if def == nil {
+		return nil, acpport.NewInvalidParams(
+			"session/set_config_option: unknown configId %q (allowed: %s)", configID, allowedOptionIDs(options))
+	}
+
+	if !configOptionListed(def, value) {
+		return nil, acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
+			configID, value, listedOptionValues(def))
+	}
+
+	return options, nil
+}
+
+// configOptionByID finds one rendered option def by its wire id.
+func configOptionByID(options []acpport.ConfigOptionDef, configID string) *acpport.ConfigOptionDef {
+	for i := range options {
+		if options[i].ID == configID {
+			return &options[i]
+		}
+	}
+
+	return nil
+}
+
+// allowedOptionIDs renders the option ids the client may pick — the unknown
+// configId error's allowed set ("none" for a snapshot that renders no
+// options at all — the honest smaller-list posture).
+func allowedOptionIDs(options []acpport.ConfigOptionDef) string {
+	ids := make([]string, 0, len(options))
+	for i := range options {
+		ids = append(ids, options[i].ID)
+	}
+
+	if len(ids) == 0 {
+		return "none"
+	}
+
+	return strings.Join(ids, ", ")
+}
+
+// configOptionListed reports whether value is a member of the option's own
+// listed set (the spec MUST: the value must be one of the option's options
+// array).
+func configOptionListed(def *acpport.ConfigOptionDef, value string) bool {
+	for _, o := range def.Options {
+		if o.Value == value {
+			return true
+		}
+	}
+
+	return false
+}
+
+// listedOptionValues renders the option's own listed values — the
+// out-of-set value error's allowed set.
+func listedOptionValues(def *acpport.ConfigOptionDef) string {
+	values := make([]string, 0, len(def.Options))
+	for _, o := range def.Options {
+		values = append(values, o.Value)
+	}
+
+	return strings.Join(values, ", ")
 }
 
 // applyConfiguredModel runs the session/setModel follow-up ONLY when a
