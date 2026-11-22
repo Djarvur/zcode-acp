@@ -240,12 +240,12 @@ Plans:
   3. Every ACP method Orca's client calls at card startup and during a turn (per the Phase 1 dialect document) is implemented or gracefully handled, so a card works end-to-end
   4. A clean Ubuntu GNOME VM scenario — install, configure, run — is scripted in the repo and reproducible, including the no-keyring error path
   5. Manual E2E confirmed and documentation published: a working agent card in a real chat-UI client (Orca) on Ubuntu GNOME on a real account through both auth paths, backed by an English README (what it is, install, configuration, both auth paths, troubleshooting), a launch recipe for ACP hosts that only accept preset agents (binary naming, version floor, env, PATH shim), and `docs/` protocol notes with the provenance statement and known limitations
-**Plans**: 1/9 plans executed
+**Plans**: 2/9 plans executed
 
 Plans:
 **Wave 1** *(07-01, 07-02, 07-04 are file-disjoint — parallel)*
 - [x] 07-01-PLAN.md — D-08 lifecycle-consistency pass: WR-05 TOCTOU (one closingMu-guarded register-if-open), WR-04 three post-create leak paths, WR-01 picker-refusal full teardown, IN-04 dead guard
-- [ ] 07-02-PLAN.md — D-08 advisory batch: IN-01 single builtin read (revision+rules from one decode), IN-03 keyring classify order (boundary success = ok), IN-02 comment fix; keyring sentinels byte-frozen
+- [x] 07-02-PLAN.md — D-08 advisory batch: IN-01 single builtin read (revision+rules from one decode), IN-03 keyring classify order (boundary success = ok), IN-02 comment fix; keyring sentinels byte-frozen
 - [ ] 07-04-PLAN.md — D-03 CLI half: omp subcommand dispatch (re-tokenized flags, unknown tolerated), --model launch binding via applyConfiguredModel, version floor 18.1.9+ (stdlib FlagSet — one require line intact)
 
 **Wave 2** *(blocked on Wave 1)*
@@ -275,7 +275,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 15/15 | Complete    | 2026-11-22 |
 | 6. OAuth Coding-Plan Path & Model Picker | 8/8 | Complete    | 2026-11-22 |
-| 7. Hardening, VM & Manual E2E, Documentation | 1/9 | In Progress | - |
+| 7. Hardening, VM & Manual E2E, Documentation | 2/9 | In Progress | - |
 
 ---
 *Roadmap created: 2026-11-19*
