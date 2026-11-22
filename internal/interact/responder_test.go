@@ -64,6 +64,20 @@ const (
 	wireKeyOfficialMcpReason     = "reason"
 	officialMcpReasonUnavailable = "official_auth_unavailable"
 
+	// officialMcpParams / officialMcpDistinctParams are the
+	// TestOfficialMcpAuthHeadersDecline asks' params — the attempt-1
+	// capture's shape (its line 15) with fixed synthetic workspace values
+	// (the wire shape is what the lock pins, never the probe's real
+	// paths); the second carries a distinct requestId for the
+	// touching-separates probe.
+	officialMcpParams = `{"mcpKey":"sites","pluginId":"zcode-site@zcode-plugins-official",` +
+		`"requestId":"official-mcp-auth:1","targetOrigin":"https://zcode.z.ai",` +
+		`"workspace":{"workspaceKey":"/tmp/official-mcp-auth-ws","workspacePath":"/tmp/official-mcp-auth-ws"}}`
+
+	officialMcpDistinctParams = `{"mcpKey":"sites","pluginId":"zcode-site@zcode-plugins-official",` +
+		`"requestId":"official-mcp-auth:2","targetOrigin":"https://zcode.z.ai",` +
+		`"workspace":{"workspaceKey":"/tmp/official-mcp-auth-ws","workspacePath":"/tmp/official-mcp-auth-ws"}}`
+
 	// wireKeyDecision is the permission-response decision key.
 	wireKeyDecision = "decision"
 )
@@ -269,7 +283,11 @@ func assertDeclineStages(ctx context.Context, t *testing.T, resp *interact.Respo
 
 	mcpDecline, mcpOK := declineRes.(map[string]any)
 
-	if !mcpOK || mcpDecline[wireKeyOfficialMcpOk] != false || mcpDecline[wireKeyOfficialMcpReason] != officialMcpReasonUnavailable {
+	okShape := mcpOK &&
+		mcpDecline[wireKeyOfficialMcpOk] == false &&
+		mcpDecline[wireKeyOfficialMcpReason] == officialMcpReasonUnavailable
+
+	if !okShape {
 		t.Fatalf("requestOfficialMcpAuthHeaders result = %v, want {%s:false, %s:%s}",
 			declineRes, wireKeyOfficialMcpOk, wireKeyOfficialMcpReason, officialMcpReasonUnavailable)
 	}
@@ -909,13 +927,6 @@ func TestRuntimeHeadersRejection(t *testing.T) {
 // dedupe entry still ages out via the zero-deadline router-default TTL
 // fallback).
 func TestOfficialMcpAuthHeadersDecline(t *testing.T) {
-	// officialMcpParams is the attempt-1 capture's params shape (line 15)
-	// with a fixed synthetic workspace — the wire shape is what the lock
-	// pins, never the probe's real paths.
-	const officialMcpParams = `{"mcpKey":"sites","pluginId":"zcode-site@zcode-plugins-official",` +
-		`"requestId":"official-mcp-auth:1","targetOrigin":"https://zcode.z.ai",` +
-		`"workspace":{"workspaceKey":"/tmp/official-mcp-auth-ws","workspacePath":"/tmp/official-mcp-auth-ws"}}`
-
 	resp := interact.NewResponder()
 
 	t.Run("declines with the byte-structured ok:false result", func(t *testing.T) {
@@ -966,14 +977,10 @@ func TestOfficialMcpAuthHeadersDecline(t *testing.T) {
 		}
 
 		// Distinct requestId: answered independently (touching separates).
-		const distinctParams = `{"mcpKey":"sites","pluginId":"zcode-site@zcode-plugins-official",` +
-			`"requestId":"official-mcp-auth:2","targetOrigin":"https://zcode.z.ai",` +
-			`"workspace":{"workspaceKey":"/tmp/official-mcp-auth-ws","workspacePath":"/tmp/official-mcp-auth-ws"}}`
-
 		res, werr, handled := resp.Serve(dedupeCtx, zcode.Envelope{
 			ID:     &zcode.ID{Str: "om-distinct"},
 			Method: interact.MethodRequestOfficialMcpAuthHeaders,
-			Params: json.RawMessage(distinctParams),
+			Params: json.RawMessage(officialMcpDistinctParams),
 		})
 
 		if !handled || werr != nil || res == nil {

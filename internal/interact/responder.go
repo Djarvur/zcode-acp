@@ -36,6 +36,11 @@ const (
 	MethodBrowserExecute                = "interaction/browserExecute"
 )
 
+// wireKeyReason is the camelCase reason wire key shared by the reply
+// payloads that carry one (the permission deny answer, the officialMcp
+// decline) — the goconst single-source for the repeated literal.
+const wireKeyReason = "reason"
+
 // Per-method deadline defaults (05-RESEARCH.md Pattern 1 policy table).
 const (
 	// DefaultPermissionDeadline is the OQ-2 disposition: the host-side
@@ -373,7 +378,7 @@ func deliver(ans Answer, err error) answerDelivery {
 // message — dialect §6).
 func expiryAnswer(method string) (any, *zcode.WireError) {
 	if method == MethodRequestPermission {
-		return map[string]any{"decision": decisionDeny, "reason": deniedByUserReason}, nil
+		return map[string]any{"decision": decisionDeny, wireKeyReason: deniedByUserReason}, nil
 	}
 
 	return nil, &zcode.WireError{
@@ -556,8 +561,8 @@ func answerOfficialMcpAuthHeaders(_ context.Context, req Request) (Answer, error
 	)
 
 	return Answer{Result: map[string]any{
-		"ok":     false,
-		"reason": "official_auth_unavailable",
+		"ok":          false,
+		wireKeyReason: "official_auth_unavailable",
 	}}, nil
 }
 

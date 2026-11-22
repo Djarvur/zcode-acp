@@ -233,7 +233,7 @@ func rawString(raw json.RawMessage) string {
 // malformed params, deadline expiry via expiryAnswer): the denied-by-user
 // reason, never a bare decision.
 func denyAnswer() Answer {
-	return Answer{Result: map[string]any{"decision": decisionDeny, "reason": deniedByUserReason}}
+	return Answer{Result: map[string]any{"decision": decisionDeny, wireKeyReason: deniedByUserReason}}
 }
 
 // cancelledWireError is the -32021 error reply for a cancelled permission
