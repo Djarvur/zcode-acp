@@ -8,10 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -115,13 +120,14 @@ type patFixtureServer struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu        sync.Mutex
-	calls     []patFixtureCall
-	customer  patReplier
-	listKeys  patReplier
-	createKey patReplier
-	access    patReplier
-	netFail   bool // hijack+close every request while set (transport-level failure)
+	mu          sync.Mutex
+	calls       []patFixtureCall
+	customer    patReplier
+	listKeys    patReplier
+	createKey   patReplier
+	access      patReplier
+	netFail     bool          // hijack+close every request while set (transport-level failure)
+	accessDelay time.Duration // access_tokens stall (widens the single-flight window)
 }
 
 // newPatFixtureServer starts the fixture origin with the happy defaults and
@@ -193,6 +199,15 @@ func (f *patFixtureServer) SetNetFail(v bool) {
 	f.netFail = v
 }
 
+// SetAccessDelay stalls every access_tokens reply by d (the single-flight
+// probe widens the mint window so concurrent Ensures truly overlap).
+func (f *patFixtureServer) SetAccessDelay(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.accessDelay = d
+}
+
 // Calls returns the recorded call slice (order-preserving snapshot).
 func (f *patFixtureServer) Calls() []patFixtureCall {
 	f.mu.Lock()
@@ -232,7 +247,12 @@ func (f *patFixtureServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body:        string(body),
 	})
 	netFail := f.netFail
+	accessDelay := f.accessDelay
 	f.mu.Unlock()
+
+	if strings.HasSuffix(r.URL.Path, "/access_tokens") && accessDelay > 0 {
+		time.Sleep(accessDelay)
+	}
 
 	if netFail {
 		// Transport-level failure: hijack and drop the connection so the
@@ -1133,4 +1153,275 @@ func patRunNetIntact(t *testing.T) {
 	if pat.Token != patSecondToken {
 		t.Fatalf("Pat.Token = %q, want the recovery mint", pat.Token)
 	}
+}
+
+// TestPatMinterSingleFlight locks the concurrency edge: N concurrent Ensure
+// callers share exactly ONE in-flight mint (mutex + shared in-flight call) —
+// exactly one access_tokens HTTPS call fires and every caller receives the
+// same PAT (run under -race; the AUTH-02 concurrency probe).
+func TestPatMinterSingleFlight(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	fx.SetAccessDelay(100 * time.Millisecond) // widen the mint window
+	clk := newPatClock(fixtureBaseTime())
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
+
+	const callers = 8
+
+	results := make(chan hostsvc.Pat, callers)
+	errs := make(chan error, callers)
+
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			pat, err := m.Ensure(context.Background())
+			if err != nil {
+				errs <- err
+
+				return
+			}
+
+			results <- pat
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("concurrent Ensure = error %v, want a shared mint", err)
+	}
+
+	tokens := make([]string, 0, callers)
+	for pat := range results {
+		tokens = append(tokens, pat.Token)
+	}
+
+	if len(tokens) != callers {
+		t.Fatalf("received %d results, want %d", len(tokens), callers)
+	}
+
+	for _, tok := range tokens {
+		if tok != fixturePATToken {
+			t.Fatalf("caller received token %q, want every caller to share the minted PAT", tok)
+		}
+	}
+
+	if n := fx.patCallCount("access"); n != 1 {
+		t.Fatalf("access_tokens calls = %d, want exactly ONE mint for %d concurrent callers", n, callers)
+	}
+}
+
+// TestPatMinterReactiveSurface locks the D-05 reactive surface: a cached
+// token whose refreshAt is still in the future serves with ZERO HTTP calls;
+// Cached() exposes the cache without I/O; Invalidate drops the cached token
+// so the next Ensure re-mints (the exactly-one-silent-re-mint orchestration
+// lives on the 06-07 source adapter over this surface).
+func TestPatMinterReactiveSurface(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	clk := newPatClock(fixtureBaseTime())
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
+
+	first, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("first Ensure = error %v, want a mint", err)
+	}
+
+	if n := fx.patCallCount("access"); n != 1 {
+		t.Fatalf("access calls = %d after the first mint, want 1", n)
+	}
+
+	// refreshAt is in the future: the cached token serves with zero HTTP.
+	cached, ok := m.Cached(context.Background())
+	if !ok || cached.Token != fixturePATToken {
+		t.Fatalf("Cached = (%+v, %v), want the minted token", cached, ok)
+	}
+
+	second, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("second Ensure = error %v, want the cached serve", err)
+	}
+
+	if second.Token != first.Token || second.Fingerprint != first.Fingerprint {
+		t.Fatalf("second Ensure token drifted: %q vs %q", second.Token, first.Token)
+	}
+
+	if n := fx.patCallCount("access"); n != 1 {
+		t.Fatalf("access calls = %d after the cached serve, want 1 (ZERO HTTP while refreshAt is future)", n)
+	}
+
+	// Invalidate drops the cached token; the next Ensure re-mints.
+	m.Invalidate("test-reactive-invalidate")
+
+	if _, ok := m.Cached(context.Background()); ok {
+		t.Fatal("cache still populated after Invalidate")
+	}
+
+	third, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure after Invalidate = error %v, want a re-mint", err)
+	}
+
+	if third.Token != fixturePATToken {
+		t.Fatalf("re-minted token = %q, want the fixture PAT", third.Token)
+	}
+
+	if n := fx.patCallCount("access"); n != 2 {
+		t.Fatalf("access calls = %d after Invalidate+Ensure, want 2 (the forced re-mint)", n)
+	}
+}
+
+// TestPatMinterTransientBackoff locks the transient posture: a network
+// failure on an otherwise-valid cache serves the CACHED token and defers the
+// retry past the 5s floor — a call inside the floor answers cached without
+// minting; past the floor the retry proceeds (the reference's
+// TRANSIENT_RETRY_BACKOFF semantics, D-05).
+func TestPatMinterTransientBackoff(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	clk := newPatClock(fixtureBaseTime())
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
+
+	if _, err := m.Ensure(context.Background()); err != nil {
+		t.Fatalf("first Ensure = error %v, want a mint", err)
+	}
+
+	if n := fx.patCallCount("access"); n != 1 {
+		t.Fatalf("access calls = %d after the first mint, want 1", n)
+	}
+
+	// Past the refresh lead, before expiry: the cache is otherwise-valid and
+	// the network dies mid-refresh.
+	clk.Advance(59 * time.Minute)
+	fx.SetNetFail(true)
+
+	served, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure = error %v, want the still-valid cached token served (transient posture)", err)
+	}
+
+	if served.Token != fixturePATToken {
+		t.Fatalf("served token = %q, want the cached token", served.Token)
+	}
+
+	wantFloor := clk.Now().Add(5 * time.Second)
+	if !served.RefreshAt.Equal(wantFloor) {
+		t.Fatalf("served RefreshAt = %v, want the 5s retry floor %v", served.RefreshAt, wantFloor)
+	}
+
+	// A call inside the floor answers cached WITHOUT minting.
+	inside, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("in-floor Ensure = error %v, want the cached serve", err)
+	}
+
+	if inside.Token != fixturePATToken {
+		t.Fatalf("in-floor token = %q, want the cached token", inside.Token)
+	}
+
+	if n := fx.patCallCount("access"); n != 2 {
+		t.Fatalf("access calls = %d after the in-floor serve, want 2 (no mint inside the floor)", n)
+	}
+
+	// The clock advances past the floor: the retry proceeds and mints.
+	clk.Advance(6 * time.Second)
+	fx.SetNetFail(false)
+
+	retried, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("post-floor Ensure = error %v, want the retry mint", err)
+	}
+
+	if retried.Token != fixturePATToken {
+		t.Fatalf("retried token = %q, want the fixture mint", retried.Token)
+	}
+
+	if n := fx.patCallCount("access"); n != 3 {
+		t.Fatalf("access calls = %d after the floor passed, want 3 (the deferred retry ran)", n)
+	}
+}
+
+// TestPatMemoryOnly is the D-04/T-5-17 hygiene lock: the minter's own source
+// must contain no write-intent file construct anywhere in its call graph, and
+// the Pat struct must carry no String()/GoString()/Marshal rendering that
+// could leak the token into a log or an error through accidental formatting.
+func TestPatMemoryOnly(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller could not locate the test file")
+	}
+
+	srcPath := filepath.Join(filepath.Dir(thisFile), "patminter.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, srcPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", srcPath, err)
+	}
+
+	forbiddenWrites := map[string]bool{
+		"os.Create":      true,
+		"os.WriteFile":   true,
+		"os.OpenFile":    true,
+		"os.Write":       true,
+		"os.WriteString": true,
+	}
+
+	forbiddenMethods := map[string]bool{
+		"String":        true,
+		"GoString":      true,
+		"MarshalJSON":   true,
+		"MarshalText":   true,
+		"MarshalBinary": true,
+		"MarshalYAML":   true,
+		"GobEncode":     true,
+	}
+
+	ast.Inspect(file, func(n ast.Node) bool {
+		sel, isSel := n.(*ast.SelectorExpr)
+		if isSel {
+			if pkg, isPkg := sel.X.(*ast.Ident); isPkg && forbiddenWrites[pkg.Name+"."+sel.Sel.Name] {
+				t.Errorf("write-intent file call %s in patminter.go — the PAT cache is in-process only (D-04)",
+					pkg.Name+"."+sel.Sel.Name)
+			}
+
+			return true
+		}
+
+		fd, isFunc := n.(*ast.FuncDecl)
+		if !isFunc || fd.Recv == nil {
+			return true
+		}
+
+		if patReceiverName(fd.Recv) != "Pat" {
+			return true
+		}
+
+		if forbiddenMethods[fd.Name.Name] {
+			t.Errorf("Pat carries rendering method %q — no String()/GoString()/Marshal on the cache struct (D-04)",
+				fd.Name.Name)
+		}
+
+		return true
+	})
+}
+
+// patReceiverName extracts the receiver's type name (pointer or value).
+func patReceiverName(recv *ast.FieldList) string {
+	if len(recv.List) == 0 {
+		return ""
+	}
+
+	switch t := recv.List[0].Type.(type) {
+	case *ast.StarExpr:
+		if ident, ok := t.X.(*ast.Ident); ok {
+			return ident.Name
+		}
+	case *ast.Ident:
+		return t.Name
+	}
+
+	return ""
 }
