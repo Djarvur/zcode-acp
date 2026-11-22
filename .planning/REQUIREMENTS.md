@@ -68,9 +68,9 @@ Requirements for the initial release. Each maps to roadmap phases.
 
 ### Documentation (English)
 
-- [ ] **DOCS-01**: README: what it is (honest ACP server for any ACP client), install, configuration, both auth paths, troubleshooting
-- [ ] **DOCS-02**: README launch recipe for ACP hosts that only accept preset agents (binary naming, version floor, env, PATH shim) — the documented method of connecting to Orca's chat UI
-- [ ] **DOCS-03**: `docs/`: protocol notes from DISC-01…04, provenance statement (no patching, no attestation forgery, PAT signed by the official binary; Apache-2.0 attribution for ported reference-adapter code), known limitations (no quota counter over OAuth; Start Plan does not work headless — browser/captcha required)
+- [x] **DOCS-01**: README: what it is (honest ACP server for any ACP client), install, configuration, both auth paths, troubleshooting
+- [x] **DOCS-02**: README launch recipe for ACP hosts that only accept preset agents (binary naming, version floor, env, PATH shim) — the documented method of connecting to Orca's chat UI
+- [x] **DOCS-03**: `docs/`: protocol notes from DISC-01…04, provenance statement (no patching, no attestation forgery, PAT signed by the official binary; Apache-2.0 attribution for ported reference-adapter code), known limitations (no quota counter over OAuth; Start Plan does not work headless — browser/captcha required)
 
 ## v2 Requirements
 
@@ -136,9 +136,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AUTH-04 | Phase 6 | Complete |
 | MODEL-01 | Phase 6 | Complete |
 | MODEL-02 | Phase 6 | Complete |
-| DOCS-01 | Phase 7 | Pending |
-| DOCS-02 | Phase 7 | Pending |
-| DOCS-03 | Phase 7 | Pending |
+| DOCS-01 | Phase 7 | Complete |
+| DOCS-02 | Phase 7 | Complete |
+| DOCS-03 | Phase 7 | Complete |
 | QA-01 | Phase 7 | Complete |
 | QA-02 | Phase 7 | Pending |
 | QA-03 | Phase 7 | Pending |

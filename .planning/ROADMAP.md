@@ -240,7 +240,7 @@ Plans:
   3. Every ACP method Orca's client calls at card startup and during a turn (per the Phase 1 dialect document) is implemented or gracefully handled, so a card works end-to-end
   4. A clean Ubuntu GNOME VM scenario — install, configure, run — is scripted in the repo and reproducible, including the no-keyring error path
   5. Manual E2E confirmed and documentation published: a working agent card in a real chat-UI client (Orca) on Ubuntu GNOME on a real account through both auth paths, backed by an English README (what it is, install, configuration, both auth paths, troubleshooting), a launch recipe for ACP hosts that only accept preset agents (binary naming, version floor, env, PATH shim), and `docs/` protocol notes with the provenance statement and known limitations
-**Plans**: 7/9 plans executed
+**Plans**: 8/9 plans executed
 
 Plans:
 **Wave 1** *(07-01, 07-02, 07-04 are file-disjoint — parallel)*
@@ -257,7 +257,7 @@ Plans:
 - [x] 07-05-PLAN.md — D-03 slash half: the /model prompt intercept (validate-first, picker-machinery reuse, slot-free refusals) + the -32603 data.details error seam; Hb strings byte-locked (`Unknown ACP model: `, `No model selected.`)
 
 **Wave 4** *(blocked on Wave 3)*
-- [ ] 07-08-PLAN.md — DOCS-01/02/03: README English user surface + the preset-agent launch recipe (override, version floor, env shim, launchesWithModel claim) + docs/provenance.md (statement, Apache-2.0 attribution, known limitations)
+- [x] 07-08-PLAN.md — DOCS-01/02/03: README English user surface + the preset-agent launch recipe (override, version floor, env shim, launchesWithModel claim) + docs/provenance.md (statement, Apache-2.0 attribution, known limitations)
 
 **Wave 5** *(blocked on Wave 4; the manual gates ride end-of-phase human-checks per D-06 — never autonomous)*
 - [ ] 07-09-PLAN.md — QA-02/QA-03 gates: phase-gate pre-verification (mise run ci + realdesktop vet), 07-UAT.md + ledger seeded, the VM-run and Orca-card human-checks; REQUIREMENTS.md untouched
@@ -275,7 +275,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 15/15 | Complete    | 2026-11-22 |
 | 6. OAuth Coding-Plan Path & Model Picker | 8/8 | Complete    | 2026-11-22 |
-| 7. Hardening, VM & Manual E2E, Documentation | 7/9 | In Progress | - |
+| 7. Hardening, VM & Manual E2E, Documentation | 8/9 | In Progress | - |
 
 ---
 *Roadmap created: 2026-11-19*
