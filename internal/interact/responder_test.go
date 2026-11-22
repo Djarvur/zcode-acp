@@ -51,6 +51,19 @@ const (
 	// sorted), so the bytes are the byte-identity proof.
 	migratedRuntimePrefsJSON = `{"memoryEnabled":false,"nativeSearchEnhancementsEnabled":false}`
 
+	// officialMcpDeclineJSON is the requestOfficialMcpAuthHeaders decline
+	// answer byte-for-byte — the desktop's own honest no-resolver shape
+	// (the same map literal the policy handler marshals; codec map keys
+	// are sorted, so the bytes are the wire bytes).
+	officialMcpDeclineJSON = `{"ok":false,"reason":"official_auth_unavailable"}`
+
+	// wireKeyOfficialMcpOk / wireKeyOfficialMcpReason are the decline
+	// reply's wire keys; officialMcpReasonUnavailable its reason value
+	// (goconst: each capture-verbatim spelling extracts to one source).
+	wireKeyOfficialMcpOk         = "ok"
+	wireKeyOfficialMcpReason     = "reason"
+	officialMcpReasonUnavailable = "official_auth_unavailable"
+
 	// wireKeyDecision is the permission-response decision key.
 	wireKeyDecision = "decision"
 )
@@ -212,15 +225,19 @@ func TestResponderContract(t *testing.T) {
 	// Stage 4 — empty-input probe + post-answer eviction.
 	assertEmptyInputAndEviction(contractCtx, t)
 
-	// Stages 7-8 — the decline posture and the harmless -32601 default.
-	assertDeclineAndFloor(contractCtx, t, defaultResp)
+	// Stages 7-8 — the two decline postures.
+	assertDeclineStages(contractCtx, t, defaultResp)
 }
 
-// assertDeclineAndFloor is contract stages 7-8: requestUserInput declines
-// (the honest no-UI-channel posture; elicitation deferred to Phase 7) and
-// interaction/requestOfficialMcpAuthHeaders keeps the field-verified
-// harmless -32601 default (EXP-SUBSCRIBE-01).
-func assertDeclineAndFloor(ctx context.Context, t *testing.T, resp *interact.Responder) {
+// assertDeclineStages is contract stages 7-8: requestUserInput declines the
+// ask-the-user channel (the honest no-UI-channel posture; elicitation
+// deferred to Phase 7) and interaction/requestOfficialMcpAuthHeaders
+// declines INSIDE the reply RESULT with the desktop's own honest
+// no-resolver shape {ok:false, reason:"official_auth_unavailable"} — the
+// EXP-CODINGPLAN-CYCLE-01 attempt-1 unblock (a -32601 answer here stalls
+// the plugin runtime materialization). The unknown-method -32601 floor is
+// stage 1 and stays for genuinely unknown methods only.
+func assertDeclineStages(ctx context.Context, t *testing.T, resp *interact.Responder) {
 	t.Helper()
 
 	res, werr, handled := resp.Serve(ctx, zcode.Envelope{
@@ -239,13 +256,22 @@ func assertDeclineAndFloor(ctx context.Context, t *testing.T, resp *interact.Res
 		t.Fatalf("requestUserInput result = %v, want {action:decline}", res)
 	}
 
-	_, werr, handled = resp.Serve(ctx, zcode.Envelope{
+	declineRes, declineErr, declineHandled := resp.Serve(ctx, zcode.Envelope{
 		ID:     &zcode.ID{Str: "s-8"},
 		Method: interact.MethodRequestOfficialMcpAuthHeaders,
+		Params: json.RawMessage(`{"requestId":"official-mcp-auth:1","sessionId":"sess_fix1"}`),
 	})
 
-	if !handled || werr == nil || werr.Code != zcode.CodeMethodNotFound {
-		t.Fatalf("requestOfficialMcpAuthHeaders must answer -32601 (handled=%v werr=%v)", handled, werr)
+	if !declineHandled || declineErr != nil {
+		t.Fatalf("requestOfficialMcpAuthHeaders must be answered with a result (handled=%v werr=%v)",
+			declineHandled, declineErr)
+	}
+
+	mcpDecline, mcpOK := declineRes.(map[string]any)
+
+	if !mcpOK || mcpDecline[wireKeyOfficialMcpOk] != false || mcpDecline[wireKeyOfficialMcpReason] != officialMcpReasonUnavailable {
+		t.Fatalf("requestOfficialMcpAuthHeaders result = %v, want {%s:false, %s:%s}",
+			declineRes, wireKeyOfficialMcpOk, wireKeyOfficialMcpReason, officialMcpReasonUnavailable)
 	}
 }
 
@@ -866,6 +892,93 @@ func TestRuntimeHeadersRejection(t *testing.T) {
 			interact.Request{Params: json.RawMessage(`{not json`)})
 		if gotScope != "" || gotFP != "" {
 			t.Fatalf("undecodable params dug (%q, %q), want empty", gotScope, gotFP)
+		}
+	})
+}
+
+// TestOfficialMcpAuthHeadersDecline locks the official-MCP auth ask's
+// structured-decline row (the EXP-CODINGPLAN-CYCLE-01 attempt-1 unblock):
+// the wrapper has no official-MCP auth resolver, so the ask is answered
+// INSIDE the reply RESULT with the desktop's own honest no-resolver shape
+// {ok:false, reason:"official_auth_unavailable"} — never {ok:true} (no
+// fabricated headers), never -32601 (an error envelope here stalls the
+// plugin runtime materialization the attempt-1 capture recorded). The
+// decline bytes are byte-locked (codec map keys are sorted), the ask joins
+// the (method, params.requestId) dedupe contract like every other policy
+// row, and the static decline answers immediately (no deadline policy; the
+// dedupe entry still ages out via the zero-deadline router-default TTL
+// fallback).
+func TestOfficialMcpAuthHeadersDecline(t *testing.T) {
+	// officialMcpParams is the attempt-1 capture's params shape (line 15)
+	// with a fixed synthetic workspace — the wire shape is what the lock
+	// pins, never the probe's real paths.
+	const officialMcpParams = `{"mcpKey":"sites","pluginId":"zcode-site@zcode-plugins-official",` +
+		`"requestId":"official-mcp-auth:1","targetOrigin":"https://zcode.z.ai",` +
+		`"workspace":{"workspaceKey":"/tmp/official-mcp-auth-ws","workspacePath":"/tmp/official-mcp-auth-ws"}}`
+
+	resp := interact.NewResponder()
+
+	t.Run("declines with the byte-structured ok:false result", func(t *testing.T) {
+		res, werr, handled := resp.Serve(context.Background(), zcode.Envelope{
+			ID:     &zcode.ID{Str: "om-1"},
+			Method: interact.MethodRequestOfficialMcpAuthHeaders,
+			Params: json.RawMessage(officialMcpParams),
+		})
+
+		if !handled || werr != nil {
+			t.Fatalf("the ask must be answered with a result, never an error envelope (handled=%v werr=%v)",
+				handled, werr)
+		}
+
+		wire, err := json.Marshal(res)
+		if err != nil {
+			t.Fatalf("marshal decline result: %v", err)
+		}
+
+		if string(wire) != officialMcpDeclineJSON {
+			t.Fatalf("decline answer = %s, want byte-identical %s", wire, officialMcpDeclineJSON)
+		}
+	})
+
+	t.Run("re-announce dedupe joins by requestId", func(t *testing.T) {
+		dedupeCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// The registering envelope is answered (the subtest above pins its
+		// bytes); a re-announce of the SAME requestId under a NEW wire id
+		// joins the set and stays silent — handled with no reply payload,
+		// parked until ctx done (the established first-reply-wins
+		// posture). The bounded join context releases the parked Serve —
+		// the park frames nothing on its own, so the released outcome
+		// (handled=true, nil result, nil wire error) is the silence proof.
+		joinCtx, joinCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer joinCancel()
+
+		joinRes, joinWerr, joinHandled := resp.Serve(joinCtx, zcode.Envelope{
+			ID:     &zcode.ID{Str: "om-join"},
+			Method: interact.MethodRequestOfficialMcpAuthHeaders,
+			Params: json.RawMessage(officialMcpParams),
+		})
+
+		if !joinHandled || joinRes != nil || joinWerr != nil {
+			t.Fatalf("re-announce must park handled with no reply payload (handled=%v res=%v werr=%v)",
+				joinHandled, joinRes, joinWerr)
+		}
+
+		// Distinct requestId: answered independently (touching separates).
+		const distinctParams = `{"mcpKey":"sites","pluginId":"zcode-site@zcode-plugins-official",` +
+			`"requestId":"official-mcp-auth:2","targetOrigin":"https://zcode.z.ai",` +
+			`"workspace":{"workspaceKey":"/tmp/official-mcp-auth-ws","workspacePath":"/tmp/official-mcp-auth-ws"}}`
+
+		res, werr, handled := resp.Serve(dedupeCtx, zcode.Envelope{
+			ID:     &zcode.ID{Str: "om-distinct"},
+			Method: interact.MethodRequestOfficialMcpAuthHeaders,
+			Params: json.RawMessage(distinctParams),
+		})
+
+		if !handled || werr != nil || res == nil {
+			t.Fatalf("distinct-requestId ask must be answered independently (handled=%v werr=%v res=%v)",
+				handled, werr, res)
 		}
 	})
 }
