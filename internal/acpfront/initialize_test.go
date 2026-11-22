@@ -37,12 +37,13 @@ func TestInitializeHonestCapabilities(t *testing.T) {
 	initIdx := teeLineIndex(t, lines, "in", `"protocolVersion"`, "initialize response")
 	initRaw := lines[initIdx].JSON
 
-	// The EXACT executed-probe honest shape, byte for byte: one lock covers
-	// protocolVersion 1, the agentInfo identity, and both authMethods in
-	// contract order without a type field (the agent variant is the
-	// default).
+	// The EXACT executed-probe honest shape, byte for byte, WIDENED by plan
+	// 06-04 (MODEL-01, D-11): sessionCapabilities gains the options
+	// empty-struct opt-in. One lock covers protocolVersion 1, the agentInfo
+	// identity, and both authMethods in contract order without a type field
+	// (the agent variant is the default).
 	probeShape := `{"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},` +
-		`"sessionCapabilities":{}},` +
+		`"sessionCapabilities":{"options":{}}},` +
 		`"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},` +
 		`"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},` +
 		`{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}`

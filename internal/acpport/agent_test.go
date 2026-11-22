@@ -177,14 +177,125 @@ func honestReport() acpport.InitReport {
 }
 
 // honestInitializeFrame is the byte-exact wire shape the executed probe
-// against v0.20.0 produced (RESEARCH Code Examples): capabilities are
-// empty objects, the agent-variant authMethods carry no type
-// discriminator, and no fs/terminal/loadSession surface appears anywhere.
+// against v0.20.0 produced (RESEARCH Code Examples), WIDENED deliberately
+// by plan 06-04 (MODEL-01, D-11): sessionCapabilities gains the options
+// empty-struct opt-in — clients gate session/set_config_option on it. The
+// agent-variant authMethods still carry no type discriminator, and no
+// fs/terminal/loadSession surface appears anywhere.
 const honestInitializeFrame = `{"agentCapabilities":{"auth":{},"mcpCapabilities":{},` +
-	`"promptCapabilities":{},"sessionCapabilities":{}},` +
+	`"promptCapabilities":{},"sessionCapabilities":{"options":{}}},` +
 	`"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},` +
 	`"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},` +
 	`{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}`
+
+// TestInitCapabilities — plan 06-04 (MODEL-01, D-11): initialize advertises
+// sessionCapabilities.options, the SDK's empty-struct opt-in — clients MUST
+// only send session/set_config_option when it is present. The advertisement
+// is UNCONDITIONAL (D-11: the picker is auth-path-independent), and every
+// phase-4 honesty lock (protocol version, real agentInfo, both auth
+// methods, the byte-exact frame with zero fs/terminal) stays asserted
+// alongside the widened shape.
+func TestInitCapabilities(t *testing.T) {
+	h := newScriptedHandlers()
+	h.initReport = honestReport()
+
+	resp, err := acpport.NewAgent(h).Initialize(
+		context.Background(), acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersionNumber})
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// The SDK carries the capabilities block as a VALUE struct — the opt-in
+	// is AgentCapabilities.SessionCapabilities.Options (the empty-struct
+	// pointer; nil means unadvertised).
+	if resp.AgentCapabilities.SessionCapabilities.Options == nil {
+		t.Fatalf("initialize must advertise sessionCapabilities.options (the empty-struct opt-in, D-11): %+v", resp.AgentCapabilities.SessionCapabilities)
+	}
+
+	if resp.ProtocolVersion != acp.ProtocolVersionNumber {
+		t.Fatalf("protocolVersion = %d, want %d", resp.ProtocolVersion, acp.ProtocolVersionNumber)
+	}
+
+	assertAgentInfo(t, resp.AgentInfo)
+	assertAuthMethods(t, resp.AuthMethods)
+	assertHonestFrame(t, resp)
+}
+
+// newSessionConfigOptions is the canned neutral option list the scripted
+// Handlers replay — the adapter's select-assembly counterparty (model +
+// thought_level, the translation table's two entries; the provider ids mix
+// zai-api and the account prefix — D-11's both-paths posture).
+var newSessionConfigOptions = []acpport.ConfigOptionDef{
+	{
+		ID:           "model",
+		Name:         "Model",
+		Category:     acpport.ConfigCategoryModel,
+		CurrentValue: "zai-api/GLM-5.3-Flash",
+		Options: []acpport.SelectOptionDef{
+			{Value: "zai-api/GLM-5.3-Flash", Name: "GLM-5.3-Flash", Description: "The flagship reasoning model"},
+			{Value: "zai-account/GLM-5-turbo", Name: "GLM-5 Turbo"},
+		},
+	},
+	{
+		ID:           "thought_level",
+		Name:         "Thought level",
+		Category:     acpport.ConfigCategoryThoughtLevel,
+		CurrentValue: "high",
+		Options: []acpport.SelectOptionDef{
+			{Value: "high", Name: "High", Description: "deep reasoning"},
+			{Value: "low", Name: "Low"},
+		},
+	},
+}
+
+// newSessionConfigOptionsFrame is the byte-exact configOptions assembly:
+// each neutral option becomes the SDK select variant with the "type":
+// "select" discriminant INJECTED BY THE SDK's MarshalJSON (never hand-
+// marshaled, T-06-12), category/currentValue/id/name translating verbatim,
+// and the ungrouped option entries as the flat array (description omitted
+// when empty).
+const newSessionConfigOptionsFrame = `{"configOptions":[` +
+	`{"category":"model","currentValue":"zai-api/GLM-5.3-Flash","id":"model","name":"Model","options":[` +
+	`{"description":"The flagship reasoning model","name":"GLM-5.3-Flash","value":"zai-api/GLM-5.3-Flash"},` +
+	`{"name":"GLM-5 Turbo","value":"zai-account/GLM-5-turbo"}],"type":"select"},` +
+	`{"category":"thought_level","currentValue":"high","id":"thought_level","name":"Thought level","options":[` +
+	`{"description":"deep reasoning","name":"High","value":"high"},` +
+	`{"name":"Low","value":"low"}],"type":"select"}],"sessionId":"sess_backend"}`
+
+// TestNewSessionAssemblesConfigOptions — plan 06-04: the adapter assembles
+// NewSessionResponse.ConfigOptions from the neutral options the front
+// returned, exclusively via the SDK select variant, and the assembled union
+// passes the SDK's own Validate (exactly one variant, name required).
+func TestNewSessionAssemblesConfigOptions(t *testing.T) {
+	h := newScriptedHandlers()
+	h.newSessionOptions = newSessionConfigOptions
+
+	resp, err := acpport.NewAgent(h).NewSession(context.Background(), acp.NewSessionRequest{Cwd: testCwd})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	if len(resp.ConfigOptions) != 2 {
+		t.Fatalf("NewSession ConfigOptions = %d entries, want the front's 2 (model + thought_level): %+v",
+			len(resp.ConfigOptions), resp.ConfigOptions)
+	}
+
+	// The SDK union's own Validate: exactly one variant set, name present.
+	for i := range resp.ConfigOptions {
+		if err := resp.ConfigOptions[i].Validate(); err != nil {
+			t.Fatalf("ConfigOptions[%d] fails the SDK Validate: %v", i, err)
+		}
+	}
+
+	frame, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal NewSessionResponse: %v", err)
+	}
+
+	if string(frame) != newSessionConfigOptionsFrame {
+		t.Fatalf("configOptions assembly drift:\n got: %s\nwant: %s", frame, newSessionConfigOptionsFrame)
+	}
+}
 
 // TestInitializeAssemblesHonestReport drives the adapter's Initialize and
 // byte-locks the response frame: protocolVersion 1, agentInfo
@@ -1646,17 +1757,18 @@ func expectNoFrame(t *testing.T, lines <-chan string, why string) {
 type scriptedHandlers struct {
 	mu sync.Mutex
 
-	initReport    acpport.InitReport
-	newSessionID  string
-	promptReason  acpport.StopReason
-	promptErr     error
-	initErr       error
-	newSessionErr error
-	cancelErr     error
-	resumeID      string
-	resumeErr     error
-	closeErr      error
-	authErr       error
+	initReport        acpport.InitReport
+	newSessionID      string
+	newSessionOptions []acpport.ConfigOptionDef
+	promptReason      acpport.StopReason
+	promptErr         error
+	initErr           error
+	newSessionErr     error
+	cancelErr         error
+	resumeID          string
+	resumeErr         error
+	closeErr          error
+	authErr           error
 
 	initCalls       int
 	newSessionCalls []acpport.NewSessionParams
