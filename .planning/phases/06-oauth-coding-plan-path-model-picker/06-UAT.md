@@ -3,7 +3,7 @@ status: testing
 phase: 06-OAuth Coding-Plan Path & Model Picker
 source: [06-VERIFICATION.md]
 started: 2026-11-22T05:52:00Z
-updated: 2026-11-22T05:52:00Z
+updated: 2026-11-22T12:10:00Z
 ---
 
 ## Current Test
@@ -41,14 +41,18 @@ expected: |
   scrub capture into experiments/captures/EXP-CODINGPLAN-CYCLE-01.jsonl, fill ledger actuals +
   V-EXP id, scan-secrets on tree AND staged diff, record A4/A6/A7 confirm-or-adjust notes,
   confirm the evidence commit. A failed leg records the honest verdict and the phase stays open.
-result: [pending]
+result: PASSED (2026-11-22 12:02, attempt 8 after 3 documented gap cycles — authenticate
+  read-back proven + PAT mint-once + live configOptions + one tool-less turn answered with the
+  three-field requestAuth shape + staged shutdown; scrubbed capture committed as
+  experiments/captures/EXP-CODINGPLAN-CYCLE-01.jsonl; A4/A6/A7 CONFIRMED; ledger updated with
+  full gap-cycle spend honesty)
 
 ## Summary
 
 total: 1
-passed: 0
+passed: 1
 issues: 0
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 
