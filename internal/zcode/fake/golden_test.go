@@ -264,6 +264,7 @@ func goldenDrivers() map[string]driverFunc {
 		"credential-cipher-scripted":     driveCredentialCipherScripted,
 		"setmodel-followup":              driveSetModelFollowup,
 		"part-delta-streaming":           drivePartDeltaStreaming,
+		"desktop-delta-streaming":        driveDesktopDeltaStreaming,
 		"no-reasoning":                   driveNoReasoning,
 		"send-refused-32010":             driveSendRefused32010,
 		"complete-then-cancel":           driveCompleteThenCancel,
@@ -713,6 +714,25 @@ func driveFrontPreamble(ctx context.Context, d *exchangeDriver) {
 // text " done") before turn.completed. The golden byte-locks the
 // interleaved emit order the front's tap consumes in arrival order.
 func drivePartDeltaStreaming(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx)
+}
+
+// driveDesktopDeltaStreaming: the QA-03 corpus row — the REAL desktop's
+// model-response delta carrier (EXP-APIKEY-CYCLE-03 frames 176+, scrubbed
+// synthetic ids/text). The send rule's ordered side effects replay the
+// capture-verbatim frame shapes: turn.started with the desktop's full
+// envelope surface (deliveryKind/eventId/seq/sessionId/timestamp/traceId/
+// turnId), interleaved model.streaming deltas (payload.kind reasoning_delta
+// and text_delta carrying payload.delta per assistantMessageId), the
+// tool_input_start/delta/end trio (tool-args streaming — held from the
+// client surface by contract), and turn.completed. The golden byte-locks
+// the ordered emit stream the front's tap consumes in arrival order; the
+// client-visible chunk lock lives in acpfront's TestDesktopDeltaStreaming
+// (the ACP-leg golden over the same corpus row).
+func driveDesktopDeltaStreaming(ctx context.Context, d *exchangeDriver) {
 	driveFrontPreamble(ctx, d)
 
 	h := happyTurnHarness{t: d.t, conn: d.conn}

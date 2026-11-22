@@ -1,0 +1,113 @@
+{
+  "name": "desktop-delta-streaming",
+  "on_request": [
+    {
+      "method": "session/create",
+      "reply": {
+        "result": {"session": {"sessionId": "sess_fix1"}, "protocol": {"name": "ZCode Protocol", "version": 1}}
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {"sessionId": "sess_fix1", "scope": "runtime-materialization"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"nativeSearchEnhancementsEnabled": false, "memoryEnabled": false}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {
+        "result": {"sessionId": "sess_fix1", "eventSeq": 0, "events": []}
+      }
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {}}
+    },
+    {
+      "method": "session/send",
+      "reply": {
+        "result": {"accepted": true, "sessionId": "sess_fix1", "stateRevision": 1}
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "running"}, "reason": "prompt_started", "revision": 1, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix1", "payload": {"executionStartedAt": 1795289387600, "turnNumber": 0, "messageId": "msg_fix1", "foregroundExecutionId": "runtime_command_1", "queryId": "query_fix1"}, "seq": 6, "sessionId": "sess_fix1", "timestamp": 1795289387601, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "turn.started"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix2", "payload": {"assistantMessageId": "msg_fix1", "delta": "Thinking", "done": false, "kind": "reasoning_delta"}, "seq": 7, "sessionId": "sess_fix1", "timestamp": 1795289387694, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix3", "payload": {"assistantMessageId": "msg_fix1", "delta": " about it", "done": false, "kind": "reasoning_delta"}, "seq": 8, "sessionId": "sess_fix1", "timestamp": 1795289387952, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix4", "payload": {"assistantMessageId": "msg_fix1", "delta": "Answer:", "done": false, "kind": "text_delta"}, "seq": 10, "sessionId": "sess_fix1", "timestamp": 1795289388300, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix5", "payload": {"assistantMessageId": "msg_fix1", "delta": " done", "done": false, "kind": "text_delta"}, "seq": 11, "sessionId": "sess_fix1", "timestamp": 1795289388359, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix6", "payload": {"assistantMessageId": "msg_fix1", "delta": "", "done": false, "kind": "tool_input_start", "toolCallId": "call_fix1", "toolName": "Read"}, "seq": 13, "sessionId": "sess_fix1", "timestamp": 1795289406197, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix7", "payload": {"assistantMessageId": "msg_fix1", "delta": "{\"file_path\":\"/tmp/notes.txt\"}", "done": false, "kind": "tool_input_delta", "toolCallId": "call_fix1"}, "seq": 14, "sessionId": "sess_fix1", "timestamp": 1795289406370, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix8", "payload": {"assistantMessageId": "msg_fix1", "delta": "", "done": false, "kind": "tool_input_end", "toolCallId": "call_fix1"}, "seq": 15, "sessionId": "sess_fix1", "timestamp": 1795289406371, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_fix9", "payload": {"response": "Answer: done", "toolCallCount": 0, "turnId": "turn_fix1"}, "seq": 16, "sessionId": "sess_fix1", "timestamp": 1795289406500, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "turn.completed"}
+          }
+        }
+      ]
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}
