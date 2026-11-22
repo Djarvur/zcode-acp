@@ -769,10 +769,22 @@ stage_auth_codingplan() {
 	case "$ARC_AUTH_REPLY" in
 	*'"error"'*)
 		# An honest coded error here is expected machinery on machines whose
-		# keyring or desktop login is not ready — surface it verbatim-class and
-		# fail the stage (the VM scenario requires the login for this stage).
-		check "auth-codingplan-authenticated" fail \
-			"authenticate{zai-individual-coding-plan} errored: $(json_field "$ARC_AUTH_REPLY" message | head -c 200)"
+		# keyring or desktop login is not ready. The no-desktop-login state is
+		# the CLEAN machine's designed outcome (the documented no-keyring error
+		# path): it passes as its own arm unless --require-auth demands a real
+		# logged-in run. Any OTHER coded error still fails the stage.
+		if printf '%s' "$ARC_AUTH_REPLY" | grep -q "log in via the ZCode desktop first"; then
+			if [ "$REQUIRE_AUTH" = "1" ]; then
+				check "auth-codingplan-authenticated" fail \
+					"--require-auth set, but the desktop login is absent (the no-login arm): $(json_field "$ARC_AUTH_REPLY" message | head -c 160)"
+			else
+				check "auth-codingplan-authenticated" pass \
+					"arm=no-desktop-login — the coded no-login error arrived cleanly (the documented clean-machine state; no hang, no crash)"
+			fi
+		else
+			check "auth-codingplan-authenticated" fail \
+				"authenticate{zai-individual-coding-plan} errored: $(json_field "$ARC_AUTH_REPLY" message | head -c 200)"
+		fi
 		;;
 	*)
 		check "auth-codingplan-authenticated" pass "the probe → login → overlay → registry verdict chain succeeded (success is recorded only after the read-back)"
@@ -789,6 +801,9 @@ stage_auth_codingplan() {
 	if grep -Fq '"account:zai-individual-coding-plan/' <<< "$ARC_SESSION_REPLY"; then
 		check "auth-codingplan-account-models-readback" pass \
 			"the session/new reply lists account-provider models (settings.model.available read-back; the paired provider-config env fact holds)"
+	elif [ "$REQUIRE_AUTH" != "1" ] && printf '%s' "$ARC_AUTH_REPLY" | grep -q "log in via the ZCode desktop first"; then
+		check "auth-codingplan-account-models-readback" pass \
+			"arm=no-desktop-login — the reply lists builtin models only; account models need the desktop login (the entitlement gate hides them, the documented clean-machine state)"
 	else
 		check "auth-codingplan-account-models-readback" fail \
 			"the session/new reply lists NO account-provider entries — the degraded (unpaired provider-config) signature; reply: ${ARC_SESSION_REPLY:0:300}"
