@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
 	"github.com/Djarvur/zcode-acp/internal/interact"
@@ -44,7 +45,9 @@ var errFixtureEnsureFailure = errors.New("fixture ensure failure")
 // scriptMinter is the patMintSource double: a warm cache field the source's
 // Cached arm reads, a sequential Ensure script (a default outcome once the
 // script drains), and invalidation counters — the exactly-once bookkeeping
-// the arms assert on.
+// the arms assert on. Ensure is single-flight like the production PatMinter
+// (WR-03): concurrent callers join one scripted mint, so a burst increments
+// the mint counter exactly once.
 type scriptMinter struct {
 	mu           sync.Mutex
 	cache        hostsvc.Pat
@@ -54,6 +57,23 @@ type scriptMinter struct {
 	ensures      int
 	invalidates  int
 	lastReason   string
+
+	// Single-flight mint state mirroring PatMinter's leader/joiner shape:
+	// minting != nil while one scripted mint is in flight; joiners wait on
+	// it and read the published lastPat/lastErr outcome.
+	minting chan struct{}
+	mintID  uint64
+	doneID  uint64
+	lastPat *hostsvc.Pat
+	lastErr error
+
+	// ensureHold, when non-nil, parks the LEADER inside Ensure until the
+	// channel closes — the deterministic-window hook the concurrent arm
+	// uses to pin every rider into the join path. ensureStarts counts
+	// cumulative Ensure entries (leader and joiners) — the arm's sync
+	// point.
+	ensureHold   chan struct{}
+	ensureStarts int
 }
 
 // scriptedEnsure is one queued Ensure outcome: a PAT, or an error.
@@ -71,27 +91,57 @@ func (m *scriptMinter) Cached(_ context.Context) (hostsvc.Pat, bool) {
 }
 
 // Ensure pops the script (the default happy outcome once drained) and
-// installs its PAT as the cache — the mint-side state flow.
-func (m *scriptMinter) Ensure(_ context.Context) (hostsvc.Pat, error) {
+// installs its PAT as the cache — the mint-side state flow. Single-flight
+// like the production PatMinter: the first caller becomes the leader,
+// runs the scripted mint, and publishes the outcome; the concurrent callers
+// that joined the in-flight mint wake with the SAME outcome, so a burst
+// increments the mint counter exactly once. A non-nil ensureHold parks the
+// leader mid-mint until it closes (the concurrent arm's window pin); the
+// joiner's ctx wait mirrors the real minter's cancellation arm.
+func (m *scriptMinter) Ensure(ctx context.Context) (hostsvc.Pat, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.ensureStarts++
+	m.mu.Unlock()
 
-	m.ensures++
+	for {
+		m.mu.Lock()
 
-	if len(m.ensureScript) > 0 {
-		out := m.ensureScript[0]
-		m.ensureScript = m.ensureScript[1:]
+		if m.minting == nil {
+			m.mu.Unlock()
 
-		if out.err == nil {
-			m.cache, m.hasCache = out.pat, true
+			return m.ensureLead(ctx)
 		}
 
-		return out.pat, out.err
+		// Join the in-flight mint (single-flight: N callers, one scripted
+		// mint).
+		done := m.minting
+		id := m.mintID
+		m.mu.Unlock()
+
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return hostsvc.Pat{}, fmt.Errorf("scripted mint join aborted: %w", ctx.Err())
+		}
+
+		m.mu.Lock()
+		joined := m.doneID == id
+
+		var joinPat hostsvc.Pat
+
+		if m.lastPat != nil {
+			joinPat = *m.lastPat
+		}
+
+		joinErr := m.lastErr
+		m.mu.Unlock()
+
+		if joined {
+			return joinPat, joinErr
+		}
+
+		// The joined slot moved on (a newer mint started) — retry the loop.
 	}
-
-	m.cache, m.hasCache = m.defaultHappy, true
-
-	return m.defaultHappy, nil
 }
 
 // Invalidate drops the cached token and records the reason.
@@ -104,12 +154,99 @@ func (m *scriptMinter) Invalidate(reason string) {
 	m.lastReason = reason
 }
 
-// counts reads the recorded counters.
+// counts reads the recorded counters (ensures counts LEADER mints —
+// concurrent joiners coalesce into them).
 func (m *scriptMinter) counts() (ensures, invalidates int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	return m.ensures, m.invalidates
+}
+
+// startedEnsures reads the cumulative Ensure entry count (leader and joiner
+// asks) — the concurrent arm's window sync point.
+func (m *scriptMinter) startedEnsures() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.ensureStarts
+}
+
+// ensureLead runs the leader half of the single-flight Ensure (the caller
+// released mu; this method re-locks): pop the script now, park on the hold
+// when the concurrent arm pinned the window, then publish the outcome for
+// the joiners and install the cache on success.
+func (m *scriptMinter) ensureLead(ctx context.Context) (hostsvc.Pat, error) {
+	m.mu.Lock()
+	m.ensures++
+
+	out := scriptedEnsure{pat: m.defaultHappy}
+	if len(m.ensureScript) > 0 {
+		out = m.ensureScript[0]
+		m.ensureScript = m.ensureScript[1:]
+	}
+
+	done := make(chan struct{})
+	m.minting = done
+	m.mintID++
+	id := m.mintID
+	hold := m.ensureHold
+	m.mu.Unlock()
+
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			out = scriptedEnsure{err: fmt.Errorf("scripted mint aborted: %w", ctx.Err())}
+		}
+	}
+
+	m.mu.Lock()
+	if out.err == nil {
+		m.cache, m.hasCache = out.pat, true
+
+		stored := out.pat
+		m.lastPat, m.lastErr = &stored, nil
+	} else {
+		m.lastPat, m.lastErr = nil, out.err
+	}
+
+	m.doneID = id
+	m.minting = nil
+	close(done)
+	m.mu.Unlock()
+
+	if out.err != nil {
+		return hostsvc.Pat{}, out.err
+	}
+
+	return out.pat, nil
+}
+
+// The concurrency-window poll bounds (the core01 waitForTeeLine pattern: a
+// deadline loop that fails at the bound, never a bare sleep-guess).
+const (
+	patWindowWait = 5 * time.Second
+	patPollStep   = time.Millisecond
+)
+
+// waitForPatState polls cond until it holds or the window bound expires —
+// the deterministic-window sequencer the concurrent arm pins the held mint
+// with.
+func waitForPatState(t *testing.T, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(patWindowWait)
+
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+
+		time.Sleep(patPollStep)
+	}
+
+	t.Fatal("the expected concurrency state never settled within the bound")
 }
 
 // patFixture builds one fixture Pat.
@@ -226,13 +363,13 @@ func TestPatHeadersSource(t *testing.T) {
 
 	t.Run("scope gate outranks the fingerprint re-mint", testPatScopeFirstArm)
 
-	t.Run("empty cache answers the coded unauthenticated state", testPatEmptyCacheArm)
+	t.Run("empty cache routes through Ensure and answers the coded unauthenticated state", testPatEmptyCacheArm)
 
 	t.Run("api-key mode delegates byte-compatibly to the static source", testPatAPIKeyDelegationArm)
 
 	t.Run("malformed rejection field digests as absent and serves the cache", testPatMalformedFieldArm)
 
-	t.Run("concurrent asks ride one re-mint without corruption", testPatConcurrentArm)
+	t.Run("concurrent asks pinned in the re-mint window join one coalesced mint", testPatConcurrentArm)
 }
 
 // servePatAskInGoroutine is the goroutine-safe ask runner (no *testing.T —
@@ -452,10 +589,18 @@ func testPatScopeFirstArm(t *testing.T) {
 	}
 }
 
-// testPatEmptyCacheArm locks the PAT-less arm: an empty cache answers the coded unauthenticated state and never mints
-// from the ask side.
+// testPatEmptyCacheArm locks the PAT-less arm: an empty cache routes through
+// the single-flight Ensure (WR-02) and — with no desktop login — answers the
+// coded unauthenticated state, the minter's coded error passed through
+// unwrapped.
 func testPatEmptyCacheArm(t *testing.T) {
-	minter := &scriptMinter{} // no cache — pre-auth / post-invalidate
+	// The no-login script: the real minter's Ensure answers the coded
+	// login_required BEFORE any network I/O when the credential store holds
+	// no login (locked at the minter tier by TestPatMinterLoginRequired) —
+	// the double mirrors that outcome.
+	minter := &scriptMinter{
+		ensureScript: []scriptedEnsure{{err: hostsvc.ErrPatLoginRequired}},
+	}
 
 	wire, werr := servePatAsk(t,
 		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
@@ -471,9 +616,10 @@ func testPatEmptyCacheArm(t *testing.T) {
 			werr.Message, hostsvc.ErrPatLoginRequired.Error())
 	}
 
-	if ensures, _ := minter.counts(); ensures != 0 {
-		t.Fatalf("PAT-less arm minted %d time(s), want 0 (the ask-side never mints "+
-			"into an unauthenticated state)", ensures)
+	if ensures, _ := minter.counts(); ensures != 1 {
+		t.Fatalf("cache-miss arm minted %d time(s), want exactly 1 — the ask routes "+
+			"through the single-flight Ensure (WR-02: a re-mint in flight is joined, "+
+			"never answered login_required from a known-empty cache)", ensures)
 	}
 }
 
@@ -555,27 +701,26 @@ func testPatMalformedFieldArm(t *testing.T) {
 	}
 }
 
-// testPatConcurrentArm locks the race posture: plain asks ride one fingerprint re-mint with all answers well-shaped
-// and exactly one Invalidate+Ensure (-race clean).
+// testPatConcurrentArm locks the WR-02/WR-03 race posture: the ONE
+// fingerprint ask (the D-05 staleness event) invalidates and re-mints while
+// seven plain asks are pinned INSIDE the invalidate→ensure window — every
+// rider routes through the single-flight Ensure and WAITS for the in-flight
+// mint, answering the fresh token (never the misleading login_required a
+// known-empty cache handed out before the WR-02 fix). The scripted double's
+// held mint makes the window deterministic (the old free-race shape was
+// flaky under -race, WR-03): every ask answers a well-shaped success and
+// the counters show exactly one Invalidate+Ensure — one coalesced re-mint
+// per staleness event.
 func testPatConcurrentArm(t *testing.T) {
-	// The deterministic concurrency shape: ONE ask carries the rejected
-	// fingerprint (exactly one Invalidate+Ensure — after it lands, the
-	// cache holds the fresh token no fingerprint matches anymore) while
-	// the plain asks ride along concurrently. Every ask must answer a
-	// well-shaped success (the pre- or post-re-mint cached token — both
-	// are current), never an error, and the counters must show exactly
-	// the one re-mint. -race proves the per-ask bookkeeping corrupts
-	// nothing.
-	const (
-		plainAskers    = 7
-		fingerprinters = 1
-		askers         = plainAskers + fingerprinters
-	)
+	// plainAskers ride the held window; askers is the total including the
+	// one fingerprint ask.
+	const plainAskers, fingerprinters, askers = 7, 1, 8
 
 	minter := &scriptMinter{
 		cache:        patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
 		hasCache:     true,
 		defaultHappy: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeA),
+		ensureHold:   make(chan struct{}),
 	}
 
 	src := newPatSource(minter, codingPlanMode(), unconfiguredFallback())
@@ -586,36 +731,54 @@ func testPatConcurrentArm(t *testing.T) {
 		badAsks int
 	)
 
-	for i := range askers {
-		wg.Add(1)
+	// runAsk serves one ask per goroutine and counts it down (failures are
+	// data, never a t.Fatal).
+	runAsk := func(n int, extra string) {
+		defer wg.Done()
+		wire, werr := servePatAskInGoroutine(src, patEnvelope(fmt.Sprintf("pat-race-%d", n), extra))
+		mu.Lock()
+		defer mu.Unlock()
 
-		rejection := ""
-		if i == 0 {
-			rejection = patAskExtra("", patFixtureFPA)
+		if werr != nil || !wellShapedPatAnswer(wire) {
+			badAsks++
 		}
-
-		go func(n int, extra string) {
-			defer wg.Done()
-
-			wire, werr := servePatAskInGoroutine(src, patEnvelope(fmt.Sprintf("pat-race-%d", n), extra))
-			mu.Lock()
-			defer mu.Unlock()
-
-			if werr != nil || !wellShapedPatAnswer(wire) {
-				badAsks++
-			}
-		}(i, rejection)
 	}
 
+	// 1. The fingerprint asker invalidates the stale cache and parks as the
+	//    held leader — the re-mint window stays open.
+	wg.Add(1)
+	go runAsk(0, patAskExtra("", patFixtureFPA))
+
+	// 2. Wait for the window: invalidation landed, the mint is parked.
+	waitForPatState(t, func() bool {
+		ensures, invalidates := minter.counts()
+
+		return ensures == 1 && invalidates == 1 && minter.startedEnsures() == 1
+	})
+
+	// 3. The riders launch INTO the held window: each Cached sees the
+	//    invalidated cache and joins the parked mint through Ensure.
+	for i := 1; i <= plainAskers; i++ {
+		wg.Add(1)
+		go runAsk(i, "")
+	}
+
+	// 4. Once every ask is inside Ensure, release the mint — all wake with
+	//    the SAME fresh token.
+	waitForPatState(t, func() bool {
+		return minter.startedEnsures() == askers
+	})
+
+	close(minter.ensureHold)
 	wg.Wait()
 
 	if badAsks != 0 {
 		t.Fatalf("%d/%d concurrent asks got a wrong answer", badAsks, askers)
 	}
-
 	ensures, invalidates := minter.counts()
 	if ensures != fingerprinters || invalidates != fingerprinters {
 		t.Fatalf("concurrent asks minted/invalidated (%d/%d), want (%d/%d) — "+
-			"exactly one re-mint, the riders unaffected", ensures, invalidates, fingerprinters, fingerprinters)
+			"exactly one re-mint per staleness event, every rider coalesced",
+			ensures, invalidates, fingerprinters, fingerprinters)
 	}
 }

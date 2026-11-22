@@ -54,6 +54,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -324,7 +325,11 @@ type cpHeaderAskShape struct {
 
 // cpAskRecorder is the coding-plan ask tap's state: the interaction/* ask
 // log (method + UTC instant) and every runtime-headers answer's shape.
+// Guarded by mu: request handlers are concurrent on the conn's read
+// goroutine fan-out (conn.go serves one request per fresh goroutine — the
+// apicycle askRecorder's guard documents the same discipline, WR-06).
 type cpAskRecorder struct {
+	mu          sync.Mutex
 	lastAsk     time.Time
 	headerAsks  []cpHeaderAskShape
 	otherAsks   []string
@@ -334,6 +339,9 @@ type cpAskRecorder struct {
 // recordAsk logs one interaction/* ask structurally.
 func (r *cpAskRecorder) recordAsk(method string) {
 	now := time.Now().UTC()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	r.lastAsk = now
 
@@ -351,6 +359,9 @@ func (r *cpAskRecorder) recordAsk(method string) {
 // pair is 1:1 in the conn's request funnel; the LAST pending entry absorbs
 // the answer).
 func (r *cpAskRecorder) recordHeaderAnswer(res any, werr *zcode.WireError) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if len(r.headerAsks) == 0 {
 		return
 	}
@@ -373,7 +384,21 @@ func (r *cpAskRecorder) recordHeaderAnswer(res any, werr *zcode.WireError) {
 
 // lastAskAt returns the UTC instant of the most recent interaction/* ask.
 func (r *cpAskRecorder) lastAskAt() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	return r.lastAsk
+}
+
+// headerAskShapes snapshots the recorded runtime-headers answer shapes (a
+// copy taken under the lock) for the post-turn assertion — the test
+// goroutine reads after Prompt returns while the conn's handler goroutines
+// may still be finishing their writes.
+func (r *cpAskRecorder) headerAskShapes() []cpHeaderAskShape {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]cpHeaderAskShape(nil), r.headerAsks...)
 }
 
 // cpTapInteractionAsks wraps the ALREADY-ASSIGNED conn.OnRequest with the
@@ -577,15 +602,17 @@ func cpToollessTurnLeg(t *testing.T, ctx context.Context, front *acpfront.Front,
 		t.Fatalf("tool-less turn observed %d tool_call frames; want zero", len(tools))
 	}
 
-	if len(asks.headerAsks) == 0 {
+	shapes := asks.headerAskShapes()
+
+	if len(shapes) == 0 {
 		t.Fatal("no interaction/requestProviderRuntimeHeaders ask fired on the coding-plan turn — " +
 			"the PAT-serving ask is the D-12 cycle's live half; record the honest verdict")
 	}
 
-	for i, shape := range asks.headerAsks {
+	for i, shape := range shapes {
 		if shape.wireError || !shape.handled {
 			t.Fatalf("runtime-headers ask %d/%d answered a wire error or went unhandled — "+
-				"the PAT source must serve the cached mint", i+1, len(asks.headerAsks))
+				"the PAT source must serve the cached mint", i+1, len(shapes))
 		}
 
 		if !shape.headersApplied || !shape.requestAuthPresent ||
@@ -593,14 +620,14 @@ func cpToollessTurnLeg(t *testing.T, ctx context.Context, front *acpfront.Front,
 			t.Fatalf("runtime-headers ask %d/%d answered an incomplete shape "+
 				"(headersApplied=%v requestAuth=%v apiKey=%v apiKeyId=%v accountScope=%v) — "+
 				"the three-field requestAuth is the coding-plan answer's contract",
-				i+1, len(asks.headerAsks), shape.headersApplied, shape.requestAuthPresent,
+				i+1, len(shapes), shape.headersApplied, shape.requestAuthPresent,
 				shape.hasAPIKey, shape.hasAPIKeyID, shape.hasAccountScope)
 		}
 	}
 
 	t.Logf("tiny tool-less turn ok: end_turn, zero tool frames, %d runtime-headers ask(s) all "+
 		"answered with the three-field requestAuth shape (token material never recorded)",
-		len(asks.headerAsks))
+		len(shapes))
 }
 
 // cpDesktopVersionPattern is main.go desktopVersionPattern's mirror (the
