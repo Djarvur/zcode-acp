@@ -43,9 +43,12 @@ const (
 	fixtureAccessPath     = "/api/biz/v1/organization/org-1/projects/proj-1/api_keys/key-7/access_tokens"
 )
 
-// fixtureBaseTime is the pinned clock base: the expiry/refresh math asserts
-// against deterministic time, never wall time.
-var fixtureBaseTime = time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+// fixtureBaseTime returns the pinned clock base: the expiry/refresh math
+// asserts against deterministic time, never wall time. (A function keeps the
+// fixture gochecknoglobals-clean.)
+func fixtureBaseTime() time.Time {
+	return time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+}
 
 // pinnedAccountScopeDigest is the sha256 hex over the COMPACT JSON array
 // ["zai","individual-coding-plan",null,"zc-synthetic-login-token",null]
@@ -54,24 +57,38 @@ var fixtureBaseTime = time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
 // drifting (encoding change, stdlib change) trips.
 const pinnedAccountScopeDigest = "8280bb48d1bf3bb1cd726406d2393769174ca9e940228c2d9f1fb617cad162c9"
 
+// The default org/project markers are the desktop's server-side literals
+// (the D-06 pick preference); the escapes keep the fixture source ASCII
+// (gosmopolitan's Han-script literal gate) while the VALUES are the exact
+// server literals.
+const (
+	fixtureDefaultOrgMarker  = "\u9ed8\u8ba4\u673a\u6784" // 默认机构
+	fixtureDefaultProjMarker = "\u9ed8\u8ba4\u9879\u76ee" // 默认项目
+)
+
 // The happy-path reply envelopes (the server-side shapes of Pattern 3): one
 // personal org carrying the default markers, one personal project of a
 // non-team type; the key list carries an unrelated entry plus the candidate.
-const (
-	fixtureCustomerReply = `{"code":200,"data":{"organizations":[` +
-		`{"organizationId":"org-1","organizationName":"默认机构",` +
-		`"projects":[{"projectId":"proj-1","projectName":"默认项目","projectType":"1"}]}]}}`
-	fixtureKeyListReply = `{"code":200,"data":[` +
+func fixtureCustomerReply() string {
+	return fmt.Sprintf(
+		`{"code":200,"data":{"organizations":[{"organizationId":"org-1",`+
+			`"organizationName":%q,"projects":[{"projectId":"proj-1",`+
+			`"projectName":%q,"projectType":"1"}]}]}}`,
+		fixtureDefaultOrgMarker, fixtureDefaultProjMarker)
+}
+
+func fixtureKeyListReply() string {
+	return `{"code":200,"data":[` +
 		`{"name":"other-key","apiKey":"key-other"},` +
 		`{"name":"zcode-api-key","apiKey":"key-7"}]}`
-)
+}
 
 // fixtureAccessReply builds the access_tokens success envelope with the
 // pinned expiry sources (expiresIn 3600s; expiresAt = base+1h in epoch sec).
 func fixtureAccessReply() string {
 	return fmt.Sprintf(
 		`{"code":200,"data":{"accessToken":%q,"tokenType":"Bearer","expiresIn":3600,"expiresAt":%d}}`,
-		fixturePATToken, fixtureBaseTime.Add(time.Hour).Unix())
+		fixturePATToken, fixtureBaseTime().Add(time.Hour).Unix())
 }
 
 // patFixtureCall is one recorded mint-chain request: the wire shape the
@@ -112,8 +129,8 @@ func newPatFixtureServer(t *testing.T) *patFixtureServer {
 
 	fx := &patFixtureServer{
 		t:         t,
-		customer:  patReplyStatusBody(http.StatusOK, fixtureCustomerReply),
-		listKeys:  patReplyStatusBody(http.StatusOK, fixtureKeyListReply),
+		customer:  patReplyStatusBody(http.StatusOK, fixtureCustomerReply()),
+		listKeys:  patReplyStatusBody(http.StatusOK, fixtureKeyListReply()),
 		createKey: nil,
 		access:    patReplyStatusBody(http.StatusOK, fixtureAccessReply()),
 	}
@@ -280,17 +297,122 @@ func patSHA256HexTest(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// assertPatCustomerCall locks call 1's wire shape: the RAW login token in
+// Authorization (a Bearer prefix is the misjudged-login-invalid trap),
+// application/json, the official path.
+func assertPatCustomerCall(t *testing.T, call patFixtureCall) {
+	t.Helper()
+
+	const customerPath = "/api/biz/customer/getCustomerInfo"
+	if call.path != customerPath {
+		t.Fatalf("call 1 path = %q, want %s", call.path, customerPath)
+	}
+
+	if call.auth != fixtureLoginToken {
+		t.Fatalf("call 1 Authorization = %q, want the RAW login token %q", call.auth, fixtureLoginToken)
+	}
+
+	if strings.HasPrefix(call.auth, "Bearer") {
+		t.Fatalf("call 1 carried a Bearer prefix on getCustomerInfo — the server misjudges it "+
+			"login-invalid (Pattern 3 step 2); auth = %q", call.auth)
+	}
+
+	if call.contentType != "application/json" {
+		t.Fatalf("call 1 Content-Type = %q, want application/json", call.contentType)
+	}
+}
+
+// assertPatListCall locks call 2's wire shape: Bearer form (zai) on the
+// api_keys collection URL, application/json.
+func assertPatListCall(t *testing.T, call patFixtureCall) {
+	t.Helper()
+
+	if call.path != fixtureKeyListPath {
+		t.Fatalf("call 2 path = %q, want %s", call.path, fixtureKeyListPath)
+	}
+
+	if call.auth != "Bearer "+fixtureLoginToken {
+		t.Fatalf("call 2 Authorization = %q, want Bearer %s", call.auth, fixtureLoginToken)
+	}
+
+	if call.contentType != "application/json" {
+		t.Fatalf("call 2 Content-Type = %q, want application/json", call.contentType)
+	}
+}
+
+// assertPatAccessCall locks call 3's wire shape: Bearer POST on the key's
+// access_tokens URL with the byte-exact clientType/clientVersion body.
+func assertPatAccessCall(t *testing.T, call patFixtureCall) {
+	t.Helper()
+
+	if call.path != fixtureAccessPath {
+		t.Fatalf("call 3 path = %q, want %s", call.path, fixtureAccessPath)
+	}
+
+	if call.method != http.MethodPost {
+		t.Fatalf("call 3 method = %q, want POST", call.method)
+	}
+
+	if call.auth != "Bearer "+fixtureLoginToken {
+		t.Fatalf("call 3 Authorization = %q, want Bearer %s", call.auth, fixtureLoginToken)
+	}
+
+	wantBody := fmt.Sprintf(`{"clientType":"zcode","clientVersion":%q}`, fixtureDesktopVersion)
+	if call.body != wantBody {
+		t.Fatalf("call 3 body = %q, want the byte-exact %s", call.body, wantBody)
+	}
+}
+
+// assertHappyPat locks the Pat field contract: minted token, the listed key
+// id, the token's sha256 fingerprint, the pinned accountScope, and the
+// min/max expiry + refresh math over the pinned clock.
+func assertHappyPat(t *testing.T, pat hostsvc.Pat) {
+	t.Helper()
+
+	if pat.Token != fixturePATToken {
+		t.Fatalf("Pat.Token = %q, want the minted fixture PAT", pat.Token)
+	}
+
+	if pat.APIKeyID != fixtureKeyID {
+		t.Fatalf("Pat.APIKeyID = %q, want the listed candidate %s", pat.APIKeyID, fixtureKeyID)
+	}
+
+	if pat.Fingerprint != patSHA256HexTest(fixturePATToken) {
+		t.Fatalf("Pat.Fingerprint = %q, want sha256 hex of the token", pat.Fingerprint)
+	}
+
+	if pat.AccountScope != pinnedAccountScopeDigest {
+		t.Fatalf("Pat.AccountScope = %q, want the pinned digest %s", pat.AccountScope, pinnedAccountScopeDigest)
+	}
+
+	// Expiry math: expiresAt = min(expiresAtSec*1000, started+expiresIn*1000)
+	// — both sources agree at base+1h in this fixture.
+	wantExpiry := fixtureBaseTime().Add(time.Hour)
+	if !pat.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("Pat.ExpiresAt = %v, want %v (min of both sources)", pat.ExpiresAt, wantExpiry)
+	}
+
+	// refreshAt = max(now, expiresAt-120s) — the refresh lead, floored at now.
+	wantRefresh := wantExpiry.Add(-120 * time.Second)
+	if !pat.RefreshAt.Equal(wantRefresh) {
+		t.Fatalf("Pat.RefreshAt = %v, want %v (expiry minus the 120s refresh lead)", pat.RefreshAt, wantRefresh)
+	}
+
+	if !pat.RefreshAt.After(fixtureBaseTime()) {
+		t.Fatalf("Pat.RefreshAt = %v is not in the future relative to the pinned now", pat.RefreshAt)
+	}
+}
+
 // TestPatMinterHappyPath locks the tracer slice: the five-call official chain
 // mints a PAT end-to-end against the fixture origin with every wire shape
 // asserted in order — the RAW-token getCustomerInfo (a Bearer here is
 // misjudged login-invalid), the Bearer api_keys list, the Bearer access_tokens
-// with the byte-exact body — plus the Pat field contract (token, key id,
-// fingerprint, pinned accountScope, min/max expiry math) and the single
+// with the byte-exact body — plus the Pat field contract and the single
 // personal org/project picking a candidate with NO warn log (D-06).
 func TestPatMinterHappyPath(t *testing.T) {
 	fx := newPatFixtureServer(t)
 	warns := capturePatSlogWarns(t)
-	clk := newPatClock(fixtureBaseTime)
+	clk := newPatClock(fixtureBaseTime())
 	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
 
 	pat, err := m.Ensure(context.Background())
@@ -304,88 +426,10 @@ func TestPatMinterHappyPath(t *testing.T) {
 			"access_tokens): %+v", len(calls), calls)
 	}
 
-	// Call 1 — getCustomerInfo: RAW token, NO Bearer prefix (Pattern 3 step 2).
-	if calls[0].path != "/api/biz/customer/getCustomerInfo" {
-		t.Fatalf("call 1 path = %q, want /api/biz/customer/getCustomerInfo", calls[0].path)
-	}
-
-	if calls[0].auth != fixtureLoginToken {
-		t.Fatalf("call 1 Authorization = %q, want the RAW login token %q", calls[0].auth, fixtureLoginToken)
-	}
-
-	if strings.HasPrefix(calls[0].auth, "Bearer") {
-		t.Fatalf("call 1 carried a Bearer prefix on getCustomerInfo — the server misjudges it "+
-			"login-invalid (Pattern 3 step 2); auth = %q", calls[0].auth)
-	}
-
-	if calls[0].contentType != "application/json" {
-		t.Fatalf("call 1 Content-Type = %q, want application/json", calls[0].contentType)
-	}
-
-	// Call 2 — api_keys list: Bearer form (zai), exact URL.
-	if calls[1].path != fixtureKeyListPath {
-		t.Fatalf("call 2 path = %q, want %q", calls[1].path, fixtureKeyListPath)
-	}
-
-	if calls[1].auth != "Bearer "+fixtureLoginToken {
-		t.Fatalf("call 2 Authorization = %q, want Bearer %q", calls[1].auth, fixtureLoginToken)
-	}
-
-	if calls[1].contentType != "application/json" {
-		t.Fatalf("call 2 Content-Type = %q, want application/json", calls[1].contentType)
-	}
-
-	// Call 3 — access_tokens: Bearer form, exact URL, byte-exact body.
-	if calls[2].path != fixtureAccessPath {
-		t.Fatalf("call 3 path = %q, want %q", calls[2].path, fixtureAccessPath)
-	}
-
-	if calls[2].method != http.MethodPost {
-		t.Fatalf("call 3 method = %q, want POST", calls[2].method)
-	}
-
-	if calls[2].auth != "Bearer "+fixtureLoginToken {
-		t.Fatalf("call 3 Authorization = %q, want Bearer %q", calls[2].auth, fixtureLoginToken)
-	}
-
-	wantBody := fmt.Sprintf(`{"clientType":"zcode","clientVersion":%q}`, fixtureDesktopVersion)
-	if calls[2].body != wantBody {
-		t.Fatalf("call 3 body = %q, want the byte-exact %q", calls[2].body, wantBody)
-	}
-
-	// The Pat contract: token, key id, fingerprint, accountScope, expiry math.
-	if pat.Token != fixturePATToken {
-		t.Fatalf("Pat.Token = %q, want the minted fixture PAT", pat.Token)
-	}
-
-	if pat.APIKeyID != fixtureKeyID {
-		t.Fatalf("Pat.APIKeyID = %q, want the listed candidate %q", pat.APIKeyID, fixtureKeyID)
-	}
-
-	if pat.Fingerprint != patSHA256HexTest(fixturePATToken) {
-		t.Fatalf("Pat.Fingerprint = %q, want sha256 hex of the token", pat.Fingerprint)
-	}
-
-	if pat.AccountScope != pinnedAccountScopeDigest {
-		t.Fatalf("Pat.AccountScope = %q, want the pinned digest %q", pat.AccountScope, pinnedAccountScopeDigest)
-	}
-
-	// Expiry math: expiresAt = min(expiresAtSec*1000, started+expiresIn*1000)
-	// — both sources agree at base+1h in this fixture.
-	wantExpiry := fixtureBaseTime.Add(time.Hour)
-	if !pat.ExpiresAt.Equal(wantExpiry) {
-		t.Fatalf("Pat.ExpiresAt = %v, want %v (min of both sources)", pat.ExpiresAt, wantExpiry)
-	}
-
-	// refreshAt = max(now, expiresAt-120s) — the refresh lead, floored at now.
-	wantRefresh := wantExpiry.Add(-120 * time.Second)
-	if !pat.RefreshAt.Equal(wantRefresh) {
-		t.Fatalf("Pat.RefreshAt = %v, want %v (expiry minus the 120s refresh lead)", pat.RefreshAt, wantRefresh)
-	}
-
-	if !pat.RefreshAt.After(fixtureBaseTime) {
-		t.Fatalf("Pat.RefreshAt = %v is not in the future relative to the pinned now", pat.RefreshAt)
-	}
+	assertPatCustomerCall(t, calls[0])
+	assertPatListCall(t, calls[1])
+	assertPatAccessCall(t, calls[2])
+	assertHappyPat(t, pat)
 
 	// A single personal org/project picks deterministically — never a warn.
 	if warns.String() != "" {
@@ -414,7 +458,7 @@ func TestAccountScopeDigest(t *testing.T) {
 
 	t.Run("nil JWT folds as null and the mint carries the pinned scope", func(t *testing.T) {
 		fx := newPatFixtureServer(t)
-		clk := newPatClock(fixtureBaseTime)
+		clk := newPatClock(fixtureBaseTime())
 		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
 
 		pat, err := m.Ensure(context.Background())
@@ -438,7 +482,7 @@ func TestAccountScopeDigest(t *testing.T) {
 		want := hex.EncodeToString(sum[:])
 
 		fx := newPatFixtureServer(t)
-		clk := newPatClock(fixtureBaseTime)
+		clk := newPatClock(fixtureBaseTime())
 		m := newFixtureMinter(t, fx.srv.URL,
 			&fixturePatCreds{login: fixtureLoginToken, jwt: fixtureJWTToken}, clk.Now)
 
