@@ -43,6 +43,7 @@ const (
 // reasoning/step-start/step-finish parts are never message text).
 func TestNoDeltaReplyReconcile(t *testing.T) {
 	t.Run("no-delta turn: ONE reconcile chunk with the stored reply, then end_turn", testReconcileNoDeltaChunk)
+	t.Run("late projection: the reconcile retries and recovers the text", testReconcileLateProjectionRetry)
 	t.Run("streamed deltas: the reconcile stays silent (no duplicate)", testReconcileDeltaSuppressed)
 	t.Run("poll failure: honest empty reply + end_turn, never a hang", testReconcilePollFailure)
 	t.Run("slow poll: the bounded reconcile gives up — end_turn without the chunk", testReconcileSlowPollBound)
@@ -134,6 +135,50 @@ func testReconcileNoDeltaChunk(t *testing.T) {
 	}
 }
 
+// testReconcileLateProjectionRetry — the QA-03 field race (the telemetry
+// run, 2026-11-23): the terminal signal lands BEFORE the reply text does —
+// the turn resolves, the reconcile's first poll reads a projection that has
+// not caught up yet (no assistant entry), and the text lands only on a
+// LATER read. The single-poll reconcile answered empty (the field log
+// "no-delta reconcile found no assistant text"). The contract under lock:
+// the reconcile RETRIES within its total window — poll one reads empty,
+// poll two reads the stored reply — and the client still gets exactly ONE
+// agent_message_chunk ("ok") before the end_turn.
+func testReconcileLateProjectionRetry(t *testing.T) {
+	h, sid, resp := runReconcileRide(t, "desktop-nodelta-lateprojection")
+
+	if resp.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stopReason = %q, want %q (the retry must not change the turn outcome)",
+			resp.StopReason, acp.StopReasonEndTurn)
+	}
+
+	updates := h.Updates()
+	if len(updates) != 1 {
+		t.Fatalf("client collected %d updates, want exactly ONE reconcile chunk recovered on the retry",
+			len(updates))
+	}
+
+	if updates[0].SessionID != sid {
+		t.Fatalf("update session = %q, want %q", updates[0].SessionID, sid)
+	}
+
+	if got := chunkText(updates[0].Update); got != "ok" {
+		t.Fatalf("reconcile chunk text = %q, want %q (recovered on the second poll)", got, "ok")
+	}
+
+	assertChunksBeforeResponse(t, h)
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	if got := len(transcriptIndexes(tr, "in", `"method":"session/messages"`)); got != 2 {
+		t.Fatalf("back leg records %d session/messages requests, want exactly 2 "+
+			"(poll one empty, poll two recovered — the retry contract)", got)
+	}
+}
+
 // testReconcileDeltaSuppressed — the no-duplicate arm: the turn streamed
 // text deltas AND the projection carries the full reply, yet the client
 // receives exactly the streamed chunks — the reconcile stayed silent
@@ -192,11 +237,12 @@ func testReconcilePollFailure(t *testing.T) {
 }
 
 // testReconcileSlowPollBound — the bounded-read arm: the projection carries
-// the reply text but answers 3s late, past the reconcile's poll bound. The
-// turn still answers end_turn with ZERO chunks — the bound gave up before
-// the reply arrived (a reconcile that waited would emit the chunk and the
-// zero-chunk assert here would fail; the prompt resolving inside the
-// bounded exchange IS the never-a-hang proof).
+// the reply text but answers 8s late, past the reconcile's TOTAL retry
+// window (the retry contract recovers projections that catch up INSIDE the
+// window — the late-projection arm — but a projection this slow must not
+// hold the stopReason hostage). The turn still answers end_turn with ZERO
+// chunks — the window gave up before the reply arrived (the prompt
+// resolving inside the bounded exchange IS the never-a-hang proof).
 func testReconcileSlowPollBound(t *testing.T) {
 	h, _, resp := runReconcileRide(t, "desktop-nodelta-slowpoll")
 

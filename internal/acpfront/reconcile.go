@@ -33,8 +33,11 @@ import (
 // reachable here: the PollSource contract wraps poll results opaquely as
 // presence/time evidence — content is never interpreted, nothing is stored
 // (watcher.go, RESEARCH Open Question 2 resolution) — and the watcher's
-// loop is joined before Run returns. Hence ONE bounded front-side poll at
-// completion, the dialect's poll shape (params {sessionId}).
+// loop is joined before Run returns. Hence bounded front-side polls at
+// completion — a retry loop on a fixed interval inside a total window (the
+// terminal-before-text delivery race: the first poll can read a projection
+// that has not caught up yet), each read the dialect's poll shape
+// (params {sessionId}).
 //
 // Honesty arms: the poll failing, the projection lacking an assistant
 // entry, or the reply carrying no type:text parts means NO chunk — never a
@@ -42,12 +45,25 @@ import (
 // honest empty reply + end_turn, never a hang). Deltas DID stream (the
 // pump's counter non-zero) means the reconcile never fires — no duplicate.
 
-// reconcilePollBound bounds the reconcile's single session/messages read —
-// the poll must never hold the stopReason hostage (never a hang): past the
-// bound the read gives up and the honest empty reply leaves. Aligned with
-// the pumpReleaseWait posture (the repo's other bounded turn-end wait);
-// the capture-verbatim polls answer in milliseconds.
+// reconcilePollBound bounds ONE session/messages read of the reconcile —
+// a single read must never hold the stopReason hostage (never a hang): past
+// the bound the read gives up and the retry loop decides. Aligned with the
+// pumpReleaseWait posture (the repo's other bounded turn-end wait); the
+// capture-verbatim polls answer in milliseconds.
 const reconcilePollBound = 2 * time.Second
+
+// The reconcile retry window (QA-03 field race, the 2026-11-23 telemetry
+// run): the real desktop's terminal signal can land BEFORE the reply text
+// reaches the messages projection — the first poll reads a projection that
+// has not caught up yet (the field log "no-delta reconcile found no
+// assistant text"). The reconcile therefore polls on a fixed interval until
+// the stored reply appears or the total window closes. The window is
+// generous against the observed catch-up latency (the raw captures' text
+// lands within ~0.3–1s of the terminal) and bounded against a hang.
+const (
+	reconcileWindow       = 4 * time.Second
+	reconcilePollInterval = 400 * time.Millisecond
+)
 
 // The messages projection's wire literals (the capture-verbatim shapes —
 // EXP-CODINGPLAN-CYCLE-01 poll 24; single-word keys stay snake-safe for
@@ -59,14 +75,18 @@ const (
 
 // reconcileNoDeltaReply is the Prompt turn-end hook (front.go, the
 // StopCompleted case, BEFORE release's flush): a completed turn whose pump
-// accepted zero message chunks gets ONE reconcile chunk with the stored
-// reply text through the same turn-scoped emit the delta tap uses. The
+// accepted zero message chunks reconciles the stored reply text through the
+// same turn-scoped emit the delta tap uses — polling the session/messages
+// projection on a fixed interval until the text appears or the total window
+// closes (the terminal-before-text delivery race, QA-03 2026-11-23). The
 // caller-initiated emit scopes by the slot state alone (turnActive /
 // turnEmit — turnScope with an empty turnId skips the record-on-first-sight
 // id check, since no envelope turnId exists to match); the slot is held
 // until Prompt's deferred release, so a scoped read here is THIS turn's
-// emitter by construction. Any failure arm logs structurally and returns —
-// the stopReason always leaves.
+// emitter by construction — and the held slot keeps the pump open, so a
+// late text delta landing mid-window rides release's flush too (the
+// message-count guard below keeps the two paths from duplicating it). Any
+// failure arm logs structurally and returns — the stopReason always leaves.
 func (f *Front) reconcileNoDeltaReply(ctx context.Context, sessionID string, pump *turnPump) {
 	if pump.messageCount() != 0 {
 		return // deltas streamed — the client has the text; reconcile would duplicate it
@@ -77,6 +97,38 @@ func (f *Front) reconcileNoDeltaReply(ctx context.Context, sessionID string, pum
 		return // the slot already cleared — never emit scopeless
 	}
 
+	deadline := time.Now().Add(reconcileWindow)
+	for {
+		text := f.reconcilePollText(ctx, sessionID)
+		if text != "" {
+			f.reconcileEmitStoredReply(pump, emit, text)
+
+			return
+		}
+
+		if pump.messageCount() != 0 {
+			return // late deltas are streaming — the client gets the text live
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			slog.Warn("acpfront: no-delta reconcile window closed without the stored text; replying empty",
+				"session", sessionID)
+
+			return
+		}
+
+		if !reconcileWait(ctx, remaining) {
+			return // the turn's teardown owns this ctx — stop polling
+		}
+	}
+}
+
+// reconcilePollText performs ONE bounded session/messages read and returns
+// the stored reply text — "" on a read failure or a projection without an
+// assistant reply (the retry loop decides whether another attempt fits the
+// window; each failure logs structurally, never aborts the loop).
+func (f *Front) reconcilePollText(ctx context.Context, sessionID string) string {
 	pollCtx, cancel := context.WithTimeout(ctx, reconcilePollBound)
 	defer cancel()
 
@@ -84,26 +136,44 @@ func (f *Front) reconcileNoDeltaReply(ctx context.Context, sessionID string, pum
 		wireKeySessionID: sessionID,
 	})
 	if err != nil {
-		slog.Warn("acpfront: no-delta reconcile poll failed; replying without the stored text",
-			"session", sessionID, "err", err)
+		slog.Warn("acpfront: no-delta reconcile poll failed", "session", sessionID, "err", err)
 
+		return ""
+	}
+
+	return lastAssistantReplyText(res)
+}
+
+// reconcileEmitStoredReply emits the ONE reconcile chunk with the FULL
+// stored text — unless a late delta landed mid-window (the message-count
+// guard: the client already has the text, a chunk here would duplicate it).
+// The chunk enqueues onto the same pump the delta tap uses, so release's
+// flush delivers it before the stopReason (flush-before-stopReason, the
+// QA-03 discipline).
+func (f *Front) reconcileEmitStoredReply(pump *turnPump, emit func(note acpport.SessionNote) error, text string) {
+	if pump.messageCount() != 0 {
 		return
 	}
 
-	text := lastAssistantReplyText(res)
-	if text == "" {
-		slog.Warn("acpfront: no-delta reconcile found no assistant text in the messages projection; replying empty",
-			"session", sessionID)
-
-		return
-	}
-
-	// ONE chunk with the FULL stored text — it enqueues onto the same pump
-	// the delta tap uses, so release's flush delivers it before the
-	// stopReason (flush-before-stopReason, the QA-03 discipline).
 	note := acpport.SessionNote{Kind: acpport.NoteMessage, Delta: text}
 	if err := emit(note); err != nil {
 		slog.Warn("acpfront: session update write failed", "err", err)
+	}
+}
+
+// reconcileWait sleeps one poll interval bounded by the window remainder;
+// false means the turn's ctx ended first (the teardown owns this ctx).
+func reconcileWait(ctx context.Context, remaining time.Duration) bool {
+	wait := reconcilePollInterval
+	if wait > remaining {
+		wait = remaining
+	}
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(wait):
+		return true
 	}
 }
 

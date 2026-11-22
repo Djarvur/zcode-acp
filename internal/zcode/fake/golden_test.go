@@ -266,6 +266,7 @@ func goldenDrivers() map[string]driverFunc {
 		"part-delta-streaming":           drivePartDeltaStreaming,
 		"desktop-delta-streaming":        driveDesktopDeltaStreaming,
 		"desktop-nodelta-messages":       driveDesktopNodeltaMessages,
+		"desktop-nodelta-lateprojection": driveDesktopNodeltaLateProjection,
 		"desktop-delta-messages":         driveDesktopDeltaMessages,
 		"desktop-nodelta-pollerror":      driveDesktopNodeltaPollError,
 		"desktop-nodelta-slowpoll":       driveDesktopNodeltaSlowPoll,
@@ -759,6 +760,24 @@ func driveDesktopNodeltaMessages(ctx context.Context, d *exchangeDriver) {
 
 	if _, err := d.call(ctx, zcode.MethodSessionMessages, map[string]any{wireKeySessionID: fixSessionID}); err != nil {
 		d.t.Fatalf("session/messages: %v", err)
+	}
+}
+
+// driveDesktopNodeltaLateProjection: the QA-03 retry row (the
+// terminal-before-text delivery race) — the same no-delta turn, then TWO
+// reconcile polls: poll one reads the not-yet-caught-up projection (the
+// times:1 rule, timeline + user only), poll two reads the caught-up
+// projection (the unlimited rule, the assistant "ok" reply). The two-call
+// drive locks the rule-sequencing contract: the spent budget hands the
+// method to the next on_request entry.
+func driveDesktopNodeltaLateProjection(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+
+	for i := 1; i <= 2; i++ {
+		params := map[string]any{wireKeySessionID: fixSessionID}
+		if _, err := d.call(ctx, zcode.MethodSessionMessages, params); err != nil {
+			d.t.Fatalf("session/messages poll %d: %v", i, err)
+		}
 	}
 }
 

@@ -367,13 +367,26 @@ func slashSendRule() fake.RequestRule {
 	}
 }
 
+// slashMessagesRule scripts the session/messages projection a REAL backend
+// always carries (the completed literal-prompt turn's stored reply). The
+// reconcile's completion-time poll reads it on the first attempt — without
+// it the reconcile's retry window would hold every literal-prompt turn
+// (the fake, unlike the real desktop, has no projection to catch up).
+func slashMessagesRule() fake.RequestRule {
+	return fake.RequestRule{
+		Method: zcode.MethodSessionMessages,
+		Reply: &fake.Reply{Result: json.RawMessage(
+			`{"messages":[{"info":{"role":"assistant"},"parts":[{"type":"text","text":"ok"}]}]}`)},
+	}
+}
+
 // TestModelSlashRefusalHoldsNoTurnSlot — the Task-3 edge lock (the
 // concurrency probe): a refused /model ask NEVER holds the front-wide turn
 // slot — the immediate follow-up prompt on the same session is accepted
 // first-try (no invalid-request/turn-active refusal), proving the intercept
 // consumed the refusal BEFORE slot acquisition.
 func TestModelSlashRefusalHoldsNoTurnSlot(t *testing.T) {
-	h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, slashSendRule()))
+	h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, slashSendRule(), slashMessagesRule()))
 
 	ctx, cancel := h.ExchangeCtx()
 	defer cancel()
@@ -454,7 +467,7 @@ func TestModelSlashSelectorByteEquality(t *testing.T) {
 	})
 
 	t.Run("non-command texts pass through as literal backend prompts", func(t *testing.T) {
-		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, slashSendRule()))
+		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, slashSendRule(), slashMessagesRule()))
 
 		ctx, cancel := h.ExchangeCtx()
 		defer cancel()
