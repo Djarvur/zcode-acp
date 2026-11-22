@@ -161,22 +161,6 @@ func (b *SnapshotBuilder) Build(install supervisor.Install) (Snapshot, error) {
 	return b.envelope(basedOn), nil
 }
 
-// envelope assembles the strict empty-overlay envelope over a computed
-// basedOnZCodeBuiltinRevision — Build's effective arm and BuildRevision's
-// raw-replay arm share it.
-func (b *SnapshotBuilder) envelope(basedOn string) Snapshot {
-	revision := b.revision()
-
-	params := map[string]any{
-		"revision":                    revision,
-		"basedOnZCodeBuiltinRevision": basedOn,
-		"providers":                   map[string]any{},
-		"states":                      map[string]any{},
-	}
-
-	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}
-}
-
 // BuildRevision computes the strict envelope over an explicitly supplied
 // recorded revision int — the RAW-formula replay surface (corpus fixtures
 // pass a fixed synthetic value over a synthetic path). basedOnZCodeBuiltinRevision
@@ -268,6 +252,22 @@ func (b *SnapshotBuilder) BuildAccount(
 	}
 
 	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}, nil
+}
+
+// envelope assembles the strict empty-overlay envelope over a computed
+// basedOnZCodeBuiltinRevision — Build's effective arm and BuildRevision's
+// raw-replay arm share it.
+func (b *SnapshotBuilder) envelope(basedOn string) Snapshot {
+	revision := b.revision()
+
+	params := map[string]any{
+		"revision":                    revision,
+		"basedOnZCodeBuiltinRevision": basedOn,
+		"providers":                   map[string]any{},
+		"states":                      map[string]any{},
+	}
+
+	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}
 }
 
 // builtinProviderRule is one account-provider rule dug out of the desktop's

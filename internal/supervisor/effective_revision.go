@@ -111,7 +111,7 @@ func EffectiveBuiltinRevision(install Install, appVersion, dataBaseDir string) (
 		// never blocks a usable active cache.
 		return BuiltinRevision(active, activeRev), nil
 	default:
-		return "", fmt.Errorf("%w: bundled %q: %v; active %q: %v",
+		return "", fmt.Errorf("%w: bundled %q: %w; active %q: %w",
 			ErrNoBuiltinCandidate, bundled, bundledErr, active, activeErr)
 	}
 }
@@ -180,17 +180,25 @@ func activeBuiltinPath(dataBaseDir, appVersion string) string {
 	return ""
 }
 
+// errNoCandidatePath is the empty-input arm of builtinRevisionNumber (no
+// candidate resolved at that level).
+var errNoCandidatePath = errors.New("no candidate path resolved")
+
+// errNoRevisionNumber is the missing-number arm (the release decode requires
+// the top-level revision; its absence invalidates the candidate).
+var errNoRevisionNumber = errors.New("no top-level revision number")
+
 // builtinRevisionNumber reads the top-level revision number out of a
 // zcode-builtin.json release document; a document without the number is an
 // invalid candidate (V-SRC: the release decode requires it), never a zero.
 func builtinRevisionNumber(path string) (int, error) {
 	if path == "" {
-		return 0, errors.New("no candidate path resolved")
+		return 0, errNoCandidatePath
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("read %s: %w", path, err)
 	}
 
 	var doc struct {
@@ -200,7 +208,7 @@ func builtinRevisionNumber(path string) (int, error) {
 		return 0, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if doc.Revision == nil {
-		return 0, fmt.Errorf("parse %s: no top-level revision number", path)
+		return 0, fmt.Errorf("parse %s: %w", path, errNoRevisionNumber)
 	}
 
 	return *doc.Revision, nil

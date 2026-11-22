@@ -73,11 +73,13 @@ func assertBasedOnIsEffective(t *testing.T, what string, snap hostsvc.Snapshot, 
 	notWant := supervisor.BuiltinRevision(inst.BuiltinFile, 44)
 
 	if snap.BasedOn != want {
-		t.Fatalf("%s basedOn = %q, want the effective (root resources copy) hash %q", what, snap.BasedOn, want)
+		t.Fatalf("%s basedOn = %q, want the effective (root resources copy) hash %q",
+			what, snap.BasedOn, want)
 	}
 
 	if snap.BasedOn == notWant {
-		t.Fatalf("%s basedOn = %q — the raw discovery-recorded hash leaked (the field gap this wiring closes)", what, snap.BasedOn)
+		t.Fatalf("%s basedOn = %q — the raw discovery-recorded hash leaked (the field gap this wiring closes)",
+			what, snap.BasedOn)
 	}
 
 	if paramsBasedOn, _ := snap.Params["basedOnZCodeBuiltinRevision"].(string); paramsBasedOn != want {

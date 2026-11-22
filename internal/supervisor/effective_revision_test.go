@@ -45,6 +45,10 @@ type effFixture struct {
 	extraEndpoints map[string]int // name → rev written inside (0 = dir only)
 }
 
+// effActiveVer is the fixture runtime-cache version dir (the <appVersion>
+// scope of the active candidate).
+const effActiveVer = "3.18.2"
+
 // writeEffFixture materializes the fixture tree and returns the install to
 // resolve. The discovery-recorded BuiltinFile always points at the runtime
 // cache copy when one exists (the field shape: discovery records the
@@ -54,54 +58,85 @@ func writeEffFixture(t *testing.T, fx effFixture) supervisor.Install {
 	t.Helper()
 
 	inst := supervisor.Install{BuiltinFile: fx.builtin}
+	writeEffRootCopy(t, fx, &inst)
 
-	if fx.root != "" {
-		inst.Root = fx.root
-		inst.Binary = filepath.Join(fx.root, "zcode")
-		inst.Entrypoint = filepath.Join(fx.root, "resources", "glm", "zcode.cjs")
+	return writeEffActiveTree(t, fx, inst)
+}
+
+// writeEffRootCopy writes the install fields and the root's own resources
+// builtin copy (the BUNDLED candidate) when the fixture carries one.
+func writeEffRootCopy(t *testing.T, fx effFixture, inst *supervisor.Install) {
+	t.Helper()
+
+	if fx.root == "" {
+		return
 	}
 
-	if fx.bundledRev > 0 {
-		bundled := filepath.Join(fx.root, "resources", "config", "provider", "zcode-builtin.json")
-		if err := os.MkdirAll(filepath.Dir(bundled), 0o750); err != nil {
-			t.Fatalf("mkdir bundled dir: %v", err)
-		}
-		if err := os.WriteFile(bundled,
-			[]byte(`{"revision":`+strconv.Itoa(fx.bundledRev)+`,"note":"bundled"}`), 0o600); err != nil {
-			t.Fatalf("write bundled builtin: %v", err)
-		}
+	inst.Root = fx.root
+	inst.Binary = filepath.Join(fx.root, "zcode")
+	inst.Entrypoint = filepath.Join(fx.root, "resources", "glm", "zcode.cjs")
+
+	if fx.bundledRev <= 0 {
+		return
 	}
 
-	if fx.dataBase != "" && fx.activeVerDir != "" {
-		verDir := filepath.Join(fx.dataBase, ".zcode", "v2", "runtime", "provider",
-			"linux-x86_64", fx.activeVerDir)
-		endpoints := map[string]int{}
-		for name, rev := range fx.extraEndpoints {
-			endpoints[name] = rev
-		}
-		if fx.activeEndpoint != "" {
-			endpoints[fx.activeEndpoint] = fx.activeRev
-		}
-		for name, rev := range endpoints {
-			dir := filepath.Join(verDir, name)
-			if err := os.MkdirAll(dir, 0o750); err != nil {
-				t.Fatalf("mkdir endpoint dir %s: %v", dir, err)
-			}
-			emptyVector := fx.activeEndpointEmpty && name == fx.activeEndpoint
-			if emptyVector || rev <= 0 {
-				continue // dir-exists-file-missing vector (or a bare extra dir)
-			}
-			if err := os.WriteFile(filepath.Join(dir, "zcode-builtin.json"),
-				[]byte(`{"revision":`+strconv.Itoa(rev)+`,"note":"active"}`), 0o600); err != nil {
-				t.Fatalf("write active builtin: %v", err)
-			}
-		}
-		if fx.activeEndpoint != "" && !fx.activeEndpointEmpty {
-			inst.BuiltinFile = filepath.Join(verDir, fx.activeEndpoint, "zcode-builtin.json")
-		}
+	bundled := filepath.Join(fx.root, "resources", "config", "provider", "zcode-builtin.json")
+	if err := os.MkdirAll(filepath.Dir(bundled), 0o750); err != nil {
+		t.Fatalf("mkdir bundled dir: %v", err)
+	}
+	if err := os.WriteFile(bundled,
+		[]byte(`{"revision":`+strconv.Itoa(fx.bundledRev)+`,"note":"bundled"}`), 0o600); err != nil {
+		t.Fatalf("write bundled builtin: %v", err)
+	}
+}
+
+// writeEffActiveTree writes the runtime-cache active tree (the ACTIVE
+// candidate's endpoint dirs) when the fixture carries one, and points the
+// recorded BuiltinFile at the primary copy (the field shape).
+func writeEffActiveTree(t *testing.T, fx effFixture, inst supervisor.Install) supervisor.Install {
+	t.Helper()
+
+	if fx.dataBase == "" || fx.activeVerDir == "" {
+		return inst
+	}
+
+	verDir := filepath.Join(fx.dataBase, ".zcode", "v2", "runtime", "provider",
+		"linux-x86_64", fx.activeVerDir)
+	endpoints := map[string]int{}
+	for name, rev := range fx.extraEndpoints {
+		endpoints[name] = rev
+	}
+	if fx.activeEndpoint != "" {
+		endpoints[fx.activeEndpoint] = fx.activeRev
+	}
+
+	for name, rev := range endpoints {
+		writeEffEndpoint(t, verDir, name, rev, fx.activeEndpointEmpty && name == fx.activeEndpoint)
+	}
+
+	if fx.activeEndpoint != "" && !fx.activeEndpointEmpty {
+		inst.BuiltinFile = filepath.Join(verDir, fx.activeEndpoint, "zcode-builtin.json")
 	}
 
 	return inst
+}
+
+// writeEffEndpoint mkdirs one endpoint dir and writes its zcode-builtin.json
+// unless it is the dir-exists-file-missing vector or a bare extra dir.
+func writeEffEndpoint(t *testing.T, verDir, name string, rev int, emptyVector bool) {
+	t.Helper()
+
+	dir := filepath.Join(verDir, name)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir endpoint dir %s: %v", dir, err)
+	}
+	if emptyVector || rev <= 0 {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, "zcode-builtin.json"),
+		[]byte(`{"revision":`+strconv.Itoa(rev)+`,"note":"active"}`), 0o600); err != nil {
+		t.Fatalf("write active builtin: %v", err)
+	}
 }
 
 // TestEffectiveRevisionTieFallsToBundled locks vector (a) — THIS machine's
@@ -118,8 +153,8 @@ func TestEffectiveRevisionTieFallsToBundled(t *testing.T) {
 		dataBase:       dataBase,
 		bundledRev:     44,
 		activeRev:      44,
-		activeVerDir:   "3.18.2",
-		activeEndpoint: "endpoint-78d7c3bef4024722642626fe3669a799",
+		activeVerDir:   effActiveVer,
+		activeEndpoint: fixtureEndpointDir,
 	})
 
 	bundledPath := filepath.Join(root, "resources", "config", "provider", "zcode-builtin.json")
@@ -130,7 +165,7 @@ func TestEffectiveRevisionTieFallsToBundled(t *testing.T) {
 		t.Fatal("fixture degenerated: bundled and active path hashes equal")
 	}
 
-	got, err := supervisor.EffectiveBuiltinRevision(inst, "3.18.2", dataBase)
+	got, err := supervisor.EffectiveBuiltinRevision(inst, effActiveVer, dataBase)
 	if err != nil {
 		t.Fatalf("effective revision: %v", err)
 	}
@@ -153,13 +188,13 @@ func TestEffectiveRevisionStrictlyNewerActive(t *testing.T) {
 		dataBase:       dataBase,
 		bundledRev:     43,
 		activeRev:      44,
-		activeVerDir:   "3.18.2",
-		activeEndpoint: "endpoint-78d7c3bef4024722642626fe3669a799",
+		activeVerDir:   effActiveVer,
+		activeEndpoint: fixtureEndpointDir,
 	})
 
 	want := supervisor.BuiltinRevision(inst.BuiltinFile, 44)
 
-	got, err := supervisor.EffectiveBuiltinRevision(inst, "3.18.2", dataBase)
+	got, err := supervisor.EffectiveBuiltinRevision(inst, effActiveVer, dataBase)
 	if err != nil {
 		t.Fatalf("effective revision: %v", err)
 	}
@@ -178,10 +213,13 @@ func TestEffectiveRevisionStrictlyNewerActive(t *testing.T) {
 func TestEffectiveRevisionNoActiveTree(t *testing.T) {
 	root := t.TempDir()
 
-	inst := writeEffFixture(t, effFixture{root: root, bundledRev: 44, builtin: filepath.Join(root, "zcode-builtin.json")})
+	inst := writeEffFixture(t, effFixture{
+		root: root, bundledRev: 44,
+		builtin: filepath.Join(root, "zcode-builtin.json"),
+	})
 
 	bundledPath := filepath.Join(root, "resources", "config", "provider", "zcode-builtin.json")
-	got, err := supervisor.EffectiveBuiltinRevision(inst, "3.18.2", t.TempDir())
+	got, err := supervisor.EffectiveBuiltinRevision(inst, effActiveVer, t.TempDir())
 	if err != nil {
 		t.Fatalf("effective revision (resources copy): %v", err)
 	}
@@ -202,7 +240,7 @@ func TestEffectiveRevisionNoActiveTree(t *testing.T) {
 		BuiltinFile: flatBuiltin,
 		Root:        t.TempDir(), // a root WITHOUT the resources copy
 	}
-	got, err = supervisor.EffectiveBuiltinRevision(bare, "3.18.2", "")
+	got, err = supervisor.EffectiveBuiltinRevision(bare, effActiveVer, "")
 	if err != nil {
 		t.Fatalf("effective revision (bare builtin): %v", err)
 	}
@@ -223,13 +261,13 @@ func TestEffectiveRevisionActiveDirWithoutFile(t *testing.T) {
 		dataBase:            dataBase,
 		bundledRev:          44,
 		activeRev:           50,
-		activeVerDir:        "3.18.2",
-		activeEndpoint:      "endpoint-78d7c3bef4024722642626fe3669a799",
+		activeVerDir:        effActiveVer,
+		activeEndpoint:      fixtureEndpointDir,
 		activeEndpointEmpty: true,
 	})
 
 	bundledPath := filepath.Join(root, "resources", "config", "provider", "zcode-builtin.json")
-	got, err := supervisor.EffectiveBuiltinRevision(inst, "3.18.2", dataBase)
+	got, err := supervisor.EffectiveBuiltinRevision(inst, effActiveVer, dataBase)
 	if err != nil {
 		t.Fatalf("effective revision: %v", err)
 	}
@@ -253,16 +291,16 @@ func TestEffectiveRevisionMultipleEndpoints(t *testing.T) {
 		dataBase:       dataBase,
 		bundledRev:     44,
 		activeRev:      45,
-		activeVerDir:   "3.18.2",
+		activeVerDir:   effActiveVer,
 		activeEndpoint: "endpoint-zzz",
 		extraEndpoints: map[string]int{"endpoint-aaa": 45},
 	})
 
 	want := supervisor.BuiltinRevision(
 		filepath.Join(dataBase, ".zcode", "v2", "runtime", "provider", "linux-x86_64",
-			"3.18.2", "endpoint-zzz", "zcode-builtin.json"), 45)
+			effActiveVer, "endpoint-zzz", "zcode-builtin.json"), 45)
 
-	got, err := supervisor.EffectiveBuiltinRevision(inst, "3.18.2", dataBase)
+	got, err := supervisor.EffectiveBuiltinRevision(inst, effActiveVer, dataBase)
 	if err != nil {
 		t.Fatalf("effective revision: %v", err)
 	}
@@ -284,16 +322,16 @@ func TestEffectiveRevisionEndpointLastWithoutFile(t *testing.T) {
 		dataBase:       dataBase,
 		bundledRev:     44,
 		activeRev:      45,
-		activeVerDir:   "3.18.2",
+		activeVerDir:   effActiveVer,
 		activeEndpoint: "endpoint-aaa", // carries the file
 		extraEndpoints: map[string]int{"endpoint-zzz": 0},
 	})
 
 	want := supervisor.BuiltinRevision(
 		filepath.Join(dataBase, ".zcode", "v2", "runtime", "provider", "linux-x86_64",
-			"3.18.2", "endpoint-aaa", "zcode-builtin.json"), 45)
+			effActiveVer, "endpoint-aaa", "zcode-builtin.json"), 45)
 
-	got, err := supervisor.EffectiveBuiltinRevision(inst, "3.18.2", dataBase)
+	got, err := supervisor.EffectiveBuiltinRevision(inst, effActiveVer, dataBase)
 	if err != nil {
 		t.Fatalf("effective revision: %v", err)
 	}
@@ -311,7 +349,7 @@ func TestEffectiveRevisionNoCandidateErrors(t *testing.T) {
 
 	inst := writeEffFixture(t, effFixture{root: root, builtin: filepath.Join(root, "missing", "zcode-builtin.json")})
 
-	_, err := supervisor.EffectiveBuiltinRevision(inst, "3.18.2", t.TempDir())
+	_, err := supervisor.EffectiveBuiltinRevision(inst, effActiveVer, t.TempDir())
 	if !errors.Is(err, supervisor.ErrNoBuiltinCandidate) {
 		t.Fatalf("err = %v, want ErrNoBuiltinCandidate", err)
 	}
@@ -337,13 +375,13 @@ func TestEffectiveRevisionMalformedBundledFallsToActive(t *testing.T) {
 		root:           root,
 		dataBase:       dataBase,
 		activeRev:      44,
-		activeVerDir:   "3.18.2",
-		activeEndpoint: "endpoint-78d7c3bef4024722642626fe3669a799",
+		activeVerDir:   effActiveVer,
+		activeEndpoint: fixtureEndpointDir,
 	})
 
 	want := supervisor.BuiltinRevision(inst.BuiltinFile, 44)
 
-	got, err := supervisor.EffectiveBuiltinRevision(inst, "3.18.2", dataBase)
+	got, err := supervisor.EffectiveBuiltinRevision(inst, effActiveVer, dataBase)
 	if err != nil {
 		t.Fatalf("effective revision: %v", err)
 	}
@@ -364,7 +402,7 @@ func TestInstallAppVersionVersion(t *testing.T) {
 		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
 	}
 
-	if got := supervisor.InstallAppVersion(inst); got != "3.18.2" {
+	if got := supervisor.InstallAppVersion(inst); got != effActiveVer {
 		t.Fatalf("InstallAppVersion = %q, want 3.18.2 (digged from the root's version dir)", got)
 	}
 
@@ -383,7 +421,10 @@ func TestInstallAppVersionVersion(t *testing.T) {
 func TestDefaultEffectiveRevisionBundledOnly(t *testing.T) {
 	root := t.TempDir()
 
-	inst := writeEffFixture(t, effFixture{root: root, bundledRev: 44, builtin: filepath.Join(root, "zcode-builtin.json")})
+	inst := writeEffFixture(t, effFixture{
+		root: root, bundledRev: 44,
+		builtin: filepath.Join(root, "zcode-builtin.json"),
+	})
 
 	bundledPath := filepath.Join(root, "resources", "config", "provider", "zcode-builtin.json")
 	got, err := supervisor.DefaultEffectiveRevision(inst)
