@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestSessionDeleteRegistered' ./internal/acpfront/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestSessionDeleteRegisteredRunsTeardown (0.01s)\n    sesscompat_test.go:126: session/delete on the registered id must answer the graceful empty result, got error: {\"code\":-32601,\"message\":\"Method not found\",\"data\":{\"method\":\"session/delete\"}}\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpfront\t0.015s\nFAIL",
+  "targetTest": "TestSessionDeleteRegisteredRunsTeardown",
+  "targetFile": "internal/acpfront/sesscompat_test.go",
+  "expected": "The SDK client's typed DeleteSession on an established session (initialize + session/new over the composed harness) answers the dialect's empty result {} and runs the full SESS-01 teardown (registry released, settings dropped, machine observers removed, backend session/close on the transcript with zero send traffic). Pre-implementation (HEAD e7eb577) the adapter arm answers unadvertised(acp.AgentMethodSessionDelete) — the wire must carry -32601 \"Method not found\" with data {\"method\":\"session/delete\"} and the test must fail on exactly that reply",
+  "actual": "Exactly that: the first Fatalf fired with the -32601 error envelope byte-shaped as planned (code -32601, message \"Method not found\", data.method \"session/delete\") — the delete never reached the front, so no teardown step ran",
+  "semanticAssessment": "VALID RED - the target test executed and failed on its planned assertion (the pre-implementation -32601 error reply) for the intended reason; the test compiles and runs (no build/load/fixture failure), the scenario preamble (initialize + session/new) succeeded before the failing arm, and the failure is deterministic"
+}
