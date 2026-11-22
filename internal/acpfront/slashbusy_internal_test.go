@@ -37,8 +37,8 @@ const (
 
 	// busySnapshot is the confirmed settings snapshot the busy session's
 	// switch validates against (the selector resolves against the listed
-	// set — the validate-first gate stays upstream of the slot check's
-	// subject; the busy rejection fires before any of it).
+	// set — the busy rejection fires before any of that: validate-first
+	// stays upstream of the slot check's subject).
 	busySnapshot = `{
   "session": {"sessionId": "` + busySID + `"},
   "settings": {
@@ -104,6 +104,32 @@ func countSetModels(tr fake.Transcript) int {
 	return n
 }
 
+// runBusyScopeArm drives one busy-scope arm end-to-end: it records the
+// snapshot, holds the slot for holderSID, runs the /model switch for
+// busySID, and returns the stop reason, the recorded transcript (the legs
+// closed — the caller asserts on the wire truth), and the intercept's
+// error.
+func runBusyScopeArm(t *testing.T, holderSID string) (acpport.StopReason, fake.Transcript, error) {
+	t.Helper()
+
+	f, closeLegs := newInterleaveFront(t, busyScopeScenario())
+
+	f.recordSettings(busySID, json.RawMessage(busySnapshot))
+	holdSlot(f, holderSID)
+
+	stop, handled, err := f.promptModelSlash(context.Background(), acpport.PromptParams{
+		SessionID: busySID,
+		Text:      "/model " + busySelector,
+	}, func(context.Context, acpport.SessionNote) error { return nil })
+
+	if !handled {
+		closeLegs()
+		t.Fatal("the command form must be handled by the intercept")
+	}
+
+	return stop, closeLegs(), err
+}
+
 // TestPromptModelSlashBusyScope is the WR-02 scoping lock (07-REVIEW): the
 // /model intercept's busy gate is session-scoped — a switch issued while
 // THIS session's turn is active takes the CORE-05 turnActiveMessage
@@ -111,25 +137,8 @@ func countSetModels(tr fake.Transcript) int {
 // proceeds even when ANOTHER session holds the front-wide slot (the
 // mutation is a conn.Call, not a turn — the Cancel WR-07 scoping parity).
 func TestPromptModelSlashBusyScope(t *testing.T) {
-	ctx := context.Background()
-
-	noopSink := func(context.Context, acpport.SessionNote) error { return nil }
-
 	t.Run("same-session busy rejects on the ONE stable surface with no mutation", func(t *testing.T) {
-		f, closeLegs := newInterleaveFront(t, busyScopeScenario())
-		defer closeLegs()
-
-		f.recordSettings(busySID, json.RawMessage(busySnapshot))
-		holdSlot(f, busySID)
-
-		_, handled, err := f.promptModelSlash(ctx, acpport.PromptParams{
-			SessionID: busySID,
-			Text:      "/model " + busySelector,
-		}, noopSink)
-
-		if !handled {
-			t.Fatal("the command form must be handled by the intercept")
-		}
+		_, tr, err := runBusyScopeArm(t, busySID)
 
 		if err == nil {
 			t.Fatal("a same-session busy switch must be rejected (CORE-05), got success")
@@ -141,27 +150,14 @@ func TestPromptModelSlashBusyScope(t *testing.T) {
 			t.Fatalf("busy rejection = %v, want the coded invalid-request carrying %q", err, turnActiveMessage)
 		}
 
-		if setModels := countSetModels(closeLegs()); setModels != 0 {
+		if setModels := countSetModels(tr); setModels != 0 {
 			t.Fatalf("the busy rejection must precede any backend call — "+
 				"%d session/setModel frame(s) recorded", setModels)
 		}
 	})
 
 	t.Run("cross-session busy leaves the switch unaffected", func(t *testing.T) {
-		f, closeLegs := newInterleaveFront(t, busyScopeScenario())
-		defer closeLegs()
-
-		f.recordSettings(busySID, json.RawMessage(busySnapshot))
-		holdSlot(f, busyOtherSID) // ANOTHER session holds the front-wide slot
-
-		stop, handled, err := f.promptModelSlash(ctx, acpport.PromptParams{
-			SessionID: busySID,
-			Text:      "/model " + busySelector,
-		}, noopSink)
-
-		if !handled {
-			t.Fatal("the command form must be handled by the intercept")
-		}
+		stop, tr, err := runBusyScopeArm(t, busyOtherSID)
 
 		if err != nil {
 			t.Fatalf("a switch on a slot-free session must proceed (the gate is session-scoped), got: %v", err)
@@ -171,7 +167,7 @@ func TestPromptModelSlashBusyScope(t *testing.T) {
 			t.Fatalf("stop reason = %q, want end_turn", stop)
 		}
 
-		if setModels := countSetModels(closeLegs()); setModels != 1 {
+		if setModels := countSetModels(tr); setModels != 1 {
 			t.Fatalf("the cross-session switch must apply exactly one setModel mutation, got %d", setModels)
 		}
 	})

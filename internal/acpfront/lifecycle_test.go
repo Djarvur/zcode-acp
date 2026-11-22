@@ -279,6 +279,42 @@ func TestResumeRecordsCwd(t *testing.T) {
 	}
 }
 
+// resumeSettingsScenario composes the WR-01 pure-resume harness:
+// cfgOptionScenario's create rule never fires (no session/new is driven);
+// the settings snapshot rides the resume reply verbatim (create-shaped)
+// and the setModel rule answers the picker/slash mutation.
+func resumeSettingsScenario() *fake.Scenario {
+	return cfgOptionScenario(cfgCreateResult,
+		fake.RequestRule{
+			Method: zcode.MethodSessionResume,
+			Reply:  &fake.Reply{Result: json.RawMessage(cfgCreateResult)},
+		},
+		fake.RequestRule{
+			Method: zcode.MethodSessionSetModel,
+			Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+		})
+}
+
+// resumeSetCfgSession runs the initialize + PURE resume preamble (no
+// session/new — the snapshot must come from the resume reply alone) and
+// returns the resumed session id.
+func resumeSetCfgSession(ctx context.Context, t *testing.T, h *FrontHarness) string {
+	t.Helper()
+
+	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	if _, err := h.client.ResumeSession(ctx, acp.ResumeSessionRequest{
+		SessionId: acp.SessionId("sess_cfg"),
+		Cwd:       t.TempDir(),
+	}); err != nil {
+		t.Fatalf("session/resume: %v", err)
+	}
+
+	return "sess_cfg"
+}
+
 // TestResumeRecordsConfirmedSettings locks WR-01 (07-REVIEW): the resume
 // reply IS a confirmed settings snapshot — createSessionID's own contract
 // states session/create and session/resume carry the SAME full snapshot
@@ -291,44 +327,8 @@ func TestResumeRecordsCwd(t *testing.T) {
 // ONLY through the resume reply, so a pass proves the resume path
 // recorded it.
 func TestResumeRecordsConfirmedSettings(t *testing.T) {
-	// resumeScenario composes the pure-resume harness: cfgOptionScenario's
-	// create rule never fires (no session/new is driven); the settings
-	// snapshot rides the resume reply verbatim (create-shaped) and the
-	// setModel rule answers the picker/slash mutation.
-	resumeScenario := func() *fake.Scenario {
-		return cfgOptionScenario(cfgCreateResult,
-			fake.RequestRule{
-				Method: zcode.MethodSessionResume,
-				Reply:  &fake.Reply{Result: json.RawMessage(cfgCreateResult)},
-			},
-			fake.RequestRule{
-				Method: zcode.MethodSessionSetModel,
-				Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
-			})
-	}
-
-	// resumeSetCfgSession runs the initialize + PURE resume preamble (no
-	// session/new — the snapshot must come from the resume reply alone) and
-	// returns the resumed session id.
-	resumeSetCfgSession := func(ctx context.Context, t *testing.T, h *FrontHarness) string {
-		t.Helper()
-
-		if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
-			t.Fatalf("initialize: %v", err)
-		}
-
-		if _, err := h.client.ResumeSession(ctx, acp.ResumeSessionRequest{
-			SessionId: acp.SessionId("sess_cfg"),
-			Cwd:       t.TempDir(),
-		}); err != nil {
-			t.Fatalf("session/resume: %v", err)
-		}
-
-		return "sess_cfg"
-	}
-
 	t.Run("the picker's model arm validates against the resume reply", func(t *testing.T) {
-		h := newSetCfgFront(t, resumeScenario())
+		h := newSetCfgFront(t, resumeSettingsScenario())
 
 		ctx, cancel := h.ExchangeCtx()
 		defer cancel()
@@ -338,7 +338,9 @@ func TestResumeRecordsConfirmedSettings(t *testing.T) {
 		// The ask targets a value the RESUME reply lists: success proves the
 		// store recorded the resume snapshot; the -32602 unknown-session
 		// answer is the WR-01 bug this test pins.
-		if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID)); err != nil {
+		ask := setCfgAsk(sid, optionIDModel, corpusModelFlashID)
+
+		if _, err := h.client.SetSessionConfigOption(ctx, ask); err != nil {
 			t.Fatalf("the resumed session must validate the picker ask against the "+
 				"resume reply's confirmed snapshot (the reply IS the D-10 source): %v", err)
 		}
@@ -355,7 +357,7 @@ func TestResumeRecordsConfirmedSettings(t *testing.T) {
 	})
 
 	t.Run("the /model slash resolves the resume reply's binding", func(t *testing.T) {
-		h := newSetCfgFront(t, resumeScenario())
+		h := newSetCfgFront(t, resumeSettingsScenario())
 
 		ctx, cancel := h.ExchangeCtx()
 		defer cancel()

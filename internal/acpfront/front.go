@@ -648,6 +648,17 @@ func (f *Front) DeleteSession(ctx context.Context, sessionID string) error {
 	return f.CloseSession(ctx, sessionID)
 }
 
+// slashTurnBusy reports whether the named session's own turn holds the
+// front-wide slot (the WR-02 gate's busy read, under the slot lock).
+// Session-scoped (the Cancel WR-07 discipline): another session's turn on
+// the front-wide slot does not block this session's switch.
+func (f *Front) slashTurnBusy(sessionID string) bool {
+	f.turnMu.Lock()
+	defer f.turnMu.Unlock()
+
+	return f.turnActive && f.turnSession == sessionID
+}
+
 // promptModelSlash runs the /model slash-prompt intercept (SESS-03, plan
 // 07-05, D-03): a prompt turn whose text is the command form resolves the
 // selector against the session's confirmed configOptions listed values
@@ -677,14 +688,8 @@ func (f *Front) promptModelSlash(
 	// turnActiveMessage rejection — the same surface any literal prompt
 	// gets from the slot — instead of issuing a mid-turn setModel mutation
 	// whose refusal would run the picker-refusal teardown (CloseSession →
-	// drainActiveTurn) and cancel the user's RUNNING turn. Session-scoped
-	// under the slot lock (the Cancel WR-07 discipline): another session's
-	// turn on the front-wide slot does not block this session's switch.
-	f.turnMu.Lock()
-	busy := f.turnActive && f.turnSession == params.SessionID
-	f.turnMu.Unlock()
-
-	if busy {
+	// drainActiveTurn) and cancel the user's RUNNING turn.
+	if f.slashTurnBusy(params.SessionID) {
 		return "", true, acpport.NewInvalidRequest(turnActiveMessage)
 	}
 
