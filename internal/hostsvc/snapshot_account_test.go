@@ -91,6 +91,11 @@ func wantZhipuProviders() map[string][]string {
 	}
 }
 
+// fixtureAccountMode is the fixture tables' access.mode value — the
+// capture-verbatim builtin-table spelling shared by every fixture zhipu
+// rule (goconst: one source).
+const fixtureAccountMode = "individual-coding-plan"
+
 // wantZhipuAccess is the pushed access's accountType+mode pair per fixture
 // zhipu-account rule — capture-verbatim values from the fixture table's
 // access block. The runtime registry validates each pushed provider against
@@ -102,8 +107,8 @@ func wantZhipuProviders() map[string][]string {
 // account models).
 func wantZhipuAccess() map[string][2]string {
 	return map[string][2]string{
-		"account:zai-individual-coding-plan":      {"zai", "individual-coding-plan"},
-		"account:bigmodel-individual-coding-plan": {"bigmodel", "individual-coding-plan"},
+		"account:zai-individual-coding-plan":      {"zai", fixtureAccountMode},
+		"account:bigmodel-individual-coding-plan": {"bigmodel", fixtureAccountMode},
 	}
 }
 
@@ -420,7 +425,7 @@ const accountTableRuleNoModels = `{
           "providerId": "account:zai-individual-coding-plan",
           "providerName": "Z.AI Individual Coding Plan",
           "config": {
-            "access": {"type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "zai"}
+            "access": {"type": "zhipu-account", "mode": "` + fixtureAccountMode + `", "accountType": "zai"}
           }
         }
       ]
