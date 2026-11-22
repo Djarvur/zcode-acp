@@ -535,6 +535,13 @@ var _ = func() bool {
 	return true
 }()
 
+// The openV1TestBlob shape sentinels (static — the err113 discipline).
+var (
+	errTestBlobPrefix   = errors.New("test blob carries no enc:v1 prefix")
+	errTestBlobLayout   = errors.New("test blob is not iv.tag.ct")
+	errTestBlobSegments = errors.New("test blob segments are not base64url")
+)
+
 // openV1TestBlob decrypts an enc:v1 blob with the given key — the in-test
 // decrypt half of the round-trip vector (the production decrypt path is
 // exercised through the store dispatch in TestCredStore). A non-nil error
@@ -543,12 +550,12 @@ func openV1TestBlob(key []byte, blob string) (string, error) {
 	const prefix = "enc:v1:"
 
 	if !strings.HasPrefix(blob, prefix) {
-		return "", errors.New("test blob carries no enc:v1 prefix")
+		return "", errTestBlobPrefix
 	}
 
 	segs := strings.Split(strings.TrimPrefix(blob, prefix), ".")
 	if len(segs) != 3 {
-		return "", errors.New("test blob is not iv.tag.ct")
+		return "", errTestBlobLayout
 	}
 
 	iv, errIV := base64.RawURLEncoding.DecodeString(segs[0])
@@ -556,7 +563,7 @@ func openV1TestBlob(key []byte, blob string) (string, error) {
 	ct, errCT := base64.RawURLEncoding.DecodeString(segs[2])
 
 	if errIV != nil || errTag != nil || errCT != nil {
-		return "", errors.New("test blob segments are not base64url")
+		return "", errTestBlobSegments
 	}
 
 	block, err := aes.NewCipher(key)
@@ -589,184 +596,200 @@ func v1FixSeams() (platform, home, username func() string) {
 		func() string { return "fixuser" }
 }
 
-// TestV1Fallback locks the legacy enc:v1 sibling loader (D-03) behind the
-// same KeyLoader seam: the round-trip over the sha256(secret) key, the
-// malformed shapes failing coded through the store dispatch, the
-// wrong-secret vector failing loud (never garbage), the env-then-machine
-// secret resolution with trim semantics, and the exact digest contract —
-// all over injected seams for determinism. The loader performs NO exec
-// (pure compute).
-func TestV1Fallback(t *testing.T) {
+// v1FixLoader builds the loader over the injected env seam and seams.
+func v1FixLoader(env map[string]string) *interact.V1FallbackKeyLoader {
+	plt, home, username := v1FixSeams()
+
+	loader, err := interact.NewV1FallbackKeyLoader(env, plt, home, username)
+	if err != nil {
+		panic(err) // unreachable: the fixture seams are valid inputs
+	}
+
+	return loader
+}
+
+// TestV1FallbackRoundTrip locks the round-trip vector: a payload sealed in
+// the v1 layout under sha256(secret) decrypts back through the loader's
+// key (the loader performs NO exec — pure compute).
+func TestV1FallbackRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), cipherTestTimeout)
 	defer cancel()
 
-	t.Run("round-trip decrypts under the loader key", func(t *testing.T) {
-		plt, home, username := v1FixSeams()
+	key, err := v1FixLoader(map[string]string{
+		interact.V1SecretEnvKey: "  " + v1TestSecret + "  ",
+	}).LoadKey(ctx)
+	if err != nil {
+		t.Fatalf("LoadKey: %v", err)
+	}
 
-		loader, err := interact.NewV1FallbackKeyLoader(
-			map[string]string{interact.V1SecretEnvKey: "  " + v1TestSecret + "  "}, plt, home, username)
-		if err != nil {
-			t.Fatalf("NewV1FallbackKeyLoader: %v", err)
-		}
+	got, derr := openV1TestBlob(key, sealV1TestBlob(t, v1TestSecret, fixJWT))
+	if derr != nil || got != fixJWT {
+		t.Fatalf("round-trip = (%q, %v), want the payload %q back under the loader key", got, derr, fixJWT)
+	}
+}
 
-		key, err := loader.LoadKey(ctx)
-		if err != nil {
-			t.Fatalf("LoadKey: %v", err)
-		}
+// TestV1FallbackMalformedShapes locks the malformed layout vectors: every
+// broken shape fails coded (the invalid-value/decrypt-failed family)
+// through the store dispatch — per-entry isolation, never a panic.
+func TestV1FallbackMalformedShapes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), cipherTestTimeout)
+	defer cancel()
 
-		got, derr := openV1TestBlob(key, sealV1TestBlob(t, v1TestSecret, fixJWT))
-		if derr != nil || got != fixJWT {
-			t.Fatalf("round-trip = (%q, %v), want the payload %q back under the loader key", got, derr, fixJWT)
-		}
-	})
+	t.Setenv(interact.V1SecretEnvKey, v1TestSecret)
 
-	t.Run("malformed shapes fail coded through the store dispatch", func(t *testing.T) {
-		t.Setenv(interact.V1SecretEnvKey, v1TestSecret)
+	full := sealV1TestBlob(t, v1TestSecret, fixJWT)
+	parts := strings.Split(strings.TrimPrefix(full, "enc:v1:"), ".")
 
-		full := sealV1TestBlob(t, v1TestSecret, fixJWT)
-		parts := strings.Split(strings.TrimPrefix(full, "enc:v1:"), ".")
+	variants := []struct {
+		name     string
+		value    string
+		wantCode string
+	}{
+		{"two segments", "enc:v1:" + parts[0] + "." + parts[1], interact.CipherCodeInvalidValue},
+		{"four segments", "enc:v1:" + full + "." + parts[0], interact.CipherCodeInvalidValue},
+		{"non-base64 segment", "enc:v1:!!!." + parts[1] + "." + parts[2], interact.CipherCodeInvalidValue},
+		{"empty ciphertext", "enc:v1:" + parts[0] + "." + parts[1] + ".", interact.CipherCodeDecryptFailed},
+	}
 
-		variants := []struct {
-			name     string
-			value    string
-			wantCode string
-		}{
-			{"two segments", "enc:v1:" + parts[0] + "." + parts[1], "invalid-value"},
-			{"four segments", "enc:v1:" + full + "." + parts[0], "invalid-value"},
-			{"non-base64url segment", "enc:v1:!!!." + parts[1] + "." + parts[2], "invalid-value"},
-			{"empty ciphertext", "enc:v1:" + parts[0] + "." + parts[1] + ".", "decrypt-failed"},
-		}
-
-		for _, tt := range variants {
-			t.Run(tt.name, func(t *testing.T) {
-				storePath := filepath.Join(t.TempDir(), "v2", "credentials.json")
-				writeFixtureStore(t, storePath, map[string]string{
-					"broken": tt.value,
-					"good":   fixBearerless,
-				})
-
-				store := interact.NewCredentialStore(storePath, &stubLoader{})
-
-				var buf bytes.Buffer
-
-				prev := slog.Default()
-				slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-				defer slog.SetDefault(prev)
-
-				got, err := store.Entries(ctx)
-				if err != nil {
-					t.Fatalf("Entries returned %v — a malformed entry isolates, never sinks", err)
-				}
-
-				if _, present := got["broken"]; present {
-					t.Fatalf("malformed entry served %q — it must skip with a coded log", got["broken"])
-				}
-
-				if got["good"] != fixBearerless {
-					t.Fatalf("matching plaintext entry = %q, want intact (per-entry isolation)", got["good"])
-				}
-
-				logged := buf.String()
-				if !strings.Contains(logged, "key=broken") || !strings.Contains(logged, "code="+tt.wantCode) {
-					t.Fatalf("skip log %q must name the entry and the coded %q family", logged, tt.wantCode)
-				}
+	for _, tt := range variants {
+		t.Run(tt.name, func(t *testing.T) {
+			storePath := filepath.Join(t.TempDir(), "v2", "credentials.json")
+			writeFixtureStore(t, storePath, map[string]string{
+				"broken": tt.value,
+				"good":   fixBearerless,
 			})
-		}
-	})
 
-	t.Run("wrong secret fails loud (never garbage)", func(t *testing.T) {
-		t.Setenv(interact.V1SecretEnvKey, "zc-fix-wrong-secret")
+			store := interact.NewCredentialStore(storePath, &stubLoader{})
 
-		storePath := filepath.Join(t.TempDir(), "v2", "credentials.json")
-		writeFixtureStore(t, storePath, map[string]string{
-			"zcodejwttoken": sealV1TestBlob(t, v1TestSecret, fixJWT),
-			"good":          fixBearerless,
-		})
+			var buf bytes.Buffer
 
-		store := interact.NewCredentialStore(storePath, &stubLoader{})
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			defer slog.SetDefault(prev)
 
-		var buf bytes.Buffer
-
-		prev := slog.Default()
-		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-		defer slog.SetDefault(prev)
-
-		got, err := store.Entries(ctx)
-		if err != nil {
-			t.Fatalf("Entries returned %v — the wrong-secret entry isolates", err)
-		}
-
-		if _, present := got["zcodejwttoken"]; present {
-			t.Fatalf("wrong-secret entry served %q — decrypt under a different secret must fail loud", got["zcodejwttoken"])
-		}
-
-		if got["good"] != fixBearerless {
-			t.Fatalf("matching plaintext entry = %q, want intact (per-entry isolation)", got["good"])
-		}
-
-		if logged := buf.String(); !strings.Contains(logged, "code=decrypt-failed") {
-			t.Fatalf("wrong-secret skip log %q must carry the coded decrypt-failed arm", logged)
-		}
-	})
-
-	t.Run("secret resolution: trimmed env wins", func(t *testing.T) {
-		plt, home, username := v1FixSeams()
-
-		got, err := interact.ResolveV1CredentialSecret(
-			map[string]string{interact.V1SecretEnvKey: "  " + v1TestSecret + "  "}, plt(), home(), username())
-		if err != nil || got != v1TestSecret {
-			t.Fatalf("ResolveV1CredentialSecret = (%q, %v), want the trimmed %q", got, err, v1TestSecret)
-		}
-	})
-
-	t.Run("secret resolution: unset or blank falls back to the machine string", func(t *testing.T) {
-		plt, home, username := v1FixSeams()
-
-		want := "zcode-credential-fallback:linux:/home/fix:fixuser"
-
-		for _, env := range []map[string]string{
-			{},
-			{interact.V1SecretEnvKey: "   "},
-			{interact.V1SecretEnvKey: ""},
-		} {
-			got, err := interact.ResolveV1CredentialSecret(env, plt(), home(), username())
-			if err != nil || got != want {
-				t.Fatalf("ResolveV1CredentialSecret(%v) = (%q, %v), want the exact machine string %q", env, got, err, want)
+			got, err := store.Entries(ctx)
+			if err != nil {
+				t.Fatalf("Entries returned %v — a malformed entry isolates, never sinks", err)
 			}
-		}
+
+			if _, present := got["broken"]; present {
+				t.Fatalf("malformed entry served %q — it must skip with a coded log", got["broken"])
+			}
+
+			if got["good"] != fixBearerless {
+				t.Fatalf("matching plaintext entry = %q, want intact (per-entry isolation)", got["good"])
+			}
+
+			logged := buf.String()
+			if !strings.Contains(logged, "key=broken") ||
+				!strings.Contains(logged, "code="+tt.wantCode) {
+				t.Fatalf("skip log %q must name the entry and the coded %q family", logged, tt.wantCode)
+			}
+		})
+	}
+}
+
+// TestV1FallbackWrongSecret locks the wrong-secret vector: decrypt under a
+// different secret fails loud — the entry isolates (coded decrypt-failed
+// skip), never garbage, matching entries intact.
+func TestV1FallbackWrongSecret(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), cipherTestTimeout)
+	defer cancel()
+
+	t.Setenv(interact.V1SecretEnvKey, "zc-fix-wrong-secret")
+
+	storePath := filepath.Join(t.TempDir(), "v2", "credentials.json")
+	writeFixtureStore(t, storePath, map[string]string{
+		"zcodejwttoken": sealV1TestBlob(t, v1TestSecret, fixJWT),
+		"good":          fixBearerless,
 	})
 
-	t.Run("empty machine inputs fail loud", func(t *testing.T) {
-		got, err := interact.ResolveV1CredentialSecret(map[string]string{}, "linux", "/home/fix", "")
-		if err == nil {
-			t.Fatalf("empty username resolved (%q, %v) — a silently-empty machine string is forbidden", got, err)
+	store := interact.NewCredentialStore(storePath, &stubLoader{})
+
+	var buf bytes.Buffer
+
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	got, err := store.Entries(ctx)
+	if err != nil {
+		t.Fatalf("Entries returned %v — the wrong-secret entry isolates", err)
+	}
+
+	if _, present := got["zcodejwttoken"]; present {
+		t.Fatalf("wrong-secret entry served %q — must fail loud, never garbage", got["zcodejwttoken"])
+	}
+
+	if got["good"] != fixBearerless {
+		t.Fatalf("matching plaintext entry = %q, want intact (per-entry isolation)", got["good"])
+	}
+
+	if logged := buf.String(); !strings.Contains(logged, "code="+interact.CipherCodeDecryptFailed) {
+		t.Fatalf("wrong-secret skip log %q must carry the coded decrypt-failed arm", logged)
+	}
+}
+
+// TestV1FallbackSecretResolution locks the resolution order (ref
+// credential-store.ts:33-43): the trimmed non-empty env value wins; unset
+// or blank falls back to the exact machine string over the injected seams.
+func TestV1FallbackSecretResolution(t *testing.T) {
+	plt, home, username := v1FixSeams()
+
+	got, err := interact.ResolveV1CredentialSecret(
+		map[string]string{interact.V1SecretEnvKey: "  " + v1TestSecret + "  "},
+		plt(), home(), username())
+	if err != nil || got != v1TestSecret {
+		t.Fatalf("resolution = (%q, %v), want the trimmed %q", got, err, v1TestSecret)
+	}
+
+	want := "zcode-credential-fallback:linux:/home/fix:fixuser"
+
+	for _, env := range []map[string]string{
+		{},
+		{interact.V1SecretEnvKey: "   "},
+		{interact.V1SecretEnvKey: ""},
+	} {
+		got, err = interact.ResolveV1CredentialSecret(env, plt(), home(), username())
+		if err != nil || got != want {
+			t.Fatalf("resolution(%v) = (%q, %v), want the machine string %q", env, got, err, want)
 		}
+	}
+}
 
-		plt, home, _ := v1FixSeams()
+// TestV1FallbackLoudValidation locks the loud-validation posture: an empty
+// machine input is the sentinel error — never a silently-empty machine
+// string (at the pure resolver and at the constructor alike).
+func TestV1FallbackLoudValidation(t *testing.T) {
+	got, err := interact.ResolveV1CredentialSecret(map[string]string{}, "linux", "/home/fix", "")
+	if err == nil {
+		t.Fatalf("empty username resolved (%q, %v) — a silently-empty machine string is forbidden", got, err)
+	}
 
-		if _, cerr := interact.NewV1FallbackKeyLoader(nil, plt, home, func() string { return "" }); cerr == nil {
-			t.Fatal("the constructor must validate empty machine inputs loud, got nil error")
-		}
-	})
+	plt, home, _ := v1FixSeams()
 
-	t.Run("LoadKey returns sha256 of the resolved secret", func(t *testing.T) {
-		plt, home, username := v1FixSeams()
+	if _, cerr := interact.NewV1FallbackKeyLoader(nil, plt, home, func() string { return "" }); cerr == nil {
+		t.Fatal("the constructor must validate empty machine inputs loud, got nil error")
+	}
+}
 
-		loader, err := interact.NewV1FallbackKeyLoader(
-			map[string]string{interact.V1SecretEnvKey: v1TestSecret}, plt, home, username)
-		if err != nil {
-			t.Fatalf("NewV1FallbackKeyLoader: %v", err)
-		}
+// TestV1FallbackDigest locks the exact key contract: LoadKey returns
+// sha256 of the resolved secret — the 32-byte digest the v1 layout
+// encrypts under.
+func TestV1FallbackDigest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), cipherTestTimeout)
+	defer cancel()
 
-		key, err := loader.LoadKey(ctx)
-		if err != nil {
-			t.Fatalf("LoadKey: %v", err)
-		}
+	key, err := v1FixLoader(map[string]string{
+		interact.V1SecretEnvKey: v1TestSecret,
+	}).LoadKey(ctx)
+	if err != nil {
+		t.Fatalf("LoadKey: %v", err)
+	}
 
-		if !bytes.Equal(key, cipherSha256(v1TestSecret)) {
-			t.Fatalf("LoadKey digest = %x, want sha256(%q) = %x", key, v1TestSecret, cipherSha256(v1TestSecret))
-		}
-	})
+	if !bytes.Equal(key, cipherSha256(v1TestSecret)) {
+		t.Fatalf("LoadKey digest mismatch: want sha256 of the resolved secret")
+	}
 }
 
 // TestResponderCredentialCipherSeam locks the D-06 injection at the

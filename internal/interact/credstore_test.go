@@ -100,19 +100,17 @@ func writeFixtureStore(t *testing.T, path string, entries map[string]string) {
 	}
 }
 
-// TestCredStore locks the read path end-to-end over one fixture store
-// carrying every value class: plaintext passthrough verbatim, an enc:v1
-// blob decrypting under the trimmed env secret, an enc:v2:os blob
-// decrypting through the injected stub loader only after its fp24
-// checksum matches, a mismatched-fp24 blob isolating to a per-entry skip,
-// an unknown enc: prefix NEVER passing through as plaintext — and the
-// chain's two accessors (the Bearer-strip and the JWT entry).
-func TestCredStore(t *testing.T) {
+// credStoreFixture builds the four-class fixture store (the trimmed-env
+// seam, the plaintext/v1/v2/v2-mismatch/unknown entries) and returns the
+// reader over it plus the sealing key the stub loader serves.
+func credStoreFixture(t *testing.T) (store *interact.CredentialStore, sealKey []byte) {
+	t.Helper()
+
 	// The trimmed-env seam: the surrounding whitespace proves the trim
 	// end-to-end (the v1 secret resolution order is env-then-machine).
-	t.Setenv("ZCODE_CREDENTIAL_SECRET", "  "+v1TestSecret+"  ")
+	t.Setenv(interact.V1SecretEnvKey, "  "+v1TestSecret+"  ")
 
-	sealKey := randomTestKey(t)
+	sealKey = randomTestKey(t)
 	otherKey := randomTestKey(t)
 
 	storePath := filepath.Join(t.TempDir(), "v2", "credentials.json")
@@ -125,7 +123,17 @@ func TestCredStore(t *testing.T) {
 		"mystery":                  "enc:v3:os:AAAA.BBBB.CCCC",
 	})
 
-	store := interact.NewCredentialStore(storePath, &stubLoader{key: sealKey})
+	return interact.NewCredentialStore(storePath, &stubLoader{key: sealKey}), sealKey
+}
+
+// TestCredStore locks the read path end-to-end over the fixture store
+// carrying every value class: plaintext passthrough verbatim, an enc:v1
+// blob decrypting under the trimmed env secret, an enc:v2:os blob
+// decrypting through the injected stub loader only after its fp24
+// checksum matches, a mismatched-fp24 blob isolating to a per-entry skip,
+// and an unknown enc: prefix NEVER passing through as plaintext.
+func TestCredStore(t *testing.T) {
+	store, _ := credStoreFixture(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cipherTestTimeout)
 	defer cancel()
@@ -169,33 +177,47 @@ func TestCredStore(t *testing.T) {
 	if len(got) != 4 {
 		t.Fatalf("Entries returned %d entries %v, want exactly the 4 handled ones", len(got), got)
 	}
+}
 
-	// LoginToken strips exactly one leading "Bearer " ASCII prefix.
+// TestCredStoreAccessors locks the chain's two credential kinds over the
+// same fixture: LoginToken strips exactly one leading "Bearer " ASCII
+// prefix (an unprefixed value passes unchanged; a missing family answers
+// ok=false) and ZcodeJWT serves the decrypted zcodejwttoken entry.
+func TestCredStoreAccessors(t *testing.T) {
+	store, _ := credStoreFixture(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), cipherTestTimeout)
+	defer cancel()
+
 	tok, ok := store.LoginToken(ctx, "zai")
 	if !ok || tok != fixAccessToken {
 		t.Fatalf("LoginToken(zai) = (%q, %v), want the Bearer-stripped %q", tok, ok, fixAccessToken)
 	}
 
-	// A value without the prefix passes unchanged.
 	tok, ok = store.LoginToken(ctx, "other")
 	if !ok || tok != fixBearerless {
 		t.Fatalf("LoginToken(other) = (%q, %v), want %q unchanged", tok, ok, fixBearerless)
 	}
 
-	// A missing family answers the ok=false posture (never a panic).
 	if tok, ok = store.LoginToken(ctx, "absent"); ok || tok != "" {
 		t.Fatalf("LoginToken(absent) = (%q, %v), want the ok=false posture", tok, ok)
 	}
 
-	// ZcodeJWT serves the decrypted zcodejwttoken entry.
 	if jwt, ok := store.ZcodeJWT(ctx); !ok || jwt != fixJWT {
 		t.Fatalf("ZcodeJWT() = (%q, %v), want (%q, true)", jwt, ok, fixJWT)
 	}
+}
 
-	// Log hygiene (T-5-17 inheritance): the skips' structural lines carry
-	// entry-key names, shapes, and lengths — never a decrypted value nor
-	// key material. The fixture guarantees both skip arms fire on every
-	// read (the fp24 mismatch and the unknown prefix).
+// TestCredStoreLogHygiene is the T-5-17 inheritance lock: the store's
+// skip arms emit structural lines carrying entry-key names, shapes, and
+// lengths — never a decrypted value nor key material. The fixture
+// guarantees both skip arms fire on every read.
+func TestCredStoreLogHygiene(t *testing.T) {
+	store, sealKey := credStoreFixture(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), cipherTestTimeout)
+	defer cancel()
+
 	var buf bytes.Buffer
 
 	prev := slog.Default()
@@ -203,7 +225,7 @@ func TestCredStore(t *testing.T) {
 	defer slog.SetDefault(prev)
 
 	if _, err := store.Entries(ctx); err != nil {
-		t.Fatalf("hygiene re-read: %v", err)
+		t.Fatalf("hygiene read: %v", err)
 	}
 
 	logged := buf.String()

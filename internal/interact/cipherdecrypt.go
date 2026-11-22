@@ -12,8 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/Djarvur/zcode-acp/internal/zcode"
@@ -66,6 +69,10 @@ const (
 	CipherCodeDecryptFailed        = "decrypt-failed"
 )
 
+// cipherCannotConstruct is the shared generic message for the arms where
+// the AES-256-GCM primitive itself cannot be constructed (goconst).
+const cipherCannotConstruct = "credential cipher cannot be constructed"
+
 // secretToolService is the field-verified Secret Service attribute value
 // the login-keyring credential entry is keyed under (a lookup key, never a
 // credential — gosec's hardcoded-credentials shape match is a false hit).
@@ -99,6 +106,10 @@ var (
 	errEmptyCredentialsPath = errors.New("credentials path is empty")
 	errLoaderKeyShape       = errors.New("keyring key is not 32 bytes of base64url")
 	errLoaderLookup         = errors.New("secret-tool lookup failed")
+	// errV1SecretInputs is the enc:v1 loud-validation sentinel: an
+	// unresolvable machine input (platform, home, username) never derives
+	// a silently-empty machine string.
+	errV1SecretInputs = errors.New("enc:v1 fallback machine inputs are unresolved")
 )
 
 // cipherFailure is one decline arm's coded payload: the stable code plus a
@@ -109,11 +120,13 @@ type cipherFailure struct {
 	message string
 }
 
-// KeyLoader loads the 32-byte login-keyring credential key. The production
-// implementation shells the field-verified secret-tool lookup
-// (SecretToolKeyLoader); Phase 6's godbus vault implements the same seam —
-// the interface is the upgrade boundary (D-06 recommend-then-upgrade
-// posture).
+// KeyLoader loads a 32-byte credential-decryption key. Two layouts join
+// the seam (D-01/D-03 — one seam, two layouts): the v2:os keyring loader
+// shells the field-verified secret-tool lookup (SecretToolKeyLoader), and
+// the legacy enc:v1 fallback derives its key from the resolved secret by
+// pure compute (V1FallbackKeyLoader — no exec). A Phase-7 godbus/dbus swap
+// must be a local seam edit — no business logic may bypass the seam (the
+// interface is the upgrade boundary, D-06 recommend-then-upgrade posture).
 type KeyLoader interface {
 	LoadKey(ctx context.Context) ([]byte, error)
 }
@@ -219,13 +232,13 @@ func (s *CredentialDecrypt) decryptOne(ctx context.Context, value string) (strin
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", &cipherFailure{code: CipherCodeDecryptFailed,
-			message: "credential cipher cannot be constructed"}
+			message: cipherCannotConstruct}
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return "", &cipherFailure{code: CipherCodeDecryptFailed,
-			message: "credential cipher cannot be constructed"}
+			message: cipherCannotConstruct}
 	}
 
 	sealed := make([]byte, 0, len(ct)+len(tag))
@@ -419,8 +432,15 @@ func decodeLoaderKey(raw []byte) ([]byte, error) {
 }
 
 // V1SecretEnvKey is the env key the enc:v1 fallback resolves first (the
-// reference's ZCODE_CREDENTIAL_SECRET — the trimmed value wins).
-const V1SecretEnvKey = "ZCODE_CREDENTIAL_SECRET"
+// reference's ZCODE_CREDENTIAL_SECRET — the trimmed value wins) and
+// v1SecretFallbackPrefix the machine-string fallback's prefix (ref
+// credential-store.ts:33-43).
+const (
+	//nolint:gosec // an env KEY name, not a credential value
+	V1SecretEnvKey = "ZCODE_CREDENTIAL_SECRET"
+	//nolint:gosec // the fallback secret's prefix literal, not a credential value
+	v1SecretFallbackPrefix = "zcode-credential-fallback:"
+)
 
 // V1FallbackKeyLoader is the legacy enc:v1 sibling KeyLoader (D-03) joining
 // the SecretToolKeyLoader family behind the same seam — one seam, two
@@ -441,30 +461,107 @@ type V1FallbackKeyLoader struct {
 
 // NewV1FallbackKeyLoader returns the loader over the caller-provided
 // secret inputs. The machine inputs resolve through the provided seams
-// (nil = the OS defaults) and validate loud: an empty platform, home, or
-// username is a sentinel error — never a silently-empty machine string.
-// env == nil consults the process env at LoadKey time (the reference
-// reads process.env at decrypt time).
+// (nil = the OS defaults: runtime.GOOS, os.UserHomeDir, user.Current) and
+// validate loud: an empty platform, home, or username is the sentinel
+// error — never a silently-empty machine string (that would hash the
+// wrong key and fail every GCM open with no cue). env == nil consults the
+// process env at LoadKey time (the reference reads process.env at decrypt
+// time).
 func NewV1FallbackKeyLoader(
 	env map[string]string, platform, home, username func() string,
 ) (*V1FallbackKeyLoader, error) {
-	return &V1FallbackKeyLoader{env: env}, nil // RED skeleton (06-01): GREEN lands the derivation
+	if platform == nil {
+		platform = func() string { return runtime.GOOS }
+	}
+
+	if home == nil {
+		home = func() string {
+			h, _ := os.UserHomeDir()
+
+			return h
+		}
+	}
+
+	if username == nil {
+		username = func() string {
+			u, err := user.Current()
+			if err != nil {
+				return ""
+			}
+
+			return u.Username
+		}
+	}
+
+	loader := &V1FallbackKeyLoader{
+		env:      env,
+		platform: platform(),
+		home:     home(),
+		username: username(),
+	}
+
+	if _, err := ResolveV1CredentialSecret(nil, loader.platform, loader.home, loader.username); err != nil {
+		return nil, err
+	}
+
+	return loader, nil
 }
 
 // ResolveV1CredentialSecret is the pure secret-resolution function (the
 // env-then-machine-string order with trim semantics, exposed for the
-// parity vectors): the trimmed non-empty env value wins; otherwise the
-// machine-bound fallback string. Empty machine inputs fail loud.
+// parity vectors; ref credential-store.ts:33-43): the trimmed non-empty
+// ZCODE_CREDENTIAL_SECRET env value wins; otherwise the machine-bound
+// fallback string `zcode-credential-fallback:<platform>:<home>:<username>`.
+// Empty machine inputs fail loud (the sentinel) — never a silently-empty
+// machine string.
 func ResolveV1CredentialSecret(
 	env map[string]string, platform, home, username string,
 ) (string, error) {
-	return "", nil // RED skeleton (06-01)
+	if platform == "" || home == "" || username == "" {
+		return "", fmt.Errorf("%w: platform/home/username must be non-empty "+
+			"(got %d/%d/%d chars)", errV1SecretInputs, len(platform), len(home), len(username))
+	}
+
+	if v, ok := env[V1SecretEnvKey]; ok {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed, nil
+		}
+	}
+
+	return v1SecretFallbackPrefix + platform + ":" + home + ":" + username, nil
 }
 
-// LoadKey resolves the secret and returns sha256(secret) — the exact
-// 32-byte key the enc:v1 layout encrypts under.
+// LoadKey resolves the secret (env-else-machine-string) and returns
+// sha256(secret) — the exact 32-byte key the enc:v1 layout encrypts
+// under. Pure compute: no exec, no subprocess, no env scrubbing needed.
 func (l *V1FallbackKeyLoader) LoadKey(_ context.Context) ([]byte, error) {
-	return make([]byte, loaderKeyLen), nil // RED skeleton (06-01)
+	secret, err := ResolveV1CredentialSecret(l.envMap(), l.platform, l.home, l.username)
+	if err != nil {
+		return nil, err
+	}
+
+	sum := sha256.Sum256([]byte(secret))
+
+	return sum[:], nil
+}
+
+// envMap resolves the env seam: the injected map when present, else a
+// snapshot of the process env at load time (the reference reads
+// process.env at decrypt time).
+func (l *V1FallbackKeyLoader) envMap() map[string]string {
+	if l.env != nil {
+		return l.env
+	}
+
+	out := make(map[string]string)
+
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			out[k] = v
+		}
+	}
+
+	return out
 }
 
 // ScrubbedEnv builds the loader subprocess env from a parent env via the

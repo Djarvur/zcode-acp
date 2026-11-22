@@ -4,15 +4,12 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/user"
-	"runtime"
 	"strings"
 )
 
@@ -76,13 +73,10 @@ const (
 	bearerPrefix              = "Bearer "
 )
 
-// v1SecretEnvKey is the env key the enc:v1 fallback resolves first and
-// v1SecretFallbackPrefix the machine-string fallback's prefix (ref
-// credential-store.ts:33-43 — the trimmed env wins, else the machine).
-const (
-	v1SecretEnvKey         = "ZCODE_CREDENTIAL_SECRET"
-	v1SecretFallbackPrefix = "zcode-credential-fallback:"
-)
+// storeCodeV1Unavailable is the structural-log code for the arm where the
+// enc:v1 fallback loader could not construct (unresolvable machine inputs)
+// — enc:v1 entries then skip per entry instead of failing the store.
+const storeCodeV1Unavailable = "v1-fallback-unavailable"
 
 // The store reader's coded posture: a missing file is NOT an error (a
 // fresh machine is simply not logged in); an undecodable store answers
@@ -94,10 +88,8 @@ var (
 	ErrStoreUnreadable  = errors.New("credential store is unreadable")
 )
 
-// errV1SecretInputs is the loud-validation sentinel: an unresolvable
-// machine input (home, username) never derives a silently-empty machine
-// string — that would hash the wrong key and fail GCM auth with no cue.
-var errV1SecretInputs = errors.New("enc:v1 fallback machine inputs are unresolved")
+// The enc:v1 loud-validation sentinel (errV1SecretInputs) lives with the
+// loader family in cipherdecrypt.go — one seam, two layouts (D-01/D-03).
 
 // CredentialStore is the D-01/D-03 reader service. Constructed once via
 // NewCredentialStore; Entries is safe for concurrent use (the v2 loader's
@@ -116,12 +108,21 @@ type CredentialStore struct {
 // NewCredentialStore returns the reader over the credentials.json path and
 // the injectable v2 keyring loader (D-01: the seam is the only keyring
 // path; the v2:os arm composes the existing CredentialDecrypt service).
+// The enc:v1 arm joins the SAME seam through the exported sibling loader
+// (D-03); an unconstructable fallback (unresolvable machine inputs) skips
+// enc:v1 entries per entry instead of failing the store.
 func NewCredentialStore(path string, v2 KeyLoader) *CredentialStore {
+	v1, verr := NewV1FallbackKeyLoader(nil, nil, nil, nil)
+	if verr != nil {
+		slog.Warn("interact: credential store enc:v1 fallback unavailable",
+			"code", storeCodeV1Unavailable)
+	}
+
 	return &CredentialStore{
 		path:    path,
 		v2:      v2,
 		decrypt: NewCredentialDecrypt(v2),
-		v1:      newStoreV1Loader(),
+		v1:      v1,
 	}
 }
 
@@ -287,13 +288,13 @@ func openEncV1(key []byte, value string) (string, *cipherFailure) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", &cipherFailure{code: CipherCodeDecryptFailed,
-			message: "credential cipher cannot be constructed"}
+			message: cipherCannotConstruct}
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return "", &cipherFailure{code: CipherCodeDecryptFailed,
-			message: "credential cipher cannot be constructed"}
+			message: cipherCannotConstruct}
 	}
 
 	sealed := make([]byte, 0, len(ct)+len(tag))
@@ -319,58 +320,4 @@ func hasUnhandledEncPrefix(value string) bool {
 	}
 
 	return !strings.HasPrefix(value, EncV1Prefix) && !strings.HasPrefix(value, EncV2OSPrefix)
-}
-
-// storeV1Loader is the store's internal enc:v1 key source (D-03): pure
-// compute — no exec, unlike the v2 keyring read. The secret resolves
-// env-then-machine-string at load time; the key is sha256(secret).
-type storeV1Loader struct{}
-
-// newStoreV1Loader returns the internal fallback key source (never nil —
-// the loud validation lives at load time so a malformed machine never
-// pre-degrades every enc:v1 entry silently).
-func newStoreV1Loader() KeyLoader {
-	return storeV1Loader{}
-}
-
-// LoadKey derives the fallback key: resolve the secret, hash it. The
-// machine inputs validate loud — an unresolvable home or username is the
-// sentinel error, never a silently-empty machine string (that would hash
-// the wrong key and fail every GCM open with no cue).
-func (storeV1Loader) LoadKey(_ context.Context) ([]byte, error) {
-	secret, err := resolveStoreV1Secret()
-	if err != nil {
-		return nil, err
-	}
-
-	sum := sha256.Sum256([]byte(secret))
-
-	return sum[:], nil
-}
-
-// resolveStoreV1Secret resolves the enc:v1 secret (RESEARCH Pattern 1,
-// ref credential-store.ts:33-43): the trimmed ZCODE_CREDENTIAL_SECRET env
-// value wins when set and non-blank; otherwise the machine-bound fallback
-// string over GOOS/home/username.
-func resolveStoreV1Secret() (string, error) {
-	if trimmed := strings.TrimSpace(os.Getenv(v1SecretEnvKey)); trimmed != "" {
-		return trimmed, nil
-	}
-
-	home, herr := os.UserHomeDir()
-	if herr != nil || home == "" {
-		return "", fmt.Errorf("%w: home directory unresolved", errV1SecretInputs)
-	}
-
-	username := ""
-
-	if u, uerr := user.Current(); uerr == nil {
-		username = u.Username
-	}
-
-	if username == "" {
-		return "", fmt.Errorf("%w: username unresolved", errV1SecretInputs)
-	}
-
-	return v1SecretFallbackPrefix + runtime.GOOS + ":" + home + ":" + username, nil
 }
