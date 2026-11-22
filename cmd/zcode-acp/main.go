@@ -110,6 +110,17 @@ func main() {
 	// supervisor's) stays off the protocol stream.
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
+	// WR-03 (07-REVIEW): the flag form carries the key on the process argv —
+	// world-readable via ps / /proc/<pid>/cmdline for the wrapper's whole
+	// lifetime, strictly worse than the owner-only-readable environment the
+	// env fallback uses. One stderr line (never stdout — the protocol
+	// stream); the flag keeps working for compatibility.
+	if *apiKeyFlag != "" {
+		slog.Warn("zcode-acp: --api-key rides the process argv " +
+			"(world-readable via ps and /proc/<pid>/cmdline while the wrapper runs) — " +
+			"prefer the " + envAPIKey + " environment variable")
+	}
+
 	cfg, err := parseConfig(*appServerFlag, *modelFlag, *reasoningFlag, *apiKeyFlag)
 	if err != nil {
 		slog.Error("zcode-acp: invalid configuration", "err", err)

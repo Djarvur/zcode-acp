@@ -40,7 +40,7 @@ Check the build: `./zcode-acp --version` prints `zcode-acp 18.1.9+zacp.0`.
 
 | Flag | Env fallback | Meaning |
 |------|--------------|---------|
-| `--api-key` | `ZCODE_ACP_API_KEY` | z.ai API key for the `authenticate{zai-api-key}` path |
+| `--api-key` | `ZCODE_ACP_API_KEY` | z.ai API key for the `authenticate{zai-api-key}` path — prefer the env var: the flag's value rides the process argv (world-readable via `ps`/`/proc` for the wrapper's lifetime) |
 | `--app-server` | `ZCODE_ACP_APP_SERVER` | path to a ZCode install root (or app-server binary) overriding discovery |
 | `--model` | `ZCODE_ACP_MODEL` | backend model selection as `providerId/modelId` |
 | `--reasoning-level` | `ZCODE_ACP_REASONING_LEVEL` | reasoning level accompanying `--model` |
@@ -54,12 +54,16 @@ frames only.
 ### Authentication: two paths
 
 **API key** — set `ZCODE_ACP_API_KEY=<your-key>` in the environment the
-wrapper runs in (or pass `--api-key`). The value lives in your own
-environment; this project's documentation never instructs exporting or pasting
-key material anywhere else. When no key is configured,
-`authenticate{zai-api-key}` answers an honest coded error naming
-`ZCODE_ACP_API_KEY` — the wrapper never falls back to reading the desktop's
-own config store.
+wrapper runs in; the env var is the recommended form (a process environment
+is owner-only readable). The `--api-key` flag keeps working for
+compatibility, but its value rides the process argv, which any local user on
+the host can read (`ps aux`, `/proc/<pid>/cmdline`) for the wrapper's whole
+lifetime — the wrapper logs a one-line warning to stderr when the flag form
+is used. The value lives in your own environment; this project's
+documentation never instructs exporting or pasting key material anywhere
+else. When no key is configured, `authenticate{zai-api-key}` answers an
+honest coded error naming `ZCODE_ACP_API_KEY` — the wrapper never falls
+back to reading the desktop's own config store.
 
 **Coding plan** — the desktop login IS the credential: nothing to export, no
 env var. Requirements: the ZCode desktop installed and logged in to the
