@@ -184,3 +184,9 @@ The real coding-plan cycle (AUTH-02/AUTH-03 field evidence, D-12) was NOT execut
 ---
 *Phase: 06-oauth-coding-plan-path-model-picker*
 *Completed: 2026-11-22*
+
+## Self-Check: PASSED
+
+- Files verified on disk: internal/acpfront/codingplan_cycle_test.go, test/realdesktop/codingplan_test.go, experiments/README.md, experiments/scan-secrets.sh (all committed)
+- Commits verified as ancestors of HEAD: aa7988e, 71a0029, 626180d, 1b0fffd, 6374b12
+- Gates at write time: mise run ci green, mise run lint 0 issues, experiments/scan-secrets.sh exit 0, TestCodingPlanFullCycleFake green under -race, tagged vet/build green, the guarded test SKIPs without the env var
