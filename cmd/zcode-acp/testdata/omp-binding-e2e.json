@@ -1,0 +1,51 @@
+{
+  "name": "omp-binding-e2e",
+  "on_request": [
+    {
+      "method": "session/create",
+      "reply": {
+        "result": {
+          "session": {"sessionId": "sess_fix1", "protocol": {"name": "ZCode Protocol", "version": 1}},
+          "settings": {
+            "model": {
+              "current": {"providerId": "zai-api", "modelId": "GLM-5.3"},
+              "available": [
+                {
+                  "ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"},
+                  "label": "GLM-5.3-Flash",
+                  "description": "The flagship reasoning model",
+                  "reasoning": {"levels": [{"value": "high", "label": "High"}, {"value": "low", "label": "Low"}], "defaultLevel": "high"}
+                },
+                {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"}
+              ]
+            }
+          }
+        }
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {"result": {"sessionId": "sess_fix1", "eventSeq": 0, "events": []}}
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {}}
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

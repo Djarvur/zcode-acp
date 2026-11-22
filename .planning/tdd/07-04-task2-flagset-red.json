@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestOmpFlagSet' ./cmd/zcode-acp/",
+  "exitCode": 0,
+  "output": "ok  \tgithub.com/Djarvur/zcode-acp/cmd/zcode-acp\t1.015s",
+  "targetTest": "TestOmpFlagSet",
+  "targetFile": "cmd/zcode-acp/main_test.go",
+  "expected": "The plan's RED-first instruction anticipated this exact branch: `the parse skeleton exists from task 1's minimal dispatch; where a case needs a helper that does not exist yet, extend the skeleton compile-first so assertions fail on values, never on build errors`. Task 1's ompParse already ships the full tolerance loop (unknown flags counted, positionals skipped, plugin-dir/session-dir registered) and the config arms compose into parseConfig — the root arm's own validation machinery carrying errModelShape/errLevelWithoutModel and the env fallbacks — so every matrix arm is already true at RED time",
+  "actual": "All eight matrix arms passed (exit 0): unknown flags tolerated-and-counted with the following flag still parsed; the value-less unknown tolerated; the bare acp positional ignored; plugin-dir/session-dir registered accepted-and-ignored; the version answer in any position; the bad --model shape answering the errModelShape wrap naming the got value; the level-without-model sentinel; and the env fallback composing through the omp parse into parseConfig",
+  "semanticAssessment": "CONFIRM-UNREPRODUCED (unexpected_green) - recorded honestly, never manufactured into a RED (the 07-01 task-1 precedent): the re-tokenizing parse skeleton task 1 landed already satisfies the matrix, and the genuinely new task-2 surface is the launch wiring, whose RED is carried by TestOmpLaunchBinding (RED_EVIDENCE_OK target_test_failed). The matrix stays as the contract lock for the tolerance/validation arms; the classifier's expected verdict for this honest record is INVALID_RED (unexpected_green), which the plan's action text explicitly authorized"
+}
