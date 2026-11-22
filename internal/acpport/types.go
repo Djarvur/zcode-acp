@@ -63,6 +63,17 @@ type Handlers interface {
 	// the ordered contract lives in the front.
 	CloseSession(ctx context.Context, sessionID string) error
 
+	// DeleteSession answers the dialect's session/delete (SESS-02, plan
+	// 07-03): a REGISTERED id runs the full SESS-01 teardown (D-01 —
+	// child-side cleanup follows session/close semantics where applicable;
+	// the runtime owns the real deletion), and an UNKNOWN or
+	// already-closed id answers success immediately — the spec's
+	// silent-success arm, with nothing sent on the back leg ("session/delete"
+	// occurs ×0 in the app-server bundle: there is nothing to delete). The
+	// method stays UNADVERTISED (plan Task 3's honesty lock): the graceful
+	// arm serves spec-loose clients only.
+	DeleteSession(ctx context.Context, sessionID string) error
+
 	// Authenticate runs one advertised auth method (AUTH-01, plan 05-07):
 	// the front validates the method id against the advertised set and
 	// runs the honest chain (record key → push snapshot → refresh registry

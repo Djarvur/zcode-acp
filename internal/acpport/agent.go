@@ -17,11 +17,13 @@ import (
 // agentAdapter implements the SDK's 12-method acp.Agent surface over a
 // Handlers impl (RESEARCH Pattern 1, the D-01 seam): the advertised
 // methods, the SESS-01 lifecycle pair (ResumeSession/CloseSession —
-// plain requests per the SDK's dispatcher, no capability flag), and the
+// plain requests per the SDK's dispatcher, no capability flag), the
 // config-options mutation (SetSessionConfigOption — plan 06-06, the
-// sessionCapabilities.options advertisement's serviced method) translate
-// the neutral vocabulary, the four remaining unadvertised stable methods
-// answer acp.NewMethodNotFound (-32601, Pitfall 6) — matching the SDK's
+// sessionCapabilities.options advertisement's serviced method), and the
+// SESS-02 delete arm (plan 07-03 — registered ids run the full teardown,
+// unknown ids answer the silent-success {}) translate the neutral
+// vocabulary, the three remaining unadvertised stable methods answer
+// acp.NewMethodNotFound (-32601, Pitfall 6) — matching the SDK's
 // own optional-interface behavior — and authenticate (advertised per
 // D-02) delegates through Handlers: the front's honest chain (AUTH-01,
 // plan 05-07) is the only success path, and its errors code through
@@ -414,12 +416,23 @@ func (a *agentAdapter) CloseSession(
 	return acp.CloseSessionResponse{}, nil
 }
 
-// DeleteSession is unadvertised in Phase 4 — clean -32601 default.
+// DeleteSession delegates to Handlers (SESS-02, plan 07-03 — the -32601
+// unadvertised default replaced, the CloseSession delegation shape): a
+// registered id runs the front's full SESS-01 teardown and every unknown /
+// already-closed id answers the spec's silent-success {} without touching
+// the back leg (the front owns both arms — D-01). Success answers the
+// empty result; front errors code via wireError, never raw. The method
+// stays UNADVERTISED (the plan Task-3 honesty lock): the graceful arm
+// serves spec-loose clients only.
 func (a *agentAdapter) DeleteSession(
 	ctx context.Context,
 	params acp.DeleteSessionRequest,
 ) (acp.DeleteSessionResponse, error) {
-	return acp.DeleteSessionResponse{}, unadvertised(acp.AgentMethodSessionDelete)
+	if err := a.h.DeleteSession(ctx, string(params.SessionId)); err != nil {
+		return acp.DeleteSessionResponse{}, wireError(err)
+	}
+
+	return acp.DeleteSessionResponse{}, nil
 }
 
 // ListSessions is unadvertised in Phase 4 — clean -32601 default.

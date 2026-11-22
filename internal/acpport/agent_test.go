@@ -388,7 +388,7 @@ func assertHonestFrame(t *testing.T, resp acp.InitializeResponse) {
 	}
 }
 
-// TestUnadvertisedMethodsAnswerMethodNotFound drives the four unadvertised
+// TestUnadvertisedMethodsAnswerMethodNotFound drives the three unadvertised
 // stable methods and asserts each answers the clean -32601 default naming
 // the method (Pitfall 6) — and that the Handlers fake was never touched
 // (the defaults are adapter-side). Authenticate is NOT in this table: it is
@@ -399,7 +399,9 @@ func assertHonestFrame(t *testing.T, resp acp.InitializeResponse) {
 // delegates (TestLifecycleDelegation locks the delegation contract).
 // SessionSetConfigOption left the table with plan 06-06: the config-options
 // mutation became a real delegate (TestSetConfigOptionDelegation locks the
-// delegation contract).
+// delegation contract). SessionDelete left the table with plan 07-03: the
+// SESS-02 graceful arm became a real delegate (TestDeleteSessionDelegation
+// locks the delegation contract).
 func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 	h := newScriptedHandlers()
 	adapter := acpport.NewAgent(h)
@@ -411,11 +413,6 @@ func TestUnadvertisedMethodsAnswerMethodNotFound(t *testing.T) {
 	}{
 		{acp.AgentMethodLogout, func() error {
 			_, err := adapter.Logout(ctx, acp.LogoutRequest{})
-
-			return err
-		}},
-		{acp.AgentMethodSessionDelete, func() error {
-			_, err := adapter.DeleteSession(ctx, acp.DeleteSessionRequest{})
 
 			return err
 		}},
@@ -563,6 +560,54 @@ func TestLifecycleDelegationCoded(t *testing.T) {
 	})
 }
 
+// TestDeleteSessionDelegation locks the SESS-02 delegation contract (plan
+// 07-03): the adapter translates the wire request onto the neutral Handlers
+// vocabulary — the session id rides verbatim, the success response stays
+// the SDK zero value (the dialect's empty result {}) — and a front seam
+// error surfaces coded via wireError with its own code and message, data
+// nil (never raw, never the -32601 stub default the method answered before
+// plan 07-03). The unknown-id silent-success arm lives in the FRONT (the
+// composed-tier row in sesscompat_test.go locks it); the adapter always
+// delegates.
+func TestDeleteSessionDelegation(t *testing.T) {
+	t.Run("delete delegates the session id", func(t *testing.T) {
+		h := newScriptedHandlers()
+		adapter := acpport.NewAgent(h)
+
+		resp, err := adapter.DeleteSession(context.Background(), acp.DeleteSessionRequest{
+			SessionId: acp.SessionId(testSessionID),
+		})
+		if err != nil {
+			t.Fatalf("DeleteSession: %v", err)
+		}
+
+		if len(h.deleteCalls) != 1 || h.deleteCalls[0] != testSessionID {
+			t.Fatalf("Handlers.DeleteSession calls = %v, want exactly [%s]", h.deleteCalls, testSessionID)
+		}
+
+		marshaled, marshalErr := json.Marshal(resp)
+		if marshalErr != nil {
+			t.Fatalf("marshal delete response: %v", marshalErr)
+		}
+
+		if string(marshaled) != "{}" {
+			t.Fatalf("delete response = %s, want the empty object (the dialect's empty result)", marshaled)
+		}
+	})
+
+	t.Run("delete seam error surfaces coded", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.mu.Lock()
+		h.deleteErr = acpport.NewInternal("backend refused the teardown")
+		h.mu.Unlock()
+
+		_, err := acpport.NewAgent(h).DeleteSession(context.Background(), acp.DeleteSessionRequest{
+			SessionId: acp.SessionId(testSessionID),
+		})
+		assertCodedInternal(t, err, "backend refused the teardown")
+	})
+}
+
 // assertCodedInternal asserts one coded -32603 RequestError whose message
 // carries the front's own text (wireError keeps seam messages verbatim,
 // never the wrapped transport noise).
@@ -703,7 +748,7 @@ func jsonRPCErrorFrame(t *testing.T, raw, method string) *struct {
 }
 
 // TestUnadvertisedStableMethodsAnswerNotFound (plan 04-03 lock) drives the
-// four unadvertised stable methods through a REAL agent-side connection
+// three unadvertised stable methods through a REAL agent-side connection
 // with raw JSON-RPC frames: each must answer the clean -32601 default
 // naming the method on the actual wire (Pitfall 6 — capability omission
 // stops legitimate clients, but the dispatcher still routes), and the
@@ -714,6 +759,9 @@ func jsonRPCErrorFrame(t *testing.T, raw, method string) *struct {
 // delegates; TestLifecycleDelegationWire locks the wire shape), and
 // SessionSetConfigOption left it with plan 06-06 (the config-options
 // delegate; TestSetConfigOptionDelegation locks the delegation contract).
+// SessionDelete left it with plan 07-03 (the SESS-02 graceful delegate;
+// TestDeleteSessionDelegation locks the adapter contract, the composed-tier
+// sesscompat row locks the wire's empty-result frame).
 func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
 	h := newScriptedHandlers()
 
@@ -724,7 +772,6 @@ func TestUnadvertisedStableMethodsAnswerNotFound(t *testing.T) {
 		params string
 	}{
 		{acp.AgentMethodLogout, "{}"},
-		{acp.AgentMethodSessionDelete, "{}"},
 		{acp.AgentMethodSessionList, "{}"},
 		{acp.AgentMethodSessionSetMode, "{}"},
 	}
@@ -1870,6 +1917,7 @@ type scriptedHandlers struct {
 	resumeID          string
 	resumeErr         error
 	closeErr          error
+	deleteErr         error
 	authErr           error
 	setConfigErr      error
 	setConfigOptions  []acpport.ConfigOptionDef
@@ -1883,6 +1931,7 @@ type scriptedHandlers struct {
 	resumeCalls     []string
 	resumeCwdCalls  []string
 	closeCalls      []string
+	deleteCalls     []string
 	authCalls       []string
 	setConfigCalls  []setConfigCall
 }
@@ -1996,6 +2045,18 @@ func (s *scriptedHandlers) CloseSession(ctx context.Context, sessionID string) e
 	return s.closeErr
 }
 
+// DeleteSession records the session id and replays the canned teardown
+// outcome (SESS-02, plan 07-03 — the adapter delegation's counterparty;
+// the unknown-id silent-success arm lives in the front).
+func (s *scriptedHandlers) DeleteSession(ctx context.Context, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.deleteCalls = append(s.deleteCalls, sessionID)
+
+	return s.deleteErr
+}
+
 // Authenticate records the method id and replays the canned auth outcome
 // (AUTH-01, plan 05-07 — the adapter delegates; the honest chain lives in
 // the front, this fake is its scripted counterparty).
@@ -2032,5 +2093,5 @@ func (s *scriptedHandlers) totalCalls() int {
 	defer s.mu.Unlock()
 
 	return s.initCalls + len(s.newSessionCalls) + len(s.promptCalls) + len(s.cancelCalls) +
-		len(s.resumeCalls) + len(s.closeCalls) + len(s.authCalls) + len(s.setConfigCalls)
+		len(s.resumeCalls) + len(s.closeCalls) + len(s.deleteCalls) + len(s.authCalls) + len(s.setConfigCalls)
 }

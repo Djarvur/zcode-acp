@@ -575,6 +575,28 @@ func (f *Front) SetSessionConfigOption(
 	return BuildConfigOptions(cs), nil
 }
 
+// DeleteSession answers the dialect's session/delete (SESS-02, plan 07-03,
+// D-01): a REGISTERED id delegates to the SESS-01 teardown (CloseSession —
+// cancel-drain → backend close → registry release → observer close → map
+// drops, the 07-01 contract; the reply on success is nil and the teardown's
+// coded errors surface verbatim), and an UNKNOWN or already-closed id
+// answers success IMMEDIATELY — the spec's silent-success arm — without any
+// backend call (the runtime owns real deletion; there is nothing on the
+// back leg to delete: "session/delete" occurs ×0 in the app-server bundle).
+// The method stays unadvertised (the plan Task-3 honesty lock): the graceful
+// arm serves spec-loose clients only — Orca gates the call client-side and
+// must never start calling it.
+func (f *Front) DeleteSession(ctx context.Context, sessionID string) error {
+	if _, err := f.registry.Get(sessionID); err != nil {
+		//nolint:nilerr // the spec's silent-success arm BY CONTRACT (D-01): an
+		// unknown/already-closed id answers the graceful success — the registry
+		// miss IS the arm's trigger, not an error to surface.
+		return nil
+	}
+
+	return f.CloseSession(ctx, sessionID)
+}
+
 // teardownAfterPickerRefusal runs the WR-01 full SESS-01 teardown after a
 // refused picker setModel on an ESTABLISHED session (the wire-only orphan
 // close left the front session registered against a dead mutation target —
