@@ -420,18 +420,18 @@ zcode-acp omp --version                                               # the prob
 | A4 | The exact release-stamp form for ≥18.1.9 (bare `18.1.9` vs `18.1.9+build`) | Pattern 5 / Pitfall 2 | Any semver ≥ 18.1.9 satisfies the probe; the form is cosmetic |
 | A5 | `session/close` advertisement (`sessionCapabilities.close: {}`) is safe for spec-conformant clients | Pattern 3 / Pitfall 4 | It is an optional advertisement of implemented functionality; worst case a client calls close more often — implemented path |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **The settings-store persistence path for `agentCmdOverrides`** (known-unknown inherited from the dialect doc)
    - What we know: the settings key and shape are source-verified; the persistence location (Electron storage/orcad) is not; configuration happens via the Settings UI.
    - What's unclear: whether the recipe can name a file for headless provisioning.
-   - Recommendation: recipe documents the Settings-UI path (QA-03 confirms live); keep the known-unknown labeled in DOCS-02.
+   - Resolution (implemented): the recipe documents the Settings-UI path and carries the known-unknown label — 07-08 (DOCS-02); live confirmation at the QA-03 gate (07-09 T3 human-check).
 2. **What id shape Orca actually passes as `--model`** (A1)
-   - Recommendation: QA-03's checklist includes observing the wrapper's launch log; the wrapper parses provider/model and fails honestly on other shapes.
+   - Resolution (implemented): the wrapper binds `--model` by parsing provider/model and fails honestly on other shapes — 07-04 (launch binding reuse); observing the wrapper's launch log is a 07-09 T3 checklist observation item (COVERAGE flagged row 8, verification: backstop).
 3. **Orca picker behavior with configOptions but no `models` field** (A3)
-   - Recommendation: QA-03 observes; the `/model` prompt path is implemented regardless (belt and braces per D-03).
+   - Resolution (implemented): observed at the QA-03 gate, never assumed — 07-09 T3 observation item (COVERAGE flagged row 8); the `/model` prompt path is implemented regardless — 07-05 (belt and braces per D-03).
 4. **Whether the release flow (goreleaser config) lands in this phase** — mise.toml and README both defer it to "the Phase 7 release flow", but CONTEXT's boundary names only the version floor and recipe
-   - Recommendation: planner scopes the minimum: a version stamp satisfying the probe (build-time `-ldflags`), with full goreleaser wiring only if explicitly planned.
+   - Resolution (implemented): planner scoped the minimum — the static floor stamp `18.1.9+zacp.0` with the `-ldflags` override seam for a future release flow — 07-04 (version stamp task); full goreleaser wiring is NOT planned in this phase (CONTEXT's boundary names only the version floor and recipe).
 
 ## Environment Availability
 
