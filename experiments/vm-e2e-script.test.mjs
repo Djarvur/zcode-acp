@@ -98,7 +98,7 @@ test('live stripped-PATH arm surfaces the binary-missing sentinel (guarded)', { 
     `the live stripped-PATH arm did not surface the binary-missing sentinel verbatim; stage output:\n${out.slice(0, 2000)}`,
   );
   assert.ok(
-    /PASS no-keyring/.test(out),
+    /PASS nokeyring-binary-missing-verbatim/.test(out),
     `the no-keyring stage did not PASS its binary-missing check; stage output:\n${out.slice(0, 2000)}`,
   );
   assert.strictEqual(res.status, 0, `stage exit ${res.status}; output:\n${out.slice(0, 2000)}`);

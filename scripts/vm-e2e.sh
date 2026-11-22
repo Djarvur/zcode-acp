@@ -481,11 +481,131 @@ stage_run() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage: no-keyring — the four coded sentinels (task 2 lands this stage)
+# Stage: no-keyring — the four coded sentinels asserted verbatim
+#
+# The client-facing no-keyring contract is the four coded sentinels of
+# internal/interact/keyringprobe.go:44-60 (AUTH-04). The script carries them
+# character-for-character and classifies the wrapper's runtime output against
+# them with grep -F fixed strings — never a paraphrase. The first arm runs
+# the coding-plan authenticate with secret-tool stripped from the CHILD's
+# PATH (the stripped dir is built inside the self-invoked arm; the caller's
+# environment is never mutated) — that arm is deterministic (the probe's
+# LookPath gate answers binary-missing before any subprocess) and provable on
+# ANY machine, clean VM included. The remaining three sentences sit in the
+# same table so a VM run classifies whichever arm its environment produces.
 # ---------------------------------------------------------------------------
 
+SENTINEL_BINARY_MISSING='keyring probe: secret-tool not found (install libsecret-tools on Ubuntu: sudo apt install libsecret-tools)'
+SENTINEL_NO_DESKTOP_SESSION='keyring probe: no desktop session available (the keyring bus cannot autolaunch headless — run inside your desktop session)'
+SENTINEL_NO_ENTRY='keyring probe: no ZCode desktop login found in the keyring (log in via the ZCode desktop first)'
+SENTINEL_LOOKUP_TIMEOUT='keyring probe: keyring lookup did not answer within its bound'
+
+classify_sentinel() { # classify_sentinel <line> — echoes the matched arm name;
+	#                     "ambiguous" for >1 match, "" for none
+	local line=$1 matched=0 name=""
+	if grep -Fq "$SENTINEL_BINARY_MISSING" <<< "$line"; then
+		name=binary-missing
+		matched=$((matched + 1))
+	fi
+	if grep -Fq "$SENTINEL_NO_DESKTOP_SESSION" <<< "$line"; then
+		name=no-desktop-session
+		matched=$((matched + 1))
+	fi
+	if grep -Fq "$SENTINEL_NO_ENTRY" <<< "$line"; then
+		name=no-entry
+		matched=$((matched + 1))
+	fi
+	if grep -Fq "$SENTINEL_LOOKUP_TIMEOUT" <<< "$line"; then
+		name=timeout
+		matched=$((matched + 1))
+	fi
+	if [ "$matched" -eq 1 ]; then
+		printf '%s' "$name"
+	fi
+}
+
 stage_no_keyring() {
-	check "no-keyring-stage" skip "stage not scripted yet (07-07 task 2: the four coded keyring sentinels asserted verbatim)"
+	if [ -z "$BINARY" ] || [ ! -x "$BINARY" ]; then
+		check "binary-present" fail "no executable binary — pass --binary PATH or set ZCODE_ACP_BIN (build-or-fetch off the VM; see the header)"
+		return 0
+	fi
+	check "binary-present" pass "$BINARY"
+
+	# The bounded attempt (T-07-21): timeout(1) wraps the whole self-invoked
+	# arm — belt-and-braces over the probe's own 5s KeyringProbeTimeout; a
+	# misclassified attempt can never hang the stage.
+	local arm_rc=0 arm_out="" arm_err reply="" arm arm_err_tail
+	arm_err=$(mktemp "${TMPDIR:-/tmp}/vm-e2e-arm.XXXXXX")
+	set +e
+	arm_out=$(timeout "$TIMEOUT_ARM" bash "$SELF" --stage nokeyring-arm --internal-arm --binary "$BINARY" 2>"$arm_err")
+	arm_rc=$?
+	set -e
+
+	if [ "$arm_rc" -eq 124 ]; then
+		check "nokeyring-attempt-bounded" fail "the attempt overran ${TIMEOUT_ARM}s (timeout(1) fired) — a hang class"
+		rm -f "$arm_err"
+		return 0
+	fi
+	check "nokeyring-attempt-bounded" pass "completed within the ${TIMEOUT_ARM}s bound"
+
+	arm_err_tail=$(tail -3 "$arm_err" 2>/dev/null | tr '\n' ' ' || true)
+	rm -f "$arm_err"
+
+	case "$arm_out" in
+	*"ARM-REPLY "*)
+		reply=$(printf '%s\n' "$arm_out" | sed -n 's/^ARM-REPLY //p' | head -1)
+		;;
+	*"ARM-EOF"*)
+		check "nokeyring-coding-plan-error" fail \
+			"the wrapper exited before the authenticate reply (diagnostics: ${arm_err_tail:-<none>})"
+		return 0
+		;;
+	*)
+		# ARM-TIMEOUT or no tagged line: the attempt answered nothing in bounds.
+		check "nokeyring-coding-plan-error" fail \
+			"the authenticate attempt answered nothing within the inner bound (a hang class; diagnostics: ${arm_err_tail:-<none>})"
+		return 0
+		;;
+	esac
+
+	# The reply must be an ERROR — a coding-plan authenticate success on a
+	# machine whose keyring binary cannot even be found is itself a failure.
+	case "$reply" in
+	*'"error"'*) ;;
+	*)
+		check "nokeyring-coding-plan-error" fail \
+			"the coding-plan authenticate SUCCEEDED with secret-tool stripped from PATH — a success with no keyring is itself a check failure: ${reply:0:200}"
+		return 0
+		;;
+	esac
+	check "nokeyring-coding-plan-error" pass "the authenticate attempt errored cleanly (bounded, no hang, no crash)"
+
+	# The verbatim binary-missing assert: the stripped-PATH arm is
+	# deterministic — the probe's LookPath gate answers binary-missing before
+	# any subprocess (D-02: the cheapest honest verdict).
+	if grep -Fq "$SENTINEL_BINARY_MISSING" <<< "$reply"; then
+		check "nokeyring-binary-missing-verbatim" pass "the stripped-PATH arm surfaces the exact coded sentence: $SENTINEL_BINARY_MISSING"
+	else
+		check "nokeyring-binary-missing-verbatim" fail \
+			"the stripped-PATH arm did not surface the binary-missing sentinel verbatim; captured reply: ${reply:0:300}"
+	fi
+
+	# Exactly one table sentinel observed, classified verbatim (a VM whose
+	# environment produces a different arm — no desktop session, no entry,
+	# timeout — classifies through the same table).
+	arm=$(classify_sentinel "$reply")
+	case "$arm" in
+	binary-missing | no-desktop-session | no-entry | timeout)
+		check "nokeyring-sentinel-table-exactly-one" pass "exactly one table sentinel matched: $arm"
+		;;
+	ambiguous)
+		check "nokeyring-sentinel-table-exactly-one" fail "multiple sentinels matched one reply (the classification must be unambiguous): ${reply:0:300}"
+		;;
+	*)
+		check "nokeyring-sentinel-table-exactly-one" fail \
+			"no table sentinel matched the reply — the wrapper answered something outside the coded contract: ${reply:0:300}"
+		;;
+	esac
 }
 
 # ---------------------------------------------------------------------------
