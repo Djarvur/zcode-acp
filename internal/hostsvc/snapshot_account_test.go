@@ -1,14 +1,17 @@
 package hostsvc_test
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
 	"github.com/Djarvur/zcode-acp/internal/supervisor"
+	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
 // AUTH-02 execution-tier contract locks (plan 06-03, RESEARCH Pattern 2):
@@ -295,4 +298,253 @@ func keysOfStr(m map[string][]string) []string {
 	}
 
 	return out
+}
+
+// accountFixtureTableNoZhipu is a builtin table with ZERO zhipu-account
+// rules (only the apiKey personal-layer row and another type) — the
+// misconfiguration arm: an account push with nothing to entitle.
+const accountFixtureTableNoZhipu = `{
+  "revision": 44,
+  "config": {
+    "providerConfigRules": {
+      "providerRules": [
+        {
+          "providerId": "zai-api",
+          "providerName": "Z.AI API Key",
+          "config": {
+            "builtinModelIds": ["GLM-5.3"],
+            "access": {"type": "apiKey"}
+          }
+        },
+        {
+          "providerId": "account:trial-access",
+          "providerName": "Trial Access",
+          "config": {
+            "builtinModelIds": ["M-1"],
+            "access": {"type": "trial"}
+          }
+        }
+      ]
+    }
+  }
+}`
+
+// accountTableUndecodable is not JSON — the table tampering arm.
+const accountTableUndecodable = `{"revision":44,"config":{"providerConfigRules"`
+
+// accountTableMissingRules carries the config envelope but no providerRules
+// key — the malformed-shape arm.
+const accountTableMissingRules = `{"revision":44,"config":{"providerConfigRules":{"templateRules":[]}}}`
+
+// accountTableRuleNoAccess is the fixture table with the first zhipu rule's
+// access block stripped — the per-rule malformed arm (a rule the wrapper
+// cannot classify).
+const accountTableRuleNoAccess = `{
+  "revision": 44,
+  "config": {
+    "providerConfigRules": {
+      "providerRules": [
+        {
+          "providerId": "account:zai-individual-coding-plan",
+          "providerName": "Z.AI Individual Coding Plan",
+          "config": {
+            "group": "zai-family",
+            "builtinModelIds": ["GLM-5.3"]
+          }
+        },
+        {
+          "providerId": "account:bigmodel-individual-coding-plan",
+          "providerName": "BigModel Individual Coding Plan",
+          "config": {
+            "builtinModelIds": ["GLM-5.2"],
+            "access": {"type": "zhipu-account", "accountType": "bigmodel"}
+          }
+        }
+      ]
+    }
+  }
+}`
+
+// accountTableRuleNoModels is the fixture table with the first zhipu rule's
+// model list stripped — the same coded class (a rule that cannot be mirrored).
+const accountTableRuleNoModels = `{
+  "revision": 44,
+  "config": {
+    "providerConfigRules": {
+      "providerRules": [
+        {
+          "providerId": "account:zai-individual-coding-plan",
+          "providerName": "Z.AI Individual Coding Plan",
+          "config": {
+            "access": {"type": "zhipu-account", "accountType": "zai"}
+          }
+        }
+      ]
+    }
+  }
+}`
+
+// writeBuiltinTable writes one raw table body to a temp install's builtin
+// file (the malformed arms need raw control over the bytes).
+func writeBuiltinTable(t *testing.T, body string) supervisor.Install {
+	t.Helper()
+
+	root := t.TempDir()
+	builtin := filepath.Join(root, "zcode-builtin.json")
+
+	if err := os.WriteFile(builtin, []byte(body), 0o600); err != nil {
+		t.Fatalf("write builtin fixture: %v", err)
+	}
+
+	return supervisor.Install{
+		Root:        root,
+		Binary:      filepath.Join(root, "zcode"),
+		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		BuiltinFile: builtin,
+		Layout:      "explicit",
+	}
+}
+
+// allEntitled is the all-pass entitlement gate.
+func allEntitled(string) bool { return true }
+
+// assertNoPartialSnapshot locks the coded-error arm's shape: the zero
+// Snapshot returns nothing pushable — never a partial overlay.
+func assertNoPartialSnapshot(t *testing.T, snap hostsvc.Snapshot, err error) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("BuildAccount answered success (params %v) — want the coded build error", snap.Params)
+	}
+
+	if snap.Params != nil {
+		t.Fatalf("error arm returned a non-nil Params map %v — never a partial push", snap.Params)
+	}
+}
+
+// TestAccountSnapshotGateOmission locks the gate's omission-only discipline
+// (D-08/T-06-09): a gate rejecting the bigmodel family omits EXACTLY that
+// family from providers AND states while the zai entry stays intact — the
+// gate may only omit, never edit an entry.
+func TestAccountSnapshotGateOmission(t *testing.T) {
+	inst := accountFixtureInstall(t)
+
+	fixed := "account-bridge:gate-fix1"
+	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return fixed }))
+
+	snap, err := b.BuildAccount(inst, func(family string) bool { return family == "zai" })
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	got := decodeEnvelope(t, snap)
+
+	var providers map[string]any
+	if err := json.Unmarshal(got["providers"], &providers); err != nil {
+		t.Fatalf("providers does not decode: %v (%s)", err, got["providers"])
+	}
+
+	if len(providers) != 1 {
+		t.Fatalf("providers keys = %v, want exactly [account:zai-individual-coding-plan] "+
+			"(the gate-rejected family must be omitted entirely)", keysOfAny(providers))
+	}
+
+	entry, ok := providers["account:zai-individual-coding-plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers[account:zai-individual-coding-plan] missing: %v", providers)
+	}
+
+	assertModelIDsVerbatim(t, "providers[account:zai-individual-coding-plan]",
+		entry["builtinModelIds"], wantZhipuProviders["account:zai-individual-coding-plan"])
+
+	var states map[string]any
+	if err := json.Unmarshal(got["states"], &states); err != nil {
+		t.Fatalf("states does not decode: %v (%s)", err, got["states"])
+	}
+
+	if len(states) != 1 {
+		t.Fatalf("states keys = %v, want exactly [account:zai-individual-coding-plan] "+
+			"(omission covers providers AND states)", keysOfAny(states))
+	}
+
+	if _, ok := states["account:zai-individual-coding-plan"]; !ok {
+		t.Fatal("states[account:zai-individual-coding-plan] missing — the entitled family must stay intact")
+	}
+}
+
+// TestAccountSnapshotNoRules locks the misconfiguration arm (AUTH-02 empty
+// probe, resolved explicit): a builtin table with ZERO zhipu-account rules
+// answers a coded error NAMING the check — an account push with nothing to
+// entitle is a misconfiguration, never an empty overlay silently pushed on
+// the coding-plan path (that would push the api-key shape onto the
+// coding-plan path and unentitle every account model).
+func TestAccountSnapshotNoRules(t *testing.T) {
+	inst := writeBuiltinTable(t, accountFixtureTableNoZhipu)
+
+	b := hostsvc.NewSnapshotBuilder(nil)
+
+	snap, err := b.BuildAccount(inst, allEntitled)
+	assertNoPartialSnapshot(t, snap, err)
+
+	if !strings.Contains(err.Error(), "zhipu-account") {
+		t.Fatalf("error %q does not name the zhipu-account check", err)
+	}
+}
+
+// TestAccountSnapshotMalformedTable locks the tampering arm: undecodable
+// JSON, a missing providerRules key, a rule missing its access block (and
+// the same coded class for a rule missing its model list) each answer the
+// coded build error — never a partial push, never a panic.
+func TestAccountSnapshotMalformedTable(t *testing.T) {
+	arms := map[string]string{
+		"undecodable JSON":              accountTableUndecodable,
+		"missing providerRules key":     accountTableMissingRules,
+		"rule missing its access block": accountTableRuleNoAccess,
+		"rule missing its model list":   accountTableRuleNoModels,
+	}
+
+	for name, table := range arms {
+		t.Run(name, func(t *testing.T) {
+			inst := writeBuiltinTable(t, table)
+
+			b := hostsvc.NewSnapshotBuilder(nil)
+
+			snap, err := b.BuildAccount(inst, allEntitled)
+			assertNoPartialSnapshot(t, snap, err)
+		})
+	}
+}
+
+// TestPushEnvelopeCompat locks the 06-05 consumer contract: BuildAccount's
+// Snapshot feeds the EXISTING PushEnvelope unchanged — the params map
+// contract the fake-tier corpus in 06-05 consumes is exactly this shape.
+func TestPushEnvelopeCompat(t *testing.T) {
+	inst := accountFixtureInstall(t)
+
+	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return "account-bridge:compat-fix1" }))
+
+	snap, err := b.BuildAccount(inst, allEntitled)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	conn, _, _ := newPeerConn(t, map[string]peerRule{
+		zcode.MethodProviderUpdateAccountConfig: peerAckRule(),
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	ack, err := hostsvc.PushEnvelope(ctx, conn, snap.Params)
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	if ack.Status != "received" {
+		t.Fatalf("ack status = %q, want received — PushEnvelope must consume the account Snapshot's Params unchanged", ack.Status)
+	}
+
+	if ack.ReceivedRevision != "account-bridge:peer-fix1" {
+		t.Fatalf("ack receivedRevision = %q, want the scripted peer's echo", ack.ReceivedRevision)
+	}
 }
