@@ -637,16 +637,16 @@ func patAccessEnvelope(dataJSON string) string {
 
 // patAccessData renders a successful access_tokens data object (the pinned
 // expiry sources: expiresIn 3600s, expiresAt base+1h epoch sec).
-func patAccessData(token string) string {
-	return patAccessDataFrom(fixtureBaseTime(), token)
+func patAccessData(value string) string {
+	return patAccessDataFrom(fixtureBaseTime(), value)
 }
 
 // patAccessDataFrom renders the access_tokens data object with the expiry
 // sources anchored at start (vectors that advance the clock re-anchor so the
 // recovery mint's reply stays fresh relative to the fixture now).
-func patAccessDataFrom(start time.Time, token string) string {
+func patAccessDataFrom(start time.Time, value string) string {
 	return fmt.Sprintf(`{"accessToken":%q,"tokenType":"Bearer","expiresIn":3600,"expiresAt":%d}`,
-		token, start.Add(time.Hour).Unix())
+		value, start.Add(time.Hour).Unix())
 }
 
 // TestPatMinterLoginRequired locks the login-required arm: an absent desktop

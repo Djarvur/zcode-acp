@@ -98,6 +98,11 @@ const (
 	// never carries a dead token (ref REFRESH_LEAD_MS).
 	patRefreshLead = 120 * time.Second
 
+	// patTransientBackoff defers the refresh retry after a transient failure
+	// while the cached token is still valid (ref TRANSIENT_RETRY_BACKOFF_MS,
+	// D-05 reactive posture).
+	patTransientBackoff = 5 * time.Second
+
 	// patMaxBodyBytes bounds the response-body read — a hostile or broken
 	// backend cannot balloon the minter's memory (the body itself is never
 	// logged).
@@ -298,6 +303,18 @@ type patSession struct {
 
 	// token is the cached Pat (nil = none).
 	token *Pat
+
+	// minting is non-nil while one mint is in flight; concurrent Ensure
+	// callers join it (single-flight — exactly one HTTPS mint per burst).
+	minting chan struct{}
+
+	// mintID/doneID pair with lastPat/lastErr so joiners read exactly the
+	// outcome of the mint they joined (a newer mint may have started by the
+	// time a joiner wakes).
+	mintID  uint64
+	doneID  uint64
+	lastPat *Pat
+	lastErr error
 }
 
 // patKeyLocation is where the account key lives — an org/project/keyId triple
@@ -396,9 +413,14 @@ func patOriginTarget(origin string) *url.URL {
 }
 
 // Ensure returns a current PAT for the source's login, minting through the
-// official chain when needed. Every failure is a coded stable error and the
-// cache is only ever advanced by a successful mint (never a partial or
-// poisoned entry).
+// official chain when the cache is stale or absent. A cached token serves
+// while its RefreshAt is in the future (zero HTTP); past it the next Ensure
+// refreshes (the proactive D-05 arm — the reactive fingerprint arm lives on
+// the 06-07 source adapter over Invalidate). Concurrent callers share one
+// in-flight mint (single-flight). A transient failure with a still-valid
+// cached token serves the cached token and defers the retry past the 5s
+// floor; every other failure is a coded stable error and never leaves a
+// partially-poisoned cache.
 func (m *PatMinter) Ensure(ctx context.Context) (Pat, error) {
 	if m.creds == nil {
 		// No credential source configured — the desktop-login arm is the
@@ -419,26 +441,56 @@ func (m *PatMinter) Ensure(ctx context.Context) (Pat, error) {
 	// artifact up front, and the in-flight chain can store what it resolves.
 	fp := patSHA256Hex(login)
 
-	m.mu.Lock()
-	if m.sess == nil || m.sess.loginFP != fp {
-		m.sess = &patSession{loginFP: fp}
+	for {
+		m.mu.Lock()
+		if m.sess == nil || m.sess.loginFP != fp {
+			m.sess = &patSession{loginFP: fp}
+		}
+
+		s := m.sess
+
+		if s.minting == nil {
+			now := m.clock()
+			if s.token != nil && now.Before(s.token.RefreshAt) {
+				// Fast path: the cached token serves until its refresh
+				// point — zero HTTP (D-05).
+				pat := *s.token
+				m.mu.Unlock()
+
+				return pat, nil
+			}
+
+			// Become the single-flight leader.
+			done := make(chan struct{})
+			s.minting = done
+			s.mintID++
+			id := s.mintID
+			m.mu.Unlock()
+
+			return m.mintAsLeader(ctx, login, s, id, done)
+		}
+
+		// Join the in-flight mint (single-flight: N callers, one mint).
+		done := s.minting
+		id := s.mintID
+		m.mu.Unlock()
+
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return Pat{}, fmt.Errorf("%w: %w", ErrPatRequestFailed, ctx.Err())
+		}
+
+		m.mu.Lock()
+		joined := s.doneID == id
+		joinPat, joinErr := patJoinResult(s.lastPat, s.lastErr)
+		m.mu.Unlock()
+
+		if joined {
+			return joinPat, joinErr
+		}
+		// The joined slot moved on (a newer mint started) — retry the loop.
 	}
-	m.mu.Unlock()
-
-	pat, err := m.mint(ctx, login)
-	if err != nil {
-		m.dropTokenOnFailure(login, err)
-
-		return Pat{}, err
-	}
-
-	m.mu.Lock()
-	if m.sess != nil && m.sess.loginFP == fp {
-		m.sess.token = &pat
-	}
-	m.mu.Unlock()
-
-	return pat, nil
 }
 
 // Cached returns the in-process cached PAT without any network I/O; ok=false
@@ -471,24 +523,76 @@ func (m *PatMinter) Invalidate(reason string) {
 	slog.Info("hostsvc: pat cache invalidated", "reason", reason)
 }
 
-// dropTokenOnFailure clears the cached token after a failed mint — a failure
-// never leaves a partially-poisoned or provably-dead token behind. The
-// transient exception keeps a STILL-VALID token cached (the reference's
-// keep-serving posture; the serve-and-floor arm lands with the
-// cache-semantics slice).
-func (m *PatMinter) dropTokenOnFailure(login string, err error) {
+// patJoinResult copies the joined mint's outcome.
+func patJoinResult(lastPat *Pat, lastErr error) (Pat, error) {
+	if lastErr != nil || lastPat == nil {
+		return Pat{}, lastErr
+	}
+
+	return *lastPat, nil
+}
+
+// mintAsLeader runs the chain as the burst's single minter, publishes the
+// outcome for joiners, and advances the cache. The transient serve arm
+// (still-valid cached token + the 5s retry floor) and the honest-failure
+// cache clearing both land here so the leader and every joiner see ONE
+// consistent outcome (the reference's shared-pending semantics).
+func (m *PatMinter) mintAsLeader(
+	ctx context.Context,
+	login string,
+	s *patSession,
+	id uint64,
+	done chan struct{},
+) (Pat, error) {
+	pat, merr := m.mint(ctx, login)
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	s.minting = nil
+	s.doneID = id
 
-	if m.sess == nil || m.sess.loginFP != patSHA256Hex(login) || m.sess.token == nil {
-		return
+	result, resultErr := pat, merr
+
+	switch {
+	case merr == nil:
+		stored := pat
+		s.lastPat = &stored
+		s.lastErr = nil
+
+		if m.sess == s {
+			s.token = &stored
+		}
+
+	case isTransientMintError(merr) && s.token != nil && m.clock().Before(s.token.ExpiresAt):
+		// Keep serving the still-valid token; the retry defers past the 5s
+		// floor (the reference's onRefreshDeferred posture, D-05).
+		served := *s.token
+		floor := m.clock().Add(patTransientBackoff)
+		if served.ExpiresAt.Before(floor) {
+			floor = served.ExpiresAt
+		}
+
+		served.RefreshAt = floor
+		s.token = &served
+		s.lastPat = &served
+		s.lastErr = nil
+		result, resultErr = served, nil
+
+		slog.Warn("hostsvc: pat mint deferred", "code", "pat-refresh-deferred")
+
+	default:
+		// Honest failure: never a dead or partial token in the cache.
+		s.lastPat = nil
+		s.lastErr = merr
+
+		if m.sess == s {
+			s.token = nil
+		}
 	}
 
-	if isTransientMintError(err) && m.clock().Before(m.sess.token.ExpiresAt) {
-		return
-	}
+	close(done)
+	m.mu.Unlock()
 
-	m.sess.token = nil
+	return result, resultErr
 }
 
 // isTransientMintError classifies mint failures the reference's way: the
