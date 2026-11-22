@@ -594,11 +594,12 @@ func assertHeadersExpiry(t *testing.T) {
 
 	headers := interact.NewResponder(
 		interact.WithMethodDeadline(interact.MethodRequestProviderRuntimeHeaders, 50*time.Millisecond),
-		interact.WithRuntimeHeadersKeySource(func(ctx context.Context, _ interact.Request) (string, string, string, error) {
-			<-ctx.Done()
+		interact.WithRuntimeHeadersKeySource(
+			func(ctx context.Context, _ interact.Request) (string, string, string, error) {
+				<-ctx.Done()
 
-			return "", "", "", ctx.Err()
-		}),
+				return "", "", "", ctx.Err()
+			}),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), contractTimeout)
@@ -711,7 +712,7 @@ func collectRacers(t *testing.T, results <-chan served, racers int) int {
 const (
 	seamFixtureKey     = "zc-synthetic-seam-fixture-key"
 	seamFixtureKeyID   = "key_seam_1"
-	seamFixtureScope   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 64 lowercase hex
+	seamFixtureScope   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 64 lowercase hex
 	seamFixtureScopeB  = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" // 64 lowercase hex
 	seamFingerprintBad = "NOT-HEX-STUFF"
 )
@@ -767,7 +768,8 @@ func TestRuntimeHeadersSeamWidening(t *testing.T) {
 			t.Fatalf("api-key arm errored: %+v", werr)
 		}
 
-		want := `{"headersApplied":true,"requestAuth":{"apiKey":"` + seamFixtureKey + `","apiKeyId":"` + seamFixtureKeyID + `"}}`
+		want := `{"headersApplied":true,"requestAuth":{"apiKey":"` + seamFixtureKey +
+			`","apiKeyId":"` + seamFixtureKeyID + `"}}`
 		if string(wire) != want {
 			t.Fatalf("api-key answer = %s, want byte-identical %s (A9 regression)", wire, want)
 		}

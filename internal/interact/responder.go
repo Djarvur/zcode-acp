@@ -430,10 +430,7 @@ func (r *Responder) handleRuntimeHeaders(ctx context.Context, req Request) (Answ
 		}}, nil
 	}
 
-	// Skeleton posture (RED): the widened source's scope is received and
-	// deliberately discarded — the api-key two-field answer stays byte-compat
-	// until GREEN joins the scope (plan 06-07 Task 1).
-	apiKey, apiKeyID, _, keyErr := r.keySource(ctx, req)
+	apiKey, apiKeyID, accountScope, keyErr := r.keySource(ctx, req)
 	if keyErr != nil {
 		// A bare handler error wraps as the coded -32603 internal error at
 		// the deliver seam — the honest coded-ERROR arm, never
@@ -445,6 +442,13 @@ func (r *Responder) handleRuntimeHeaders(ctx context.Context, req Request) (Answ
 
 	if apiKeyID != "" {
 		auth["apiKeyId"] = apiKeyID
+	}
+
+	// The widened success arm (Pattern 4/A9): accountScope joins requestAuth
+	// ONLY when the source supplies it — an empty scope keeps the api-key
+	// two-field answer byte-compatibly identical (the Phase-5 corpus bytes).
+	if accountScope != "" {
+		auth["accountScope"] = accountScope
 	}
 
 	// The success arm verbatim (dialect §3; the server zod-parses the
@@ -464,7 +468,39 @@ func (r *Responder) handleRuntimeHeaders(ctx context.Context, req Request) (Answ
 // paramsString discipline). Neither value is ever logged here: the caller
 // may log digests/scope hashes (they are digests), never token material.
 func RuntimeHeadersRejection(req Request) (expectedScope, rejectedFingerprint string) {
-	return "", "" // skeleton: the dig lands in GREEN (plan 06-07 Task 1)
+	return paramsHex64(req.Params, "expectedAccountScope"),
+		paramsHex64(req.Params, "rejectedProjectTokenFingerprint")
+}
+
+// hexFingerprintLen is the strict fingerprint/scope shape the ask schema
+// pins (/^[a-f0-9]{64}$/) — sha256 hex length.
+const hexFingerprintLen = 64
+
+// paramsHex64 digs one top-level string value out of a params payload and
+// gates it on the strict 64-lowercase-hex shape the ask schema pins
+// (/^[a-f0-9]{64}$/) — anything else classifies as absent.
+func paramsHex64(raw json.RawMessage, key string) string {
+	s := paramsString(raw, key)
+	if !isLowerHex64(s) {
+		return ""
+	}
+
+	return s
+}
+
+// isLowerHex64 reports whether s is exactly 64 lowercase hex characters.
+func isLowerHex64(s string) bool {
+	if len(s) != hexFingerprintLen {
+		return false
+	}
+
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+
+	return true
 }
 
 // answerRuntimePreferences replies with the static runtime-preference
