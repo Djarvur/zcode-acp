@@ -1801,18 +1801,20 @@ func (s *scriptedHandlers) Initialize(ctx context.Context) (acpport.InitReport, 
 	return s.initReport, nil
 }
 
-// NewSession records the params and replays the canned session id.
-func (s *scriptedHandlers) NewSession(ctx context.Context, params acpport.NewSessionParams) (string, error) {
+// NewSession records the params and replays the canned session id plus
+// the canned neutral options (plan 06-04 — the adapter's select-assembly
+// counterparty).
+func (s *scriptedHandlers) NewSession(ctx context.Context, params acpport.NewSessionParams) (string, []acpport.ConfigOptionDef, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.newSessionCalls = append(s.newSessionCalls, params)
 
 	if s.newSessionErr != nil {
-		return "", s.newSessionErr
+		return "", nil, s.newSessionErr
 	}
 
-	return s.newSessionID, nil
+	return s.newSessionID, s.newSessionOptions, nil
 }
 
 // Prompt records the params and sink, then answers with the canned reason

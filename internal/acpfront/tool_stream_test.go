@@ -393,7 +393,7 @@ func composeBackLeg(t *testing.T, scenario string, opts ...acpfront.Option) *bac
 func (h *backLegHarness) openSession(ctx context.Context, t *testing.T) string {
 	t.Helper()
 
-	sid, err := h.front.NewSession(ctx, acpport.NewSessionParams{Cwd: toolLifecycleCwd})
+	sid, _, err := h.front.NewSession(ctx, acpport.NewSessionParams{Cwd: toolLifecycleCwd})
 	if err != nil {
 		t.Fatalf("front.NewSession: %v", err)
 	}

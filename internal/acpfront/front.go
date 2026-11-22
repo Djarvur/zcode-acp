@@ -219,15 +219,18 @@ func (f *Front) Initialize(ctx context.Context) (acpport.InitReport, error) {
 // model selection is configured (Open Question 4 resolution) with explicit
 // persistAsWorkspaceLastUsed:false (Open Question 3 resolution). The
 // session's turn machine registers in the core registry before the id
-// returns. mcpServers are accepted and ignored (D-03).
-func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams) (string, error) {
+// returns. mcpServers are accepted and ignored (D-03). The widened
+// Handlers contract (plan 06-04) returns the session's config options —
+// the confirmed-reply capture that fills them lands in Task 3 (06-04
+// sequencing: the signature widens here, the settings store follows).
+func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams) (string, []acpport.ConfigOptionDef, error) {
 	// Spec input validation (RESEARCH Security Domain V5, T-4-01): the ACP
 	// session-setup contract makes cwd MUST-be-absolute — validate BEFORE
 	// any backend call so a rejected session/new never touches the back-leg
 	// wire (the fake transcript must show no session/create frame). The
 	// empty-cwd case folds in: an empty string is not absolute either.
 	if !filepath.IsAbs(params.Cwd) {
-		return "", acpport.NewInvalidParams(
+		return "", nil, acpport.NewInvalidParams(
 			"session/new: cwd must be absolute (spec session-setup MUST), got %q", params.Cwd)
 	}
 
@@ -235,12 +238,12 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 		"workspace": map[string]any{"workspacePath": params.Cwd, "workspaceKey": params.Cwd},
 	})
 	if err != nil {
-		return "", acpport.NewInternal("session/create: %v", err)
+		return "", nil, acpport.NewInternal("session/create: %v", err)
 	}
 
 	sid, err := createSessionID(res, "session/create")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	f.recordCwd(sid, params.Cwd)
@@ -253,7 +256,7 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 		// session down best-effort instead of orphaning it (T-5-12).
 		f.closeOrphan(ctx, sid, "subscribe", err)
 
-		return "", acpport.NewInternal("session/subscribe: %v", err)
+		return "", nil, acpport.NewInternal("session/subscribe: %v", err)
 	}
 
 	if f.model != nil {
@@ -280,7 +283,7 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 			// every post-create failure closes the backend session.
 			f.closeOrphan(ctx, sid, "setModel", err)
 
-			return "", acpport.NewInternal("session/setModel: %v", err)
+			return "", nil, acpport.NewInternal("session/setModel: %v", err)
 		}
 	}
 
@@ -293,7 +296,9 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 
 	slog.Info("acpfront: session opened", "session", sid)
 
-	return sid, nil
+	// Task 3 (plan 06-04) fills the options from the confirmed reply
+	// snapshots; the signature carries them from this commit on.
+	return sid, nil, nil
 }
 
 // wireKeySessionID is the dialect's camelCase session-id params key (the

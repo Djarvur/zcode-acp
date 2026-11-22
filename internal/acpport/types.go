@@ -27,8 +27,15 @@ type Handlers interface {
 	Initialize(ctx context.Context) (InitReport, error)
 
 	// NewSession opens one backend session and returns its ACP session id
-	// (the D-03 create/subscribe/setModel contract lives in the front).
-	NewSession(ctx context.Context, params NewSessionParams) (string, error)
+	// (the D-03 create/subscribe/setModel contract lives in the front)
+	// plus the session's config options built ONLY from the confirmed
+	// reply settings snapshots (MODEL-01, plan 06-04 — D-10: currentValue
+	// is server-confirmed state; the reply IS the confirmation source, so
+	// a guessed selection can never reach the wire. The adapter alone
+	// assembles the SDK select variants from these neutral options —
+	// D-01: no SDK types cross the seam; an empty/nil list renders no
+	// configOptions at all).
+	NewSession(ctx context.Context, params NewSessionParams) (string, []ConfigOptionDef, error)
 
 	// Prompt runs one prompt turn: content deltas stream through sink as
 	// they arrive (D-04), and the returned StopReason is the turn's

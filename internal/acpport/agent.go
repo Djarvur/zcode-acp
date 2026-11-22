@@ -159,9 +159,12 @@ func (a *agentAdapter) Initialize(ctx context.Context, params acp.InitializeRequ
 
 // initializeResponse assembles the honest wire report from the neutral
 // InitReport: protocol version 1, real agentInfo, the advertised auth
-// methods as agent-variant entries, and the zero-value AgentCapabilities
-// (the SDK struct has no fs/terminal fields at all — honesty by
-// construction, D-02/A7; omission is spec-correct).
+// methods as agent-variant entries, the capabilities block with the
+// sessionCapabilities.options empty-struct opt-in (MODEL-01, plan 06-04 —
+// UNCONDITIONAL per D-11: the config-options picker is auth-path-
+// independent; clients gate session/set_config_option on it), and zero
+// fs/terminal surface (the SDK capability structs carry no such fields at
+// all — honesty by construction, D-02/A7; omission is spec-correct).
 func initializeResponse(report InitReport) acp.InitializeResponse {
 	title := report.Title
 
@@ -184,18 +187,76 @@ func initializeResponse(report InitReport) acp.InitializeResponse {
 			Version: report.Version,
 		},
 		AuthMethods: authMethods,
+		AgentCapabilities: acp.AgentCapabilities{
+			SessionCapabilities: acp.SessionCapabilities{
+				Options: &acp.SessionOptionsCapabilities{},
+			},
+		},
 	}
 }
 
-// NewSession delegates to Handlers and wraps the front's session id in
-// the wire response (D-03 contract lives in the front).
+// NewSession delegates to Handlers and wraps the front's session id plus
+// its confirmed config options in the wire response (D-03 contract lives
+// in the front; the options translate through the SDK select variant
+// exclusively).
 func (a *agentAdapter) NewSession(ctx context.Context, params acp.NewSessionRequest) (acp.NewSessionResponse, error) {
-	sessionID, err := a.h.NewSession(ctx, newSessionParams(params))
+	sessionID, options, err := a.h.NewSession(ctx, newSessionParams(params))
 	if err != nil {
 		return acp.NewSessionResponse{}, wireError(err)
 	}
 
-	return acp.NewSessionResponse{SessionId: acp.SessionId(sessionID)}, nil
+	return acp.NewSessionResponse{
+		SessionId:     acp.SessionId(sessionID),
+		ConfigOptions: configOptionSelects(options),
+	}, nil
+}
+
+// configOptionSelects assembles the SDK select variants from the neutral
+// options vocabulary (MODEL-01, plan 06-04): id/name/category/currentValue
+// translate verbatim, entries ride as the SDK's ungrouped select-options
+// array, and the "type":"select" discriminant is INJECTED BY THE SDK's
+// union MarshalJSON — nothing here hand-marshals wire bytes (T-06-12),
+// and the assembled unions satisfy the SDK's own required-field Validate.
+// A nil/empty list renders no configOptions at all (the D-10 honest
+// smaller-list posture).
+func configOptionSelects(defs []ConfigOptionDef) []acp.SessionConfigOption {
+	if len(defs) == 0 {
+		return nil
+	}
+
+	out := make([]acp.SessionConfigOption, 0, len(defs))
+
+	for _, def := range defs {
+		opts := make(acp.SessionConfigSelectOptionsUngrouped, 0, len(def.Options))
+
+		for _, o := range def.Options {
+			entry := acp.SessionConfigSelectOption{
+				Value: acp.SessionConfigValueId(o.Value),
+				Name:  o.Name,
+			}
+			if o.Description != "" {
+				description := o.Description
+				entry.Description = &description
+			}
+
+			opts = append(opts, entry)
+		}
+
+		category := acp.SessionConfigOptionCategory(def.Category)
+
+		out = append(out, acp.SessionConfigOption{
+			Select: &acp.SessionConfigOptionSelect{
+				Id:           acp.SessionConfigId(def.ID),
+				Name:         def.Name,
+				Category:     &category,
+				CurrentValue: acp.SessionConfigValueId(def.CurrentValue),
+				Options:      acp.SessionConfigSelectOptions{Ungrouped: &opts},
+				Type:         "select",
+			},
+		})
+	}
+
+	return out
 }
 
 // newSessionParams translates the create request into the neutral DTO

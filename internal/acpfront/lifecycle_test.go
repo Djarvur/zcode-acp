@@ -804,7 +804,7 @@ func TestNewSessionOrphanClosed(t *testing.T) {
 	ctx, cancel := h.ExchangeCtx()
 	defer cancel()
 
-	sid, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: t.TempDir()})
+	sid, _, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: t.TempDir()})
 	if err == nil {
 		t.Fatalf("session/new must fail when the subscribe leg refuses, got session %q", sid)
 	}
