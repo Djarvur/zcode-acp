@@ -62,7 +62,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 
 ### Verification (done-v1 criteria)
 
-- [ ] **QA-01**: CI protocol conformance suite green: fake app-server exercises initialize → session/new → prompt streaming → tool calls → permissions → cancel
+- [x] **QA-01**: CI protocol conformance suite green: fake app-server exercises initialize → session/new → prompt streaming → tool calls → permissions → cancel
 - [ ] **QA-02**: VM test scenario scripted for a clean Ubuntu GNOME VM (install, configure, run) reproducible from the repo
 - [ ] **QA-03**: Manual end-to-end confirmed: a working agent card in a real chat-UI client (Orca) on Ubuntu GNOME, on a real account, both auth paths
 
@@ -139,7 +139,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DOCS-01 | Phase 7 | Pending |
 | DOCS-02 | Phase 7 | Pending |
 | DOCS-03 | Phase 7 | Pending |
-| QA-01 | Phase 7 | Pending |
+| QA-01 | Phase 7 | Complete |
 | QA-02 | Phase 7 | Pending |
 | QA-03 | Phase 7 | Pending |
 | SESS-02 | Phase 7 | Complete |
