@@ -2,7 +2,7 @@
 
 **Domain:** the desktop app-server's wire dialect — transport framing, full method map, server→host surface, `session/subscribe` / event-stream availability, turn-completion terminal signals, error codes, session lifecycle, snapshot semantics, and the 3.17↔3.18.2 drift baseline (DISC-01)
 **Verified against:** the shipped 3.18.2 desktop bundle — the unpacked-AppImage squashfs-root copy (`~/Applications/zcode-<ver>/squashfs-root/`, the same copy `install-discovery.md` row 1 names as ground truth; `resources/glm/zcode.cjs` byte-compared identical to its `.orig` sibling while writing this doc, consistent with the recorded pristine check in `[V-EXP EXP-DISCOVERY-01]`) plus the live experiments below — and the public 3.17.x source tree read at **3.17.1**, which is corroborating only and never 3.18.2 truth (per D-01)
-**Confidence:** HIGH for everything tagged `[V-EXP <experiment-id>]` (live on the shipped binary) and for bundle-anchored `[V-SRC ...]` claims (grep anchors with occurrence counts, re-derivable via the recorded commands); HIGH for 3.17.1-cited mechanics re-verified file:line in the clone this phase; the turn-COMPLETION half of section 5 is honestly `V-SRC-only` per the recorded D-05 degradation — the turn never completed under the Phase 1 harness (limitation quoted from `[V-EXP EXP-TURN-01]`)
+**Confidence:** HIGH for everything tagged `[V-EXP <experiment-id>]` (live on the shipped binary) and for bundle-anchored `[V-SRC ...]` claims (grep anchors with occurrence counts, re-derivable via the recorded commands); HIGH for 3.17.1-cited mechanics re-verified file:line in the clone this phase; the turn-COMPLETION half of section 5 was honestly `V-SRC-only` per the recorded D-05 degradation (the turn never completed under the Phase 1 harness, `[V-EXP EXP-TURN-01]`) — **resolved 2026-11-23**: the completion terminal envelope IS observed live on the shipped 3.18.2 desktop (the EXP-VM-QA02-family field runs; recorded `V-RPT` per ground rule 1 — the raw wraps were born outside the repo and are quoted below with their line references)
 
 Provenance tags (`V-SRC` / `V-EXP` / `V-RPT`) are used per the legend in
 [README.md](README.md) — defined once there (D-04). Every `[V-EXP <id>]` in this
@@ -144,6 +144,13 @@ Verdict of experiment E1 against the shipped binary (idle session, no send), fro
 
 **Honesty statement (D-05 degradation, applies to the completion half of this section):** across three live runs the model stream was cancelled by harness shutdown before any completion envelope arrived, and the session status patch stayed `"running"` until teardown; answering the mid-turn `interaction/requestCredentialCipher` (operation `decrypt`) would require decrypted keyring credential material, which Phase 1 deliberately never reads (threat register T-1-05). Turn-completion terminal envelopes were therefore **never observed on the wire in this phase**; every completion claim below is labelled `V-SRC-only` (bundle source enumeration) or `V-RPT`, with this limitation attached [V-EXP EXP-TURN-01]. Quota honesty: 3 tiny `session/send` calls issued, none completed a model response, no keys minted [V-EXP EXP-TURN-01].
 
+**RESOLVED (2026-11-23, the EXP-VM-QA02-family field runs): the completion terminal envelope IS observed live on the shipped 3.18.2 desktop.** The phase-1 degradation above was a harness limitation (the credential-cipher stall), not a wire absence. The 2026-11-23 field runs against the QA-02-shaped VM's desktop child (green106) recorded completed turns whose terminal envelopes arrived on TWO carriers, both `turnId`-scoped — the raw wraps were born outside the repo (ground rule 1; preserved at the session's scratch paths `/tmp/qa03-raw3.out` / `/tmp/qa03-raw4.out` at the time of writing), so the shapes below are quoted `V-RPT` with their line references until a scrubber-run capture lands:
+
+- `computer-use/operation-event` `kind:"turn-completed"` — raw4 `:66` (and raw3 `:83`): `{"method":"computer-use/operation-event","params":{"eventId":"<uuid>","sequenceNumber":30,"sessionId":"sess_<uuid>","timestamp":1795371951553,"kind":"turn-completed","turnId":"turn_<uuid>"}}` — ms-epoch `timestamp`, wire-order `sequenceNumber` shared with the sibling `turn-started` (raw4 `:34`, `sequenceNumber` 4).
+- `v4/telemetry/event` `kind:"turn.terminal"` — raw3 `:84` (same instant as the computer-use twin, same `eventId`): `{"method":"v4/telemetry/event","params":{"memoryEnabled":false,"version":1,"eventId":"<uuid>","eventSeq":46,"occurredAt":1795371856008,"sessionId":"sess_<uuid>","turnId":"turn_<uuid>","kind":"turn.terminal","status":"success","resultType":"success","durationMs":5701,"tokenCount":35396,"toolCallCount":0}}` — **the live v4-carrier terminal literal is `turn.terminal` with the outcome in `status`/`resultType`, NOT the bundle taxonomy's `turn.completed`**; the same turn's start rode `kind:"turn.started"` on this carrier (raw3 `:35`), completing the started→terminal pairing per carrier.
+- Timing truth (the QA-03 field blocker, raw4): turn-started → 4.1 s of SILENCE (the model thinking — no frame of any kind) → the first `model.streaming` reasoning delta → the last text delta → `turn-completed` 0.15 s later (raw3: a 4.9 s silent think, terminal 1.0 s after the last delta). The turn-completion instant sits at 4.6–5.6 s after turn-started — RIGHT AT the wrapper's quiet floor (3×2.5 s from the send ack), and the 2026-11-22 field runs lost that race: the floor's settle ended the turn 0.1 s after the first delta while the terminal was still seconds away (the Orca card's empty reply — the QA-03 report verbatim) [V-RPT private field notes — the QA-03 field report + the 2026-11-23 raw wraps].
+- The `state.updated` channel on the real desktop carried ONLY the `prompt_started` running patch per turn (raw4: ×1 total) — **no `turn.completed`/`turn.failed`/idle patch EVER arrives on it**; a consumer cannot read completion from the status channel [V-RPT the 2026-11-23 raw wraps].
+
 **Observed live — turn-start signal table (what a turn machine receives when a turn begins)** [V-EXP EXP-TURN-01]:
 
 | Signal | Envelope | Payload shape (as observed) |
@@ -158,6 +165,18 @@ Verdict of experiment E1 against the shipped binary (idle session, no send), fro
 | Context recomposition | `v4/conversation/contextCompositionChanged` | `{sessionId, revision}` (observed revision 1→3 during one turn) |
 
 All `session/event` envelopes above carried `deliveryKind:"desktop-continuous"`, monotone `seq`, `turnId` and `traceId` [V-EXP EXP-TURN-01].
+
+**Observed live + bundle — TURN-COMPLETION signal table (what resolves a turn, and where)** — the turn machine's signal table; every row is `turnId`-matched, and a foreign `turnId` never resolves another turn (IN-05 discipline):
+
+| Signal | Envelope | Evidence | Payload shape (as observed) |
+|--------|----------|----------|------------------------------|
+| Turn-completed (computer-use stream) | `computer-use/operation-event` | **LIVE 2026-11-23** (raw4 `:66`, raw3 `:83`) `[V-RPT the EXP-VM-QA02-family raw wraps]` | `{kind:"turn-completed", turnId, sequenceNumber, sessionId, eventId, timestamp}` |
+| Turn-terminal (v4 telemetry) | `v4/telemetry/event` | **LIVE 2026-11-23** (raw3 `:84`) `[V-RPT the EXP-VM-QA02-family raw wraps]` | `{kind:"turn.terminal", turnId, eventSeq, sessionId, eventId, occurredAt, status:"success", resultType:"success", durationMs, tokenCount, toolCallCount, version:1, memoryEnabled:false}` — `status` decides completed/failed; only `"success"` observed live |
+| Turn-completed (session event stream) | `session/event` | **LIVE** `-03` capture `:227` `[V-EXP EXP-APIKEY-CYCLE-01]` | `type:"turn.completed"`, payload `{response, tokenCount, usage, toolCallCount, resultType:"success"}` |
+| `turn.completed` / `turn.failed` (v4 taxonomy) | v4 conversation channel events | `V-SRC-only` (bundle enumeration — keep classified for other runtime families) | quoted literals `"turn.completed"` ×7 / `"turn.failed"` ×8 `[V-SRC bundle]` |
+| `state.updated` idle patch | `state.updated` | NEVER observed live (phase-1 runs ×0; 2026-11-23: the channel carries only the `prompt_started` running patch per turn) `[V-EXP EXP-TURN-01]` `[V-RPT the 2026-11-23 raw wraps]` | `patch.status` leaving `"running"` — classify by absence of the running status, never rely on it alone |
+
+Timing semantics (the machine's contract, locked by the QA-03 corpus row `desktop-terminal-signal`): the terminal may arrive AFTER the quiet floor when the model thinks silently past it — a start-announced turn (a `turn-started`/`turn.started` on the computer-use or v4-telemetry carrier, both terminal-proven) holds the quiet settle off while the veto budget lasts, and notification-stream activity (the delta stream) resets the settle gate; the no-signal family keeps the floor+settle fallback unchanged [V-RPT private field notes — the QA-03 field report + the 2026-11-23 raw wraps].
 
 ### The model-response delta surface — `session/event` `model.streaming`, 3.18.2 [V-EXP EXP-APIKEY-CYCLE-01]
 
@@ -192,8 +211,10 @@ arrival order — `kind:"text_delta"` → `session/update` `agent_message_chunk`
 the tool-args stream and the start/finish/error markers — is a desktop-UI fact, held from the
 client surface (tool cards ride the `tool.updated` stream, whose `scheduled` frame carries the
 full input). `payload.done` is not a completion signal in practice: every observed delta carried
-`done:false` (`"done":true` ×0 in the capture) — the turn-end verdict rides `turn.completed` /
-the quiet-window settle, and the wrapper emits no extra client frame on done. Stream shape:
+`done:false` (`"done":true` ×0 in the capture) — the turn-end verdict rides the terminal
+envelopes (the signal table: `computer-use` `turn-completed`, v4 `turn.terminal`,
+`session/event` `turn.completed`) / the quiet-window settle, and the wrapper emits no extra
+client frame on done. Stream shape:
 monotone per-session `seq`, `turnId` scoped per turn, deltas interleaved across
 `assistantMessageId`s; the client-visible chunk order is the arrival order (single demux path).
 Field proof of the translation's necessity: the 2026-11-22 Orca card reproduction completed
@@ -224,7 +245,7 @@ The machine's own idle-window polls cannot source this text: their poll results 
 presence/time evidence only — content never interpreted, nothing stored — and the poll loop is
 joined before the turn resolves, so the reconcile reads the surface once at completion.
 
-**Completion half — `V-SRC-only` (bundle source enumeration; limitation above applies):**
+**Completion half — bundle taxonomy rows, `V-SRC-only` (kept for the other runtime families; the live rows live in the signal table above):**
 
 | Signal | Where it lives | Evidence |
 |--------|----------------|----------|
@@ -242,11 +263,23 @@ The `-02` run's no-terminal-in-window fact stands as recorded above; both facts 
 the terminal envelope may arrive and still be absent on some completed turns — a consumer keeps
 both signals armed.
 
+**Correction (2026-11-23, the EXP-VM-QA02-family runs): the terminal may arrive AFTER the quiet
+floor — the floor race is the QA-03 field blocker.** The 2026-11-22 "well inside the quiet-floor
+window" fact is the LUCKY side of a race, not a guarantee: the same prompt on the 2026-11-22
+evening field runs (and again on the 2026-11-23 VM runs) had the model thinking silently for
+~7.3 s — past the 7.5 s floor — so the floor's settle fired 0.1 s after the FIRST reasoning
+delta while the reply text and the real terminal signal (`computer-use` `turn-completed`,
+`v4/telemetry` `turn.terminal`) were still seconds away; the wrapper replied `end_turn` with one
+orphan chunk and the Orca card showed an empty reply (the QA-03 field report, verbatim)
+[V-RPT private field notes + the raw wraps]. The wrapper's machine now holds the settle off for
+start-announced turns (veto budget) and counts the notification stream as settle-gate activity;
+the floor+settle fallback stays for turns with no start announcement.
+
 **Reliability column (planning input for Phase 4):**
 
-- Explicit finish events (`turn.completed`/`turn.failed`): source-level only until a credential-answering host exists (Phase 6) — `V-SRC-only`, limitation as stated [V-EXP EXP-TURN-01].
-- `state.updated` idle patch (`patch.status` leaving `"running"`): the settle gate of the harness waits for it; in the three runs it never arrived before teardown — do not rely on it alone [V-EXP EXP-TURN-01] [V-RPT private field notes].
-- **Quiet-window fallback (2.5 s without new parts): the proven secondary** — field-verified end-to-end by the predecessor shim, and the harness implements its hardened form (send-latency floor = 3× quiet-ms after the send reply, plus the settle gate) after live runs showed a bare quiet window mis-arms during first-token latency [V-RPT private field notes] [V-EXP EXP-TURN-01].
+- Explicit finish events: **live-observed on 3.18.2 as of 2026-11-23** — the computer-use `turn-completed` and v4-telemetry `turn.terminal` carriers (the signal table above), plus the `session/event` `turn.completed` of the `-03` capture; the bundle's `turn.completed`/`turn.failed` taxonomy rows stay armed for other runtime families [V-RPT the 2026-11-23 raw wraps] [V-EXP EXP-APIKEY-CYCLE-01] [V-SRC bundle]. A terminal may still be ABSENT on some completed turns (the `-02` run) — the fallback stays armed.
+- `state.updated` idle patch (`patch.status` leaving `"running"`): never arrived before teardown in the phase-1 runs; the 2026-11-23 real-desktop turns carry ONLY the `prompt_started` running patch on this channel — do not rely on it alone [V-EXP EXP-TURN-01] [V-RPT private field notes].
+- **Quiet-window fallback (2.5 s without new activity): the proven secondary** — field-verified end-to-end by the predecessor shim, and the harness implements its hardened form (send-latency floor = 3× quiet-ms after the send reply, plus the settle gate) after live runs showed a bare quiet window mis-arms during first-token latency [V-RPT private field notes] [V-EXP EXP-TURN-01]. **Premature-end hazard (QA-03, field-proven): the floor race can end a live turn mid-generation** — the settle gate now counts notification-stream activity and start-announced turns veto settles within the budget (the machine's contract, signal table above).
 - Predecessor-shim provider logs carried `model.request.completed` / `turn.completed` markers at turn end — client-side log events, not captured wire envelopes [V-RPT private field notes; quoted in the capture's v-rpt block] [V-EXP EXP-TURN-01].
 
 ### The one-turn-at-a-time latch — post-completion window, 3.18.2 [V-EXP EXP-APIKEY-CYCLE-01]
@@ -287,6 +320,12 @@ line references below point into that file). Every fact in this subsection is ca
   hypothesis (b) premature `end_turn` (our verdict fired before the desktop's true completion).
   The wrapper's countermeasure — a latch drain between sends, rehearsed as the fake-tier corpus
   row `lingering-latch-32010` — is correct under both.
+  **ARBITRATED (2026-11-23): hypothesis (b) — the verdict WAS premature.** The EXP-VM-QA02-family
+  runs recorded the true terminal surface (`computer-use` `turn-completed` + `v4/telemetry`
+  `turn.terminal`, signal table above) landing seconds AFTER the floor-based verdict in the
+  failing runs: the wrapper's quiet-floor verdict fired before the desktop's real completion.
+  The latch-drain countermeasure stands; the completion-timing fix (the machine's
+  start-announced veto + activity-aware settle gate) closes the verdict side.
 
 ## 6. Error-code table
 
