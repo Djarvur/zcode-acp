@@ -240,7 +240,7 @@ Plans:
   3. Every ACP method Orca's client calls at card startup and during a turn (per the Phase 1 dialect document) is implemented or gracefully handled, so a card works end-to-end
   4. A clean Ubuntu GNOME VM scenario — install, configure, run — is scripted in the repo and reproducible, including the no-keyring error path
   5. Manual E2E confirmed and documentation published: a working agent card in a real chat-UI client (Orca) on Ubuntu GNOME on a real account through both auth paths, backed by an English README (what it is, install, configuration, both auth paths, troubleshooting), a launch recipe for ACP hosts that only accept preset agents (binary naming, version floor, env, PATH shim), and `docs/` protocol notes with the provenance statement and known limitations
-**Plans**: 5/9 plans executed
+**Plans**: 6/9 plans executed
 
 Plans:
 **Wave 1** *(07-01, 07-02, 07-04 are file-disjoint — parallel)*
@@ -251,7 +251,7 @@ Plans:
 **Wave 2** *(blocked on Wave 1)*
 - [x] 07-03-PLAN.md — SESS-02 + D-02: session/delete answers {} (full teardown when registered, silent success when unknown), explicit fork decline, set_mode/set_model/list/load byte-locked rows, advertisement honesty lock (delete/fork/list stay unadvertised)
 - [x] 07-06-PLAN.md — QA-01: the named TestConformanceV1Arc (initialize → session/new → streaming → tool calls → permission decision → cancel) green inside `mise run ci`, additive only
-- [ ] 07-07-PLAN.md — QA-02: scripts/vm-e2e.sh — discovery, version probe, stdio ACP arc, both auth-path stages, four verbatim no-keyring sentinels, paired-env read-back assert; no toolchain on the VM
+- [x] 07-07-PLAN.md — QA-02: scripts/vm-e2e.sh — discovery, version probe, stdio ACP arc, both auth-path stages, four verbatim no-keyring sentinels, paired-env read-back assert; no toolchain on the VM
 
 **Wave 3** *(blocked on Wave 2 — the front.go/agent.go/types.go chain)*
 - [ ] 07-05-PLAN.md — D-03 slash half: the /model prompt intercept (validate-first, picker-machinery reuse, slot-free refusals) + the -32603 data.details error seam; Hb strings byte-locked (`Unknown ACP model: `, `No model selected.`)
@@ -275,7 +275,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 15/15 | Complete    | 2026-11-22 |
 | 6. OAuth Coding-Plan Path & Model Picker | 8/8 | Complete    | 2026-11-22 |
-| 7. Hardening, VM & Manual E2E, Documentation | 5/9 | In Progress | - |
+| 7. Hardening, VM & Manual E2E, Documentation | 6/9 | In Progress | - |
 
 ---
 *Roadmap created: 2026-11-19*

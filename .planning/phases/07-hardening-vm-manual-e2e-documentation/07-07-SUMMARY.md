@@ -179,6 +179,10 @@ None - no external service configuration required. (The VM field execution itsel
 - The scenario script is ready for the QA-02 field proof: on a clean Ubuntu GNOME VM, build-or-fetch the binary off the VM, run `bash scripts/vm-e2e.sh --binary <path>`; the one documented execution rides 07-09's human-check + the experiments ledger.
 - 07-08 (docs) can reference the script as the reproducible scenario entry point; the header already documents usage, deps, and exit codes.
 
+## Self-Check: PASSED
+
+All created files exist on disk and all five commits (4 task + 1 docs) are ancestors of HEAD (verified 2026-11-22).
+
 ---
 *Phase: 07-hardening-vm-manual-e2e-documentation*
 *Completed: 2026-11-22*
