@@ -1031,6 +1031,92 @@ func assertUnmappedReasonLoud(t *testing.T, req acp.PromptRequest) {
 	}
 }
 
+// TestSetConfigOptionDelegation (plan 06-06, MODEL-02 — the Task-1 RED
+// target): the adapter routes session/set_config_option to Handlers (the
+// -32601 unadvertised default replaced, the Authenticate delegation shape)
+// with the wire triple verbatim, assembles the response's ConfigOptions
+// through the SDK select variant exclusively (Validate-clean, non-nil per
+// the spec MUST), and maps front errors via wireError — a seam-carried
+// -32602 reaches the client with its code intact (never degraded to
+// -32603; the RequestError stays unwrapped), and a raw error codes
+// internal (A5).
+func TestSetConfigOptionDelegation(t *testing.T) {
+	t.Run("delegates the verbatim triple and assembles the response", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.setConfigOptions = []acpport.ConfigOptionDef{
+			{
+				ID:           "model",
+				Name:         "Model",
+				Category:     acpport.ConfigCategoryModel,
+				CurrentValue: "zai-api/GLM-5.3",
+				Options: []acpport.SelectOptionDef{
+					{Value: "zai-api/GLM-5.3", Name: "GLM-5.3"},
+				},
+			},
+		}
+
+		resp, err := acpport.NewAgent(h).SetSessionConfigOption(context.Background(),
+			setConfigOptionAsk(testSessionID, "model", "zai-api/GLM-5.3"))
+		if err != nil {
+			t.Fatalf("SetSessionConfigOption: %v", err)
+		}
+
+		if len(h.setConfigCalls) != 1 {
+			t.Fatalf("Handlers.SetSessionConfigOption calls = %d, want 1 (the -32601 default must be replaced)",
+				len(h.setConfigCalls))
+		}
+
+		got := h.setConfigCalls[0]
+
+		if got.sessionID != testSessionID || got.configID != "model" || got.value != "zai-api/GLM-5.3" {
+			t.Fatalf("Handlers call = %+v, want the wire triple verbatim", got)
+		}
+
+		if len(resp.ConfigOptions) != 1 {
+			t.Fatalf("ConfigOptions = %d entries, want the front's 1", len(resp.ConfigOptions))
+		}
+
+		// The SDK union's own Validate: exactly one variant set, name
+		// present — the response list the spec MUST carries.
+		for i := range resp.ConfigOptions {
+			if err := resp.ConfigOptions[i].Validate(); err != nil {
+				t.Fatalf("ConfigOptions[%d] fails the SDK Validate: %v", i, err)
+			}
+		}
+	})
+
+	t.Run("a seam -32602 keeps its code (never degraded to -32603)", func(t *testing.T) {
+		h := newScriptedHandlers()
+		seam := acpport.NewInvalidParams(`session/set_config_option: unknown configId "volume"`)
+		h.setConfigErr = seam
+
+		_, err := acpport.NewAgent(h).SetSessionConfigOption(context.Background(),
+			setConfigOptionAsk(testSessionID, "volume", "loud"))
+		assertSeamCoded(t, err, seam)
+	})
+
+	t.Run("a raw error codes internal", func(t *testing.T) {
+		h := newScriptedHandlers()
+		h.setConfigErr = errRawFront
+
+		_, err := acpport.NewAgent(h).SetSessionConfigOption(context.Background(),
+			setConfigOptionAsk(testSessionID, "model", "zai-api/GLM-5.3"))
+		assertCodedInternal(t, err, errRawFront.Error())
+	})
+}
+
+// setConfigOptionAsk builds the wire request (the ValueId default variant —
+// this build advertises select options only).
+func setConfigOptionAsk(sessionID, configID, value string) acp.SetSessionConfigOptionRequest {
+	return acp.SetSessionConfigOptionRequest{
+		ValueId: &acp.SetSessionConfigOptionValueId{
+			SessionId: acp.SessionId(sessionID),
+			ConfigId:  acp.SessionConfigId(configID),
+			Value:     acp.SessionConfigValueId(value),
+		},
+	}
+}
+
 // TestFrontErrorsCodedOnAllAdvertisedMethods pins the coding contract on
 // every advertised method: a seam error returned by Handlers surfaces as
 // the coded RequestError on the wire, never raw — the SDK's toReqErr
@@ -1770,6 +1856,8 @@ type scriptedHandlers struct {
 	resumeErr         error
 	closeErr          error
 	authErr           error
+	setConfigErr      error
+	setConfigOptions  []acpport.ConfigOptionDef
 
 	initCalls       int
 	newSessionCalls []acpport.NewSessionParams
@@ -1781,6 +1869,15 @@ type scriptedHandlers struct {
 	resumeCwdCalls  []string
 	closeCalls      []string
 	authCalls       []string
+	setConfigCalls  []setConfigCall
+}
+
+// setConfigCall records one SetSessionConfigOption delegation (plan 06-06):
+// the wire triple the adapter must forward verbatim.
+type setConfigCall struct {
+	sessionID string
+	configID  string
+	value     string
 }
 
 // newScriptedHandlers returns the fake with the canned backend session id.
@@ -1896,11 +1993,29 @@ func (s *scriptedHandlers) Authenticate(_ context.Context, methodID string) erro
 	return s.authErr
 }
 
+// SetSessionConfigOption records the wire triple and replays the canned
+// neutral options (MODEL-02, plan 06-06 — the adapter delegation's
+// counterparty).
+func (s *scriptedHandlers) SetSessionConfigOption(
+	_ context.Context, sessionID, configID, value string,
+) ([]acpport.ConfigOptionDef, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.setConfigCalls = append(s.setConfigCalls, setConfigCall{sessionID: sessionID, configID: configID, value: value})
+
+	if s.setConfigErr != nil {
+		return nil, s.setConfigErr
+	}
+
+	return s.setConfigOptions, nil
+}
+
 // totalCalls reports the number of Handlers invocations recorded.
 func (s *scriptedHandlers) totalCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.initCalls + len(s.newSessionCalls) + len(s.promptCalls) + len(s.cancelCalls) +
-		len(s.resumeCalls) + len(s.closeCalls) + len(s.authCalls)
+		len(s.resumeCalls) + len(s.closeCalls) + len(s.authCalls) + len(s.setConfigCalls)
 }
