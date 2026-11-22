@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -875,6 +876,140 @@ func (c *e2eCollector) hasUpdateText(want string) bool {
 	}
 
 	return false
+}
+
+// ompFloorVersion is the compatibility floor the version answers must meet
+// (plan 07-04, D-03): the client's probe blocks the card below 17.0.5
+// outright and model selectors resolve only from 18.1.9 — the locked stamp
+// decision prints the 18.1.9 floor.
+var ompFloorVersion = semverTriple{major: 18, minor: 1, patch: 9}
+
+// semverTriple is the parsed major.minor.patch of a version answer.
+type semverTriple struct {
+	major, minor, patch int
+}
+
+// parseSemverLine parses the probe's one output line — the exact format the
+// probe parses around (`zcode-acp <semver>`, build metadata tolerated) —
+// and reports the triple; ok=false on any format deviation.
+func parseSemverLine(line string) (semverTriple, bool) {
+	prefix, ver, ok := strings.Cut(line, " ")
+	if !ok || prefix != "zcode-acp" {
+		return semverTriple{}, false
+	}
+
+	ver, _, _ = strings.Cut(ver, "+") // build metadata never compares
+
+	majorStr, rest, ok := strings.Cut(ver, ".")
+	if !ok {
+		return semverTriple{}, false
+	}
+
+	minorStr, patchStr, ok := strings.Cut(rest, ".")
+	if !ok {
+		return semverTriple{}, false
+	}
+
+	// A prerelease suffix parses away (the client's semver reader reads
+	// `0.0.0-dev` as 0.0.0 — the tooOld shape the phase replaces).
+	patchStr, _, _ = strings.Cut(patchStr, "-")
+
+	major, majorErr := strconv.Atoi(majorStr)
+	minor, minorErr := strconv.Atoi(minorStr)
+	patch, patchErr := strconv.Atoi(patchStr)
+	if majorErr != nil || minorErr != nil || patchErr != nil {
+		return semverTriple{}, false
+	}
+
+	return semverTriple{major: major, minor: minor, patch: patch}, true
+}
+
+// ompVersionAtLeast reports whether the got triple is >= the floor triple.
+func ompVersionAtLeast(got, floor semverTriple) bool {
+	if got.major != floor.major {
+		return got.major > floor.major
+	}
+
+	if got.minor != floor.minor {
+		return got.minor > floor.minor
+	}
+
+	return got.patch >= floor.patch
+}
+
+// ompRunVersionProbe runs the built binary with argv and returns its stdout
+// (the client probe reads stdout with a 4096-byte cap inside a 5s bound —
+// the wait bound mirrors that). The app-server env override names a
+// nonexistent path so a pre-dispatch fall-through to acp mode fails fast at
+// discovery — deterministically side-effect-free (no real desktop spawn,
+// the CI blocker rule), which is exactly the pre-implementation shape.
+func ompRunVersionProbe(t *testing.T, bin string, argv []string) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), e2eUpdateWait)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, argv...)
+	cmd.Env = append(os.Environ(), "ZCODE_ACP_APP_SERVER="+filepath.Join(t.TempDir(), "no-such-install"))
+
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("%v: %v (stdout %q)", argv, err, string(out))
+	}
+
+	return strings.TrimSpace(string(out))
+}
+
+// ompAssertVersionFloor asserts the probe's one-line answer: the
+// `zcode-acp <semver>` format and a semver >= the 18.1.9 floor.
+func ompAssertVersionFloor(t *testing.T, out string) {
+	t.Helper()
+
+	lines := strings.Split(out, "\n")
+	if len(lines) != 1 {
+		t.Fatalf("version answer = %q, want exactly one stdout line", out)
+	}
+
+	got, ok := parseSemverLine(lines[0])
+	if !ok {
+		t.Fatalf("version answer %q does not parse as the `zcode-acp <semver>` line", lines[0])
+	}
+
+	if !ompVersionAtLeast(got, ompFloorVersion) {
+		t.Fatalf("version answer %q parses to %d.%d.%d, want >= the %d.%d.%d floor",
+			lines[0], got.major, got.minor, got.patch,
+			ompFloorVersion.major, ompFloorVersion.minor, ompFloorVersion.patch)
+	}
+}
+
+// TestOmpVersionProbeFloor (plan 07-04 task 1): the built binary answers the
+// client's version probe under the omp subcommand in ANY position —
+// `omp --version` (the probe shape: prefix args + --version, card args
+// absent) and `omp acp --version` (the any-position rule) — with a semver
+// >= the 18.1.9 floor on one stdout line. Pre-implementation every omp
+// shape falls through to root acp mode (stdlib flag stops at the `omp`
+// positional, Pitfall 3), so the probe never answers.
+func TestOmpVersionProbeFloor(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+
+	for _, argv := range [][]string{
+		{"omp", "--version"},
+		{"omp", "acp", "--version"},
+	} {
+		t.Run(strings.Join(argv, " "), func(t *testing.T) {
+			ompAssertVersionFloor(t, ompRunVersionProbe(t, agentBin, argv))
+		})
+	}
+}
+
+// TestRootVersionFloor locks the root arm's floor parity: the root
+// `--version` answer carries the SAME >= 18.1.9 semver (the probe also hits
+// the root shape when no prefix args are configured) and the format stays
+// `zcode-acp <semver>`.
+func TestRootVersionFloor(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+
+	ompAssertVersionFloor(t, ompRunVersionProbe(t, agentBin, []string{"--version"}))
 }
 
 // testWiringMachineryLazily locks D-13's construction posture: every coding-plan seam constructs without executing

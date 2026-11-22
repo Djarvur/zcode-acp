@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestOmpVersionProbeFloor|TestRootVersionFloor' ./cmd/zcode-acp/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestRootVersionFloor (0.91s)\n    main_test.go:1012: version answer \"zcode-acp 0.0.0-dev\" parses to 0.0.0, want >= the 18.1.9 floor\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/cmd/zcode-acp\t2.071s\nFAIL",
+  "targetTest": "TestRootVersionFloor",
+  "targetFile": "cmd/zcode-acp/main_test.go",
+  "expected": "The root `--version` argv answers one stdout line `zcode-acp <semver>` with a semver >= 18.1.9. Pre-implementation the version var is the dev placeholder 0.0.0-dev (main.go:36), which the client's semver probe parses as 0.0.0 — below the 17.0.5 card floor, hence tooOld/unusable (RESEARCH Pitfall 2) — so this regression lock must fail on the floor comparison pre-GREEN",
+  "actual": "Exactly that: the binary printed the one line `zcode-acp 0.0.0-dev`, the prerelease-tolerant parser read it as 0.0.0 (the client's own tooOld reading), and the floor assertion failed naming 0.0.0 vs the 18.1.9 floor. The format half (`zcode-acp <semver>` prefix) parsed fine — only the floor comparison failed, isolating the version-var value as the sole pre-GREEN defect",
+  "semanticAssessment": "VALID RED - the target test executed and failed on the planned floor assertion for the intended reason (the version var is the 0.0.0-dev placeholder below the compatibility floor); the test compiles and runs; the format lock and parse helper behaved as designed, isolating the stamp value as the defect GREEN must fix"
+}

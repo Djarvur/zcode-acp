@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestOmpVersionProbeFloor|TestRootVersionFloor' ./cmd/zcode-acp/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestOmpVersionProbeFloor (1.14s)\n    --- FAIL: TestOmpVersionProbeFloor/omp_--version (0.08s)\n        main_test.go:1000: [omp --version]: exit status 1 (stdout \"\")\n    --- FAIL: TestOmpVersionProbeFloor/omp_acp_--version (0.24s)\n        main_test.go:1000: [omp acp --version]: exit status 1 (stdout \"\")\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/cmd/zcode-acp\t2.071s\nFAIL",
+  "targetTest": "TestOmpVersionProbeFloor",
+  "targetFile": "cmd/zcode-acp/main_test.go",
+  "expected": "Both omp argv shapes (omp --version — the probe shape; omp acp --version — the any-position rule) answer one stdout line `zcode-acp <semver>` with a semver >= 18.1.9 and exit 0. Pre-implementation (version var 0.0.0-dev @HEAD 6f6281d, no omp dispatch) stdlib flag stops at the `omp` positional (Pitfall 3), the shapes fall through to root acp mode, and the probe never answers — the tests must fail on exactly that",
+  "actual": "Exactly that: both subtests report the fall-through shape — exit status 1 with empty stdout (the wrapper went into acp mode with the nonexistent-install env override and died at discovery; no version line ever printed). The version parse helper itself verified the root line `zcode-acp 0.0.0-dev` parses to 0.0.0 in the sibling test, so the floor comparator is exercised and honest",
+  "semanticAssessment": "VALID RED - the target test executed and failed on the planned assertion for the intended reason (the omp shapes never answer the version probe pre-dispatch: stdlib flag's stop-at-first-positional drops everything after `omp`); the tests compile and run (no build/load/setup failure); the failure mode is the documented Pitfall 3 fall-through, deterministic and side-effect-free (nonexistent-install env override, no real desktop spawn)"
+}
