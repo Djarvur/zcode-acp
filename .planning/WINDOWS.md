@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 15
+open_count: 17
 waived_count: 0
 fixed_count: 1
-total_count: 16
-last_updated: 2026-11-22T11:36:17.784Z
+total_count: 18
+last_updated: 2026-11-22T14:45:18.399Z
 ---
 
 # Broken Windows Ledger
@@ -31,6 +31,8 @@ last_updated: 2026-11-22T11:36:17.784Z
 | 14 | 05 | unmet-truth | test/realdesktop/apicycle_test.go | 208 | REAL RUN attempt 2 (EXP-APIKEY-CYCLE-02): file-read tool turn refused by the desktop turn latch ('another prompt is already running') — the real-tier full cycle remains unproven; auth read-back leg field-proven; next gap plan must add a turn-latch drain between sends | open |  | 2026-11-21T10:08:55.578Z |  |
 | 15 | 6 | unrun-verify | test/realdesktop/codingplan_test.go |  | TestCodingPlanFullCycle real-account run is the human-gated end-of-phase UAT (D-12/D-13): executor prepared harness+runbook+ledger row PENDING; the run executes under human control at phase verification, never autonomously, never CI | open |  | 2026-11-22T04:52:07.817Z |  |
 | 16 | 7 | deviation | .planning/tdd/07-01-task1-red.json |  | Task-1 RED landed as the plan-sanctioned CONFIRM-UNREPRODUCED branch: both WR-05 tests pass pre-fix (window cannot land), classifier verdict INVALID_RED unexpected_green persisted in the record; tasks 2-3 produced genuine RED_EVIDENCE_OK REDs | open |  | 2026-11-22T11:36:17.784Z |  |
+| 17 | 7 | unrun-verify | .planning/phases/07-hardening-vm-manual-e2e-documentation/07-UAT.md |  | QA-02 VM field run of scripts/vm-e2e.sh is the human-gated end-of-phase UAT (D-05): executor staged the copy-pasteable runbook + PENDING ledger row; the one documented VM execution happens under user control at phase verification, never autonomously | open |  | 2026-11-22T14:45:18.280Z |  |
+| 18 | 7 | unrun-verify | .planning/phases/07-hardening-vm-manual-e2e-documentation/07-UAT.md |  | QA-03 Orca card E2E through BOTH auth paths is THE phase user gate (D-06): executor staged per-path checklists + observation items + PENDING ledger row; the real-account run happens under user control at phase verification, never autonomously | open |  | 2026-11-22T14:45:18.399Z |  |
 
 ````json
 [
@@ -239,6 +241,32 @@ last_updated: 2026-11-22T11:36:17.784Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-22T11:36:17.784Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 17,
+    "kind": "unrun-verify",
+    "phase": "7",
+    "file": ".planning/phases/07-hardening-vm-manual-e2e-documentation/07-UAT.md",
+    "line": null,
+    "description": "QA-02 VM field run of scripts/vm-e2e.sh is the human-gated end-of-phase UAT (D-05): executor staged the copy-pasteable runbook + PENDING ledger row; the one documented VM execution happens under user control at phase verification, never autonomously",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-22T14:45:18.280Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 18,
+    "kind": "unrun-verify",
+    "phase": "7",
+    "file": ".planning/phases/07-hardening-vm-manual-e2e-documentation/07-UAT.md",
+    "line": null,
+    "description": "QA-03 Orca card E2E through BOTH auth paths is THE phase user gate (D-06): executor staged per-path checklists + observation items + PENDING ledger row; the real-account run happens under user control at phase verification, never autonomously",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-22T14:45:18.399Z",
     "resolved_at": null,
     "milestone": "v0.20.0"
   }
