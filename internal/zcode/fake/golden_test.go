@@ -265,6 +265,11 @@ func goldenDrivers() map[string]driverFunc {
 		"setmodel-followup":              driveSetModelFollowup,
 		"part-delta-streaming":           drivePartDeltaStreaming,
 		"desktop-delta-streaming":        driveDesktopDeltaStreaming,
+		"desktop-nodelta-messages":       driveDesktopNodeltaMessages,
+		"desktop-delta-messages":         driveDesktopDeltaMessages,
+		"desktop-nodelta-pollerror":      driveDesktopNodeltaPollError,
+		"desktop-nodelta-slowpoll":       driveDesktopNodeltaSlowPoll,
+		"desktop-nodelta-noassistant":    driveDesktopNodeltaNoAssistant,
 		"no-reasoning":                   driveNoReasoning,
 		"send-refused-32010":             driveSendRefused32010,
 		"complete-then-cancel":           driveCompleteThenCancel,
@@ -733,6 +738,83 @@ func drivePartDeltaStreaming(ctx context.Context, d *exchangeDriver) {
 // client-visible chunk lock lives in acpfront's TestDesktopDeltaStreaming
 // (the ACP-leg golden over the same corpus row).
 func driveDesktopDeltaStreaming(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx)
+}
+
+// driveDesktopNodeltaMessages: the QA-03 completion-side reconcile's
+// flagship corpus row (EXP-CODINGPLAN-CYCLE-01 poll-24 projection shape) —
+// the front preamble, the no-delta send (turn.started → turn.completed with
+// ZERO model.streaming rows), then ONE session/messages poll replaying the
+// reconcile's completion-time read at the back tier: the golden byte-locks
+// the messages projection whose LAST role:assistant entry's type:text parts
+// carry the stored reply (beside reasoning/step-*/timeline parts). The
+// client-visible reconcile chunk lock lives in acpfront's
+// TestNoDeltaReplyReconcile (the ACP-leg golden over the same corpus row).
+func driveDesktopNodeltaMessages(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+
+	if _, err := d.call(ctx, zcode.MethodSessionMessages, map[string]any{wireKeySessionID: fixSessionID}); err != nil {
+		d.t.Fatalf("session/messages: %v", err)
+	}
+}
+
+// driveDesktopNodeltaNoAssistant: the reconcile's unrecoverable-text row —
+// the same turn and poll as the flagship row, but the projection carries no
+// assistant reply (timeline + user entries only): nothing extractable, so
+// nothing is ever emitted.
+func driveDesktopNodeltaNoAssistant(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+
+	if _, err := d.call(ctx, zcode.MethodSessionMessages, map[string]any{wireKeySessionID: fixSessionID}); err != nil {
+		d.t.Fatalf("session/messages: %v", err)
+	}
+}
+
+// driveDesktopDeltaMessages: the reconcile's no-duplicate row — the same
+// no-delta turn shape with TWO text_delta rows streaming before the
+// terminal, and the messages rule present (the projection data available):
+// a front that lost the streamed-deltas counter would duplicate the reply
+// here. The poll itself is locked by the flagship row's replay.
+func driveDesktopDeltaMessages(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+}
+
+// driveDesktopNodeltaPollError: the reconcile's honest-failure row — the
+// no-delta turn whose session/messages poll answers a dialect §6 internal
+// error: the reconcile read fails, nothing is fabricated, the stopReason
+// still leaves.
+func driveDesktopNodeltaPollError(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+
+	_, err := d.call(ctx, zcode.MethodSessionMessages, map[string]any{wireKeySessionID: fixSessionID})
+
+	var callErr *zcode.CallError
+	if !errors.As(err, &callErr) {
+		d.t.Fatalf("the refused session/messages must answer a wire error, got %v", err)
+	}
+
+	if callErr.Err.Code != zcode.CodeInternalError {
+		d.t.Fatalf("session/messages error code = %d, want %d (-32603)", callErr.Err.Code, zcode.CodeInternalError)
+	}
+}
+
+// driveDesktopNodeltaSlowPoll: the reconcile's bounded-read row — the
+// no-delta turn whose messages rule answers 3s past the front's bounded
+// read. The replay drives preamble + send only: a poll here would stall the
+// exchange on the scripted delay for no back-tier fact (the delay semantics
+// are the acpfront tier's lock).
+func driveDesktopNodeltaSlowPoll(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+}
+
+// driveDesktopReconcileTurn is the shared reconcile-row body: the front
+// preamble plus the no-delta send (the rule's ordered side effects replay
+// state.running → turn.started → [deltas] → turn.completed with the
+// desktop envelope surface verbatim).
+func driveDesktopReconcileTurn(ctx context.Context, d *exchangeDriver) {
 	driveFrontPreamble(ctx, d)
 
 	h := happyTurnHarness{t: d.t, conn: d.conn}

@@ -79,6 +79,18 @@ type turnPump struct {
 	notify  chan struct{}
 	drained chan struct{} // signaled whenever the queue reaches empty
 	done    chan struct{}
+
+	// messages counts the agent_message_chunk notes this turn's pump has
+	// ACCEPTED (enqueued) — the QA-03 completion-side reconcile's counter
+	// (reconcile.go): a completed turn whose count is still zero carries its
+	// reply text only in the backend's message store, so the turn-end path
+	// reconciles it; a non-zero count means deltas streamed and the
+	// reconcile must stay silent (no duplicate). Counting at the enqueue
+	// boundary (not the sink write) is the conservative duplicate guard:
+	// every accepted chunk rides the release flush even when the reconcile
+	// reads mid-drain. The pump is constructed fresh per acquireTurn, so the
+	// counter starts at zero each turn — that construction IS the reset.
+	messages int
 }
 
 // newTurnPump builds the pump for one turn and starts its drain goroutine
@@ -290,9 +302,25 @@ func (p *turnPump) enqueue(note acpport.SessionNote) error {
 }
 
 // appendLocked queues one note and adds its weight; the caller holds mu.
+// Message chunks bump the reconcile counter here — the single acceptance
+// choke point every enqueued note passes (coalescing never drops or merges
+// message chunks: they are not tool patches).
 func (p *turnPump) appendLocked(note acpport.SessionNote, size int) {
 	p.queue = append(p.queue, pumpEntry{note: note, size: size})
 	p.bytes += size
+
+	if note.Kind == acpport.NoteMessage {
+		p.messages++
+	}
+}
+
+// messageCount snapshots the turn's accepted agent_message_chunk count —
+// the completion-side reconcile's counter read (reconcile.go).
+func (p *turnPump) messageCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.messages
 }
 
 // isToolUpdate reports whether the note is a tool_call_update patch (the

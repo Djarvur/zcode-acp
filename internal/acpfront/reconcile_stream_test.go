@@ -8,6 +8,15 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
 
+// The shared delta-stream literals (goconst): the two corpus text deltas
+// the streaming corpus rows replay (part-delta-streaming and the
+// desktop-delta rows) — extracted so the package stays under the literal
+// repetition threshold.
+const (
+	deltaTextAnswer = "Answer:"
+	deltaTextDone   = " done"
+)
+
 // TestNoDeltaReplyReconcile locks the QA-03 completion-side reconcile (the
 // second half of the field gap): the real desktop's turns VARY run-to-run —
 // some stream model.streaming deltas (the landed translation covers those),
@@ -85,7 +94,8 @@ func testReconcileNoDeltaChunk(t *testing.T) {
 
 	updates := h.Updates()
 	if len(updates) != 1 {
-		t.Fatalf("client collected %d updates, want exactly ONE reconcile chunk carrying the stored reply", len(updates))
+		t.Fatalf("client collected %d updates, want exactly ONE reconcile chunk carrying the stored reply",
+			len(updates))
 	}
 
 	if updates[0].SessionID != sid {
@@ -114,7 +124,8 @@ func testReconcileNoDeltaChunk(t *testing.T) {
 
 	msgIdxs := transcriptIndexes(tr, "in", `"method":"session/messages"`)
 	if len(msgIdxs) != 1 {
-		t.Fatalf("back leg records %d session/messages requests, want exactly 1 (the bounded reconcile read)", len(msgIdxs))
+		t.Fatalf("back leg records %d session/messages requests, want exactly 1 (the bounded reconcile read)",
+			len(msgIdxs))
 	}
 
 	if msgIdxs[0] < sendIdx {
@@ -136,10 +147,11 @@ func testReconcileDeltaSuppressed(t *testing.T) {
 
 	updates := h.Updates()
 	if len(updates) != 2 {
-		t.Fatalf("client collected %d updates, want exactly the 2 streamed deltas — a reconcile chunk here is a DUPLICATE", len(updates))
+		t.Fatalf("client collected %d updates, want exactly the 2 streamed deltas (a reconcile chunk = DUPLICATE)",
+			len(updates))
 	}
 
-	wantDeltas := []string{"Answer:", " done"}
+	wantDeltas := []string{deltaTextAnswer, deltaTextDone}
 	for i, want := range wantDeltas {
 		if updates[i].SessionID != sid {
 			t.Fatalf("update[%d] session = %q, want %q", i, updates[i].SessionID, sid)
@@ -152,7 +164,8 @@ func testReconcileDeltaSuppressed(t *testing.T) {
 
 	lines := h.ACPLines()
 	if got := len(teeLineIndexes(lines, "in", `"agent_message_chunk"`)); got != 2 {
-		t.Fatalf("tee records %d agent_message_chunk frames, want exactly 2 (the deltas; the projection's full reply must not duplicate)", got)
+		t.Fatalf("tee records %d agent_message_chunk frames, want exactly 2 (the deltas; no full-reply duplicate)",
+			got)
 	}
 }
 
@@ -164,7 +177,8 @@ func testReconcilePollFailure(t *testing.T) {
 	h, _, resp := runReconcileRide(t, "desktop-nodelta-pollerror")
 
 	if resp.StopReason != acp.StopReasonEndTurn {
-		t.Fatalf("stopReason = %q, want %q (a failed reconcile poll must still answer the turn)", resp.StopReason, acp.StopReasonEndTurn)
+		t.Fatalf("stopReason = %q, want %q (a failed reconcile poll must still answer the turn)",
+			resp.StopReason, acp.StopReasonEndTurn)
 	}
 
 	if updates := h.Updates(); len(updates) != 0 {
@@ -187,11 +201,13 @@ func testReconcileSlowPollBound(t *testing.T) {
 	h, _, resp := runReconcileRide(t, "desktop-nodelta-slowpoll")
 
 	if resp.StopReason != acp.StopReasonEndTurn {
-		t.Fatalf("stopReason = %q, want %q (a slow reconcile poll must not hold the turn open)", resp.StopReason, acp.StopReasonEndTurn)
+		t.Fatalf("stopReason = %q, want %q (a slow reconcile poll must not hold the turn open)",
+			resp.StopReason, acp.StopReasonEndTurn)
 	}
 
 	if updates := h.Updates(); len(updates) != 0 {
-		t.Fatalf("client collected %d updates after the reconcile poll missed its bound, want 0 (the late reply must not leak a chunk)", len(updates))
+		t.Fatalf("client collected %d updates after the reconcile poll missed its bound, want 0 (no late-chunk leak)",
+			len(updates))
 	}
 
 	lines := h.ACPLines()
@@ -207,11 +223,13 @@ func testReconcileNoAssistantText(t *testing.T) {
 	h, _, resp := runReconcileRide(t, "desktop-nodelta-noassistant")
 
 	if resp.StopReason != acp.StopReasonEndTurn {
-		t.Fatalf("stopReason = %q, want %q (an unrecoverable reply text must still answer the turn)", resp.StopReason, acp.StopReasonEndTurn)
+		t.Fatalf("stopReason = %q, want %q (an unrecoverable reply text must still answer the turn)",
+			resp.StopReason, acp.StopReasonEndTurn)
 	}
 
 	if updates := h.Updates(); len(updates) != 0 {
-		t.Fatalf("client collected %d updates with no assistant reply in the projection, want 0 (nothing fabricated)", len(updates))
+		t.Fatalf("client collected %d updates with no assistant reply in the projection, want 0 (nothing fabricated)",
+			len(updates))
 	}
 }
 

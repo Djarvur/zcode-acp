@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_fix1","update":{"content":{"text":"ok","type":"text"},"sessionUpdate":"agent_message_chunk"}}}
+{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}

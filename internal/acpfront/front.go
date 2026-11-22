@@ -414,6 +414,20 @@ func (f *Front) Prompt(
 
 	switch reason {
 	case turn.StopCompleted:
+		// QA-03 completion-side reconcile (reconcile.go): a completed turn
+		// whose pump accepted zero message chunks carries its reply text
+		// only in the backend's message store — fetch it once (bounded) and
+		// emit ONE agent_message_chunk BEFORE the stopReason leaves (the
+		// chunk enqueues onto the same pump, so the deferred release's
+		// flush delivers it first). Delta-streamed turns skip it; every
+		// failure arm answers honestly (empty reply + end_turn, never a
+		// hang).
+		//
+		//nolint:contextcheck // the turn ctx is front-owned BY CONTRACT (the
+		// Run call above): the reconcile poll derives from it so the bounded
+		// read dies with the turn's own teardown, never with the SDK request.
+		f.reconcileNoDeltaReply(turnCtx, params.SessionID, pump)
+
 		return acpport.StopEndTurn, nil
 	case turn.StopCancelled:
 		return acpport.StopCancelled, nil
