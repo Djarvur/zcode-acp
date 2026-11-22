@@ -48,14 +48,19 @@ func TestDesktopDeltaStreaming(t *testing.T) {
 // the desktop-delta-streaming corpus: the scripted model.streaming payload
 // deltas verbatim (reasoning_delta → thought chunks, text_delta → message
 // chunks), the tool_input_* trio and turn.started/turn.completed absent.
-var desktopDeltaWantUpdates = []struct {
+func desktopDeltaWantUpdates() []struct {
 	thought bool
 	text    string
-}{
-	{true, "Thinking"},
-	{true, " about it"},
-	{false, "Answer:"},
-	{false, " done"},
+} {
+	return []struct {
+		thought bool
+		text    string
+	}{
+		{true, "Thinking"},
+		{true, " about it"},
+		{false, "Answer:"},
+		{false, " done"},
+	}
 }
 
 // testDesktopDeltaChunks drives the composed loop and asserts the QA-03
@@ -64,6 +69,8 @@ var desktopDeltaWantUpdates = []struct {
 // trio invisible, and every chunk frame on the wire BEFORE the end_turn
 // response (flush-before-stopReason).
 func testDesktopDeltaChunks(t *testing.T) {
+	wantUpdates := desktopDeltaWantUpdates()
+
 	h := newTracerFront(t, "desktop-delta-streaming")
 
 	ctx, cancel := h.ExchangeCtx()
@@ -89,13 +96,13 @@ func testDesktopDeltaChunks(t *testing.T) {
 	}
 
 	updates := h.Updates()
-	if len(updates) != len(desktopDeltaWantUpdates) {
+	if len(updates) != len(wantUpdates) {
 		t.Fatalf("client collected %d updates, want exactly %d "+
-			"(one chunk per model.streaming delta payload; the tool_input_* trio and turn.* desktop facts never translate)",
-			len(updates), len(desktopDeltaWantUpdates))
+			"(one chunk per model.streaming delta payload; held kinds never translate)",
+			len(updates), len(wantUpdates))
 	}
 
-	for i, want := range desktopDeltaWantUpdates {
+	for i, want := range wantUpdates {
 		if updates[i].SessionID != sid {
 			t.Fatalf("update[%d] session = %q, want %q", i, updates[i].SessionID, sid)
 		}
@@ -113,9 +120,9 @@ func testDesktopDeltaChunks(t *testing.T) {
 	// The tool-args trio renders no tool card on this row (no tool.updated
 	// frames are scripted): a tool_call/tool_call_update update here would be
 	// synthesized from the held kinds — never.
-	for i, update := range updates {
-		if update.Update.ToolCall != nil || update.Update.ToolCallUpdate != nil {
-			t.Fatalf("update[%d] carries a tool surface — tool-args model.streaming kinds must stay held from the client", i)
+	for i := range updates {
+		if updates[i].Update.ToolCall != nil || updates[i].Update.ToolCallUpdate != nil {
+			t.Fatalf("update[%d] carries a tool surface — tool-args kinds must stay held from the client", i)
 		}
 	}
 

@@ -19,6 +19,20 @@ import (
 // upsert (Pitfall 5: upserts carry cumulative part text and would
 // duplicate every delta).
 //
+// QA-03 (the real-desktop delta carrier): the shipped 3.18.2 desktop never
+// emits part.delta on the wire — its model-response text rides session/event
+// envelopes with type model.streaming whose payload.kind discriminates the
+// delta (text_delta / reasoning_delta / tool_input_* per the bundle enum,
+// EXP-APIKEY-CYCLE-03 frames 176+). The tap translates the two DELTA kinds
+// with the same one-envelope-one-chunk discipline (text_delta →
+// agent_message_chunk, reasoning_delta → agent_thought_chunk); every other
+// model.streaming kind — the tool-args stream and the start/finish/error
+// markers — is a desktop-UI fact held from the client surface with a
+// structural log (tool cards ride tool.updated, below). payload.done is
+// deliberately not consulted: the capture's own final deltas carry
+// done:false, and the turn-completion machinery (turn.completed /
+// quiet-window) owns the turn end.
+//
 // TOOL-01 (plan 05-04): the tap extends to the tool.updated discriminated
 // union — one backend envelope maps to exactly ONE neutral ToolNote
 // (scheduled → the tool_call start with the Edit/Write diff recipe and the
@@ -31,8 +45,8 @@ import (
 //
 // IN-05: the turn slot records the active turn's backend turnId
 // (record-on-first-sight, the machine.go discipline) and the tap skips
-// BOTH part.delta and tool.updated envelopes whose turnId differs from
-// the slot's — a foreign turn's deltas never reach the client.
+// part.delta, model.streaming AND tool.updated envelopes whose turnId
+// differs from the slot's — a foreign turn's deltas never reach the client.
 //
 // WR-03 (plan 05-04 Task 3): the tap never blocks the backend read loop —
 // classification stays on the read goroutine, and the emit goes through
@@ -43,12 +57,25 @@ import (
 // part.delta kind and field literals (zcode-src schema, RESEARCH Pattern 2
 // verbatim: field ∈ {"text","reasoning","input","output"}).
 const (
-	kindPartDelta = "part.delta"
+	kindPartDelta      = "part.delta"
+	kindModelStreaming = "model.streaming" // the real desktop's delta carrier (QA-03)
 
 	deltaFieldText      = "text"      // → agent_message_chunk (acpport.NoteMessage)
 	deltaFieldReasoning = "reasoning" // → agent_thought_chunk (acpport.NoteThought, CORE-04)
 	deltaFieldInput     = "input"     // tool inputs ride tool.updated — skipped here
 	deltaFieldOutput    = "output"    // tool outputs ride tool.updated result — skipped here
+
+	// The model.streaming payload.kind literals that TRANSLATE (the bundle's
+	// dRr schema enum, dialect doc §5 [V-SRC bundle resources/glm/zcode.cjs#
+	// model.streaming payload schema]; EXP-APIKEY-CYCLE-03 frames 176+).
+	// Every other enum member — the tool_input_start/delta/end and tool_call
+	// tool-args kinds (tool cards ride tool.updated, whose scheduled frame
+	// carries the full input) and the start/finish/error and
+	// text/reasoning start/end markers — is a desktop-UI fact, held from
+	// the client surface with the structural log-and-skip (see
+	// observeModelStreaming).
+	modelStreamingKindTextDelta      = "text_delta"      // → agent_message_chunk (NoteMessage)
+	modelStreamingKindReasoningDelta = "reasoning_delta" // → agent_thought_chunk (NoteThought)
 
 	// The tool.updated discriminated-union kinds (05-RESEARCH.md Pattern 4
 	// taxonomy table, zcode-src index.ts:1758-1812 verbatim literals).
@@ -104,9 +131,88 @@ func (f *Front) observeEnvelope(env zcode.Envelope) {
 	switch params.Type {
 	case kindPartDelta:
 		f.observePartDelta(params.Field, params.Delta, turnID)
+	case kindModelStreaming:
+		f.observeModelStreaming(params.Payload, turnID)
 	case "tool.updated":
 		f.observeToolUpdated(params.Payload, turnID)
 	}
+}
+
+// observeModelStreaming maps one real-desktop model.streaming envelope onto
+// its chunk note (QA-03, CORE-03/CORE-04 on the shipped wire): payload kind
+// text_delta → NoteMessage, reasoning_delta → NoteThought — exactly ONE
+// chunk per delta envelope, in arrival order, through the same turn-scoped
+// pump emit the part.delta arm rides (the single demux path). The
+// payload.done flag is deliberately not decoded: the capture's own final
+// deltas carry done:false and the turn-completion machinery (turn.completed
+// / the quiet-window settle) owns the turn end — no client frame rides on
+// done. Every other kind (the tool_input_* tool-args stream, the
+// start/finish/error markers) is held from the client surface with a
+// structural log — kinds and ids only, never content (the WR-06-adjacent
+// posture): tool cards ride the tool.updated stream, whose scheduled frame
+// carries the full input.
+func (f *Front) observeModelStreaming(payload json.RawMessage, turnID string) {
+	p, ok := decodeModelStreamingPayload(payload)
+	if !ok {
+		return // undecodable payload — observation only, never synthesized
+	}
+
+	var kind acpport.SessionNoteKind
+
+	switch p.Kind {
+	case modelStreamingKindTextDelta:
+		kind = acpport.NoteMessage
+	case modelStreamingKindReasoningDelta:
+		kind = acpport.NoteThought
+	default:
+		slog.Debug("acpfront: model.streaming kind held from the client surface",
+			"kind", p.Kind, "assistantMessageId", p.AssistantMessageID, "toolCallId", p.ToolCallID)
+
+		return
+	}
+
+	emit, scoped := f.turnScope(turnID)
+	if !scoped {
+		return // pre-turn, foreign-turn, or slotless envelope — observation only
+	}
+
+	// Exactly ONE chunk per model.streaming delta envelope, in arrival
+	// order, on the turn context (the part.delta arm's discipline — a
+	// failed update write is recorded structurally and the turn continues).
+	note := acpport.SessionNote{Kind: kind, Delta: p.Delta}
+	if err := emit(note); err != nil {
+		slog.Warn("acpfront: session update write failed", "err", err)
+	}
+}
+
+// modelStreamingPayload is one decoded model.streaming payload — the
+// classification-relevant key subset of the bundle's dRr schema shape
+// (assistantMessageId/delta/kind plus the tool-args ids). payload.done is
+// not decoded: nothing consumes it (see observeModelStreaming).
+type modelStreamingPayload struct {
+	Kind               string
+	AssistantMessageID string
+	Delta              string
+	ToolCallID         string
+}
+
+// decodeModelStreamingPayload digs the classification-relevant keys out of
+// one model.streaming payload; an undecodable payload decodes as not-ok —
+// observation only, never a synthesized note. The camelCase wire keys dig
+// out through a raw map (the tagliatelle contract).
+func decodeModelStreamingPayload(raw json.RawMessage) (modelStreamingPayload, bool) {
+	var obj map[string]json.RawMessage
+
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return modelStreamingPayload{}, false
+	}
+
+	return modelStreamingPayload{
+		Kind:               rawString(obj["kind"]),
+		AssistantMessageID: rawString(obj["assistantMessageId"]),
+		Delta:              rawString(obj["delta"]),
+		ToolCallID:         rawString(obj["toolCallId"]),
+	}, true
 }
 
 // observePartDelta maps one part.delta envelope onto its chunk note
