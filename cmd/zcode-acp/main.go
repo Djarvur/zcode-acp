@@ -32,8 +32,13 @@ import (
 
 // version is reported by --version and advertises as the agentInfo version
 // (D-02 real agentInfo — the initialize report carries the binary's own
-// version) until the release flow stamps a real value (Phase 7).
-var version = "0.0.0-dev"
+// version). The value is the omp card's compatibility-floor stamp (plan
+// 07-04, D-03): the client's version probe parses the answer as semver and
+// blocks the whole card below 17.0.5, and model selectors resolve only from
+// 18.1.9 — the stamp carries build metadata, honest about being this
+// wrapper's build at the floor. The -ldflags override seam stays open for a
+// release flow to stamp later.
+var version = "18.1.9+zacp.0"
 
 // Environment fallbacks for the flags (the flag always wins over its env var,
 // so a wrapper config env and a CLI flag compose like a prefix/override pair).
@@ -79,6 +84,12 @@ var (
 )
 
 func main() {
+	if ompRequested(os.Args[1:]) {
+		runOmp(os.Args[1:])
+
+		return
+	}
+
 	showVersion := flag.Bool("version", false, "print version and exit")
 	appServerFlag := flag.String("app-server", "",
 		"path to a ZCode install root (or app-server binary) overriding discovery — also "+envAppServer)
@@ -102,6 +113,220 @@ func main() {
 	cfg, err := parseConfig(*appServerFlag, *modelFlag, *reasoningFlag, *apiKeyFlag)
 	if err != nil {
 		slog.Error("zcode-acp: invalid configuration", "err", err)
+
+		os.Exit(exitInvalidConfig)
+	}
+
+	if err := run(cfg); err != nil {
+		slog.Error("zcode-acp: exiting after failure", "err", err)
+
+		os.Exit(1)
+	}
+}
+
+// ompSubcommand is the omp card persona's dispatch token: the client
+// launches the card as `<program> omp ...` (the per-agent command override
+// is "<wrapper> omp" — the dialect doc's Launch contract), so the first
+// non-flag positional equal to omp selects the omp arm. First-positional
+// dispatch is the only switch (plan 07-04: root acp-mode behavior stays
+// byte-identical for non-omp argv).
+const ompSubcommand = "omp"
+
+// ompRootValueFlags are the root arm's flag names that consume a separate
+// value token; the dispatch pre-scan skips those values so an argv like
+// `--model omp` stays a root invocation instead of hijacking the arm.
+var ompRootValueFlags = map[string]bool{
+	"app-server":      true,
+	"model":           true,
+	"reasoning-level": true,
+	"api-key":         true,
+}
+
+// ompRequested reports whether the argv selects the omp card arm: the first
+// non-flag positional equals omp (stdlib flag stops at the first positional
+// — Pitfall 3 — so the dispatch must be recognized BEFORE flag.Parse). Root
+// value flags consume their values during the scan and "--" terminates flag
+// scanning (everything after it is positional).
+func ompRequested(args []string) bool {
+	flagsDone := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		if !flagsDone {
+			if arg == "--" {
+				flagsDone = true
+
+				continue
+			}
+
+			if strings.HasPrefix(arg, "-") {
+				name := strings.TrimLeft(arg, "-")
+				if !strings.Contains(name, "=") && ompRootValueFlags[name] && i+1 < len(args) {
+					i++ // the flag's value token — never a positional
+				}
+
+				continue
+			}
+		}
+
+		return arg == ompSubcommand
+	}
+
+	return false
+}
+
+// ompOptions is the parsed omp card argv: the version answer, the config
+// flags the root arm shares (validated identically by parseConfig), and the
+// acceptance counters for the card flags this wrapper takes and ignores
+// (--plugin-dir, --session-dir) plus the unknown flags the client may add
+// across versions (the omp contract's tolerance posture).
+type ompOptions struct {
+	version        bool
+	appServer      string
+	model          string
+	reasoningLevel string
+	apiKey         string
+
+	pluginDirSet  bool
+	sessionDirSet bool
+	unknownCount  int
+}
+
+// ompFlagValues holds the omp FlagSet's parsed value pointers so ompParse's
+// permissive loop can read each chunk's answers after its Parse.
+type ompFlagValues struct {
+	version        *bool
+	appServer      *string
+	model          *string
+	reasoningLevel *string
+	apiKey         *string
+	pluginDir      *string
+	sessionDir     *string
+}
+
+// ompFlagSet is the omp arm's flag set over the card argv surface: the
+// config flags the root arm carries plus the card's own flags accepted and
+// ignored. Output is discarded — a parse failure surfaces through ompParse's
+// honest-error path, never a usage dump on stdout (stdout carries the probe
+// answer and protocol frames only).
+func ompFlagSet() (*flag.FlagSet, *ompFlagValues) {
+	fs := flag.NewFlagSet(ompSubcommand, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	return fs, &ompFlagValues{
+		version:        fs.Bool("version", false, "print version and exit"),
+		appServer:      fs.String("app-server", "", "path to a ZCode install root (or app-server binary) overriding discovery"),
+		model:          fs.String("model", "", "backend model selection as providerId/modelId"),
+		reasoningLevel: fs.String("reasoning-level", "", "reasoning level for --model"),
+		apiKey:         fs.String("api-key", "", "z.ai API key for authenticate{zai-api-key}"),
+		pluginDir:      fs.String("plugin-dir", "", "accepted and ignored (the omp card visuals contract)"),
+		sessionDir:     fs.String("session-dir", "", "accepted and ignored (the client's disposable discovery launches)"),
+	}
+}
+
+// ompParse re-tokenizes the post-omp args (Pitfall 3: the card's own argv
+// carries its flags AFTER the `acp` positional — `omp acp --model X` —
+// which stdlib flag can never parse in one pass). The loop parses flag
+// chunks, skips bare positionals (the card's `acp` marker is never
+// meaningful to this wrapper), and tolerates unknown flags: an unknown flag
+// plus one following non-flag token (its value, when it carries one) is
+// skipped and counted. A known-flag parse error (bad syntax, a missing
+// value) is an honest error, never silence.
+func ompParse(args []string) (ompOptions, error) {
+	opts := ompOptions{}
+
+	rest := args
+
+	for len(rest) > 0 {
+		fs, v := ompFlagSet()
+
+		parseErr := fs.Parse(rest)
+
+		if *v.version {
+			opts.version = true
+		}
+
+		if *v.appServer != "" {
+			opts.appServer = *v.appServer
+		}
+
+		if *v.model != "" {
+			opts.model = *v.model
+		}
+
+		if *v.reasoningLevel != "" {
+			opts.reasoningLevel = *v.reasoningLevel
+		}
+
+		if *v.apiKey != "" {
+			opts.apiKey = *v.apiKey
+		}
+
+		opts.pluginDirSet = opts.pluginDirSet || *v.pluginDir != ""
+		opts.sessionDirSet = opts.sessionDirSet || *v.sessionDir != ""
+
+		rest = fs.Args()
+
+		if parseErr != nil {
+			if !isUnknownFlagError(parseErr) {
+				return ompOptions{}, fmt.Errorf("omp: %w", parseErr)
+			}
+
+			// Tolerated: also skip the unknown flag's separate value token
+			// when one follows (a non-dash token after an unknown flag).
+			if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+				rest = rest[1:]
+			}
+
+			opts.unknownCount++
+
+			continue
+		}
+
+		if len(rest) > 0 { // the first positional — the card's `acp` marker; ignored
+			rest = rest[1:]
+		}
+	}
+
+	return opts, nil
+}
+
+// isUnknownFlagError reports whether a FlagSet error is the undefined-flag
+// class the omp contract tolerates (anything else — bad syntax, a missing
+// value — is an honest parse error).
+func isUnknownFlagError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "flag provided but not defined")
+}
+
+// runOmp is the omp card arm (plan 07-04, D-03): answer the client's
+// version probe in any position under omp — the probe shape is
+// `<program> <prefixArgs> --version`, prefix args included, card args
+// absent — then delegate to the standard acp path. Task-1 scope: the
+// version answer plus this delegation stub; the card's own argv surface
+// (--model launch binding, accepted-and-ignored logging, honest shape
+// errors) is task 2's contract, so the post-omp flags stay unbound here.
+func runOmp(args []string) {
+	// stderr slog first: every omp-arm diagnostic (parse, config, runtime)
+	// stays off stdout — stdout carries the probe answer / protocol only.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	opts, err := ompParse(args)
+	if err != nil {
+		slog.Error("zcode-acp omp: invalid arguments", "err", err)
+
+		os.Exit(exitInvalidConfig)
+	}
+
+	if opts.version {
+		_, _ = fmt.Fprintln(os.Stdout, "zcode-acp "+version)
+
+		return
+	}
+
+	cfg, err := parseConfig("", "", "", "")
+	if err != nil {
+		slog.Error("zcode-acp omp: invalid configuration", "err", err)
 
 		os.Exit(exitInvalidConfig)
 	}
