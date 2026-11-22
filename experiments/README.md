@@ -236,3 +236,24 @@ config at run time; write the raw capture outside the repo; scrub into
   id + the actual spend. Credentials live only in the local ZCode desktop config
   (`ZCODE_ACP_API_KEY`, export into the manual-run shell only); the ledger records
   spend and V-EXP ids, never credentials.
+- **Phase-6 guarded coding-plan full-cycle run (plan 06-08, EXP-CODINGPLAN-CYCLE-01) — PENDING (planned 2026-11-22; the HUMAN-GATED end-of-phase UAT — D-12/D-13; the executor never runs it)**
+  — planned spend (the D-13 cap): one real PAT mint via the official api.z.ai chain
+  (in-process only, never persisted) + the registry read-back (registry-level, no
+  model spend) + ONE tool-less tiny turn — nothing else. Tier: the guarded
+  `test/realdesktop/codingplan_test.go` (`TestCodingPlanFullCycle`) — canonical
+  command in its file header (`export ZCODE_ACP_RAW_CAPTURE=<scratch path outside
+  this repo>` then `ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run
+  TestCodingPlanFullCycle ./test/realdesktop/`); NEVER from CI: the realdesktop
+  build tag + `ZCODE_ACP_REAL_E2E=1` double guard is the contract, and the default
+  suite never builds the file. The credential is the desktop's own keyring login
+  (D-12): NO key is exported, embedded, logged, or committed — the desktop must be
+  logged into the individual coding plan and the session's keyring unlocked at run
+  time. Evidence pointer format for the run's entry: scrubbed capture
+  `experiments/captures/EXP-CODINGPLAN-CYCLE-01.jsonl` (the raw capture from
+  `ZCODE_ACP_RAW_CAPTURE` passes `scrub-capture.mjs` BEFORE any commit; scan-secrets
+  green on the tree AND the staged diff) + the V-EXP id + the actual spend. The run
+  confirms-or-adjusts the flagged assumptions A4 (settings.thoughtLevel in live
+  replies), A6 (clientVersion tolerance in the mint), A7 (configOptions rendering
+  when no current is reported) — outcomes recorded HERE and in COVERAGE.md's
+  disposition column, never silently assumed. A failed leg: the honest verdict with
+  the scrubbed capture; the phase stays open (the 05-14 discipline).
