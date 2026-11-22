@@ -609,19 +609,182 @@ stage_no_keyring() {
 }
 
 # ---------------------------------------------------------------------------
-# Stage: auth-apikey (task 3 lands this stage)
+# Stage: auth-apikey — the api-key path asserted by read-back
+# Stage: auth-codingplan — the paired-env fact asserted by read-back
+#
+# Both stages share auth_arc: initialize -> authenticate{methodId} ->
+# session/new. The asserts are READ-BACKS on the replies, never any ack:
+# authenticate must return a success result, and the session/new reply must
+# LIST models. The coding-plan stage's assert is the paired provider-config
+# env fact (internal/supervisor/spawn.go ChildEnv passes
+# ZCODE_BUILTIN_PROVIDER_CONFIG_FILE AND ZCODE_PERSONAL_PROVIDER_CONFIG_FILE
+# together — the unpaired builtin-only form runs the worker degraded): the
+# create reply's settings.model.available surface must carry
+# account-provider entries (the phase-6 root cause: session/create alone
+# never publishes them — the authenticate chain's materialization + PAT ask
+# must run first), exposed by the front as the reply's configOptions model
+# select. Pattern 8's env mechanism note: the SCRIPT reads ZCODE_ACP_API_KEY
+# from its own environment — referenced by NAME, the value never echoed.
 # ---------------------------------------------------------------------------
 
-stage_auth_apikey() {
-	check "auth-apikey-stage" skip "stage not scripted yet (07-07 task 3: the api-key path asserted by read-back)"
+auth_arc() { # auth_arc <method-id> — sets ARC_STEP (init-failed | auth-timeout |
+	#            session | session-timeout), ARC_AUTH_REPLY, ARC_SESSION_REPLY,
+	#            ARC_DETAIL
+	local method_id=$1
+
+	ARC_STEP=init
+	ARC_DETAIL=""
+	ARC_AUTH_REPLY=""
+	ARC_SESSION_REPLY=""
+
+	agent_start
+
+	agent_send '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}'
+	if ! agent_expect 1 "$TIMEOUT_INIT"; then
+		ARC_STEP=init-failed
+		ARC_DETAIL=$(agent_stderr_tail)
+		agent_stop
+		return 0
+	fi
+
+	ARC_STEP=auth
+	agent_send "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"authenticate\",\"params\":{\"methodId\":\"$method_id\"}}"
+	if ! agent_expect 2 "$TIMEOUT_AUTH"; then
+		ARC_STEP=auth-timeout
+		ARC_DETAIL=$(agent_stderr_tail)
+		agent_stop
+		return 0
+	fi
+	ARC_AUTH_REPLY=$REPLY_LINE
+
+	ARC_STEP=session
+	agent_send '{"jsonrpc":"2.0","id":3,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}'
+	if ! agent_expect 3 "$TIMEOUT_SESSION"; then
+		ARC_STEP=session-timeout
+		ARC_DETAIL=$(agent_stderr_tail)
+		agent_stop
+		return 0
+	fi
+	ARC_SESSION_REPLY=$REPLY_LINE
+
+	agent_stop
 }
 
-# ---------------------------------------------------------------------------
-# Stage: auth-codingplan (task 3 lands this stage)
-# ---------------------------------------------------------------------------
+# arc_completed reports whether the shared arc reached its session/new reply.
+arc_completed() {
+	[ "$ARC_STEP" = "session" ]
+}
+
+arc_fail_detail() { # the actionable diagnostics for a failed arc leg
+	local leg=$1
+	case "$ARC_STEP" in
+	init-failed)
+		printf 'the wrapper exited before initialize — discovery likely found no desktop; wrapper diagnostics: %s' "${ARC_DETAIL:-<none>}"
+		;;
+	auth-timeout)
+		printf 'no authenticate reply within %ss (a hang class; wrapper diagnostics: %s)' "$TIMEOUT_AUTH" "${ARC_DETAIL:-<none>}"
+		;;
+	session-timeout)
+		printf 'no session/new reply within %ss (a hang class; wrapper diagnostics: %s)' "$TIMEOUT_SESSION" "${ARC_DETAIL:-<none>}"
+		;;
+	*)
+		printf 'arc did not complete (leg: %s; diagnostics: %s)' "$leg" "${ARC_DETAIL:-<none>}"
+		;;
+	esac
+}
+
+stage_auth_apikey() {
+	if [ -z "${ZCODE_ACP_API_KEY:-}" ]; then
+		auth_stage_skip "auth-apikey-key-present" \
+			"ZCODE_ACP_API_KEY is not set in this shell (set it to exercise the api-key path; the value is read only from the environment and never echoed)"
+		return 0
+	fi
+	check "auth-apikey-key-present" pass "ZCODE_ACP_API_KEY is set (value never echoed)"
+
+	if [ -z "$BINARY" ] || [ ! -x "$BINARY" ]; then
+		check "binary-present" fail "no executable binary — pass --binary PATH or set ZCODE_ACP_BIN (build-or-fetch off the VM; see the header)"
+		return 0
+	fi
+	check "binary-present" pass "$BINARY"
+
+	auth_arc "zai-api-key"
+
+	if ! arc_completed; then
+		check "auth-apikey-arc" fail "$(arc_fail_detail auth)"
+		return 0
+	fi
+	check "auth-apikey-arc" pass "initialize + authenticate + session/new all replied"
+
+	case "$ARC_AUTH_REPLY" in
+	*'"error"'*)
+		check "auth-apikey-authenticated" fail \
+			"authenticate{zai-api-key} errored: $(json_field "$ARC_AUTH_REPLY" message | head -c 200)"
+		;;
+	*)
+		check "auth-apikey-authenticated" pass "the registry read-back verdict passed (the wrapper records the mode only after the read-back proves the key)"
+		;;
+	esac
+
+	# The read-back shape the wrapper exposes: the session/new reply lists the
+	# confirmed models (configOptions with providerId/modelId values) — a
+	# reply with no model list means the session carries nothing confirmed.
+	if grep -Fq '"category":"model"' <<< "$ARC_SESSION_REPLY"; then
+		check "auth-apikey-models-readback" pass "the session/new reply lists confirmed models"
+	else
+		check "auth-apikey-models-readback" fail \
+			"the session/new reply lists no model config options: ${ARC_SESSION_REPLY:0:200}"
+	fi
+}
 
 stage_auth_codingplan() {
-	check "auth-codingplan-stage" skip "stage not scripted yet (07-07 task 3: the paired-env fact asserted by read-back)"
+	if ! command -v secret-tool >/dev/null 2>&1; then
+		auth_stage_skip "auth-codingplan-secret-tool-present" \
+			"secret-tool is not on PATH (install libsecret-tools on Ubuntu to exercise the coding-plan path)"
+		return 0
+	fi
+	check "auth-codingplan-secret-tool-present" pass "secret-tool found (the keyring path is exercisable)"
+
+	if [ -z "$BINARY" ] || [ ! -x "$BINARY" ]; then
+		check "binary-present" fail "no executable binary — pass --binary PATH or set ZCODE_ACP_BIN (build-or-fetch off the VM; see the header)"
+		return 0
+	fi
+	check "binary-present" pass "$BINARY"
+
+	auth_arc "zai-individual-coding-plan"
+
+	if ! arc_completed; then
+		check "auth-codingplan-arc" fail "$(arc_fail_detail auth)"
+		return 0
+	fi
+	check "auth-codingplan-arc" pass "initialize + authenticate + session/new all replied"
+
+	case "$ARC_AUTH_REPLY" in
+	*'"error"'*)
+		# An honest coded error here is expected machinery on machines whose
+		# keyring or desktop login is not ready — surface it verbatim-class and
+		# fail the stage (the VM scenario requires the login for this stage).
+		check "auth-codingplan-authenticated" fail \
+			"authenticate{zai-individual-coding-plan} errored: $(json_field "$ARC_AUTH_REPLY" message | head -c 200)"
+		;;
+	*)
+		check "auth-codingplan-authenticated" pass "the probe → login → overlay → registry verdict chain succeeded (success is recorded only after the read-back)"
+		;;
+	esac
+
+	# THE PAIRED-ENV READ-BACK ASSERT (D-05, the phase-6 root cause): the
+	# create reply's settings.model.available surface must LIST account-
+	# provider entries. The wrapper's child env pairs
+	# ZCODE_BUILTIN_PROVIDER_CONFIG_FILE with
+	# ZCODE_PERSONAL_PROVIDER_CONFIG_FILE; the unpaired builtin-only form runs
+	# the worker degraded and the account models NEVER PUBLISH — the session/
+	# create ack proves nothing, the REPLY's model list is the fact.
+	if grep -Fq '"account:zai-individual-coding-plan/' <<< "$ARC_SESSION_REPLY"; then
+		check "auth-codingplan-account-models-readback" pass \
+			"the session/new reply lists account-provider models (settings.model.available read-back; the paired provider-config env fact holds)"
+	else
+		check "auth-codingplan-account-models-readback" fail \
+			"the session/new reply lists NO account-provider entries — the degraded (unpaired provider-config) signature; reply: ${ARC_SESSION_REPLY:0:300}"
+	fi
 }
 
 # ---------------------------------------------------------------------------
