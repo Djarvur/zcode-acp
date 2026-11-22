@@ -210,6 +210,12 @@ func (b *SnapshotBuilder) BuildAccount(install supervisor.Install, entitled func
 	basedOn := supervisor.BuiltinRevision(install.BuiltinFile, rev)
 	revision := b.revision()
 
+	if len(providers) == 0 {
+		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: builtin table %s: no %s provider rules to entitle "+
+			"after the entitlement gate — an account push with nothing to entitle is a misconfiguration, "+
+			"never an empty overlay silently pushed on the coding-plan path", install.BuiltinFile, zhipuAccountAccess)
+	}
+
 	params := map[string]any{
 		"revision":                    revision,
 		"basedOnZCodeBuiltinRevision": basedOn,
