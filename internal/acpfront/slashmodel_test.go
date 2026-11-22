@@ -498,6 +498,118 @@ func TestModelSlashSelectorByteEquality(t *testing.T) {
 // refuses the uppercase spelling).
 const corpusModelPlainUpper = "ZAI-API/GLM-5.3"
 
+// slashActiveSendRule scripts one HELD literal-prompt turn (the busy-state
+// fixture): accepted:true + the running patch + turn.started with NO
+// terminal — the front-wide slot parks until the test's explicit cancel
+// (the session-lifecycle active-turn rule's shape over the setcfg session
+// id).
+func slashActiveSendRule() fake.RequestRule {
+	return fake.RequestRule{
+		Method: zcode.MethodSessionSend,
+		Reply: &fake.Reply{Result: json.RawMessage(
+			`{"accepted":true,"sessionId":"sess_cfg","stateRevision":2}`)},
+		SideEffects: []fake.SideEffect{
+			{Emit: &fake.Emit{Method: zcode.MethodStateUpdated, Params: json.RawMessage(
+				`{"patch":{"status":"running"},"reason":"prompt_started","revision":2,` +
+					`"scope":"session","sessionId":"sess_cfg","type":"state.updated"}`)}},
+			{Emit: &fake.Emit{Method: zcode.MethodSessionEvent, Params: json.RawMessage(
+				`{"type":"turn.started","seq":4,"turnId":"turn_busy","deliveryKind":"desktop-continuous"}`)}},
+		},
+	}
+}
+
+// slashStopRule scripts the cancel leg: the stop ack plus the cancelled
+// state patch — the observed outcome that resolves the held turn cancelled
+// promptly (SignalIdlePatch, the corpus cancel row's shape).
+func slashStopRule() fake.RequestRule {
+	return fake.RequestRule{
+		Method: zcode.MethodSessionStop,
+		Reply:  &fake.Reply{Result: json.RawMessage(`{}`)},
+		SideEffects: []fake.SideEffect{
+			{Emit: &fake.Emit{Method: zcode.MethodStateUpdated, Params: json.RawMessage(
+				`{"patch":{"status":"cancelled"},"reason":"session_stopped","revision":3,` +
+					`"scope":"session","sessionId":"sess_cfg","type":"state.updated"}`)}},
+		},
+	}
+}
+
+// TestModelSlashMidTurnRejectedWhenTurnActive — the WR-02 lock (07-REVIEW):
+// a /model switch issued while the SAME session's turn is active takes the
+// CORE-05 rejection — the ONE stable turn-active surface (cancel_test.go's
+// pinned text), exactly what any literal prompt would get — and never a
+// mid-turn backend setModel mutation. The intercept deliberately runs
+// before acquireTurn so refusals never HOLD the slot; the session-scoped
+// slot check keeps that placement from becoming a bypass: at HEAD the
+// mid-turn switch rides straight into the mutation, and a refused one
+// would run the picker-refusal teardown (CloseSession → drainActiveTurn)
+// that cancels the user's RUNNING turn and tears the session down.
+func TestModelSlashMidTurnRejectedWhenTurnActive(t *testing.T) {
+	h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult,
+		slashActiveSendRule(),
+		slashStopRule(),
+		fake.RequestRule{
+			Method: zcode.MethodSessionSetModel,
+			Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+		}))
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	sid := openSetCfgSession(ctx, t, h)
+
+	// Hold the front-wide slot with THIS session's active turn
+	// (startActiveTurn blocks until turn.started proves the machine is
+	// running and the slot held).
+	promptDone := startActiveTurn(ctx, t, h, sid)
+
+	// The mid-turn switch: rejected like any literal prompt (CORE-05).
+	_, err := h.client.Prompt(ctx, slashPrompt(sid, "/model "+corpusModelFlashID))
+	if err == nil {
+		t.Fatal("a /model switch while the session's turn is active must be rejected " +
+			"(the CORE-05 single-active-turn surface), got success")
+	}
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) || rerr.Code != acpport.CodeInvalidRequest {
+		t.Fatalf("the mid-turn switch must ride the invalid-request class, got %v", err)
+	}
+
+	if rerr.Message != turnActiveMessage {
+		t.Fatalf("rejection message = %q, want the ONE stable surface %q", rerr.Message, turnActiveMessage)
+	}
+
+	// The running turn was untouched by the rejected switch: the explicit
+	// cancel still resolves it cancelled.
+	if err := h.client.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(sid)}); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	outcome := waitPromptOutcome(t, promptDone)
+	if outcome.err != nil {
+		t.Fatalf("the running turn must survive the rejected switch and resolve by its own cancel: %v", outcome.err)
+	}
+
+	if outcome.resp.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("stopReason = %q, want cancelled", outcome.resp.StopReason)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	// The rejected switch never mutated the backend: exactly the held
+	// turn's ONE send (plus the cancel's stop), ZERO setModel frames.
+	if setModels := transcriptIndexes(tr, "in", `"method":"session/setModel"`); len(setModels) != 0 {
+		t.Fatalf("the mid-turn switch must never mutate the backend — "+
+			"the back leg records %d session/setModel frame(s)", len(setModels))
+	}
+
+	if sends := len(transcriptIndexes(tr, "in", `"method":"session/send"`)); sends != 1 {
+		t.Fatalf("the back leg records %d session/send frame(s), want exactly 1 (the held turn)", sends)
+	}
+}
+
 // TestModelSlashCarriesConfirmedLevel — the Task-3 edge lock (the level
 // carry, picker parity): a successful switch carries the session's CURRENT
 // confirmed reasoning level (never empty, never a fabricated one); a
