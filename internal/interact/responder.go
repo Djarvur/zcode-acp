@@ -262,10 +262,13 @@ func (r *Responder) Serve(ctx context.Context, env zcode.Envelope) (any, *zcode.
 // (05-RESEARCH.md Pattern 1): the migrated runtime-preferences static
 // answer (byte-identical to conn.go:384-387 — the conn's built-in router
 // keeps serving it only while the responder is unwired), the seam-backed
-// permission and runtime-headers policies, the decline posture for
-// requestUserInput, and the -32601 floor for officialMcpAuthHeaders and
-// the browser* pair (field-verified harmless — EXP-SUBSCRIBE-01: 6-7 asks
-// per create answered -32601 without breaking the flow).
+// permission and runtime-headers policies, the decline postures for
+// requestUserInput and officialMcpAuthHeaders (the latter answered INSIDE
+// the reply RESULT — the EXP-CODINGPLAN-CYCLE-01 attempt-1 unblock: a
+// -32601 there stalls the plugin runtime materialization), and the -32601
+// floor for the browser* pair (field-verified harmless —
+// EXP-SUBSCRIBE-01: 6-7 asks per create answered -32601 without breaking
+// the flow).
 //
 // interaction/requestCredentialCipher is deliberately ABSENT here: while
 // the D-06 decrypt seam is unwired, Serve falls it through (handled=false)
@@ -292,7 +295,7 @@ func (r *Responder) defaultPolicyTable() map[string]MethodPolicy {
 			Handler:  answerUserInput,
 		},
 		MethodRequestOfficialMcpAuthHeaders: {
-			Handler: unsupportedHostMethod,
+			Handler: answerOfficialMcpAuthHeaders,
 		},
 		MethodBrowserList: {
 			Handler: unsupportedHostMethod,
@@ -530,10 +533,38 @@ func answerUserInput(_ context.Context, req Request) (Answer, error) {
 	return Answer{Result: map[string]any{"action": "decline"}}, nil
 }
 
+// answerOfficialMcpAuthHeaders declines the official-plugin MCP auth ask
+// INSIDE the reply RESULT with the desktop's own honest no-resolver shape
+// {ok:false, reason:"official_auth_unavailable"} (dialect §3 — the host's
+// three RESULT replies; the plugin proceeds header-less on ok:false, its
+// designed survivable path). The wrapper has no official-MCP auth
+// resolver: never {ok:true} (no fabricated headers — an invented success
+// would poison the plugin's auth state), never the -32601 error envelope
+// (EXP-CODINGPLAN-CYCLE-01 attempt-1: the -32601 reply stalled the probe
+// session's runtime materialization — the create reply's settings carried
+// only the builtin registry, the read-back verdict timed out, and the
+// authenticate attempt aborted), never silence. No deadline policy: the
+// static decline answers immediately (a zero deadline dispatches the
+// handler undelimited; the dedupe entry still ages out through the
+// zero-deadline router-default TTL fallback). Structural log: id keys
+// only, never params (T-5-03).
+func answerOfficialMcpAuthHeaders(_ context.Context, req Request) (Answer, error) {
+	slog.Info("interact: requestOfficialMcpAuthHeaders declined (no official-MCP auth resolver)",
+		"method", req.Method,
+		"requestId", req.ReqID,
+		"id", idKey(req),
+	)
+
+	return Answer{Result: map[string]any{
+		"ok":     false,
+		"reason": "official_auth_unavailable",
+	}}, nil
+}
+
 // unsupportedHostMethod is the -32601 floor for known-but-unanswered
-// methods (officialMcpAuthHeaders, browser*): the same verbatim posture
-// as the unknown default — a protocol error naming the method, never a
-// fabricated success.
+// methods (the browser* pair): the same verbatim posture as the unknown
+// default — a protocol error naming the method, never a fabricated
+// success.
 func unsupportedHostMethod(_ context.Context, req Request) (Answer, error) {
 	return Answer{Err: &zcode.WireError{
 		Code:    zcode.CodeMethodNotFound,
