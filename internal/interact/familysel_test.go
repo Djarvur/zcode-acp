@@ -17,20 +17,20 @@ import (
 // plan 06-05) arm by arm — 06-RESEARCH.md Pattern 2's entitlement rule over
 // READ-ONLY desktop state:
 //
-//   (a) the entitled arm — selections[family].kind == individual-coding-plan,
-//       modes[family] != apiKey, the store carries oauth:<family>:
-//       access_token → TRUE;
-//   (b) mode == apiKey vetoes;
-//   (c) a different selection kind (the start-plan family of the live
-//       probe) vetoes;
-//   (d) a missing store token vetoes;
-//   (e) a missing setting.json answers false with a structural log (a fresh
-//       machine is simply not logged in);
-//   (f) an undecodable setting.json answers false through the same honest
-//       bool+log posture — never a panic;
-//   (g) an ABSENT mode entry does not veto (the verified rule's !== apiKey
-//       strict-inequality semantics — the mode gate only rejects the
-//       explicit apiKey value).
+//	(a) the entitled arm — selections[family].kind == individual-coding-plan,
+//	    modes[family] != apiKey, the store carries oauth:<family>:
+//	    access_token → TRUE;
+//	(b) mode == apiKey vetoes;
+//	(c) a different selection kind (the start-plan family of the live
+//	    probe) vetoes;
+//	(d) a missing store token vetoes;
+//	(e) a missing setting.json answers false with a structural log (a fresh
+//	    machine is simply not logged in);
+//	(f) an undecodable setting.json answers false through the same honest
+//	    bool+log posture — never a panic;
+//	(g) an ABSENT mode entry does not veto (the verified rule's !== apiKey
+//	    strict-inequality semantics — the mode gate only rejects the
+//	    explicit apiKey value).
 //
 // The gate composes the 06-01 store reader (no parallel read path) and
 // every log line carries booleans/codes only — no value material.

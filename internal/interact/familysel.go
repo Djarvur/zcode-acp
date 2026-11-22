@@ -3,6 +3,9 @@ package interact
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"os"
 )
 
 // The production entitlement gate (AUTH-02, plan 06-05 — 06-RESEARCH.md
@@ -41,7 +44,6 @@ const (
 	famselCodeSettingMissing     = "setting-missing"
 	famselCodeSettingUnreadable  = "setting-unreadable"
 	famselCodeSettingUndecodable = "setting-undecodable"
-	famselCodeStoreUnreadable    = "store-unreadable"
 )
 
 // EntitlementGate is the production entitlement decision the account
@@ -65,13 +67,79 @@ func NewEntitlementGate(settingPath string, store *CredentialStore) *Entitlement
 // arm answers false through the same posture, with the structural log
 // carrying the class.
 func (g *EntitlementGate) Entitled(ctx context.Context, family string) bool {
-	return famselStubFalse(ctx, family, g)
+	doc, ok := g.readSetting()
+	if !ok {
+		return false
+	}
+
+	kind, kindOK := selectionKind(doc.ProviderFamilyConnectionSelections[family])
+	kindOK = kindOK && kind == codingPlanSelectionKind
+
+	// The verified rule is a strict inequality against the explicit apiKey
+	// value — an ABSENT modes entry passes (JS `!== "apiKey"` semantics,
+	// ref account-provider.ts oauthSelectedCodingPlanFamilies).
+	mode, hasMode := doc.ModelProviderFamilyModes[family]
+	modeOK := !hasMode || mode != apiKeyFamilyMode
+
+	tokenPresent, ok := g.store.LoginToken(ctx, family)
+	_ = tokenPresent // presence only — the value is never surfaced (T-06-15)
+
+	entitled := kindOK && modeOK && ok
+
+	slog.Info("interact: entitlement gate", "family", family,
+		"kind_ok", kindOK, "mode_ok", modeOK, "token_present", ok,
+		"entitled", entitled)
+
+	return entitled
 }
 
-// famselStubFalse is the compiling skeleton's marker (plan 06-05 RED): the
-// GREEN step replaces it with the real rule.
-func famselStubFalse(_ context.Context, _ string, _ *EntitlementGate) bool {
-	return false
+// readSetting reads the desktop setting.json read-only and decodes the
+// minimal doc. Every degradation arm answers not-ok through the same
+// posture with its structural class: a missing file is a fresh machine
+// simply not logged in; an unreadable or undecodable file degrades honestly
+// (false + the coded log) — never a panic, never a fabricated true, never a
+// file dump in the log (path shapes and file lengths only).
+func (g *EntitlementGate) readSetting() (settingDoc, bool) {
+	var doc settingDoc
+
+	raw, err := os.ReadFile(g.settingPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Info("interact: entitlement gate: setting.json absent (a fresh machine is simply not logged in)",
+				"code", famselCodeSettingMissing, "path_len", len(g.settingPath))
+
+			return doc, false
+		}
+
+		slog.Warn("interact: entitlement gate: setting.json unread",
+			"code", famselCodeSettingUnreadable, "path_len", len(g.settingPath), "err_len", len(err.Error()))
+
+		return doc, false
+	}
+
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		slog.Warn("interact: entitlement gate: setting.json undecodable",
+			"code", famselCodeSettingUndecodable, "file_len", len(raw))
+
+		return doc, false
+	}
+
+	return doc, true
+}
+
+// selectionKind digs one family's selection kind from its raw selection
+// value (the capture-verbatim `kind` field). A missing family, an
+// unstructured value, or an empty kind answers not-ok — the kind gate only
+// passes the exact individual-coding-plan literal.
+func selectionKind(raw json.RawMessage) (string, bool) {
+	var sel struct {
+		Kind string `json:"kind"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &sel) != nil || sel.Kind == "" {
+		return "", false
+	}
+
+	return sel.Kind, true
 }
 
 // settingDoc is the minimal decode of the desktop's setting.json — the
