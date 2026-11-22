@@ -151,28 +151,6 @@ func patReplyStatusBody(status int, body string) patReplier {
 // patCustomerPath is the fixture's customer-info route.
 const patCustomerPath = "/api/biz/customer/getCustomerInfo"
 
-// patCallCount returns how many recorded calls hit the given stage kind
-// ("customer" | "list" | "create" | "access"), matched by path/method.
-func (f *patFixtureServer) patCallCount(kind string) int {
-	calls := f.Calls()
-
-	n := 0
-	for _, c := range calls {
-		switch {
-		case kind == "customer" && c.path == patCustomerPath:
-			n++
-		case kind == "list" && strings.HasSuffix(c.path, "/api_keys") && c.method == http.MethodGet:
-			n++
-		case kind == "create" && strings.HasSuffix(c.path, "/api_keys") && c.method == http.MethodPost:
-			n++
-		case kind == "access" && strings.HasSuffix(c.path, "/access_tokens"):
-			n++
-		}
-	}
-
-	return n
-}
-
 // SetCustomer replaces the customer-info replier (arm vectors reconfigure the
 // origin mid-test).
 func (f *patFixtureServer) SetCustomer(r patReplier) {
@@ -226,6 +204,21 @@ func (f *patFixtureServer) Calls() []patFixtureCall {
 	return out
 }
 
+// CreateCall returns the recorded api_keys POST (ok=false when none fired).
+func (f *patFixtureServer) CreateCall() (patFixtureCall, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for i := range f.calls {
+		c := f.calls[i]
+		if strings.HasSuffix(c.path, "/api_keys") && c.method == http.MethodPost {
+			return c, true
+		}
+	}
+
+	return patFixtureCall{}, false
+}
+
 // ServeHTTP records the wire shape and serves the configured stage reply.
 func (f *patFixtureServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -277,6 +270,28 @@ func (f *patFixtureServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(reply))
+}
+
+// patCallCount returns how many recorded calls hit the given stage kind
+// ("customer" | "list" | "create" | "access"), matched by path/method.
+func (f *patFixtureServer) patCallCount(kind string) int {
+	calls := f.Calls()
+
+	n := 0
+	for _, c := range calls {
+		switch {
+		case kind == "customer" && c.path == patCustomerPath:
+			n++
+		case kind == "list" && strings.HasSuffix(c.path, "/api_keys") && c.method == http.MethodGet:
+			n++
+		case kind == "create" && strings.HasSuffix(c.path, "/api_keys") && c.method == http.MethodPost:
+			n++
+		case kind == "access" && strings.HasSuffix(c.path, "/access_tokens"):
+			n++
+		}
+	}
+
+	return n
 }
 
 // fixturePatCreds is the credential seam fixture: the 06-01 accessor contract
@@ -483,7 +498,7 @@ func TestPatMinterHappyPath(t *testing.T) {
 	fx := newPatFixtureServer(t)
 	warns := capturePatSlogWarns(t)
 	clk := newPatClock(fixtureBaseTime())
-	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
 	pat, err := m.Ensure(context.Background())
 	if err != nil {
@@ -529,7 +544,7 @@ func TestAccountScopeDigest(t *testing.T) {
 	t.Run("nil JWT folds as null and the mint carries the pinned scope", func(t *testing.T) {
 		fx := newPatFixtureServer(t)
 		clk := newPatClock(fixtureBaseTime())
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
 		pat, err := m.Ensure(context.Background())
 		if err != nil {
@@ -554,7 +569,7 @@ func TestAccountScopeDigest(t *testing.T) {
 		fx := newPatFixtureServer(t)
 		clk := newPatClock(fixtureBaseTime())
 		m := newFixtureMinter(t, fx.srv.URL,
-			&fixturePatCreds{login: fixtureLoginToken, jwt: fixtureJWTToken}, clk.Now)
+			&fixturePatCreds{login: fixtureLoginToken, jwt: fixtureJWTToken, loginOK: true}, clk.Now)
 
 		pat, err := m.Ensure(context.Background())
 		if err != nil {
@@ -666,13 +681,14 @@ func TestPatMinterPickUnavailable(t *testing.T) {
 	t.Run("all-team account answers project-unavailable", func(t *testing.T) {
 		fx := newPatFixtureServer(t)
 		clk := newPatClock(fixtureBaseTime())
-		fx.SetCustomer(patReplyStatusBody(http.StatusOK, patCustomerEnvelope(patOrgJSON(
-			"org-team", "Team Org", patProjJSON("proj-team", "Team Proj", "2")))))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+		fx.SetCustomer(patReplyStatusBody(http.StatusOK, patCustomerEnvelope("["+
+			patOrgJSON("org-team", "Team Org", patProjJSON("proj-team", "Team Proj", "2"))+"]")))
+		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
 		_, err := m.Ensure(context.Background())
 		if !errors.Is(err, hostsvc.ErrPatProjectUnavailable) {
-			t.Fatalf("Ensure = error %v, want ErrPatProjectUnavailable (team projects are never the personal home)", err)
+			t.Fatalf("Ensure = error %v, want ErrPatProjectUnavailable "+
+				"(team projects are never the personal home)", err)
 		}
 
 		if n := fx.patCallCount("customer"); n != 1 {
@@ -692,7 +708,7 @@ func TestPatMinterPickUnavailable(t *testing.T) {
 		fx := newPatFixtureServer(t)
 		clk := newPatClock(fixtureBaseTime())
 		fx.SetCustomer(patReplyStatusBody(http.StatusOK, patCustomerEnvelope(`[]`)))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
 		_, err := m.Ensure(context.Background())
 		if !errors.Is(err, hostsvc.ErrPatProjectUnavailable) {
@@ -710,71 +726,79 @@ func TestPatMinterPickUnavailable(t *testing.T) {
 // and a slog warn lists the candidate ids — the user is never blocked, and a
 // multi-candidate account is never silently collapsed.
 func TestPatMinterMultiPickWarn(t *testing.T) {
-	t.Run("several candidates pick deterministic first and warn the ids", func(t *testing.T) {
-		fx := newPatFixtureServer(t)
-		warns := capturePatSlogWarns(t)
-		clk := newPatClock(fixtureBaseTime())
-		org1 := patOrgJSON("org-1", "Org One",
-			patProjJSON("proj-1a", "Proj A", "1"), patProjJSON("proj-1b", "Proj B", "1"))
-		org2 := patOrgJSON("org-2", "Org Two", patProjJSON("proj-2", "Proj Two", "1"))
-		fx.SetCustomer(patReplyStatusBody(http.StatusOK,
-			patCustomerEnvelope("["+org1+","+org2+"]")))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+	t.Run("several candidates pick deterministic first and warn the ids", patRunMultiPickFirst)
+	t.Run("the default-marker org and project win over the first", patRunMultiPickMarkers)
+}
 
-		pat, err := m.Ensure(context.Background())
-		if err != nil {
-			t.Fatalf("Ensure = error %v, want the deterministic-first mint (D-06: never block)", err)
+// patRunMultiPickFirst runs the deterministic-first D-06 vector: several
+// personal orgs/projects still mint (never block) against the FIRST pair,
+// with a warn listing every candidate id.
+func patRunMultiPickFirst(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	warns := capturePatSlogWarns(t)
+	clk := newPatClock(fixtureBaseTime())
+	org1 := patOrgJSON("org-1", "Org One",
+		patProjJSON("proj-1a", "Proj A", "1"), patProjJSON("proj-1b", "Proj B", "1"))
+	org2 := patOrgJSON("org-2", "Org Two", patProjJSON("proj-2", "Proj Two", "1"))
+	fx.SetCustomer(patReplyStatusBody(http.StatusOK,
+		patCustomerEnvelope("["+org1+","+org2+"]")))
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
+
+	pat, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure = error %v, want the deterministic-first mint (D-06: never block)", err)
+	}
+
+	calls := fx.Calls()
+	if len(calls) < 3 || !strings.HasSuffix(calls[1].path, "/organization/org-1/projects/proj-1a/api_keys") {
+		t.Fatalf("list path = %+v, want the deterministic-first org-1/proj-1a pair", calls)
+	}
+
+	if !strings.HasSuffix(calls[2].path, "/api_keys/key-7/access_tokens") {
+		t.Fatalf("access path = %q, want the picked pair's key", calls[2].path)
+	}
+
+	if pat.APIKeyID != fixtureKeyID {
+		t.Fatalf("Pat.APIKeyID = %q, want the candidate under the picked pair", pat.APIKeyID)
+	}
+
+	for _, id := range []string{"org-1", "org-2", "proj-1a", "proj-1b"} {
+		if !strings.Contains(warns.String(), id) {
+			t.Fatalf("warn log %q does not list candidate id %q (D-06)", warns.String(), id)
 		}
+	}
+}
 
-		calls := fx.Calls()
-		if len(calls) < 3 || !strings.HasSuffix(calls[1].path, "/organization/org-1/projects/proj-1a/api_keys") {
-			t.Fatalf("list path = %+v, want the deterministic-first org-1/proj-1a pair", calls)
-		}
+// patRunMultiPickMarkers runs the marker-preference D-06 vector: the
+// default-marker org and project win over the deterministic first.
+func patRunMultiPickMarkers(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	clk := newPatClock(fixtureBaseTime())
+	orgA := patOrgJSON("org-a", "Org A", patProjJSON("proj-a", "Proj A", "1"))
+	orgB := patOrgJSON("org-b", fixtureDefaultOrgMarker,
+		patProjJSON("proj-b1", "Proj B1", "1"),
+		patProjJSON("proj-b2", fixtureDefaultProjMarker, "1"))
+	fx.SetCustomer(patReplyStatusBody(http.StatusOK,
+		patCustomerEnvelope("["+orgA+","+orgB+"]")))
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
-		if !strings.HasSuffix(calls[2].path, "/api_keys/key-7/access_tokens") {
-			t.Fatalf("access path = %q, want the picked pair's key", calls[2].path)
-		}
+	pat, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure = error %v, want the marker-preference mint", err)
+	}
 
-		if pat.APIKeyID != fixtureKeyID {
-			t.Fatalf("Pat.APIKeyID = %q, want the candidate under the picked pair", pat.APIKeyID)
-		}
+	calls := fx.Calls()
+	if len(calls) < 3 || !strings.HasSuffix(calls[1].path, "/organization/org-b/projects/proj-b2/api_keys") {
+		t.Fatalf("list path = %+v, want the marker org-b/proj-b2 pair (default-marker preference)", calls)
+	}
 
-		for _, id := range []string{"org-1", "org-2", "proj-1a", "proj-1b"} {
-			if !strings.Contains(warns.String(), id) {
-				t.Fatalf("warn log %q does not list candidate id %q (D-06)", warns.String(), id)
-			}
-		}
-	})
+	if !strings.HasSuffix(calls[2].path, "/api_keys/key-7/access_tokens") {
+		t.Fatalf("access path = %q, want the marker pair's key", calls[2].path)
+	}
 
-	t.Run("the default-marker org and project win over the first", func(t *testing.T) {
-		fx := newPatFixtureServer(t)
-		clk := newPatClock(fixtureBaseTime())
-		orgA := patOrgJSON("org-a", "Org A", patProjJSON("proj-a", "Proj A", "1"))
-		orgB := patOrgJSON("org-b", fixtureDefaultOrgMarker,
-			patProjJSON("proj-b1", "Proj B1", "1"),
-			patProjJSON("proj-b2", fixtureDefaultProjMarker, "1"))
-		fx.SetCustomer(patReplyStatusBody(http.StatusOK,
-			patCustomerEnvelope("["+orgA+","+orgB+"]")))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
-
-		pat, err := m.Ensure(context.Background())
-		if err != nil {
-			t.Fatalf("Ensure = error %v, want the marker-preference mint", err)
-		}
-
-		calls := fx.Calls()
-		if len(calls) < 3 || !strings.HasSuffix(calls[1].path, "/organization/org-b/projects/proj-b2/api_keys") {
-			t.Fatalf("list path = %+v, want the marker org-b/proj-b2 pair (default-marker preference)", calls)
-		}
-
-		if !strings.HasSuffix(calls[2].path, "/api_keys/key-7/access_tokens") {
-			t.Fatalf("access path = %q, want the marker pair's key", calls[2].path)
-		}
-
-		if pat.APIKeyID != fixtureKeyID {
-			t.Fatalf("Pat.APIKeyID = %q, want the marker pair's candidate", pat.APIKeyID)
-		}
-	})
+	if pat.APIKeyID != fixtureKeyID {
+		t.Fatalf("Pat.APIKeyID = %q, want the marker pair's candidate", pat.APIKeyID)
+	}
 }
 
 // TestPatMinterCreateIfAbsent locks D-07: an account with no zcode-api-key
@@ -782,91 +806,87 @@ func TestPatMinterMultiPickWarn(t *testing.T) {
 // the created key, and a cache-missed re-mint lists FIRST and reuses the
 // existing entry (check-then-create idempotency — never a duplicate).
 func TestPatMinterCreateIfAbsent(t *testing.T) {
-	t.Run("empty list creates the key with the byte-exact body", func(t *testing.T) {
-		fx := newPatFixtureServer(t)
-		clk := newPatClock(fixtureBaseTime())
-		fx.SetListKeys(patReplyStatusBody(http.StatusOK, patKeyListEnvelope()))
-		fx.SetCreateKey(patReplyStatusBody(http.StatusOK,
-			`{"code":200,"data":{"name":"zcode-api-key","apiKey":"key-created"}}`))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+	t.Run("empty list creates the key with the byte-exact body", patRunCreateAbsent)
+	t.Run("created entry is used as the keyId and a cache-missed re-mint lists first (idempotent)",
+		patRunCreateIdempotent)
+}
 
-		_, err := m.Ensure(context.Background())
-		if err != nil {
-			t.Fatalf("Ensure = error %v, want the create-if-absent mint (D-07)", err)
-		}
+// patRunCreateAbsent runs the D-07 create vector: an empty candidate list
+// answers exactly one POST with the byte-exact create body, Bearer form.
+func patRunCreateAbsent(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	clk := newPatClock(fixtureBaseTime())
+	fx.SetListKeys(patReplyStatusBody(http.StatusOK, patKeyListEnvelope()))
+	fx.SetCreateKey(patReplyStatusBody(http.StatusOK,
+		`{"code":200,"data":{"name":"zcode-api-key","apiKey":"key-created"}}`))
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
-		creates := fx.patCallCount("create")
-		if creates != 1 {
-			t.Fatalf("create POSTs = %d, want exactly 1", creates)
-		}
+	_, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure = error %v, want the create-if-absent mint (D-07)", err)
+	}
 
-		fx.mu.Lock()
-		snapshot := make([]patFixtureCall, len(fx.calls))
-		copy(snapshot, fx.calls)
-		fx.mu.Unlock()
+	if n := fx.patCallCount("create"); n != 1 {
+		t.Fatalf("create POSTs = %d, want exactly 1", n)
+	}
 
-		var create *patFixtureCall
-		for i := range snapshot {
-			c := &snapshot[i]
-			if strings.HasSuffix(c.path, "/api_keys") && c.method == http.MethodPost {
-				create = c
-			}
-		}
+	create, ok := fx.CreateCall()
+	if !ok {
+		t.Fatal("create call missing")
+	}
 
-		if create == nil {
-			t.Fatal("create call missing")
-		}
+	const wantCreateBody = `{"name":"zcode-api-key","usageScene":1}`
+	if create.body != wantCreateBody {
+		t.Fatalf("create body = %q, want the byte-exact %s", create.body, wantCreateBody)
+	}
 
-		const wantCreateBody = `{"name":"zcode-api-key","usageScene":1}`
-		if create.body != wantCreateBody {
-			t.Fatalf("create body = %q, want the byte-exact %s", create.body, wantCreateBody)
-		}
+	if create.auth != "Bearer "+fixtureLoginToken {
+		t.Fatalf("create Authorization = %q, want Bearer %s", create.auth, fixtureLoginToken)
+	}
+}
 
-		if create.auth != "Bearer "+fixtureLoginToken {
-			t.Fatalf("create Authorization = %q, want Bearer %s", create.auth, fixtureLoginToken)
-		}
-	})
+// patRunCreateIdempotent runs the D-07 idempotency vector: the created entry
+// becomes the keyId, and a cache-missed re-mint (a fresh minter against the
+// same account) lists FIRST and reuses the existing entry — never a duplicate.
+func patRunCreateIdempotent(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	clk := newPatClock(fixtureBaseTime())
+	fx.SetListKeys(patReplyStatusBody(http.StatusOK, patKeyListEnvelope()))
+	fx.SetCreateKey(patReplyStatusBody(http.StatusOK,
+		`{"code":200,"data":{"name":"zcode-api-key","apiKey":"key-created"}}`))
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
-	t.Run("created entry is used as the keyId and a cache-missed re-mint lists first (idempotent)", func(t *testing.T) {
-		fx := newPatFixtureServer(t)
-		clk := newPatClock(fixtureBaseTime())
-		fx.SetListKeys(patReplyStatusBody(http.StatusOK, patKeyListEnvelope()))
-		fx.SetCreateKey(patReplyStatusBody(http.StatusOK,
-			`{"code":200,"data":{"name":"zcode-api-key","apiKey":"key-created"}}`))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+	pat, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("Ensure = error %v, want the create-if-absent mint", err)
+	}
 
-		pat, err := m.Ensure(context.Background())
-		if err != nil {
-			t.Fatalf("Ensure = error %v, want the create-if-absent mint", err)
-		}
+	if pat.APIKeyID != "key-created" {
+		t.Fatalf("Pat.APIKeyID = %q, want the created entry's id", pat.APIKeyID)
+	}
 
-		if pat.APIKeyID != "key-created" {
-			t.Fatalf("Pat.APIKeyID = %q, want the created entry's id", pat.APIKeyID)
-		}
+	// A cache-missed re-mint (a fresh minter against the same account)
+	// lists FIRST and finds the existing entry — no second create.
+	fx.SetListKeys(patReplyStatusBody(http.StatusOK,
+		patKeyListEnvelope(patKeyEntry("zcode-api-key", "key-created"))))
+	m2 := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
-		// A cache-missed re-mint (a fresh minter against the same account)
-		// lists FIRST and finds the existing entry — no second create.
-		fx.SetListKeys(patReplyStatusBody(http.StatusOK,
-			patKeyListEnvelope(patKeyEntry("zcode-api-key", "key-created"))))
-		m2 := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+	pat2, err := m2.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("second Ensure = error %v, want the reuse mint", err)
+	}
 
-		pat2, err := m2.Ensure(context.Background())
-		if err != nil {
-			t.Fatalf("second Ensure = error %v, want the reuse mint", err)
-		}
+	if pat2.APIKeyID != "key-created" {
+		t.Fatalf("second Pat.APIKeyID = %q, want the existing entry reused", pat2.APIKeyID)
+	}
 
-		if pat2.APIKeyID != "key-created" {
-			t.Fatalf("second Pat.APIKeyID = %q, want the existing entry reused", pat2.APIKeyID)
-		}
+	if n := fx.patCallCount("create"); n != 1 {
+		t.Fatalf("create POSTs = %d after the cache-missed re-mint, want 1 (check-then-create idempotency)", n)
+	}
 
-		if n := fx.patCallCount("create"); n != 1 {
-			t.Fatalf("create POSTs = %d after the cache-missed re-mint, want 1 (check-then-create idempotency)", n)
-		}
-
-		if n := fx.patCallCount("list"); n != 2 {
-			t.Fatalf("list calls = %d, want 2 (the candidate search precedes every mint)", n)
-		}
-	})
+	if n := fx.patCallCount("list"); n != 2 {
+		t.Fatalf("list calls = %d, want 2 (the candidate search precedes every mint)", n)
+	}
 }
 
 // TestPatMinterDisabled locks the disabled arm: a reply carrying
@@ -876,7 +896,7 @@ func TestPatMinterDisabled(t *testing.T) {
 	fx := newPatFixtureServer(t)
 	clk := newPatClock(fixtureBaseTime())
 	fx.SetAccess(patReplyStatusBody(http.StatusOK, patAccessEnvelope(`{"enable":false}`)))
-	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
 	_, err := m.Ensure(context.Background())
 	if !errors.Is(err, hostsvc.ErrPatDisabled) {
@@ -898,7 +918,7 @@ func TestPatMinterBizFail(t *testing.T) {
 		clk := newPatClock(fixtureBaseTime())
 		body := `{"code":1001,"data":{"secret-marker-zc-synthetic-leak-probe":true}}`
 		fx.SetAccess(patReplyStatusBody(http.StatusOK, body))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
 		_, err := m.Ensure(context.Background())
 		if !errors.Is(err, hostsvc.ErrPatInvalidResponse) {
@@ -915,7 +935,7 @@ func TestPatMinterBizFail(t *testing.T) {
 		clk := newPatClock(fixtureBaseTime())
 		fx.SetAccess(patReplyStatusBody(http.StatusOK,
 			`{"code":"500","data":{"accessToken":"x","tokenType":"Bearer","expiresIn":1,"expiresAt":1}}`))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
 		_, err := m.Ensure(context.Background())
 		if !errors.Is(err, hostsvc.ErrPatInvalidResponse) {
@@ -928,7 +948,7 @@ func TestPatMinterBizFail(t *testing.T) {
 		clk := newPatClock(fixtureBaseTime())
 		fx.SetAccess(patReplyStatusBody(http.StatusOK,
 			fmt.Sprintf(`{"code":"200","data":%s}`, patAccessData(fixturePATToken))))
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
 		pat, err := m.Ensure(context.Background())
 		if err != nil {
@@ -947,159 +967,170 @@ func TestPatMinterBizFail(t *testing.T) {
 // a network error leave the cached location intact — and no failure ever
 // poisons the cache with a partial entry.
 func TestPatMinterKey404(t *testing.T) {
-	t.Run("404 drops the location and the next mint re-resolves and re-lists", func(t *testing.T) {
-		fx := newPatFixtureServer(t)
-		clk := newPatClock(fixtureBaseTime())
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+	t.Run("404 drops the location and the next mint re-resolves and re-lists", patRunKey404Drop)
+	t.Run("403 permission error leaves the cached location intact", patRunKey403Intact)
+	t.Run("network error leaves the cached location intact", patRunNetIntact)
+}
 
-		if _, err := m.Ensure(context.Background()); err != nil {
-			t.Fatalf("first Ensure = error %v, want a mint", err)
+// patRunKey404Drop runs the 404 vector: access_tokens 404 answers the coded
+// key-missing error, drops the cached token AND location, and the next mint
+// re-resolves via getCustomerInfo and re-lists against the new key.
+func patRunKey404Drop(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	clk := newPatClock(fixtureBaseTime())
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
+
+	if _, err := m.Ensure(context.Background()); err != nil {
+		t.Fatalf("first Ensure = error %v, want a mint", err)
+	}
+
+	if _, ok := m.Cached(context.Background()); !ok {
+		t.Fatal("first mint did not populate the cache")
+	}
+
+	// Past the refresh lead: the next Ensure re-mints, and the key has
+	// moved (404 at access_tokens).
+	clk.Advance(59 * time.Minute)
+	fx.SetAccess(patReplyStatusBody(http.StatusNotFound, `{"code":404,"data":null}`))
+
+	_, err := m.Ensure(context.Background())
+	if !errors.Is(err, hostsvc.ErrPatKeyMissing) {
+		t.Fatalf("Ensure = error %v, want ErrPatKeyMissing (404 is the ONLY location-invalidating class)", err)
+	}
+
+	if _, ok := m.Cached(context.Background()); ok {
+		t.Fatal("cache kept the token after the 404 — the dead key location survived")
+	}
+
+	// The key re-appeared under a new id: the next mint re-resolves via
+	// getCustomerInfo, re-lists, and succeeds against the new key.
+	fx.SetListKeys(patReplyStatusBody(http.StatusOK,
+		patKeyListEnvelope(patKeyEntry("zcode-api-key", "key-8"))))
+	fx.SetAccess(patReplyStatusBody(http.StatusOK, patAccessEnvelope(patAccessData(patSecondToken))))
+
+	pat, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("recovery Ensure = error %v, want a mint against the re-resolved location", err)
+	}
+
+	patAssertKey404Counts(t, fx, 2)
+
+	calls := fx.Calls()
+	var access404, accessOK *patFixtureCall
+
+	for i := range calls {
+		if !strings.HasSuffix(calls[i].path, "/access_tokens") {
+			continue
 		}
 
-		if _, ok := m.Cached(context.Background()); !ok {
-			t.Fatal("first mint did not populate the cache")
+		switch {
+		case strings.HasSuffix(calls[i].path, "/api_keys/key-7/access_tokens"):
+			access404 = &calls[i]
+		case strings.HasSuffix(calls[i].path, "/api_keys/key-8/access_tokens"):
+			accessOK = &calls[i]
 		}
+	}
 
-		// Past the refresh lead: the next Ensure re-mints, and the key has
-		// moved (404 at access_tokens).
-		clk.Advance(59 * time.Minute)
-		fx.SetAccess(patReplyStatusBody(http.StatusNotFound, `{"code":404,"data":null}`))
+	if access404 == nil || accessOK == nil {
+		t.Fatalf("access calls = %+v, want key-7 (404) then key-8 (success)", calls)
+	}
 
-		_, err := m.Ensure(context.Background())
-		if !errors.Is(err, hostsvc.ErrPatKeyMissing) {
-			t.Fatalf("Ensure = error %v, want ErrPatKeyMissing (404 is the ONLY location-invalidating class)", err)
-		}
+	if pat.APIKeyID != "key-8" {
+		t.Fatalf("Pat.APIKeyID = %q, want the re-resolved key-8", pat.APIKeyID)
+	}
+}
 
-		if _, ok := m.Cached(context.Background()); ok {
-			t.Fatal("cache kept the token after the 404 — the dead key location survived")
-		}
+// patAssertKey404Counts locks the re-resolution counts: the customer probe
+// and the key list each ran once per RESOLUTION (the 404 re-resolved, the
+// 403/network recoveries did not).
+func patAssertKey404Counts(t *testing.T, fx *patFixtureServer, wantResolutions int) {
+	t.Helper()
 
-		// The key re-appeared under a new id: the next mint re-resolves via
-		// getCustomerInfo, re-lists, and succeeds against the new key.
-		fx.SetListKeys(patReplyStatusBody(http.StatusOK,
-			patKeyListEnvelope(patKeyEntry("zcode-api-key", "key-8"))))
-		fx.SetAccess(patReplyStatusBody(http.StatusOK, patAccessEnvelope(patAccessData(patSecondToken))))
+	if n := fx.patCallCount("customer"); n != wantResolutions {
+		t.Fatalf("customer calls = %d, want %d", n, wantResolutions)
+	}
 
-		pat, err := m.Ensure(context.Background())
-		if err != nil {
-			t.Fatalf("recovery Ensure = error %v, want a mint against the re-resolved location", err)
-		}
+	if n := fx.patCallCount("list"); n != wantResolutions {
+		t.Fatalf("list calls = %d, want %d", n, wantResolutions)
+	}
+}
 
-		if n := fx.patCallCount("customer"); n != 2 {
-			t.Fatalf("customer calls = %d, want 2 (the next mint re-resolved via getCustomerInfo)", n)
-		}
+// patRunKey403Intact runs the permission vector: an access_tokens 403
+// answers the coded http-status class, drops the stale TOKEN, but the
+// cached LOCATION survives — the recovery mint goes straight back to the
+// same key with no re-resolution and no re-list.
+func patRunKey403Intact(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	clk := newPatClock(fixtureBaseTime())
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
-		if n := fx.patCallCount("list"); n != 2 {
-			t.Fatalf("list calls = %d, want 2 (the second attempt re-listed)", n)
-		}
+	if _, err := m.Ensure(context.Background()); err != nil {
+		t.Fatalf("first Ensure = error %v, want a mint", err)
+	}
 
-		calls := fx.Calls()
-		var access404, accessOK *patFixtureCall
+	clk.Advance(59 * time.Minute)
+	fx.SetAccess(patReplyStatusBody(http.StatusForbidden, `{"code":403,"data":null}`))
 
-		for i := range calls {
-			if !strings.HasSuffix(calls[i].path, "/access_tokens") {
-				continue
-			}
+	_, err := m.Ensure(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "project_token_http_403") {
+		t.Fatalf("Ensure = error %v, want the coded project_token_http_403 class", err)
+	}
 
-			switch {
-			case strings.HasSuffix(calls[i].path, "/api_keys/key-7/access_tokens"):
-				access404 = &calls[i]
-			case strings.HasSuffix(calls[i].path, "/api_keys/key-8/access_tokens"):
-				accessOK = &calls[i]
-			}
-		}
+	if _, ok := m.Cached(context.Background()); ok {
+		t.Fatal("cache kept the token after a non-transient failure (never a partial serve)")
+	}
 
-		if access404 == nil || accessOK == nil {
-			t.Fatalf("access calls = %+v, want key-7 (404) then key-8 (success)", calls)
-		}
+	// Recovery: the permission problem resolves. The location was NEVER
+	// dropped — the mint goes straight back to access_tokens with the
+	// SAME key, no re-resolution, no re-list.
+	fx.SetAccess(patReplyStatusBody(http.StatusOK, patAccessEnvelope(patAccessData(patSecondToken))))
 
-		if pat.APIKeyID != "key-8" {
-			t.Fatalf("Pat.APIKeyID = %q, want the re-resolved key-8", pat.APIKeyID)
-		}
-	})
+	pat, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("recovery Ensure = error %v, want a mint against the intact location", err)
+	}
 
-	t.Run("403 permission error leaves the cached location intact", func(t *testing.T) {
-		fx := newPatFixtureServer(t)
-		clk := newPatClock(fixtureBaseTime())
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
+	patAssertKey404Counts(t, fx, 1)
 
-		if _, err := m.Ensure(context.Background()); err != nil {
-			t.Fatalf("first Ensure = error %v, want a mint", err)
-		}
+	if pat.APIKeyID != fixtureKeyID {
+		t.Fatalf("Pat.APIKeyID = %q, want the SAME key-7 (no re-create)", pat.APIKeyID)
+	}
+}
 
-		clk.Advance(59 * time.Minute)
-		fx.SetAccess(patReplyStatusBody(http.StatusForbidden, `{"code":403,"data":null}`))
+// patRunNetIntact runs the network vector: a transport-level failure past
+// token expiry answers the honest coded network error, and the cached
+// location survives — the recovery mint goes straight back to access_tokens.
+func patRunNetIntact(t *testing.T) {
+	fx := newPatFixtureServer(t)
+	clk := newPatClock(fixtureBaseTime())
+	m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken, loginOK: true}, clk.Now)
 
-		_, err := m.Ensure(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "project_token_http_403") {
-			t.Fatalf("Ensure = error %v, want the coded project_token_http_403 class", err)
-		}
+	if _, err := m.Ensure(context.Background()); err != nil {
+		t.Fatalf("first Ensure = error %v, want a mint", err)
+	}
 
-		if _, ok := m.Cached(context.Background()); ok {
-			t.Fatal("cache kept the token after a non-transient failure (never a partial serve)")
-		}
+	// Past expiry: no still-valid token can serve, so the network failure
+	// surfaces as the honest coded error.
+	clk.Advance(2 * time.Hour)
+	fx.SetAccess(patReplyStatusBody(http.StatusOK,
+		patAccessEnvelope(patAccessDataFrom(clk.Now(), patSecondToken))))
+	fx.SetNetFail(true)
 
-		// Recovery: the permission problem resolves. The location was NEVER
-		// dropped — the mint goes straight back to access_tokens with the
-		// SAME key, no re-resolution, no re-list.
-		fx.SetAccess(patReplyStatusBody(http.StatusOK, patAccessEnvelope(patAccessData(patSecondToken))))
+	_, err := m.Ensure(context.Background())
+	if !errors.Is(err, hostsvc.ErrPatNetworkError) {
+		t.Fatalf("Ensure = error %v, want ErrPatNetworkError", err)
+	}
 
-		pat, err := m.Ensure(context.Background())
-		if err != nil {
-			t.Fatalf("recovery Ensure = error %v, want a mint against the intact location", err)
-		}
+	fx.SetNetFail(false)
 
-		if n := fx.patCallCount("customer"); n != 1 {
-			t.Fatalf("customer calls = %d, want 1 (permission errors never invalidate the location)", n)
-		}
+	pat, err := m.Ensure(context.Background())
+	if err != nil {
+		t.Fatalf("recovery Ensure = error %v, want a mint against the intact location", err)
+	}
 
-		if n := fx.patCallCount("list"); n != 1 {
-			t.Fatalf("list calls = %d, want 1 (no re-list after a permission error)", n)
-		}
+	patAssertKey404Counts(t, fx, 1)
 
-		if pat.APIKeyID != fixtureKeyID {
-			t.Fatalf("Pat.APIKeyID = %q, want the SAME key-7 (no re-create)", pat.APIKeyID)
-		}
-	})
-
-	t.Run("network error leaves the cached location intact", func(t *testing.T) {
-		fx := newPatFixtureServer(t)
-		clk := newPatClock(fixtureBaseTime())
-		m := newFixtureMinter(t, fx.srv.URL, &fixturePatCreds{login: fixtureLoginToken}, clk.Now)
-
-		if _, err := m.Ensure(context.Background()); err != nil {
-			t.Fatalf("first Ensure = error %v, want a mint", err)
-		}
-
-		// Past expiry: no still-valid token can serve, so the network failure
-		// surfaces as the honest coded error.
-		clk.Advance(2 * time.Hour)
-		fx.SetAccess(patReplyStatusBody(http.StatusOK,
-			patAccessEnvelope(patAccessDataFrom(clk.Now(), patSecondToken))))
-		fx.SetNetFail(true)
-
-		_, err := m.Ensure(context.Background())
-		if !errors.Is(err, hostsvc.ErrPatNetworkError) {
-			t.Fatalf("Ensure = error %v, want ErrPatNetworkError", err)
-		}
-
-		fx.SetNetFail(false)
-
-		pat, err := m.Ensure(context.Background())
-		if err != nil {
-			t.Fatalf("recovery Ensure = error %v, want a mint against the intact location", err)
-		}
-
-		if n := fx.patCallCount("customer"); n != 1 {
-			t.Fatalf("customer calls = %d, want 1 (network errors never invalidate the location)", n)
-		}
-
-		if n := fx.patCallCount("list"); n != 1 {
-			t.Fatalf("list calls = %d, want 1 (no re-list after a network error)", n)
-		}
-
-		if pat.Token != patSecondToken {
-			t.Fatalf("Pat.Token = %q, want the recovery mint", pat.Token)
-		}
-	})
+	if pat.Token != patSecondToken {
+		t.Fatalf("Pat.Token = %q, want the recovery mint", pat.Token)
+	}
 }

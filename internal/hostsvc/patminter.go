@@ -41,6 +41,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,8 +63,31 @@ const (
 	// the chain selects (create-if-absent per D-07).
 	patKeyName = "zcode-api-key"
 
+	// patDefaultOrgMarker and patDefaultProjMarker are the desktop's
+	// server-side default-org/default-project name literals (the D-06 pick
+	// preference; the escapes keep the source ASCII, the VALUES are the
+	// exact server literals).
+	patDefaultOrgMarker  = "\u9ed8\u8ba4\u673a\u6784" // 默认机构
+	patDefaultProjMarker = "\u9ed8\u8ba4\u9879\u76ee" // 默认项目
+
+	// patTeamProjectType is the projectType wire value marking team projects,
+	// which are never the personal plan's home (the D-06 filter;
+	// String(projectType).trim() compared against it).
+	patTeamProjectType = "2"
+
 	// patPlanKind is the plan kind slot of the accountScope array.
 	patPlanKind = "individual-coding-plan"
+
+	// patCreateKeyBody is the byte-exact create-if-absent body (D-07): the
+	// desktop's own create — name + the coding-plan usage scene (1 =
+	// API_KEY_USAGE_SCENE.CODING_PLAN). A constant string, never a marshal
+	// (key order is part of the wire shape).
+	patCreateKeyBody = `{"name":"zcode-api-key","usageScene":1}`
+
+	// The HTTP status markers of the transient classification (the
+	// reference's isTransient: 429 and the 5xx band retry; 4xx does not).
+	patHTTPTooManyRequests = 429
+	patHTTPServerErrMin    = 500
 
 	// patRequestTimeout bounds every mint HTTPS call (ref REQUEST_TIMEOUT_MS),
 	// set once on the client at construction (Pitfall 7: bounded I/O, never a
@@ -267,6 +291,11 @@ type patSession struct {
 	// means a new session (cached artifacts dropped, scope changed).
 	loginFP string
 
+	// loc is the cached key location {organizationId, projectId, apiKeyId};
+	// ONLY an access_tokens 404 drops it (Pitfall 8 — permission and network
+	// errors never invalidate).
+	loc *patKeyLocation
+
 	// token is the cached Pat (nil = none).
 	token *Pat
 }
@@ -377,21 +406,36 @@ func (m *PatMinter) Ensure(ctx context.Context) (Pat, error) {
 		return Pat{}, ErrPatLoginRequired
 	}
 
-	raw, _ := m.creds.LoginToken(ctx, patFamily)
+	raw, ok := m.creds.LoginToken(ctx, patFamily)
 	login := strings.TrimSpace(raw)
+	if !ok || login == "" {
+		// The absent-login arm: the coded error naming the desktop login,
+		// BEFORE any network I/O (zero HTTP calls, no fabricated success).
+		return Pat{}, ErrPatLoginRequired
+	}
+
+	// The session (per-login cache scope) is established BEFORE the mint —
+	// the reference's LoginSession guard: a changed login drops every cached
+	// artifact up front, and the in-flight chain can store what it resolves.
+	fp := patSHA256Hex(login)
+
+	m.mu.Lock()
+	if m.sess == nil || m.sess.loginFP != fp {
+		m.sess = &patSession{loginFP: fp}
+	}
+	m.mu.Unlock()
 
 	pat, err := m.mint(ctx, login)
 	if err != nil {
+		m.dropTokenOnFailure(login, err)
+
 		return Pat{}, err
 	}
 
 	m.mu.Lock()
-	fp := patSHA256Hex(login)
-	if m.sess == nil || m.sess.loginFP != fp {
-		m.sess = &patSession{loginFP: fp}
+	if m.sess != nil && m.sess.loginFP == fp {
+		m.sess.token = &pat
 	}
-
-	m.sess.token = &pat
 	m.mu.Unlock()
 
 	return pat, nil
@@ -427,32 +471,115 @@ func (m *PatMinter) Invalidate(reason string) {
 	slog.Info("hostsvc: pat cache invalidated", "reason", reason)
 }
 
+// dropTokenOnFailure clears the cached token after a failed mint — a failure
+// never leaves a partially-poisoned or provably-dead token behind. The
+// transient exception keeps a STILL-VALID token cached (the reference's
+// keep-serving posture; the serve-and-floor arm lands with the
+// cache-semantics slice).
+func (m *PatMinter) dropTokenOnFailure(login string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.sess == nil || m.sess.loginFP != patSHA256Hex(login) || m.sess.token == nil {
+		return
+	}
+
+	if isTransientMintError(err) && m.clock().Before(m.sess.token.ExpiresAt) {
+		return
+	}
+
+	m.sess.token = nil
+}
+
+// isTransientMintError classifies mint failures the reference's way: the
+// timeout and network coded classes, plus the 429 and 5xx transport bands,
+// are transient (retryable); every other failure (permission, disabled,
+// business codes, shape errors) is not.
+func isTransientMintError(err error) bool {
+	if errors.Is(err, ErrPatTimeout) || errors.Is(err, ErrPatNetworkError) {
+		return true
+	}
+
+	var status *patHTTPStatusError
+	if errors.As(err, &status) {
+		return status.status == patHTTPTooManyRequests || status.status >= patHTTPServerErrMin
+	}
+
+	return false
+}
+
 // mint runs the official chain once: the accountScope digest over the current
-// sign-in, the key-location resolution (getCustomerInfo -> pick -> list), and
-// the access_tokens exchange.
+// sign-in, the key location (cached per session, or resolved through
+// getCustomerInfo -> pick -> list/create), and the access_tokens exchange.
+// An access_tokens 404 drops ONLY the cached location (Pitfall 8) so the
+// next mint re-resolves.
 func (m *PatMinter) mint(ctx context.Context, login string) (Pat, error) {
 	jwt, _ := m.creds.ZcodeJWT(ctx)
 	scope := patAccountScope(patFamily, login, jwt)
 
-	loc, err := m.resolveLocation(ctx, login)
-	if err != nil {
-		return Pat{}, err
+	loc := m.cachedLocation(login)
+	if loc == nil {
+		resolved, rerr := m.resolveLocation(ctx, login)
+		if rerr != nil {
+			return Pat{}, rerr
+		}
+
+		m.storeLocation(login, resolved)
+		loc = resolved
 	}
 
-	return m.issueToken(ctx, login, loc, m.clock(), scope)
+	pat, err := m.issueToken(ctx, login, loc, m.clock(), scope)
+	if err != nil && errors.Is(err, ErrPatKeyMissing) {
+		// The key moved (access_tokens 404): drop ONLY the cached location
+		// — the next mint re-resolves via getCustomerInfo and re-lists.
+		m.dropLocation(login)
+	}
+
+	return pat, err
+}
+
+// cachedLocation returns the session's cached key location (nil = none),
+// scoped to the login the caller is minting for.
+func (m *PatMinter) cachedLocation(login string) *patKeyLocation {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.sess == nil || m.sess.loginFP != patSHA256Hex(login) {
+		return nil
+	}
+
+	return m.sess.loc
+}
+
+// storeLocation caches the resolved key location under the current session.
+func (m *PatMinter) storeLocation(login string, loc *patKeyLocation) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.sess != nil && m.sess.loginFP == patSHA256Hex(login) {
+		m.sess.loc = loc
+	}
+}
+
+// dropLocation clears the cached key location (the 404 arm).
+func (m *PatMinter) dropLocation(login string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.sess != nil && m.sess.loginFP == patSHA256Hex(login) {
+		m.sess.loc = nil
+	}
 }
 
 // resolveLocation resolves where the account key lives: getCustomerInfo with
-// the RAW token, the personal pick (D-06), then the api_keys list. The result
-// is recomputed per mint in this slice (the cross-mint location cache with
-// the 404 drop rule is the edge-arm slice's subject).
+// the RAW token, the personal pick (D-06), then the api_keys list.
 func (m *PatMinter) resolveLocation(ctx context.Context, login string) (*patKeyLocation, error) {
 	orgID, projID, err := m.pickPersonal(ctx, login)
 	if err != nil {
 		return nil, err
 	}
 
-	keyID, err := m.locateKey(ctx, login, orgID, projID)
+	keyID, err := m.locateOrCreateKey(ctx, login, orgID, projID)
 	if err != nil {
 		return nil, err
 	}
@@ -460,31 +587,73 @@ func (m *PatMinter) resolveLocation(ctx context.Context, login string) (*patKeyL
 	return &patKeyLocation{organizationID: orgID, projectID: projID, apiKeyID: keyID}, nil
 }
 
+// patPersonalOrg/patPersonalProject are the D-06 pick candidates: the
+// personal layer after the team filter, ids non-empty.
+type patPersonalOrg struct {
+	id       string
+	name     string
+	projects []patPersonalProject
+}
+
+type patPersonalProject struct {
+	id   string
+	name string
+}
+
 // pickPersonal digs the customer-info envelope and picks the personal org and
-// project: personal-layer ids must be non-empty; this slice takes the
-// deterministic first pair (the D-06 team filter, marker preference,
-// multi-candidate warn, and the coded unavailable arm land with their
-// vectors).
+// project (D-06): team projects (projectType "2") are never candidates, the
+// default-marker org/project win, the deterministic first pair otherwise —
+// and multiple candidates answer a slog warn listing the ids (the user is
+// never blocked). No personal candidates at all answers the coded
+// project-unavailable arm.
 func (m *PatMinter) pickPersonal(ctx context.Context, login string) (orgID, projID string, err error) {
 	obj, err := m.callJSON(ctx, http.MethodGet, m.origin+patCustomerInfoPath, "", login)
 	if err != nil {
 		return "", "", err
 	}
 
-	data, err := patEnvelopeData(obj)
+	orgs, err := patCustomerOrganizations(obj)
 	if err != nil {
 		return "", "", err
 	}
 
+	personal := patCollectPersonal(orgs)
+	picked, proj, ok := patPickPair(personal)
+	if !ok {
+		return "", "", ErrPatProjectUnavailable
+	}
+
+	patWarnMultiPick(personal, picked, proj)
+
+	return picked.id, proj.id, nil
+}
+
+// patCustomerOrganizations digs the organizations array out of the decoded
+// getCustomerInfo envelope (the desktop's customerSchema shape).
+func patCustomerOrganizations(obj map[string]any) ([]any, error) {
+	data, err := patEnvelopeData(obj)
+	if err != nil {
+		return nil, err
+	}
+
 	dataObj, dataOK := data.(map[string]any)
 	if !dataOK {
-		return "", "", ErrPatInvalidResponse
+		return nil, ErrPatInvalidResponse
 	}
 
 	orgs, ok := dataObj["organizations"].([]any)
 	if !ok {
-		return "", "", ErrPatInvalidResponse
+		return nil, ErrPatInvalidResponse
 	}
+
+	return orgs, nil
+}
+
+// patCollectPersonal filters the organizations array down to the personal
+// candidates: non-empty org id, team projects removed, orgs without any
+// remaining project skipped (the reference's personal layer build).
+func patCollectPersonal(orgs []any) []patPersonalOrg {
+	personal := make([]patPersonalOrg, 0, len(orgs))
 
 	for _, rawOrg := range orgs {
 		org, ok := rawOrg.(map[string]any)
@@ -492,39 +661,110 @@ func (m *PatMinter) pickPersonal(ctx context.Context, login string) (orgID, proj
 			continue
 		}
 
-		orgID := patNonEmpty(org["organizationId"])
-		if orgID == "" {
+		id := patNonEmpty(org["organizationId"])
+		if id == "" {
 			continue
 		}
 
-		orgProjects, ok := org["projects"].([]any)
-		if !ok {
+		rawProjects, _ := org["projects"].([]any)
+		projects := patCollectProjects(rawProjects)
+		if len(projects) == 0 {
 			continue
 		}
 
-		for _, rawProj := range orgProjects {
-			proj, ok := rawProj.(map[string]any)
-			if !ok {
-				continue
-			}
+		personal = append(personal, patPersonalOrg{
+			id:       id,
+			name:     patNonEmpty(org["organizationName"]),
+			projects: projects,
+		})
+	}
 
-			projID := patNonEmpty(proj["projectId"])
-			if projID == "" {
-				continue
-			}
+	return personal
+}
 
-			return orgID, projID, nil
+// patCollectProjects filters one org's projects: team-typed entries removed,
+// non-empty ids kept.
+func patCollectProjects(rawProjects []any) []patPersonalProject {
+	projects := make([]patPersonalProject, 0, len(rawProjects))
+
+	for _, rawProj := range rawProjects {
+		proj, ok := rawProj.(map[string]any)
+		if !ok || patProjectTypeIsTeam(proj["projectType"]) {
+			continue
+		}
+
+		id := patNonEmpty(proj["projectId"])
+		if id == "" {
+			continue
+		}
+
+		projects = append(projects, patPersonalProject{id: id, name: patNonEmpty(proj["projectName"])})
+	}
+
+	return projects
+}
+
+// patPickPair applies the D-06 preference: the org whose name carries the
+// default-org marker else the deterministic first; within it the project
+// carrying the default-project marker else the first.
+func patPickPair(personal []patPersonalOrg) (patPersonalOrg, patPersonalProject, bool) {
+	if len(personal) == 0 {
+		return patPersonalOrg{}, patPersonalProject{}, false
+	}
+
+	orgIdx := 0
+	for i, org := range personal {
+		if strings.Contains(org.name, patDefaultOrgMarker) {
+			orgIdx = i
+
+			break
 		}
 	}
 
-	return "", "", ErrPatInvalidResponse
+	picked := personal[orgIdx]
+
+	projIdx := 0
+	for i, proj := range picked.projects {
+		if strings.Contains(proj.name, patDefaultProjMarker) {
+			projIdx = i
+
+			break
+		}
+	}
+
+	return picked, picked.projects[projIdx], true
 }
 
-// locateKey lists the org/project api_keys (Bearer form, zai) and returns the
-// id of the zcode-api-key candidate. A missing candidate answers the
-// reference's read-only coded arm in this slice (the D-07 create-if-absent
-// lands with its vector).
-func (m *PatMinter) locateKey(ctx context.Context, login, orgID, projID string) (string, error) {
+// patWarnMultiPick emits the D-06 structural warn listing the candidate ids
+// when several personal orgs (or several projects of the picked org) exist —
+// ids only, never names-with-material, never a block.
+func patWarnMultiPick(orgs []patPersonalOrg, picked patPersonalOrg, proj patPersonalProject) {
+	if len(orgs) > 1 {
+		ids := make([]string, 0, len(orgs))
+		for _, org := range orgs {
+			ids = append(ids, org.id)
+		}
+
+		slog.Warn("hostsvc: pat minter multiple personal organizations, picking deterministic first",
+			"code", "pat-multipick-org", "picked", picked.id, "candidates", ids)
+	}
+
+	if len(picked.projects) > 1 {
+		ids := make([]string, 0, len(picked.projects))
+		for _, p := range picked.projects {
+			ids = append(ids, p.id)
+		}
+
+		slog.Warn("hostsvc: pat minter multiple personal projects, picking deterministic first",
+			"code", "pat-multipick-project", "picked", proj.id, "candidates", ids)
+	}
+}
+
+// locateOrCreateKey resolves the account key id: list the org/project
+// api_keys (Bearer form, zai) and return the zcode-api-key candidate's id;
+// no candidate → create-if-absent (D-07: the desktop's own posture,
+// superseding the reference's read-only key_missing).
+func (m *PatMinter) locateOrCreateKey(ctx context.Context, login, orgID, projID string) (string, error) {
 	obj, err := m.callJSON(ctx, http.MethodGet,
 		patKeyListURL(m.origin, orgID, projID), "", patBearerPrefix+login)
 	if err != nil {
@@ -548,23 +788,51 @@ func (m *PatMinter) locateKey(ctx context.Context, login, orgID, projID string) 
 		}
 
 		if name, _ := entry["name"].(string); name == patKeyName {
-			keyID := patNonEmpty(entry["apiKey"])
-			if keyID == "" {
-				return "", ErrPatInvalidResponse
-			}
-
-			return keyID, nil
+			return patKeyIDFrom(entry)
 		}
 	}
 
-	return "", ErrPatKeyMissing
+	// Check-then-create idempotency: the candidate search precedes every
+	// mint, so the create fires only when the list carried no candidate.
+	return m.createKey(ctx, login, orgID, projID)
+}
+
+// createKey POSTs the byte-exact create body to the same api_keys URL and
+// returns the created entry's id (the reply is the created key entry).
+func (m *PatMinter) createKey(ctx context.Context, login, orgID, projID string) (string, error) {
+	obj, err := m.callJSON(ctx, http.MethodPost,
+		patKeyListURL(m.origin, orgID, projID), patCreateKeyBody, patBearerPrefix+login)
+	if err != nil {
+		return "", err
+	}
+
+	data, err := patEnvelopeData(obj)
+	if err != nil {
+		return "", err
+	}
+
+	entry, ok := data.(map[string]any)
+	if !ok {
+		return "", ErrPatInvalidResponse
+	}
+
+	return patKeyIDFrom(entry)
+}
+
+// patKeyIDFrom digs the non-empty apiKey id out of a key entry (a
+// candidate/created entry without a usable id is the invalid-response arm).
+func patKeyIDFrom(entry map[string]any) (string, error) {
+	keyID := patNonEmpty(entry["apiKey"])
+	if keyID == "" {
+		return "", ErrPatInvalidResponse
+	}
+
+	return keyID, nil
 }
 
 // issueToken exchanges the login for the project access token: POST
-// access_tokens with the Bearer header and the byte-exact body, validate the
-// reply shape, and apply the conservative expiry math (expiresAt =
-// min(expiresAtSec*1000, startedAt+expiresIn*1000); refreshAt =
-// max(startedAt, expiresAt-120s)).
+// access_tokens with the Bearer header and the byte-exact body; the reply
+// validation and expiry math live in patFromReply.
 func (m *PatMinter) issueToken(
 	ctx context.Context,
 	login string,
@@ -581,6 +849,14 @@ func (m *PatMinter) issueToken(
 		return Pat{}, err
 	}
 
+	if patCodeIs404(obj["code"]) {
+		// The ONLY location-invalidating failure: the key no longer exists
+		// at its cached location (HTTP 404 arrives as the pseudo envelope,
+		// so both forms land here — Pitfall 8). Permission and network
+		// errors never reach this arm.
+		return Pat{}, ErrPatKeyMissing
+	}
+
 	data, err := patEnvelopeData(obj)
 	if err != nil {
 		return Pat{}, err
@@ -591,11 +867,33 @@ func (m *PatMinter) issueToken(
 		return Pat{}, ErrPatInvalidResponse
 	}
 
+	return patFromReply(dataObj, loc, startedAt, scope, m.clock())
+}
+
+// patFromReply validates the access_tokens reply shape (the reference's
+// guards: non-empty token, tokenType Bearer, positive expiresIn/expiresAt,
+// enable !== false) and applies the conservative expiry math (expiresAt =
+// min(expiresAtSec*1000, startedAt+expiresIn*1000); refreshAt =
+// max(startedAt, expiresAt-120s)). A dead expiry is the invalid-response arm
+// — never a partial serve.
+func patFromReply(
+	dataObj map[string]any,
+	loc *patKeyLocation,
+	startedAt time.Time,
+	scope string,
+	now time.Time,
+) (Pat, error) {
 	token := patNonEmpty(dataObj["accessToken"])
 
 	tokenType, _ := dataObj["tokenType"].(string)
 	expiresIn, expiresInOK := patPositiveNumber(dataObj["expiresIn"])
 	expiresAtSec, expiresAtSecOK := patPositiveNumber(dataObj["expiresAt"])
+
+	if v, present := dataObj["enable"]; present {
+		if disabled, isBool := v.(bool); isBool && !disabled {
+			return Pat{}, ErrPatDisabled
+		}
+	}
 
 	if token == "" || tokenType != patTokenType || !expiresInOK || !expiresAtSecOK {
 		return Pat{}, ErrPatInvalidResponse
@@ -609,7 +907,7 @@ func (m *PatMinter) issueToken(
 		expiresAt = fromExpiresIn
 	}
 
-	if !expiresAt.After(m.clock()) {
+	if !expiresAt.After(now) {
 		return Pat{}, ErrPatInvalidResponse
 	}
 
@@ -779,5 +1077,40 @@ func patSuccessCode(code any) bool {
 		return v == patCodeOKStr || v == patCodeZeroStr
 	default:
 		return false
+	}
+}
+
+// patCodeIs404 reports whether an envelope code is the numeric 404 — the
+// key-missing marker on access_tokens (the pseudo envelope from an HTTP 404
+// and a business-code 404 both land here; the reference's strict numeric
+// check).
+func patCodeIs404(code any) bool {
+	n, ok := code.(float64)
+
+	return ok && int(n) == patCodeNotFound
+}
+
+// patProjectTypeIsTeam reports whether a projectType value (string, number,
+// or null on the wire) marks a team project — String(projectType).trim()
+// compared against the team marker (the D-06 filter).
+func patProjectTypeIsTeam(v any) bool {
+	return strings.TrimSpace(patAnyToString(v)) == patTeamProjectType
+}
+
+// patAnyToString renders a decoded JSON value the way the reference's
+// String() coercion does (numbers render without trailing zeros; nil is the
+// empty string).
+func patAnyToString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(t)
+	default:
+		return fmt.Sprintf("%v", t)
 	}
 }
