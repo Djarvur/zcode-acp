@@ -42,9 +42,16 @@ const (
 	builtinFileName    = "zcode-builtin.json"
 	builtinProviderRel = ".zcode/v2/runtime/provider/linux-x86_64"
 
+	// bundledProviderRel is the bundled builtin copy's directory under the
+	// install root — <root>/resources/config/provider/zcode-builtin.json, the
+	// copy every shipped layout carries (field-verified in the QA-02 VM's
+	// squashfs-root, EXP-VM-QA02).
+	bundledProviderRel = "resources/config/provider"
+
 	// probeCount is the documented probe set (install-discovery.md :93-97
-	// plus the runtime-provider-tree row).
-	probeCount = 8
+	// plus the runtime-provider-tree row and its install-side bundled
+	// fallback row).
+	probeCount = 9
 
 	// dirPerm is the permission for directories discovery creates (the
 	// AppImage extraction working dir).
@@ -135,6 +142,11 @@ func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 	probes = append(probes, row)
 	if found && winner.BuiltinFile == "" {
 		winner.BuiltinFile = builtin
+	}
+	bundledRow, bundled := p.probeBuiltinBundled(winner, found)
+	probes = append(probes, bundledRow)
+	if found && winner.BuiltinFile == "" {
+		winner.BuiltinFile = bundled
 	}
 	if !found {
 		return Install{}, probes, emptyResultError(probes)
@@ -575,6 +587,10 @@ func (p Probers) packageTreeInstall() (Install, bool) {
 // probeBuiltinRuntime is order step 5's data row: the newest zcode-builtin.json
 // under the runtime-provider tree feeds ZCODE_BUILTIN_PROVIDER_CONFIG_FILE
 // (the spawn line, install-discovery.md :50). It never yields a root install.
+// On a fresh machine the tree does not exist yet and this probe honestly
+// misses — the winner's BuiltinFile would stay empty and the child would boot
+// on the unpaired personal-only env (the QA-02 field failure, EXP-VM-QA02);
+// probeBuiltinBundled is the install-side completion of the same step.
 func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
 	row = Probe{Name: "builtin-runtime", Query: "newest " + builtinFileName +
 		" under ~/.zcode/v2/runtime/provider/linux-x86_64/<ver>/endpoint-*/"}
@@ -599,6 +615,44 @@ func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
 	row.Result = "provider tree present but no " + builtinFileName + " in any version dir"
 
 	return row, ""
+}
+
+// probeBuiltinBundled is the install-side completion of order step 5: when the
+// resolved install carries no BuiltinFile from the runtime-provider tree — a
+// fresh machine has no ~/.zcode/v2/runtime/provider cache — discovery falls
+// back to the BUNDLED copy inside the install,
+// <root>/resources/config/provider/zcode-builtin.json. Field-proven on the
+// clean QA-02 VM (EXP-VM-QA02): the squashfs-root layout ships the bundled
+// file, and the paired builtin+personal env pass boots the app-server with
+// account models publishing. It never yields a root install and never
+// displaces a runtime-cache hit (the runtime cache wins — install-discovery.md
+// :91's active-cache rule); with neither source present BuiltinFile honestly
+// stays empty (:34).
+func (p Probers) probeBuiltinBundled(winner Install, found bool) (row Probe, bundledFile string) {
+	row = Probe{
+		Name:  "builtin-bundled",
+		Query: "<root>/" + bundledProviderRel + "/" + builtinFileName,
+	}
+	if !found {
+		row.Result = "no install resolved; no bundled builtin to check"
+
+		return row, ""
+	}
+	if winner.BuiltinFile != "" {
+		row.Result = "not consulted; the runtime cache resolved the builtin file"
+
+		return row, ""
+	}
+	bundled := filepath.Join(winner.Root, filepath.FromSlash(bundledProviderRel), builtinFileName)
+	if _, err := os.Stat(bundled); err != nil {
+		row.Result = "no bundled " + builtinFileName + " under " + winner.Root +
+			" (" + bundledProviderRel + "/" + builtinFileName + " missing)"
+
+		return row, ""
+	}
+	row.Result = "found: " + bundled + describeRevision(bundled)
+
+	return row, bundled
 }
 
 // versionDirs lists the directory names under dir (the <ver> dirs of the
