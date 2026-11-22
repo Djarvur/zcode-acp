@@ -46,7 +46,8 @@ var (
 	// ErrKeyringNoDesktopSession: the keyring bus cannot autolaunch — the
 	// coded no-desktop-session hint (the coarse autolaunch marker class).
 	ErrKeyringNoDesktopSession = errors.New(
-		"keyring probe: no desktop session available (the keyring bus cannot autolaunch headless — run inside your desktop session)")
+		"keyring probe: no desktop session available " +
+			"(the keyring bus cannot autolaunch headless — run inside your desktop session)")
 
 	// ErrKeyringNoEntry: the keyring holds no matching ZCode credential —
 	// the coded log-in-via-desktop hint.
@@ -191,7 +192,7 @@ func (p *keyringProber) classify(ctx context.Context) (string, error) {
 	// 1. LookPath FIRST (D-02): an absent binary is the cheapest honest
 	// verdict and never spawns a subprocess.
 	if _, err := p.lookPath(p.bin); err != nil {
-		return probeClassBinaryMissing, fmt.Errorf("%w: %v", ErrKeyringBinaryMissing, err)
+		return probeClassBinaryMissing, fmt.Errorf("%w: %w", ErrKeyringBinaryMissing, err)
 	}
 
 	// 2. The loader's exact argv — one argv source (the probe never
@@ -201,7 +202,7 @@ func (p *keyringProber) classify(ctx context.Context) (string, error) {
 	argv, env, err := p.loader.LookupCommand()
 	if err != nil {
 		return probeClassNoEntry,
-			fmt.Errorf("%w: no readable desktop credentials (%v)", ErrKeyringNoEntry, err)
+			fmt.Errorf("%w: no readable desktop credentials (%w)", ErrKeyringNoEntry, err)
 	}
 
 	// 3. The bounded exec: the ≤5s ceiling contains any prompt path nobody
@@ -231,7 +232,7 @@ func (p *keyringProber) classify(ctx context.Context) (string, error) {
 		return probeClassOK, nil
 
 	case execErr != nil && bytes.Contains(stderr, []byte(autolaunchMarker)):
-		return probeClassNoDesktopSession, fmt.Errorf("%w: %v", ErrKeyringNoDesktopSession, execErr)
+		return probeClassNoDesktopSession, fmt.Errorf("%w: %w", ErrKeyringNoDesktopSession, execErr)
 
 	default:
 		return probeClassNoEntry,

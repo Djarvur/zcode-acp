@@ -43,6 +43,16 @@ func TestKeyringProbe(t *testing.T) {
 	t.Run("hung lookup answers the coded timeout inside the bound", testKeyringProbeHungExec)
 }
 
+// The arms' static fixture errors (err113: wrapped static errors, never
+// dynamically constructed).
+var (
+	// errProbeLookPathAbsent replays the exec.LookPath miss verbatim.
+	errProbeLookPathAbsent = errors.New(`exec: "secret-tool": executable file not found in $PATH`)
+
+	// errProbeExitStatus1 replays the probed rc=1 failure modes.
+	errProbeExitStatus1 = errors.New("exit status 1")
+)
+
 // probeEnv is the fixture scrubbed env (synthetic allowlist members only).
 func probeEnv() []string {
 	return []string{"PATH=/usr/bin", "HOME=/fixture-home"}
@@ -62,9 +72,10 @@ func probeFixtureCredentials(t *testing.T) string {
 	return path
 }
 
-// recordedProbeExec records every exec-seam invocation (argv/env/ctx) and
-// scripts verdicts per call index — the injection discipline the arms use
-// to prove ordering and non-execution.
+// recordedProbeExec records every exec-seam invocation (argv/env/deadline
+// facts) — the injection discipline the arms use to prove ordering and
+// non-execution. Verdict scripting rides the per-arm WithKeyringProbeExec
+// closures; this double's own verdict is the synthetic success.
 type recordedProbeExec struct {
 	mu    sync.Mutex
 	calls []probeExecCall
@@ -73,16 +84,22 @@ type recordedProbeExec struct {
 type probeExecCall struct {
 	argv []string
 	env  []string
-	ctx  context.Context
+
+	// deadline/hasDeadline carry the bounded-ctx facts the argv-contract
+	// arm asserts — the ctx itself is never stored (containedctx).
+	deadline    time.Time
+	hasDeadline bool
 }
 
-// exec is the seam: records the invocation, then returns the scripted
-// verdict (default: a synthetic success — an entry exists).
+// exec is the seam: records the invocation (deadline facts only — never
+// the ctx), then returns the synthetic success verdict (an entry exists).
 func (r *recordedProbeExec) exec(
 	ctx context.Context, argv, env []string,
-) ([]byte, []byte, error) {
+) (stdout, stderr []byte, err error) {
+	dl, dlOK := ctx.Deadline()
+
 	r.mu.Lock()
-	r.calls = append(r.calls, probeExecCall{argv: argv, env: env, ctx: ctx})
+	r.calls = append(r.calls, probeExecCall{argv: argv, env: env, deadline: dl, hasDeadline: dlOK})
 	r.mu.Unlock()
 
 	return []byte("fixture-synthetic-keyring-answer"), nil, nil
@@ -104,7 +121,7 @@ func testKeyringProbeMissingBinary(t *testing.T) {
 
 	probe := interact.NewKeyringProber("secret-tool", probeFixtureCredentials(t), probeEnv(),
 		interact.WithKeyringProbeLookPath(func(string) (string, error) {
-			return "", errors.New(`exec: "secret-tool": executable file not found in $PATH`)
+			return "", errProbeLookPathAbsent
 		}),
 		interact.WithKeyringProbeExec(exec.exec),
 	)
@@ -135,7 +152,7 @@ func testKeyringProbeNoDesktopSession(t *testing.T) {
 		) ([]byte, []byte, error) {
 			// The probed failure mode (V-EXP 2026-11-22): autolaunch refused.
 			return nil, []byte("secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY"),
-				errors.New("exit status 1")
+				errProbeExitStatus1
 		}),
 	)
 
@@ -163,7 +180,7 @@ func testKeyringProbeNoEntry(t *testing.T) {
 			_ context.Context, _ []string, _ []string,
 		) ([]byte, []byte, error) {
 			// The probed failure mode (V-EXP 2026-11-22): no matching entry.
-			return nil, nil, errors.New("exit status 1")
+			return nil, nil, errProbeExitStatus1
 		}),
 	)
 
@@ -216,12 +233,11 @@ func testKeyringProbeArgvContract(t *testing.T) {
 		t.Fatalf("probe env = %v, want the loader's scrubbed env %v", call.env, wantEnv)
 	}
 
-	deadline, ok := call.ctx.Deadline()
-	if !ok {
+	if !call.hasDeadline {
 		t.Fatal("probe exec ctx carries no deadline — the lookup must be bounded (AUTH-04)")
 	}
 
-	remaining := time.Until(deadline)
+	remaining := time.Until(call.deadline)
 	if remaining > interact.KeyringProbeTimeout || remaining < interact.KeyringProbeTimeout-time.Second {
 		t.Fatalf("probe exec ctx deadline in %v, want the %s bound (±1s)", remaining, interact.KeyringProbeTimeout)
 	}
@@ -271,8 +287,6 @@ func testKeyringProbeHungExec(t *testing.T) {
 	)
 
 	type outcome struct {
-		err      error
-		elapsed  time.Duration
 		watchdog bool
 	}
 

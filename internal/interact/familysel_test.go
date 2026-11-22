@@ -44,6 +44,15 @@ func TestFamilySelections(t *testing.T) {
 	t.Run("absent mode entry does not veto", testFamselAbsentMode)
 }
 
+// The fixture constants (goconst): the fixture families, the oauth mode
+// value, and the synthetic login token marker shared by the arms.
+const (
+	famselFixFamily      = "zai"
+	famselFixOtherFamily = "bigmodel"
+	famselFixOAuthMode   = "oauth"
+	famselFixLoginToken  = "fixture-synthetic-not-a-real-login-token"
+)
+
 // famselSetting is the live-probed setting.json shape (06-RESEARCH.md
 // Pattern 2's V-EXP probe: selections carry kind objects; modes carry
 // plain strings) with the fixture families zai (coding plan) and bigmodel
@@ -111,15 +120,15 @@ func famselCaptureLog(t *testing.T) *bytes.Buffer {
 // famselZaiEntitledSelections is the fixture's entitled-arm selections map.
 func famselZaiEntitledSelections() map[string]any {
 	return map[string]any{
-		"zai":      map[string]any{"kind": "individual-coding-plan"},
-		"bigmodel": map[string]any{"kind": "start-plan"},
+		famselFixFamily:      map[string]any{"kind": "individual-coding-plan"},
+		famselFixOtherFamily: map[string]any{"kind": "start-plan"},
 	}
 }
 
 // famselOAuthModes is the fixture's modes map (both families on oauth — the
 // live-probed values).
 func famselOAuthModes() map[string]any {
-	return map[string]any{"zai": "oauth", "bigmodel": "oauth"}
+	return map[string]any{famselFixFamily: famselFixOAuthMode, famselFixOtherFamily: famselFixOAuthMode}
 }
 
 // testFamselEntitled is arm (a): kind + mode + store token all hold — the
@@ -127,12 +136,12 @@ func famselOAuthModes() map[string]any {
 func testFamselEntitled(t *testing.T) {
 	setting := famselFixtureSetting(t, famselSetting(famselZaiEntitledSelections(), famselOAuthModes()))
 	store := famselFixtureStore(t, map[string]string{
-		"oauth:zai:access_token": "fixture-synthetic-not-a-real-login-token",
+		"oauth:" + famselFixFamily + ":access_token": famselFixLoginToken,
 	})
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if !gate.Entitled(context.Background(), "zai") {
+	if !gate.Entitled(context.Background(), famselFixFamily) {
 		t.Fatal("gate answered false for the fully-entitled arm — " +
 			"want true (kind + non-apiKey mode + store token)")
 	}
@@ -142,14 +151,14 @@ func testFamselEntitled(t *testing.T) {
 // kind + token holding.
 func testFamselAPIKeyMode(t *testing.T) {
 	setting := famselFixtureSetting(t, famselSetting(famselZaiEntitledSelections(),
-		map[string]any{"zai": "apiKey", "bigmodel": "oauth"}))
+		map[string]any{famselFixFamily: "apiKey", famselFixOtherFamily: famselFixOAuthMode}))
 	store := famselFixtureStore(t, map[string]string{
-		"oauth:zai:access_token": "fixture-synthetic-not-a-real-login-token",
+		"oauth:" + famselFixFamily + ":access_token": famselFixLoginToken,
 	})
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if gate.Entitled(context.Background(), "zai") {
+	if gate.Entitled(context.Background(), famselFixFamily) {
 		t.Fatal("gate answered true with mode == apiKey — the explicit apiKey mode must veto")
 	}
 }
@@ -160,12 +169,12 @@ func testFamselAPIKeyMode(t *testing.T) {
 func testFamselOtherKind(t *testing.T) {
 	setting := famselFixtureSetting(t, famselSetting(famselZaiEntitledSelections(), famselOAuthModes()))
 	store := famselFixtureStore(t, map[string]string{
-		"oauth:bigmodel:access_token": "fixture-synthetic-not-a-real-login-token",
+		"oauth:" + famselFixOtherFamily + ":access_token": famselFixLoginToken,
 	})
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if gate.Entitled(context.Background(), "bigmodel") {
+	if gate.Entitled(context.Background(), famselFixOtherFamily) {
 		t.Fatal("gate answered true for the start-plan kind — only individual-coding-plan entitles")
 	}
 }
@@ -178,7 +187,7 @@ func testFamselNoToken(t *testing.T) {
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if gate.Entitled(context.Background(), "zai") {
+	if gate.Entitled(context.Background(), famselFixFamily) {
 		t.Fatal("gate answered true without a store token — the desktop login must hold")
 	}
 }
@@ -191,12 +200,12 @@ func testFamselMissingSetting(t *testing.T) {
 
 	missing := filepath.Join(t.TempDir(), "absent", "setting.json")
 	store := famselFixtureStore(t, map[string]string{
-		"oauth:zai:access_token": "fixture-synthetic-not-a-real-login-token",
+		"oauth:" + famselFixFamily + ":access_token": famselFixLoginToken,
 	})
 
 	gate := interact.NewEntitlementGate(missing, store)
 
-	if gate.Entitled(context.Background(), "zai") {
+	if gate.Entitled(context.Background(), famselFixFamily) {
 		t.Fatal("gate answered true with the setting.json absent — a fresh machine is not entitled")
 	}
 
@@ -205,7 +214,7 @@ func testFamselMissingSetting(t *testing.T) {
 		t.Fatalf("missing-setting degradation logged %q — want the structural setting-missing class", logged)
 	}
 
-	if strings.Contains(logged, "fixture-synthetic-not-a-real-login-token") {
+	if strings.Contains(logged, famselFixLoginToken) {
 		t.Fatal("the log carries credential material — logs carry booleans/codes only (T-06-15)")
 	}
 }
@@ -217,12 +226,12 @@ func testFamselUndecodableSetting(t *testing.T) {
 
 	setting := famselFixtureSetting(t, `{"providerFamilyConnectionSelections": NOT-JSON`)
 	store := famselFixtureStore(t, map[string]string{
-		"oauth:zai:access_token": "fixture-synthetic-not-a-real-login-token",
+		"oauth:" + famselFixFamily + ":access_token": famselFixLoginToken,
 	})
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if gate.Entitled(context.Background(), "zai") {
+	if gate.Entitled(context.Background(), famselFixFamily) {
 		t.Fatal("gate answered true with an undecodable setting.json — honest degradation must answer false")
 	}
 
@@ -241,14 +250,14 @@ func testFamselUndecodableSetting(t *testing.T) {
 // not veto (kind + token holding → true).
 func testFamselAbsentMode(t *testing.T) {
 	setting := famselFixtureSetting(t, famselSetting(famselZaiEntitledSelections(),
-		map[string]any{"bigmodel": "oauth"})) // no zai entry
+		map[string]any{famselFixOtherFamily: famselFixOAuthMode})) // no zai entry
 	store := famselFixtureStore(t, map[string]string{
-		"oauth:zai:access_token": "fixture-synthetic-not-a-real-login-token",
+		"oauth:" + famselFixFamily + ":access_token": famselFixLoginToken,
 	})
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if !gate.Entitled(context.Background(), "zai") {
+	if !gate.Entitled(context.Background(), famselFixFamily) {
 		t.Fatal("gate vetoed on an absent mode entry — the rule rejects only the explicit apiKey value")
 	}
 }
