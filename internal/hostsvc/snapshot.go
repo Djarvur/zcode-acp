@@ -1,7 +1,6 @@
 // Package hostsvc implements AUTH-01's execution tier (plan 05-06): the
 // api-key snapshot push (provider/updateAccountConfig with the
-// effective-revision builtin formula — the runtime's own two-candidate
-// selection — over the field-verified EMPTY personal-layer
+// exact-revision builtin formula over the field-verified EMPTY personal-layer
 // overlay), the provider/refreshRegistry call, the registry read-back helper
 // (PITFALL 1 discipline — the ack is never the verdict), and the
 // runtime-headers answer over the 05-01 KeySource seam (D-02's success
@@ -93,10 +92,9 @@ type SnapshotOption func(*SnapshotBuilder)
 // WithRevisionSource overrides the push-revision generator (tests and
 // corpus replays inject a fixed value for byte-deterministic goldens; the
 // default generates a fresh account-bridge:<unix-nano> per build). The
-// builtin-revision source is NOT injectable — it is always computed at
-// runtime via the supervisor's effective-revision resolver (T-5-16: never
-// hard-coded, never cached; injectability would only invite a golden that
-// lies about what the runtime computes).
+// builtin-revision formula is NOT injectable — it is always computed at
+// runtime via supervisor.BuiltinRevision over the resolved path
+// (T-5-16: never hard-coded, never cached).
 func WithRevisionSource(source func() string) SnapshotOption {
 	return func(b *SnapshotBuilder) { b.revision = source }
 }
@@ -107,28 +105,16 @@ func WithRevisionSource(source func() string) SnapshotOption {
 // is the personal layer, untouched by account snapshots — field-verified
 // no-op; the protocol comment places keys/JWTs/dynamic headers in the
 // request-time runtime-headers protocol, never the snapshot).
-//
-// basedOnZCodeBuiltinRevision is the EFFECTIVE builtin revision (the
-// runtime's own two-candidate selectReleaseCandidate over the install's
-// bundled resources copy and the runtime-cache active copy — the field gap:
-// pushes hashed over the raw discovery-recorded runtime-tree copy are
-// schema-accepted and silently ignored by the registry, V-SRC
-// registry-service.ts), computed fresh per build.
 type SnapshotBuilder struct {
 	keys     KeySource
 	revision func() string
-	basedOn  func(supervisor.Install) (string, error)
 }
 
 // NewSnapshotBuilder returns a builder over the account-credential binding
 // (keys — the same binding the runtime-headers answer serves; the envelope
 // itself carries no key material) with options applied.
 func NewSnapshotBuilder(keys KeySource, opts ...SnapshotOption) *SnapshotBuilder {
-	b := &SnapshotBuilder{
-		keys:     keys,
-		revision: defaultRevision,
-		basedOn:  supervisor.DefaultEffectiveRevision,
-	}
+	b := &SnapshotBuilder{keys: keys, revision: defaultRevision}
 
 	for _, opt := range opts {
 		opt(b)
@@ -138,38 +124,44 @@ func NewSnapshotBuilder(keys KeySource, opts ...SnapshotOption) *SnapshotBuilder
 }
 
 // Snapshot is one built push envelope and its identity: Revision is the
-// wrapper-generated snapshot revision, BasedOn the effective builtin
-// revision (the runtime's own registry revision string), Params the strict
-// envelope to push.
+// wrapper-generated snapshot revision, BasedOn the exact builtin-revision
+// formula output, Params the strict envelope to push.
 type Snapshot struct {
 	Revision string
 	BasedOn  string
 	Params   map[string]any
 }
 
-// Build computes the strict envelope for install. basedOnZCodeBuiltinRevision
-// is the EFFECTIVE revision — supervisor.DefaultEffectiveRevision's
-// two-candidate selection (the install's own resources copy when the tree
-// carries it, the discovery-recorded BuiltinFile otherwise; a strictly-newer
-// runtime-cache copy wins) over the winner's resolved path.
+// Build computes the strict envelope for install, reading the recorded
+// revision int out of the active zcode-builtin.json (the probe-time read
+// the realdesktop tier records — a live desktop may update mid-probe; the
+// value is read, never assumed).
 func (b *SnapshotBuilder) Build(install supervisor.Install) (Snapshot, error) {
-	basedOn, err := b.basedOn(install)
+	rev, err := readBuiltinRevision(install.BuiltinFile)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: %w", err)
 	}
 
-	return b.envelope(basedOn), nil
+	return b.BuildRevision(install, rev), nil
 }
 
 // BuildRevision computes the strict envelope over an explicitly supplied
-// recorded revision int — the RAW-formula replay surface (corpus fixtures
-// pass a fixed synthetic value over a synthetic path). basedOnZCodeBuiltinRevision
-// is the EXACT zcode-builtin:<rev>:<sha256(resolved-path)> formula REUSED
-// from supervisor.BuiltinRevision over install.BuiltinFile — never
-// re-derived, never hard-coded. Production pushes go through Build (the
-// effective revision); this is the byte-deterministic corpus/replay tier.
+// recorded revision int (probe-time reads hold it already; the corpus
+// fixture passes a fixed synthetic value). basedOnZCodeBuiltinRevision is
+// the EXACT zcode-builtin:<rev>:<sha256(resolved-path)> formula REUSED from
+// supervisor.BuiltinRevision — never re-derived, never hard-coded.
 func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Snapshot {
-	return b.envelope(supervisor.BuiltinRevision(install.BuiltinFile, rev))
+	basedOn := supervisor.BuiltinRevision(install.BuiltinFile, rev)
+	revision := b.revision()
+
+	params := map[string]any{
+		"revision":                    revision,
+		"basedOnZCodeBuiltinRevision": basedOn,
+		"providers":                   map[string]any{},
+		"states":                      map[string]any{},
+	}
+
+	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}
 }
 
 // BuildAccount builds the coding-plan ACCOUNT snapshot (AUTH-02, RESEARCH
@@ -179,7 +171,7 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 // {builtinModelIds: verbatim from the table, access {type, entitled true}};
 // states carries per provider {availability available, entitled true,
 // current true}. The rules come from the desktop's OWN bundled table — the
-// SAME install.BuiltinFile readBuiltinProviderRules opens (D-08's snapshot-side
+// SAME install.BuiltinFile readBuiltinRevision opens (D-08's snapshot-side
 // twin: verbatim mirror, no renaming/reordering/model-list editing;
 // T-06-09). Entitlement is a decision the builder RECEIVES: entitled is the
 // caller's gate (production: setting.json selections/modes + store oauth
@@ -188,19 +180,13 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 // table answers a coded error — never an empty overlay silently pushed as
 // if it were the account config.
 //
-// basedOnZCodeBuiltinRevision stays computed at build time over the
-// effective revision — the runtime's own two-candidate selection
-// (supervisor.DefaultEffectiveRevision; T-06-08 / the Phase-5 lock, now over
-// the WINNER's resolved path: pushes hashed over the raw discovery-recorded
-// copy are schema-accepted and silently registry-ignored, V-SRC
-// registry-service.ts). The OVERLAY source is untouched: the rules still
-// come from the same install.BuiltinFile readBuiltinProviderRules opens
-// (T-06-09 verbatim mirror — revision plumbing only).
+// basedOnZCodeBuiltinRevision stays the EXACT supervisor.BuiltinRevision
+// formula over the same resolved install path (T-06-08 / the Phase-5 lock).
 func (b *SnapshotBuilder) BuildAccount(
 	install supervisor.Install,
 	entitled func(family string) bool,
 ) (Snapshot, error) {
-	basedOn, err := b.basedOn(install)
+	rev, err := readBuiltinRevision(install.BuiltinFile)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: %w", err)
 	}
@@ -237,6 +223,7 @@ func (b *SnapshotBuilder) BuildAccount(
 		}
 	}
 
+	basedOn := supervisor.BuiltinRevision(install.BuiltinFile, rev)
 	revision := b.revision()
 
 	if len(providers) == 0 {
@@ -254,22 +241,6 @@ func (b *SnapshotBuilder) BuildAccount(
 	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}, nil
 }
 
-// envelope assembles the strict empty-overlay envelope over a computed
-// basedOnZCodeBuiltinRevision — Build's effective arm and BuildRevision's
-// raw-replay arm share it.
-func (b *SnapshotBuilder) envelope(basedOn string) Snapshot {
-	revision := b.revision()
-
-	params := map[string]any{
-		"revision":                    revision,
-		"basedOnZCodeBuiltinRevision": basedOn,
-		"providers":                   map[string]any{},
-		"states":                      map[string]any{},
-	}
-
-	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}
-}
-
 // builtinProviderRule is one account-provider rule dug out of the desktop's
 // bundled builtin table (config.providerConfigRules.providerRules[]) —
 // capture-verbatim camelCase wire fields: the wrapper mirrors exactly these,
@@ -281,8 +252,8 @@ type builtinProviderRule struct {
 	Family     string   // config.access.accountType — the entitlement-gate family
 }
 
-// readBuiltinProviderRules digs the account-provider rules out of the
-// discovery-recorded zcode-builtin.json (install.BuiltinFile). Capture-verbatim camelCase
+// readBuiltinProviderRules digs the account-provider rules out of the SAME
+// zcode-builtin.json readBuiltinRevision opens. Capture-verbatim camelCase
 // discipline — but UNLIKE the ack dig-outs, undecodable here is a coded
 // error, NOT absent: a malformed table (undecodable JSON, missing
 // providerRules, a rule missing its access block) must fail the build, never
@@ -367,6 +338,25 @@ func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRul
 		AccessType: rule.Config.Access.Type,
 		Family:     rule.Config.Access.AccountType,
 	}, nil
+}
+
+// readBuiltinRevision reads the recorded revision number out of the active
+// zcode-builtin.json.
+func readBuiltinRevision(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read builtin revision: %w", err)
+	}
+
+	var parsed struct {
+		Revision int `json:"revision"`
+	}
+
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return 0, fmt.Errorf("parse builtin revision %s: %w", path, err)
+	}
+
+	return parsed.Revision, nil
 }
 
 // Ack is the provider/updateAccountConfig reply (dialect §8) — receipt
