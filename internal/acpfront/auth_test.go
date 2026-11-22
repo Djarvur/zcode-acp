@@ -560,9 +560,6 @@ func TestCodingPlanAuth(t *testing.T) {
 var (
 	// errCannedProbeFailure is the probe-fail arm's injected verdict.
 	errCannedProbeFailure = errors.New("canned probe failure")
-
-	// errScriptedMintDouble guards the mint-once contract at the double.
-	errScriptedMintDouble = errors.New("scripted mint double: second Ensure is a contract violation")
 )
 
 // Coding-plan fixture material — synthetic markers only.
@@ -702,38 +699,68 @@ func (r *recordingProbe) count() int {
 	return r.calls
 }
 
-// scriptedPat is the PatEnsurer double: counts Ensure calls and returns the
-// fixture Pat (the mint-once-after-verdict lock reads the counter).
+// scriptedPat is the PatEnsurer double with the production cache semantics
+// (the minter owns caching + single-flight): the FIRST Ensure mints and warms
+// the cache; any later Ensure dedupes against the warm cache (the eager-mint
+// + ask-side single-flight shape); a mint while warm would be a contract
+// violation — the double serves cached instead and the mint counter stays,
+// so the mint-once locks read exactly one mint per authenticate lifetime.
 type scriptedPat struct {
 	mu    sync.Mutex
-	calls int
+	mints int
+	warm  bool
 }
 
-// Ensure replays the fixture PAT and counts the call.
-func (s *scriptedPat) Ensure(_ context.Context) (hostsvc.Pat, error) {
-	s.mu.Lock()
-	s.calls++
-	n := s.calls
-	s.mu.Unlock()
-
-	if n > 1 {
-		return hostsvc.Pat{}, errScriptedMintDouble
-	}
-
+// fixturePat renders the invariant fixture PAT (every serve is the same
+// cached value — the cache identity the asks compare against).
+func (s *scriptedPat) fixturePat() hostsvc.Pat {
 	return hostsvc.Pat{
 		Token:        cpFixPatToken,
 		APIKeyID:     cpFixPatKeyID,
 		Fingerprint:  strings.Repeat("0", 64),
 		AccountScope: strings.Repeat("f", 64),
-	}, nil
+	}
 }
 
-// count reports the recorded Ensure count.
+// Ensure serves cache-first: one mint, later calls dedupe.
+func (s *scriptedPat) Ensure(_ context.Context) (hostsvc.Pat, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.warm {
+		return s.fixturePat(), nil
+	}
+
+	s.mints++
+	s.warm = true
+
+	return s.fixturePat(), nil
+}
+
+// Cached reports the cache without minting (the ask-side read).
+func (s *scriptedPat) Cached(_ context.Context) (hostsvc.Pat, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.fixturePat(), s.warm
+}
+
+// Invalidate drops the cached token (unused on these arms' scripts — an
+// Invalidate here would mean a fingerprint rejection the scenarios never
+// script).
+func (s *scriptedPat) Invalidate(string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.warm = false
+}
+
+// count reports the recorded mint count.
 func (s *scriptedPat) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.calls
+	return s.mints
 }
 
 // codingPlanConfig composes the arms' default coding-plan seams: the
@@ -966,8 +993,10 @@ func testCodingPlanNoLogin(t *testing.T) {
 
 // testCodingPlanReadbackNegative is arm (d): the ack says received but the
 // registry never confirms within the shortened deadline — the coded
-// read-back error answers and NOTHING MINTED (the mint happens only after
-// the verdict — the PITFALL-1 discipline's mint half).
+// read-back error answers, and the eager mint ALREADY RAN (D-04 round-3:
+// the mint arms the cache at authenticate, before the probe — the verdict
+// gates the SUCCESS RECORD, never the mint; the failure path restores the
+// prior mode so nothing new is recorded).
 func testCodingPlanReadbackNegative(t *testing.T) {
 	cfg, _, pat := codingPlanConfig(t)
 	h, front := newCodingPlanFront(t, []fake.RequestRule{cpAckRule(), cpRefreshRule(0, 0, false)}, cfg)
@@ -995,9 +1024,9 @@ func testCodingPlanReadbackNegative(t *testing.T) {
 		t.Fatalf("transcript records push×%d, want the chain's honest run", len(idx))
 	}
 
-	if calls := pat.count(); calls != 0 {
-		t.Fatalf("PAT Ensure ran %d time(s) without a registry verdict — "+
-			"a mint before the verdict is a contract violation", calls)
+	if calls := pat.count(); calls != 1 {
+		t.Fatalf("PAT minted %d time(s), want exactly one — the eager mint "+
+			"arms the cache before the probe (D-04 round-3) even when the verdict fails", calls)
 	}
 
 	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
@@ -1048,8 +1077,10 @@ func testCodingPlanCancelRetry(t *testing.T) {
 		t.Fatalf("interrupted authenticate error %v is not a coded request error", res1.err)
 	}
 
-	if calls := pat.count(); calls != 0 {
-		t.Fatalf("PAT Ensure ran %d time(s) on the cancelled run — the mint must never run", calls)
+	if calls := pat.count(); calls != 1 {
+		t.Fatalf("PAT minted %d time(s) on the cancelled run, want exactly one — "+
+			"the eager mint arms the cache before the traffic (D-04 round-3); "+
+			"a cancelled run records no success, never a second mint", calls)
 	}
 
 	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
@@ -1062,7 +1093,8 @@ func testCodingPlanCancelRetry(t *testing.T) {
 	}
 
 	if calls := pat.count(); calls != 1 {
-		t.Fatalf("PAT Ensure ran %d time(s) total, want only the retry's single mint", calls)
+		t.Fatalf("PAT minted %d time(s) total, want still one — the retry's Ensure "+
+			"dedupes against the cache the eager mint armed (the minter owns caching)", calls)
 	}
 
 	if mode := front.AuthMode(); mode != acpfront.AuthModeCodingPlan {
