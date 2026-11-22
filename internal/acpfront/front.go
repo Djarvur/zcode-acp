@@ -548,18 +548,9 @@ func (f *Front) SetSessionConfigOption(
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, params)
 	if err != nil {
-		// WR-01 (plan 07-01): the refused mutation targets an ESTABLISHED
-		// session — the wire-only orphan close left the front session fully
-		// registered against a dead mutation target (the zombie: later
-		// prompts sent to a dead backend, later picker asks re-failed).
-		// Run the FULL SESS-01 teardown (lifecycle.go: cancel-drain →
-		// backend close → registry Remove → CloseObservers → map drops);
-		// its own failure logs structurally — never a silent skip. The
-		// refusal error the client sees is unchanged.
-		if tearErr := f.CloseSession(ctx, sessionID); tearErr != nil {
-			slog.Warn("acpfront: picker-refusal teardown failed",
-				"session", sessionID, "stage", "set_config_option setModel", "cause", err, "err", tearErr)
-		}
+		// WR-01 (plan 07-01): the full SESS-01 teardown — never a zombie
+		// front session against a dead mutation target.
+		f.teardownAfterPickerRefusal(ctx, sessionID, err)
 
 		return nil, acpport.NewInternal("session/setModel: %v", err)
 	}
@@ -582,6 +573,19 @@ func (f *Front) SetSessionConfigOption(
 	}
 
 	return BuildConfigOptions(cs), nil
+}
+
+// teardownAfterPickerRefusal runs the WR-01 full SESS-01 teardown after a
+// refused picker setModel on an ESTABLISHED session (the wire-only orphan
+// close left the front session registered against a dead mutation target —
+// the zombie: later prompts sent to a dead backend, later picker asks
+// re-failed). The teardown's own failure logs structurally — never a
+// silent skip. The client-facing refusal error is unchanged.
+func (f *Front) teardownAfterPickerRefusal(ctx context.Context, sessionID string, cause error) {
+	if err := f.CloseSession(ctx, sessionID); err != nil {
+		slog.Warn("acpfront: picker-refusal teardown failed",
+			"session", sessionID, "stage", "set_config_option setModel", "cause", cause, "err", err)
+	}
 }
 
 // setConfigMutation maps a VALIDATED config-option ask onto the locked OQ1

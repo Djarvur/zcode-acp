@@ -117,7 +117,7 @@ func (p *pipeEnd) Close() error { return errors.Join(p.r.Close(), p.w.Close()) }
 // test's cleanup phase. The closer returns the fake's recorded transcript
 // (serve fully drained — the wire-order assertion surface for the flows
 // that need it).
-func newInterleaveFront(t *testing.T, sc *fake.Scenario) (*Front, func() fake.Transcript) {
+func newInterleaveFront(t *testing.T, sc *fake.Scenario) (front *Front, closeLegs func() fake.Transcript) {
 	t.Helper()
 
 	toFakeR, toFakeW := io.Pipe()
@@ -134,11 +134,11 @@ func newInterleaveFront(t *testing.T, sc *fake.Scenario) (*Front, func() fake.Tr
 	}()
 
 	conn := zcode.NewConn(hostEnd)
-	f := New(conn)
+	front = New(conn)
 
 	var once sync.Once
 
-	return f, func() fake.Transcript {
+	closeLegs = func() fake.Transcript {
 		var tr fake.Transcript
 
 		once.Do(func() {
@@ -149,6 +149,8 @@ func newInterleaveFront(t *testing.T, sc *fake.Scenario) (*Front, func() fake.Tr
 
 		return tr
 	}
+
+	return front, closeLegs
 }
 
 // openInterleaveSession registers the raced-over session exactly the way
@@ -200,7 +202,7 @@ func TestResumeCloseInterleave(t *testing.T) {
 	cwd := t.TempDir()
 	ctx := context.Background()
 
-	for i := 0; i < interleaveIterations; i++ {
+	for i := range interleaveIterations {
 		f, closeLegs := newInterleaveFront(t, interleaveScenario(0))
 		openInterleaveSession(t, f, cwd)
 
@@ -244,6 +246,8 @@ func TestResumeCloseInterleave(t *testing.T) {
 // releasing it with the mark still set answers the coded closing rejection
 // with nothing ever registered. Phase 2 is the liveness control: the same
 // machinery with no mark registers and the registry holds the session.
+//
+//nolint:funlen // the two-phase lock is one story; splitting would scatter the serialization contract
 func TestRegisterIfOpen(t *testing.T) {
 	cwd := t.TempDir()
 	ctx := context.Background()
@@ -270,7 +274,7 @@ func TestRegisterIfOpen(t *testing.T) {
 
 	f.closing[interleaveSID] = true
 
-	for sample := 0; sample < interleaveHoldSamples; sample++ {
+	for sample := range interleaveHoldSamples {
 		if _, getErr := f.registry.Get(interleaveSID); getErr == nil {
 			f.closingMu.Unlock()
 			closeLegs()

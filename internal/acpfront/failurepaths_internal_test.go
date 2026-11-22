@@ -89,7 +89,7 @@ func assertNoSettingsForSID(t *testing.T, what string, store map[string]json.Raw
 // liveness lock (the happy path still records; the teardown still drops —
 // proving the stores are live and only the dead nil-guard was removed).
 //
-//nolint:funlen // each subtest is a full harness lock; splitting would scatter its sequencing
+//nolint:funlen,contextcheck // full harness locks; the harness owns its conn lifecycle (NewConn is ctx-free)
 func TestCreateFailurePathsLeaveNoMapEntries(t *testing.T) {
 	cwd := t.TempDir()
 	ctx := context.Background()
@@ -177,11 +177,13 @@ func TestCreateFailurePathsLeaveNoMapEntries(t *testing.T) {
 
 		// The stores are LIVE: the happy path recorded both entries.
 		if _, ok := f.cwds[failureSID]; !ok {
-			t.Fatal("the happy path must record the session cwd (IN-04: removing the dead nil-guard must not strand the store)")
+			t.Fatal("the happy path must record the session cwd " +
+				"(IN-04: removing the dead nil-guard must not strand the store)")
 		}
 
 		if _, ok := f.settings[failureSID]; !ok {
-			t.Fatal("the happy path must record the confirmed settings (IN-04: removing the dead nil-guard must not strand the store)")
+			t.Fatal("the happy path must record the confirmed settings " +
+				"(IN-04: removing the dead nil-guard must not strand the store)")
 		}
 
 		// The teardown still drops both — the map stays bounded with the

@@ -96,10 +96,10 @@ func pickerRefusalScenario(setModelRule fake.RequestRule) *fake.Scenario {
 // openPickerSession runs the create + subscribe preamble (no configured
 // model — the picker's own setModel frames are the only mutation frames)
 // and returns the established front + session id.
-func openPickerSession(t *testing.T, f *Front, cwd string) string {
+func openPickerSession(ctx context.Context, t *testing.T, f *Front, cwd string) string {
 	t.Helper()
 
-	sid, _, err := f.NewSession(context.Background(), acpport.NewSessionParams{Cwd: cwd})
+	sid, _, err := f.NewSession(ctx, acpport.NewSessionParams{Cwd: cwd})
 	if err != nil {
 		t.Fatalf("session/new: %v", err)
 	}
@@ -144,7 +144,8 @@ func assertPickerSendCount(t *testing.T, tr fake.Transcript, want int) {
 	}
 
 	if sends != want {
-		t.Fatalf("back leg records %d session/send frames, want exactly %d (a post-refusal prompt must never reach the backend)", sends, want)
+		t.Fatalf("back leg records %d session/send frames, want exactly %d "+
+			"(a post-refusal prompt must never reach the backend)", sends, want)
 	}
 }
 
@@ -154,7 +155,7 @@ func assertPickerSendCount(t *testing.T, tr fake.Transcript, want int) {
 // closing/closed class without a backend send, and the successful switch
 // keeps the session fully alive.
 //
-//nolint:funlen // each subtest is a full harness lock; splitting would scatter its sequencing
+//nolint:funlen,contextcheck // full harness locks; the harness owns its conn lifecycle (NewConn is ctx-free)
 func TestPickerSetModelRefusalRunsFullTeardown(t *testing.T) {
 	cwd := t.TempDir()
 	ctx := context.Background()
@@ -167,7 +168,7 @@ func TestPickerSetModelRefusalRunsFullTeardown(t *testing.T) {
 		f, closeLegs := newInterleaveFront(t, pickerRefusalScenario(refusalRule))
 		defer closeLegs()
 
-		sid := openPickerSession(t, f, cwd)
+		sid := openPickerSession(ctx, t, f, cwd)
 
 		if _, err := f.SetSessionConfigOption(ctx, sid, optionIDModel, pickerFlashValue); err == nil {
 			t.Fatal("a refused picker setModel must fail the ask, got success")
@@ -180,7 +181,7 @@ func TestPickerSetModelRefusalRunsFullTeardown(t *testing.T) {
 		f, closeLegs := newInterleaveFront(t, pickerRefusalScenario(refusalRule))
 		defer closeLegs()
 
-		sid := openPickerSession(t, f, cwd)
+		sid := openPickerSession(ctx, t, f, cwd)
 
 		_, err := f.SetSessionConfigOption(ctx, sid, optionIDModel, pickerFlashValue)
 		if err == nil {
@@ -198,7 +199,7 @@ func TestPickerSetModelRefusalRunsFullTeardown(t *testing.T) {
 	t.Run("a follow-up prompt answers the closing/closed class, never a backend send", func(t *testing.T) {
 		f, closeLegs := newInterleaveFront(t, pickerRefusalScenario(refusalRule))
 
-		sid := openPickerSession(t, f, cwd)
+		sid := openPickerSession(ctx, t, f, cwd)
 
 		if _, err := f.SetSessionConfigOption(ctx, sid, optionIDModel, pickerFlashValue); err == nil {
 			t.Fatal("a refused picker setModel must fail the ask, got success")
@@ -224,7 +225,7 @@ func TestPickerSetModelRefusalRunsFullTeardown(t *testing.T) {
 		}))
 		defer closeLegs()
 
-		sid := openPickerSession(t, f, cwd)
+		sid := openPickerSession(ctx, t, f, cwd)
 
 		if _, err := f.SetSessionConfigOption(ctx, sid, optionIDModel, pickerFlashValue); err != nil {
 			t.Fatalf("the successful model switch must go through: %v", err)
