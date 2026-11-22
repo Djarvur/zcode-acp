@@ -517,6 +517,16 @@ const (
 	modelSwitchedConfirmationPrefix = "Model switched to "
 )
 
+// The pinned omp-dialect refusal strings (SESS-03, plan 07-05, D-03; the
+// dialect doc's byte-for-byte contracts — startsWith-matched by the
+// client's matchers on code -32603 + data.details). Each lives in exactly
+// ONE site here; the refusal arms reference them verbatim — never a
+// paraphrase (SESS-03's acceptance is string-exact).
+const (
+	unknownACPModelFormat = "Unknown ACP model: %s"
+	noModelSelectedDetail = "No model selected."
+)
+
 // The setModel params' remaining camelCase wire keys (the capture-verbatim
 // dialect spellings — the wireKeySessionID family).
 const (
@@ -661,9 +671,9 @@ func (f *Front) promptModelSlash(
 	}
 
 	if selector == "" {
-		// The no-argument arm: nothing to resolve — the no-model refusal
-		// class (plan Task 2 pins the wire carriage and strings).
-		return "", true, acpport.NewInternal("session/prompt /model: no model selected")
+		// The no-argument arm: nothing to resolve — the pinned no-model
+		// sentence rides the detail carriage (-32603 + data.details).
+		return "", true, acpport.NewInternalWithData(noModelSelectedDetail)
 	}
 
 	// The validation source is the SAME confirmed-settings read the picker
@@ -672,7 +682,7 @@ func (f *Front) promptModelSlash(
 	// exact — no case folding, no trimming of the selector itself.
 	raw, ok := f.latestSettings(params.SessionID)
 	if !ok {
-		return "", true, acpport.NewInternal("session/prompt /model: no model selected (unknown session)")
+		return "", true, acpport.NewInternalWithData(noModelSelectedDetail)
 	}
 
 	s, parsed := ParseSettings(raw)
@@ -684,14 +694,16 @@ func (f *Front) promptModelSlash(
 	def := configOptionByID(BuildConfigOptions(s), optionIDModel)
 	if def == nil {
 		// The snapshot binds no model (D-10: an unbound session renders no
-		// model option) — the no-model refusal class.
-		return "", true, acpport.NewInternal("session/prompt /model: no model selected (no model bound)")
+		// model option) — the pinned no-model sentence rides the detail
+		// carriage.
+		return "", true, acpport.NewInternalWithData(noModelSelectedDetail)
 	}
 
 	if !configOptionListed(def, selector) {
-		// The validate-first refusal: never a backend call (plan Task 2
-		// upgrades this arm to the pinned data.details carriage).
-		return "", true, acpport.NewInternal("session/prompt /model: unknown ACP model %q", selector)
+		// The validate-first refusal: never a backend call — the pinned
+		// unknown-selector detail rides the detail carriage (the Hb
+		// matchers read ONLY -32603 + data.details, Pitfall 1).
+		return "", true, acpport.NewInternalWithData(unknownACPModelFormat, selector)
 	}
 
 	mutation, err := setConfigMutation(params.SessionID, s, optionIDModel, selector)

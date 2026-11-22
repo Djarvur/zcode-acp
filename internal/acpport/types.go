@@ -343,10 +343,18 @@ const (
 
 // Error is a seam-carried front error with its wire code; the adapter
 // translates it onto the SDK's RequestError so the client sees the coded
-// JSON-RPC error.
+// JSON-RPC error. A non-empty Details rides the wire as
+// data:{"details": ...} (agent.go wireError) — the ONLY carriage some
+// clients classify on (the omp dialect's matchers read code -32603 +
+// data.details, Pitfall 1, plan 07-05).
 type Error struct {
 	Code    int
 	Message string
+
+	// Details is the opt-in detail payload: empty on every constructor
+	// except NewInternalWithData — the seam widens ONLY detail-carrying
+	// errors, so generic coded frames keep data null.
+	Details string
 }
 
 // NewInvalidRequest builds a -32600 front error (protocol-level request
@@ -367,6 +375,18 @@ func NewInvalidParams(format string, args ...any) *Error {
 // honestly — A5).
 func NewInternal(format string, args ...any) *Error {
 	return &Error{Code: CodeInternal, Message: fmt.Sprintf(format, args...)}
+}
+
+// NewInternalWithData builds a -32603 front error whose payload rides the
+// wire as data:{"details": <the same formatted string>} (plan 07-05, the
+// omp dialect's refusal carriage: the client's matchers classify ONLY
+// -32603 with a string data.details — a refusal in any other code or field
+// is invisible to them, Pitfall 1). The message duplicates the details for
+// humans: one source of truth, two read paths.
+func NewInternalWithData(format string, args ...any) *Error {
+	details := fmt.Sprintf(format, args...)
+
+	return &Error{Code: CodeInternal, Message: details, Details: details}
 }
 
 // Error implements the error interface with the plain message.

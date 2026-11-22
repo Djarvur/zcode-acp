@@ -569,9 +569,13 @@ func (a *agentAdapter) sinkForPrompt() UpdateSink {
 
 // wireError maps a front error onto the SDK's coded RequestError: seam
 // errors carry their own code; anything else is an internal error (A5).
-// The returned *RequestError must stay unwrapped — the SDK's toReqErr
-// type-asserts the concrete type (no errors.As), so %w wrapping would
-// silently degrade every coded seam error to a generic -32603.
+// A seam error carrying a non-empty Details widens the frame with
+// data:{"details": ...} (NewInternalWithData — the omp dialect's refusal
+// carriage, plan 07-05); every other frame keeps data null — the seam is
+// opt-in per error. The returned *RequestError must stay unwrapped — the
+// SDK's toReqErr type-asserts the concrete type (no errors.As), so %w
+// wrapping would silently degrade every coded seam error to a generic
+// -32603.
 func wireError(err error) error {
 	if err == nil {
 		return nil
@@ -579,7 +583,12 @@ func wireError(err error) error {
 
 	var seamErr *Error
 	if errors.As(err, &seamErr) {
-		return acp.NewRequestError(seamErr.Code, seamErr.Message, nil)
+		var data any
+		if seamErr.Details != "" {
+			data = map[string]string{"details": seamErr.Details}
+		}
+
+		return acp.NewRequestError(seamErr.Code, seamErr.Message, data)
 	}
 
 	return acp.NewInternalError(err.Error())
