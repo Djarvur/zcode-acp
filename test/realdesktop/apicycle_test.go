@@ -824,16 +824,23 @@ func authenticateLeg(t *testing.T, ctx context.Context, front *acpfront.Front) {
 	t.Log("authenticate ok — the registry read-back verdict proved the key landed (PITFALL 1: the verdict is the registry's)")
 }
 
-// newSessionLeg opens the session over the scratch workspace.
+// newSessionLeg opens the session over the scratch workspace. The
+// 06-04 configOptions return (the neutral option list built from the
+// session's confirmed settings snapshot) is logged structurally — the
+// api-key cycle's assertion surface stays the read-back + turn legs.
 func newSessionLeg(t *testing.T, ctx context.Context, front *acpfront.Front, ws string) string {
 	t.Helper()
 
-	sid, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: ws})
+	sid, options, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: ws})
 	if err != nil {
 		t.Fatalf("session/new: %v", err)
 	}
 
-	t.Logf("session/new ok: %s (create + the D-03 subscribe gate%s)", sid, setModelNote(t))
+	for i := range options {
+		t.Logf("configOption: id=%s currentValue=%q entries=%d", options[i].ID, options[i].CurrentValue, len(options[i].Options))
+	}
+
+	t.Logf("session/new ok: %s (create + the D-03 subscribe gate%s, %d configOptions)", sid, setModelNote(t), len(options))
 
 	return sid
 }
