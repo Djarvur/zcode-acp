@@ -206,3 +206,10 @@ None - no external service configuration required.
 ---
 *Phase: 07-hardening-vm-manual-e2e-documentation*
 *Completed: 2026-11-22*
+
+## Self-Check: PASSED
+
+- All six created/modified files exist on disk (SUMMARY, classify-order test file, RED evidence record, snapshot.go, keyringprobe.go, agent.go).
+- All six commits are ancestors of HEAD: `e888605` (IN-01 refactor), `0f423e3` (IN-03 RED), `98a6f84` (IN-03 GREEN), `b5652ce` (IN-02 docs), `611eb31` (style), `86d4a00` (plan metadata).
+- Measured commit count from the plan ledger `1be8fe3..HEAD` matches frontmatter `commits: 5` (code commits; 86d4a00 is the metadata commit).
+- Both grep gates re-verified 0; the sentinel block diffs empty across the plan's commits; `mise run lint` 0 issues.
