@@ -13,10 +13,10 @@
         },
         {
           "reverse": {
-            "method": "interaction/requestOfficialMcpAuthHeaders",
-            "params": {"mcpKey": "sites", "pluginId": "zcode-site@zcode-plugins-official", "requestId": "official-mcp-auth:1", "targetOrigin": "https://zcode.z.ai", "workspace": {"workspaceKey": "/tmp/unknown-host-method-ws", "workspacePath": "/tmp/unknown-host-method-ws"}},
+            "method": "interaction/requestFoo",
+            "params": {"sessionId": "sess_fix1"},
             "timeout_ms": 5000,
-            "expect_answer": {"error": {"code": -32601, "message": "unsupported host request: interaction/requestOfficialMcpAuthHeaders"}}
+            "expect_answer": {"error": {"code": -32601, "message": "unsupported host request: interaction/requestFoo"}}
           }
         },
         {

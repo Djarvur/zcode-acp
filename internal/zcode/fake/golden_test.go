@@ -255,6 +255,7 @@ func goldenDrivers() map[string]driverFunc {
 		"cancel-mid-turn":            driveCancelMidTurn,
 		"error-32010":                driveError32010,
 		"unknown-host-method":        driveUnknownHostMethod,
+		"official-mcp-auth-decline":  driveOfficialMcpAuthDecline,
 		"runtime-preferences":        driveRuntimePreferences,
 		"completion-idle-patch":      driveCompletionIdlePatch,
 		"completion-quiet-window":    driveCompletionQuietWindow,
@@ -531,11 +532,28 @@ func driveError32010(ctx context.Context, d *exchangeDriver) {
 	}
 }
 
-// driveUnknownHostMethod: create; the fake's reverse
-// interaction/requestOfficialMcpAuthHeaders (dialect §3, capture-verbatim
-// params shape with fixed synthetic workspace values) is answered -32601 by
-// the conn's router and the flow continues to the create reply.
+// driveUnknownHostMethod: create; the fake's reverse of a GENUINELY unknown
+// method (interaction/requestFoo — the -32601 arm stays scoped to methods
+// with no dialect §3 surface) is answered -32601 naming the method by the
+// conn's router and the flow continues to the create reply.
 func driveUnknownHostMethod(ctx context.Context, d *exchangeDriver) {
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.create(ctx)
+}
+
+// driveOfficialMcpAuthDecline: the official-MCP auth corpus row (the
+// EXP-CODINGPLAN-CYCLE-01 attempt-1 unblock) — create whose rule fires the
+// interaction/requestOfficialMcpAuthHeaders reverse (dialect §3, the
+// attempt-1 capture's params shape with a fixed synthetic workspace) and
+// expects the wrapper's honest structured decline {ok:false,
+// reason:"official_auth_unavailable"} INSIDE the reply RESULT (never
+// -32601 — the attempt-1 capture recorded that error stalling the plugin
+// runtime materialization), then the session continues to the ready state
+// and the create reply. The Responder alone wires the hook (the static
+// decline needs no seam).
+func driveOfficialMcpAuthDecline(ctx context.Context, d *exchangeDriver) {
+	d.conn.OnRequest = interact.NewResponder().Serve // hook contract: before any frame flows
+
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.create(ctx)
 }

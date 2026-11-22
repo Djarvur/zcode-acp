@@ -1,0 +1,6 @@
+in	{"id":1,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/happy-turn-ws","workspacePath":"/tmp/happy-turn-ws"}}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"starting","generation":1,"revision":1,"lastError":null}}
+out	{"id":"fake-1","method":"interaction/requestOfficialMcpAuthHeaders","params":{"mcpKey":"sites","pluginId":"zcode-site@zcode-plugins-official","requestId":"official-mcp-auth:1","targetOrigin":"https://zcode.z.ai","workspace":{"workspaceKey":"/tmp/official-mcp-auth-ws","workspacePath":"/tmp/official-mcp-auth-ws"}}}
+in	{"id":"fake-1","result":{"ok":false,"reason":"official_auth_unavailable"}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"ready","generation":1,"revision":2,"lastError":null}}
+out	{"id":1,"result":{"session":{"sessionId":"sess_fix1"},"protocol":{"name":"ZCode Protocol","version":1}}}
