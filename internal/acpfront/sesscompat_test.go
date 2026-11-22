@@ -543,3 +543,85 @@ func waitSessRawReply(t *testing.T, h *FrontHarness, idKey string) TeeLine {
 
 	return TeeLine{}
 }
+
+// TestSessionCapabilitiesAdvertisementStayedHonest is the T-07-08
+// advertisement honesty lock (plan 07-03 Task 3): the initialize reply's
+// sessionCapabilities declares OPTIONS — the D-11 empty-struct opt-in — and
+// NOTHING else. delete/fork/list/load/resume/close stay UNADVERTISED: the
+// graceful arms of Tasks 1-2 serve spec-loose clients only.
+//
+// GUARD: passes at HEAD and must KEEP passing. GUARD MUTATION — adding any
+// of the six capability fields in agent.go's initializeResponse flips this
+// red. The advertisement is not cosmetic: Orca gates delete/fork/list
+// client-side, and advertising delete flips Orca into calling session/delete
+// on its disposable listing sessions (it uses throwaway folders precisely
+// because omp does not advertise delete — Pitfall 4). The one
+// honest-improvement candidate, advertising close (implemented since SESS-01,
+// never checked by Orca), is DECIDED AGAINST for v1: advertising would churn
+// every initialize byte-lock for zero v1 benefit — revisit on demand.
+//
+// No production file changes back this lock: it freezes the assembly exactly
+// as the 06-04 D-11 advertisement stands.
+func TestSessionCapabilitiesAdvertisementStayedHonest(t *testing.T) {
+	h := newSessCompatFront(t, sessDeleteScenario())
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	lines := h.ACPLines()
+	initIdx := teeLineIndex(t, lines, "in", `"protocolVersion"`, "initialize response")
+
+	// The RAW recorded frame is the truth; the decode only picks the
+	// sessionCapabilities sub-object apart (the sibling byte-lock,
+	// TestInitializeHonestCapabilities, pins the whole frame shape).
+	var frame struct {
+		Result struct {
+			AgentCapabilities struct {
+				SessionCapabilities map[string]json.RawMessage `json:"sessionCapabilities"`
+			} `json:"agentCapabilities"`
+			AuthMethods []map[string]any `json:"authMethods"`
+		} `json:"result"`
+	}
+
+	initRaw := lines[initIdx].JSON
+
+	if err := json.Unmarshal([]byte(initRaw), &frame); err != nil {
+		t.Fatalf("decode initialize response frame: %v (%s)", err, initRaw)
+	}
+
+	sc := frame.Result.AgentCapabilities.SessionCapabilities
+
+	// The D-11 opt-in is the ONE declared capability, and it is the empty
+	// struct (the wire shape {"options":{}} — options serviced, nothing
+	// configurable).
+	if raw, ok := sc["options"]; !ok || strings.TrimSpace(string(raw)) != "{}" {
+		t.Fatalf("sessionCapabilities[\"options\"] = %q (present: %v), want the empty-struct opt-in: %s",
+			raw, ok, initRaw)
+	}
+
+	// GUARD MUTATION surface: any of the six must never appear.
+	for _, banned := range []string{"delete", "fork", "list", "load", "resume", "close"} {
+		if _, present := sc[banned]; present {
+			t.Fatalf("sessionCapabilities advertises %q — the honesty lock forbids it "+
+				"(advertising delete flips Orca into deleting its disposable listing sessions, Pitfall 4): %s",
+				banned, initRaw)
+		}
+	}
+
+	if len(sc) != 1 {
+		keys := make([]string, 0, len(sc))
+		for k := range sc {
+			keys = append(keys, k)
+		}
+
+		t.Fatalf("sessionCapabilities carries %v, want exactly [options] (the advertisement grows only "+
+			"with an honest, reviewed decision): %s", keys, initRaw)
+	}
+
+	// The auth surface stays exactly the two advertised ids (agent variant).
+	assertAuthMethods(t, frame.Result.AuthMethods, initRaw)
+}
