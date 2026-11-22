@@ -1,0 +1,15 @@
+in	{"id":1,"method":"provider/updateAccountConfig","params":{"basedOnZCodeBuiltinRevision":"zcode-builtin:44:cp-corpus-fixture-hash","providers":{"account:zai-individual-coding-plan":{"access":{"entitled":true,"type":"zhipu-account"},"builtinModelIds":["GLM-5.3","GLM-5.3-Flash"]}},"revision":"account-bridge:cp-fix1","states":{"account:zai-individual-coding-plan":{"availability":"available","current":true,"entitled":true}}}}
+out	{"id":1,"result":{"receivedRevision":"account-bridge:cp-fix1","providerCount":1,"status":"received"}}
+in	{"id":2,"method":"provider/refreshRegistry","params":{"reason":"account-config-sync"}}
+out	{"id":2,"result":{"refreshed":true}}
+in	{"id":3,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/zcode-acp-auth-probe-<probe-dir>","workspacePath":"/tmp/zcode-acp-auth-probe-<probe-dir>"}}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_cp1","state":"starting","generation":1,"revision":1,"lastError":null}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_cp1","state":"ready","generation":1,"revision":2,"lastError":null}}
+out	{"id":3,"result":{"session":{"sessionId":"sess_cp1"},"protocol":{"name":"ZCode Protocol","version":1},"settings":{"model":{"available":[{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"}}]}}}}
+in	{"id":4,"method":"session/setModel","params":{"model":{"modelId":"GLM-5.3-Flash","providerId":"account:zai-individual-coding-plan"},"persistAsWorkspaceLastUsed":false,"sessionId":"sess_cp1"}}
+out	{"id":"fake-1","method":"interaction/requestProviderRuntimeHeaders","params":{"requestId":"cp-probe-hdr-1","sessionId":"sess_cp1","workspace":{"workspacePath":"/tmp/happy-turn-ws"},"modelSelection":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3-Flash"},"providerId":"zhipu-account","reason":"model-request"}}
+in	{"id":"fake-1","result":{"headersApplied":true,"requestAuth":{"accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","apiKey":"zc-synthetic-pat-a-corpus-fixture","apiKeyId":"key_pat_corpus_a"}}}
+out	{"method":"state.updated","params":{"scope":"registry","reason":"registry_refresh","revision":3,"patch":{"providers":{"account:zai-individual-coding-plan":{"models":["GLM-5.3","GLM-5.3-Flash"]}}}}}
+out	{"id":4,"result":{"session":{"sessionId":"sess_cp1"},"settings":{"model":{"current":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3-Flash"},"available":[{"ref":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"}},{"ref":{"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3-Flash"}}]}}}}
+in	{"id":5,"method":"session/close","params":{"sessionId":"sess_cp1"}}
+out	{"id":5,"result":{"closed":true}}

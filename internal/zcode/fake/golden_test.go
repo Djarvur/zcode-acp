@@ -251,38 +251,40 @@ func patchStatus(env zcode.Envelope) string {
 // scenario means adding its replay driver — the corpus must stay replayable.
 func goldenDrivers() map[string]driverFunc {
 	return map[string]driverFunc{
-		"happy-turn":                 driveHappyTurnCorpus,
-		"cancel-mid-turn":            driveCancelMidTurn,
-		"error-32010":                driveError32010,
-		"unknown-host-method":        driveUnknownHostMethod,
-		"official-mcp-auth-decline":  driveOfficialMcpAuthDecline,
-		"runtime-preferences":        driveRuntimePreferences,
-		"completion-idle-patch":      driveCompletionIdlePatch,
-		"completion-quiet-window":    driveCompletionQuietWindow,
-		"eof-drain":                  driveEOFDrain,
-		"envelope-negatives":         driveEnvelopeNegatives,
-		"credential-cipher-scripted": driveCredentialCipherScripted,
-		"setmodel-followup":          driveSetModelFollowup,
-		"part-delta-streaming":       drivePartDeltaStreaming,
-		"no-reasoning":               driveNoReasoning,
-		"send-refused-32010":         driveSendRefused32010,
-		"complete-then-cancel":       driveCompleteThenCancel,
-		"reannounce-dedupe":          driveReannounceDedupe,
-		"permission-allow":           drivePermissionAllow,
-		"permission-cancel":          drivePermissionCancel,
-		"user-input-decline":         driveUserInputDecline,
-		"tool-lifecycle":             driveToolLifecycle,
-		"session-lifecycle":          driveSessionLifecycle,
-		"newsession-orphan-close":    driveNewSessionOrphanClose,
-		"auth-apikey":                driveAuthApikey,
-		"coding-plan-auth-cycle":     driveCodingPlanAuthCycle,
-		cpCorpusProbeFailName:        driveCodingPlanProbeFail,
-		"runtime-headers-answer":     driveRuntimeHeadersAnswer,
-		"runtime-headers-pat":        driveRuntimeHeadersPat,
-		"full-cycle":                 driveFullCycle,
-		"lingering-latch-32010":      driveLingeringLatch32010,
-		"config-option-set-model":    driveConfigOptionSetModel,
-		"config-option-thought":      driveConfigOptionThought,
+		"happy-turn":                     driveHappyTurnCorpus,
+		"cancel-mid-turn":                driveCancelMidTurn,
+		"error-32010":                    driveError32010,
+		"unknown-host-method":            driveUnknownHostMethod,
+		"official-mcp-auth-decline":      driveOfficialMcpAuthDecline,
+		"runtime-preferences":            driveRuntimePreferences,
+		"completion-idle-patch":          driveCompletionIdlePatch,
+		"completion-quiet-window":        driveCompletionQuietWindow,
+		"eof-drain":                      driveEOFDrain,
+		"envelope-negatives":             driveEnvelopeNegatives,
+		"credential-cipher-scripted":     driveCredentialCipherScripted,
+		"setmodel-followup":              driveSetModelFollowup,
+		"part-delta-streaming":           drivePartDeltaStreaming,
+		"no-reasoning":                   driveNoReasoning,
+		"send-refused-32010":             driveSendRefused32010,
+		"complete-then-cancel":           driveCompleteThenCancel,
+		"reannounce-dedupe":              driveReannounceDedupe,
+		"permission-allow":               drivePermissionAllow,
+		"permission-cancel":              drivePermissionCancel,
+		"user-input-decline":             driveUserInputDecline,
+		"tool-lifecycle":                 driveToolLifecycle,
+		"session-lifecycle":              driveSessionLifecycle,
+		"newsession-orphan-close":        driveNewSessionOrphanClose,
+		"auth-apikey":                    driveAuthApikey,
+		"coding-plan-auth-cycle":         driveCodingPlanAuthCycle,
+		cpCorpusProbeFailName:            driveCodingPlanProbeFail,
+		cpCorpusProbeSetModelName:        driveCodingPlanProbeSetModel,
+		cpCorpusProbeSetModelRefusedName: driveCodingPlanProbeSetModelRefused,
+		"runtime-headers-answer":         driveRuntimeHeadersAnswer,
+		"runtime-headers-pat":            driveRuntimeHeadersPat,
+		"full-cycle":                     driveFullCycle,
+		"lingering-latch-32010":          driveLingeringLatch32010,
+		"config-option-set-model":        driveConfigOptionSetModel,
+		"config-option-thought":          driveConfigOptionThought,
 	}
 }
 
@@ -291,8 +293,10 @@ func goldenDrivers() map[string]driverFunc {
 // (the fake records both directions, so reply addressing is assertable).
 func goldenPostAsserts() map[string]func(t *testing.T, tr fake.Transcript) {
 	return map[string]func(t *testing.T, tr fake.Transcript){
-		"reannounce-dedupe":   assertReannounceDedupeTranscript,
-		cpCorpusProbeFailName: assertCodingPlanProbeFailTranscript,
+		"reannounce-dedupe":              assertReannounceDedupeTranscript,
+		cpCorpusProbeFailName:            assertCodingPlanProbeFailTranscript,
+		cpCorpusProbeSetModelName:        assertCodingPlanProbeSetModelTranscript,
+		cpCorpusProbeSetModelRefusedName: assertCodingPlanProbeSetModelRefusedTranscript,
 	}
 }
 
@@ -308,28 +312,35 @@ func goldenPostAsserts() map[string]func(t *testing.T, tr fake.Transcript) {
 // shapes, and the ack/echo pairing all remain byte-exact.
 func goldenNormalizers() map[string]func([]byte) []byte {
 	return map[string]func([]byte) []byte{
-		"coding-plan-auth-cycle": normalizeCodingPlanCorpus,
-		cpCorpusProbeFailName:    normalizeCodingPlanCorpus,
-		"runtime-headers-pat":    normalizeCodingPlanCorpus,
+		"coding-plan-auth-cycle":         normalizeCodingPlanCorpus,
+		cpCorpusProbeFailName:            normalizeCodingPlanCorpus,
+		cpCorpusProbeSetModelName:        normalizeCodingPlanCorpus,
+		cpCorpusProbeSetModelRefusedName: normalizeCodingPlanCorpus,
+		"runtime-headers-pat":            normalizeCodingPlanCorpus,
 	}
 }
 
 // The fixture tokens the normalizer substitutes (the ack's scripted echo
 // pairs with the substituted push revision — the golden then SHOWS the
-// receipt pairing).
+// receipt pairing). cpCorpusProbeDirToken substitutes the probe sessions'
+// os.MkdirTemp random suffix (the round-3 poke rows' only other
+// machine-derived byte run).
 const (
 	cpCorpusRevisionToken = "account-bridge:cp-fix1"
 	cpCorpusBuiltinToken  = "zcode-builtin:44:cp-corpus-fixture-hash"
+	cpCorpusProbeDirToken = "zcode-acp-auth-probe-<probe-dir>"
 )
 
 var (
 	cpCorpusRevPattern     = regexp.MustCompile(`account-bridge:\d+`)
 	cpCorpusBuiltinPattern = regexp.MustCompile(`zcode-builtin:44:[0-9a-f]{64}`)
+	cpCorpusProbeDir       = regexp.MustCompile(`zcode-acp-auth-probe-\d+`)
 )
 
-// normalizeCodingPlanCorpus substitutes the two machine-derived tokens.
+// normalizeCodingPlanCorpus substitutes the machine-derived tokens.
 func normalizeCodingPlanCorpus(b []byte) []byte {
 	b = cpCorpusRevPattern.ReplaceAll(b, []byte(cpCorpusRevisionToken))
+	b = cpCorpusProbeDir.ReplaceAll(b, []byte(cpCorpusProbeDirToken))
 
 	return cpCorpusBuiltinPattern.ReplaceAll(b, []byte(cpCorpusBuiltinToken))
 }
@@ -1176,6 +1187,17 @@ const (
 	// cpCorpusProbeFailName is the probe-fail row's corpus name (the three
 	// map keys the row registers under).
 	cpCorpusProbeFailName = "coding-plan-probe-fail"
+
+	// The round-3 poke rows' corpus names (the three map keys each
+	// registers under): the happy setModel-poke row and its coded-refusal
+	// twin (EXP-CODINGPLAN-CYCLE-01 round-3 root cause).
+	cpCorpusProbeSetModelName        = "coding-plan-probe-setmodel"
+	cpCorpusProbeSetModelRefusedName = "coding-plan-probe-setmodel-refused"
+
+	// cpCorpusProbeReadbackDeadline is the poke rows' injected read-back
+	// window: the refused row's Await must time out fast (the honest coded
+	// read-back failure) without racing the harness timeout.
+	cpCorpusProbeReadbackDeadline = 500 * time.Millisecond
 
 	// corpusLayoutExplicit is the fixture install layout string.
 	corpusLayoutExplicit = "explicit"
@@ -2172,4 +2194,235 @@ func (c *permissionClient) awaitAsk(t *testing.T) {
 			t.Fatal("no request_permission ask reached the scripted client within the wait bound")
 		}
 	}
+}
+
+// The round-3 poke rows (plans 06-08's composed chain, EXP-CODINGPLAN-CYCLE-01
+// round-3 root cause): the coding-plan probe's create → setModel poke → close
+// materializes the account provider — the ask the poke fires is answered by
+// the mode-aware source from the cache the EAGER mint armed (D-04 round-3),
+// and the account-models patch is the verdict surface the watcher latches.
+// The refused twin records the poke's coded refusal as probe evidence — the
+// verdict stays the watcher's Await, never the poke's own outcome.
+
+// corpusProbePokeFront composes the poke rows' front + responder: the
+// production chain (probe-pass canned, fixture store, the cache-semantic
+// corpusPatMinter the front eagerly mints through, the entitlement gate)
+// and the mode-aware PAT source over the SAME minter — the arming posture
+// the materialization ask depends on.
+func corpusProbePokeFront(d *exchangeDriver, patMinter *corpusPatMinter) *acpfront.Front {
+	front := acpfront.New(d.conn, acpfront.WithAuth(acpfront.AuthConfig{
+		Install:          codingPlanCorpusInstall(d.t),
+		Probe:            func(_ context.Context) error { return nil }, // canned probe-pass
+		Creds:            corpusCreds(d.t),
+		Pat:              patMinter,
+		Entitle:          func(_ context.Context, family string) bool { return family == cpCorpusAccountFamily },
+		ReadbackDeadline: cpCorpusProbeReadbackDeadline,
+	}))
+
+	responder := interact.NewResponder(interact.WithRuntimeHeadersKeySource(
+		hostsvc.PatHeadersSource(hostsvc.PatHeadersSourceDeps{
+			Minter:         patMinter,
+			Mode:           front.AuthMode,
+			APIKeyFallback: hostsvc.RuntimeHeadersHandler(hostsvc.NewStaticKey("", "")),
+		})))
+	d.conn.OnRequest = responder.Serve // hook contract: before any frame flows
+
+	return front
+}
+
+// driveCodingPlanProbeSetModel replays the round-3 happy poke row: the
+// front's production chain — push → refresh (the row scripts NO registry
+// patch, so the probe runs) → the probe's create → the deterministic
+// setModel POKE (the model-selection materialization) whose side effects
+// fire the runtime-headers ask (answered by the armed mode-aware source
+// from the eagerly minted cache) and the account-models patch (the verdict
+// surface the watcher latches) → close. Authenticate answers nil with
+// exactly one eager mint.
+func driveCodingPlanProbeSetModel(ctx context.Context, d *exchangeDriver) {
+	patMinter := &corpusPatMinter{}
+
+	//nolint:contextcheck // the Front derives its own process-lifetime base context by design (front.go New)
+	front := corpusProbePokeFront(d, patMinter)
+
+	if err := front.Authenticate(ctx, acpfront.AuthMethodZaiCodingPlan); err != nil {
+		d.t.Fatalf("authenticate coding-plan (poke probe): %v", err)
+	}
+
+	if calls := patMinter.mintsCount(); calls != 1 {
+		d.t.Fatalf("authenticate minted %d time(s), want exactly one "+
+			"(the eager mint; the ask served from the cache)", calls)
+	}
+}
+
+// driveCodingPlanProbeSetModelRefused replays the round-3 negative poke
+// row: the poke answers a coded model-not-in-registry refusal — the probe
+// records the evidence and STILL closes the probe session; no ask fires,
+// the watcher never latches, and authenticate surfaces the honest coded
+// read-back failure (never a fabricated outcome from the poke's own
+// error).
+func driveCodingPlanProbeSetModelRefused(ctx context.Context, d *exchangeDriver) {
+	patMinter := &corpusPatMinter{}
+
+	//nolint:contextcheck // the Front derives its own process-lifetime base context by design (front.go New)
+	front := corpusProbePokeFront(d, patMinter)
+
+	err := front.Authenticate(ctx, acpfront.AuthMethodZaiCodingPlan)
+	if err == nil {
+		d.t.Fatal("authenticate answered success on a refused poke — never a fabricated success")
+	}
+
+	if !strings.Contains(err.Error(), "read-back") {
+		d.t.Fatalf("refused-poke error %v must name the read-back step (the verdict is the watcher's)", err)
+	}
+
+	if calls := patMinter.mintsCount(); calls != 1 {
+		d.t.Fatalf("authenticate minted %d time(s), want exactly one (the eager mint stands)", calls)
+	}
+}
+
+// transcriptMethodCount counts the host→fake frames naming method.
+func transcriptMethodCount(tr fake.Transcript, method string) int {
+	count := 0
+
+	for _, line := range tr.Lines {
+		if line.Dir == fake.DirIn && strings.Contains(line.JSON, `"method":"`+method+`"`) {
+			count++
+		}
+	}
+
+	return count
+}
+
+// transcriptFirstIndex returns the first transcript index of a frame in dir
+// carrying substr (fails loud when absent).
+func transcriptFirstIndex(t *testing.T, tr fake.Transcript, dir fake.Dir, substr, what string) int {
+	t.Helper()
+
+	for i, line := range tr.Lines {
+		if line.Dir == dir && strings.Contains(line.JSON, substr) {
+			return i
+		}
+	}
+
+	t.Fatalf("transcript carries no %s frame (%s)", what, substr)
+
+	return 0
+}
+
+// transcriptFirstMethod returns the first transcript index of a host→fake
+// frame naming method (fails loud when absent).
+func transcriptFirstMethod(t *testing.T, tr fake.Transcript, method string) int {
+	t.Helper()
+
+	return transcriptFirstIndex(t, tr, fake.DirIn, `"method":"`+method+`"`, method)
+}
+
+// assertProbePokeWireOrder is the shared probe-chain shape: exactly one
+// push/refresh/create/setModel/close, ordered refresh → create → setModel →
+// close (the create's reply IS the ready gate; the close trails the poke —
+// the probe session never leaks). Returns the setModel frame's index.
+func assertProbePokeWireOrder(t *testing.T, tr fake.Transcript) int {
+	t.Helper()
+
+	for _, method := range []string{
+		zcode.MethodProviderUpdateAccountConfig,
+		zcode.MethodProviderRefreshRegistry,
+		zcode.MethodSessionCreate,
+		zcode.MethodSessionSetModel,
+		zcode.MethodSessionClose,
+	} {
+		if count := transcriptMethodCount(tr, method); count != 1 {
+			t.Fatalf("transcript records %s ×%d, want exactly one honest probe chain", method, count)
+		}
+	}
+
+	refreshIdx := transcriptFirstMethod(t, tr, zcode.MethodProviderRefreshRegistry)
+	createIdx := transcriptFirstMethod(t, tr, zcode.MethodSessionCreate)
+	setModelIdx := transcriptFirstMethod(t, tr, zcode.MethodSessionSetModel)
+	closeIdx := transcriptFirstMethod(t, tr, zcode.MethodSessionClose)
+
+	if refreshIdx >= createIdx || createIdx >= setModelIdx || setModelIdx >= closeIdx {
+		t.Fatalf("probe order violated: refresh(%d) create(%d) setModel(%d) close(%d)",
+			refreshIdx, createIdx, setModelIdx, closeIdx)
+	}
+
+	return setModelIdx
+}
+
+// assertNoHeadersAsk fails the test when any runtime-headers ask frame is
+// on the transcript (the refused-poke lock: a provider that never
+// materialized never asks).
+func assertNoHeadersAsk(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	for _, line := range tr.Lines {
+		if strings.Contains(line.JSON, `"method":"interaction/requestProviderRuntimeHeaders"`) {
+			t.Fatalf("transcript records a runtime-headers ask after a refused poke: %s", line.JSON)
+		}
+	}
+}
+
+// assertHeadersAskAnswered is the happy row's ask lock: the materialization
+// ask fired exactly once and left no unanswered note (an unanswered or
+// timed-out ask must fail the row, never pass silently).
+func assertHeadersAskAnswered(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	asks := 0
+
+	for _, line := range tr.Lines {
+		if line.Dir == fake.DirOut &&
+			strings.Contains(line.JSON, `"method":"interaction/requestProviderRuntimeHeaders"`) {
+			asks++
+		}
+	}
+
+	if asks != 1 {
+		t.Fatalf("transcript records %d runtime-headers ask(s), want exactly one", asks)
+	}
+
+	for _, line := range tr.Lines {
+		if line.Dir == fake.DirNote && strings.Contains(line.JSON, "requestProviderRuntimeHeaders") {
+			t.Fatalf("the materialization ask left a transcript note %s", line.JSON)
+		}
+	}
+}
+
+// assertCodingPlanProbeSetModelTranscript is the happy poke row's semantic
+// belt to the byte-lock braces: the shared probe-chain shape, the poke
+// carrying the probe session id, the deterministic account Flash model, and
+// persistAsWorkspaceLastUsed:false (no options object — the omit-shape),
+// and the materialization ask answered exactly once.
+func assertCodingPlanProbeSetModelTranscript(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	poke := tr.Lines[assertProbePokeWireOrder(t, tr)].JSON
+
+	for _, marker := range []string{
+		`"sessionId":"` + cpCorpusSessionID + `"`,
+		`"providerId":"` + cpCorpusAccountProvider + `"`,
+		`"modelId":"GLM-5.3-Flash"`,
+		`"persistAsWorkspaceLastUsed":false`,
+	} {
+		if !strings.Contains(poke, marker) {
+			t.Fatalf("setModel frame %s lacks the poke marker %s", poke, marker)
+		}
+	}
+
+	if strings.Contains(poke, `"options"`) {
+		t.Fatalf("setModel frame %s carries an options object — the omit-shape must ride", poke)
+	}
+
+	assertHeadersAskAnswered(t, tr)
+}
+
+// assertCodingPlanProbeSetModelRefusedTranscript is the negative row's
+// semantic belt: the full probe sequence STILL ran (the refused poke did
+// not skip the close) and NO runtime-headers ask fired (the provider never
+// materialized).
+func assertCodingPlanProbeSetModelRefusedTranscript(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	assertProbePokeWireOrder(t, tr)
+	assertNoHeadersAsk(t, tr)
 }
