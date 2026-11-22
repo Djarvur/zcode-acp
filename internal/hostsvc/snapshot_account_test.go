@@ -1,0 +1,298 @@
+package hostsvc_test
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Djarvur/zcode-acp/internal/hostsvc"
+	"github.com/Djarvur/zcode-acp/internal/supervisor"
+)
+
+// AUTH-02 execution-tier contract locks (plan 06-03, RESEARCH Pattern 2):
+// BuildAccount produces the NON-empty account-provider overlay mirrored from
+// the desktop's OWN bundled builtin table (D-08's snapshot-side twin) —
+// providers one entry per zhipu-account rule ({builtinModelIds verbatim,
+// access {type, entitled}}), states per provider {availability, entitled,
+// current}. The Phase-5 empty-overlay builder (TestSnapshotEnvelope) stays
+// byte-untouched. The entitlement gate is a decision the builder RECEIVES —
+// it may only omit families, never edit entries (T-06-09).
+
+// accountFixtureTable is the fixture builtin table in the desktop's own
+// schema (providerId / providerName / config.group / config.builtinModelIds /
+// config.access{type,mode,accountType} — shape verified against this
+// machine's revision-44 table, V-EXP 2026-11-22). It mixes: two zhipu-account
+// rules (different families — the gate arms need them), one apiKey rule and
+// one other-type rule (the leak guards), a mixed-case model id and a
+// slash-free provider name (the no-transformation locks, AUTH-02 encoding).
+const accountFixtureTable = `{
+  "schemaVersion": 1,
+  "revision": 44,
+  "config": {
+    "providerConfigRules": {
+      "templateRules": [],
+      "providerRules": [
+        {
+          "providerId": "account:zai-individual-coding-plan",
+          "providerName": "Z.AI Individual Coding Plan",
+          "config": {
+            "group": "zai-family",
+            "builtinModelIds": ["GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"],
+            "access": {"type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "zai"}
+          }
+        },
+        {
+          "providerId": "account:bigmodel-individual-coding-plan",
+          "providerName": "BigModel Individual Coding Plan",
+          "config": {
+            "group": "bigmodel-family",
+            "builtinModelIds": ["GLM-5.2"],
+            "access": {"type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "bigmodel"}
+          }
+        },
+        {
+          "providerId": "zai-api",
+          "providerName": "Z.AI API Key",
+          "config": {
+            "builtinModelIds": ["GLM-5.3"],
+            "access": {"type": "apiKey"}
+          }
+        },
+        {
+          "providerId": "account:trial-access",
+          "providerName": "Trial Access",
+          "config": {
+            "builtinModelIds": ["M-1"],
+            "access": {"type": "trial"}
+          }
+        }
+      ]
+    }
+  }
+}`
+
+// wantZhipuProviders is the exact providers/states shape the fixture's
+// zhipu-account rules must build (all-entitled gate): model lists are the
+// table's arrays verbatim, entitlement true.
+var wantZhipuProviders = map[string][]string{
+	"account:zai-individual-coding-plan":      {"GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"},
+	"account:bigmodel-individual-coding-plan": {"GLM-5.2"},
+}
+
+// accountFixtureInstall writes a temp install whose zcode-builtin.json is the
+// full account fixture table. Two calls never share a path, so the
+// basedOnZCodeBuiltinRevision path-sensitivity lock bites (the formula hashes
+// the resolved absolute PATH STRING, not the contents).
+func accountFixtureInstall(t *testing.T) supervisor.Install {
+	t.Helper()
+
+	root := t.TempDir()
+	builtin := filepath.Join(root, "zcode-builtin.json")
+
+	if err := os.WriteFile(builtin, []byte(accountFixtureTable), 0o600); err != nil {
+		t.Fatalf("write builtin fixture: %v", err)
+	}
+
+	return supervisor.Install{
+		Root:        root,
+		Binary:      filepath.Join(root, "zcode"),
+		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		BuiltinFile: builtin,
+		Layout:      "explicit",
+	}
+}
+
+// decodeEnvelope marshals a built Snapshot's params and decodes the strict
+// envelope object: exactly the four schema keys as raw JSON members.
+func decodeEnvelope(t *testing.T, snap hostsvc.Snapshot) map[string]json.RawMessage {
+	t.Helper()
+
+	wire, err := json.Marshal(snap.Params)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatalf("decode envelope: %v (%s)", err, wire)
+	}
+
+	wantKeys := []string{"revision", "basedOnZCodeBuiltinRevision", "providers", "states"}
+	if len(got) != len(wantKeys) {
+		t.Fatalf("envelope keys = %v, want exactly %v (strict schema — extra fields are parse errors)",
+			keysOf(got), wantKeys)
+	}
+
+	for _, k := range wantKeys {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("envelope missing key %q (strict schema requires all four)", k)
+		}
+	}
+
+	return got
+}
+
+// assertModelIDsVerbatim asserts one provider's builtinModelIds equals the
+// fixture table's array element-for-element — every emitted string traces to
+// the table byte-for-byte (T-06-09: no wrapper-side renaming or editing).
+func assertModelIDsVerbatim(t *testing.T, what string, got any, want []string) {
+	t.Helper()
+
+	arr, ok := got.([]any)
+	if !ok {
+		t.Fatalf("%s builtinModelIds = %v (%T), want a JSON array", what, got, got)
+	}
+
+	if len(arr) != len(want) {
+		t.Fatalf("%s builtinModelIds = %v, want the table's array verbatim (%d elements): %v",
+			what, arr, len(want), want)
+	}
+
+	for i, el := range arr {
+		if s, _ := el.(string); s != want[i] {
+			t.Fatalf("%s builtinModelIds[%d] = %v, want the table's %q verbatim (no transformation)",
+				what, i, el, want[i])
+		}
+	}
+}
+
+// TestAccountSnapshotVerbatimMirror locks the account overlay mirror over the
+// fixture table with an all-entitled gate: providers contains EXACTLY the
+// zhipu-account rules (never the apiKey/trial rows), each entry mirrors the
+// table verbatim with access {type zhipu-account, entitled true}, states
+// carries the strict {availability available, entitled true, current true}
+// per entry, basedOnZCodeBuiltinRevision is the exact
+// supervisor.BuiltinRevision output for the fixture path AND changes when the
+// path changes (T-06-08), and the revision is the builder's non-empty
+// account-bridge form.
+func TestAccountSnapshotVerbatimMirror(t *testing.T) {
+	instA := accountFixtureInstall(t)
+	instB := accountFixtureInstall(t) // same table bytes, different resolved path
+
+	fixed := "account-bridge:account-fix1"
+	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return fixed }))
+
+	snap, err := b.BuildAccount(instA, func(string) bool { return true })
+	if err != nil {
+		t.Fatalf("build account snapshot: %v", err)
+	}
+
+	if snap.Revision != fixed || !strings.HasPrefix(snap.Revision, "account-bridge:") {
+		t.Fatalf("revision = %q, want the builder's non-empty account-bridge form %q", snap.Revision, fixed)
+	}
+
+	wantA := supervisor.BuiltinRevision(instA.BuiltinFile, 44)
+	if snap.BasedOn != wantA {
+		t.Fatalf("basedOn = %q, want the exact supervisor.BuiltinRevision output %q", snap.BasedOn, wantA)
+	}
+
+	snapB, err := b.BuildAccount(instB, func(string) bool { return true })
+	if err != nil {
+		t.Fatalf("build account snapshot (path B): %v", err)
+	}
+
+	wantB := supervisor.BuiltinRevision(instB.BuiltinFile, 44)
+	if snapB.BasedOn != wantB {
+		t.Fatalf("basedOn (path B) = %q, want %q", snapB.BasedOn, wantB)
+	}
+
+	if snapB.BasedOn == snap.BasedOn {
+		t.Fatalf("basedOn is path-insensitive (%q for both installs) — "+
+			"the formula must be computed at runtime over the resolved path, never hard-coded", snap.BasedOn)
+	}
+
+	got := decodeEnvelope(t, snap)
+
+	var providers map[string]any
+	if err := json.Unmarshal(got["providers"], &providers); err != nil {
+		t.Fatalf("providers does not decode as a record: %v (%s)", err, got["providers"])
+	}
+
+	if len(providers) != len(wantZhipuProviders) {
+		t.Fatalf("providers keys = %v, want exactly the zhipu-account rules %v "+
+			"(a non-zhipu rule leaked in or a family went missing)",
+			keysOfAny(providers), keysOfStr(wantZhipuProviders))
+	}
+
+	for pid, models := range wantZhipuProviders {
+		entry, ok := providers[pid].(map[string]any)
+		if !ok {
+			t.Fatalf("providers[%s] missing or not an object: %v", pid, providers[pid])
+		}
+
+		if len(entry) != 2 {
+			t.Fatalf("providers[%s] keys = %v, want exactly [access builtinModelIds] (strict zod shape)", pid, keysOfAny(entry))
+		}
+
+		assertModelIDsVerbatim(t, "providers["+pid+"]", entry["builtinModelIds"], models)
+
+		access, ok := entry["access"].(map[string]any)
+		if !ok {
+			t.Fatalf("providers[%s].access missing or not an object: %v", pid, entry["access"])
+		}
+
+		if len(access) != 2 {
+			t.Fatalf("providers[%s].access keys = %v, want exactly [entitled type]", pid, keysOfAny(access))
+		}
+
+		if access["type"] != "zhipu-account" {
+			t.Fatalf("providers[%s].access.type = %v, want the table's zhipu-account verbatim", pid, access["type"])
+		}
+
+		if access["entitled"] != true {
+			t.Fatalf("providers[%s].access.entitled = %v, want true (entitled account entry)", pid, access["entitled"])
+		}
+	}
+
+	var states map[string]any
+	if err := json.Unmarshal(got["states"], &states); err != nil {
+		t.Fatalf("states does not decode as a record: %v (%s)", err, got["states"])
+	}
+
+	if len(states) != len(wantZhipuProviders) {
+		t.Fatalf("states keys = %v, want exactly the entitled providers %v",
+			keysOfAny(states), keysOfStr(wantZhipuProviders))
+	}
+
+	for pid := range wantZhipuProviders {
+		st, ok := states[pid].(map[string]any)
+		if !ok {
+			t.Fatalf("states[%s] missing or not an object: %v", pid, states[pid])
+		}
+
+		if len(st) != 3 {
+			t.Fatalf("states[%s] keys = %v, want exactly [availability current entitled] (strict zod shape)",
+				pid, keysOfAny(st))
+		}
+
+		if st["availability"] != "available" {
+			t.Fatalf("states[%s].availability = %v, want available (entitled zhipu-account entry)", pid, st["availability"])
+		}
+
+		if st["entitled"] != true {
+			t.Fatalf("states[%s].entitled = %v, want true", pid, st["entitled"])
+		}
+
+		if st["current"] != true {
+			t.Fatalf("states[%s].current = %v, want true (required for entitled zhipu-account entries)", pid, st["current"])
+		}
+	}
+}
+
+// keysOfStr lists the keys of a string-slice map (sorted — deterministic).
+func keysOfStr(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+
+	return out
+}

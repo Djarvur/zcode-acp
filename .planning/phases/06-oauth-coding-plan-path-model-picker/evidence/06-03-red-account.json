@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run 'TestAccountSnapshot' ./internal/hostsvc/",
+  "exitCode": 1,
+  "output": "--- FAIL: TestAccountSnapshotVerbatimMirror (0.00s)\n    snapshot_account_test.go:183: revision = \"\", want the builder's non-empty account-bridge form \"account-bridge:account-fix1\"\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/hostsvc\t0.015s\nFAIL\n",
+  "targetTest": "TestAccountSnapshotVerbatimMirror",
+  "targetFile": "internal/hostsvc/snapshot_account_test.go",
+  "expected": "The vector compiles against the landed skeleton and fails on its planned account-overlay assertions \u2014 never a build failure. TestAccountSnapshotVerbatimMirror (the named target) must fail first on the builder's non-empty account-bridge revision (the skeleton returns the zero Snapshot), and would equally fail on the absent providers/states overlay, the exact supervisor.BuiltinRevision basedOn, and the path-sensitivity lock.",
+  "actual": "Build succeeded under -race. TestAccountSnapshotVerbatimMirror FAILED exactly once on the planned assertion: 'revision = \"\", want the builder's non-empty account-bridge form \"account-bridge:account-fix1\"' \u2014 the compiling skeleton's zero-value body. No build, fixture, discovery, or load faults; no unrelated failures.",
+  "semanticAssessment": "Genuine RED on the planned assertion: the skeleton BuildAccount returns Snapshot{}, nil by design, so the named target's first overlay assertion (non-empty account-bridge revision) fails as intended. The failure is an assertion failure inside the target test, not a compile error, zero-test discovery, fixture crash, or build failure."
+}

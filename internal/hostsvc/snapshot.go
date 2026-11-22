@@ -145,6 +145,51 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}
 }
 
+// BuildAccount builds the coding-plan ACCOUNT snapshot (AUTH-02, RESEARCH
+// Pattern 2 — the NON-empty overlay, the exact opposite shape of
+// BuildRevision's intentional empty one): providers carries one entry per
+// builtin-table rule whose config.access.type is zhipu-account, each
+// {builtinModelIds: verbatim from the table, access {type, entitled true}};
+// states carries per provider {availability available, entitled true,
+// current true}. The rules come from the desktop's OWN bundled table — the
+// SAME install.BuiltinFile readBuiltinRevision opens (D-08's snapshot-side
+// twin: verbatim mirror, no renaming/reordering/model-list editing;
+// T-06-09). Entitlement is a decision the builder RECEIVES: entitled is the
+// caller's gate (production: setting.json selections/modes + store oauth
+// token, authored in 06-05) and a rejected family is omitted from providers
+// AND states entirely — the gate may only omit, never edit. A malformed
+// table answers a coded error — never an empty overlay silently pushed as
+// if it were the account config.
+//
+// basedOnZCodeBuiltinRevision stays the EXACT supervisor.BuiltinRevision
+// formula over the same resolved install path (T-06-08 / the Phase-5 lock).
+func (b *SnapshotBuilder) BuildAccount(install supervisor.Install, entitled func(family string) bool) (Snapshot, error) {
+	_, _ = install, entitled
+
+	return Snapshot{}, nil // skeleton (plan 06-03 RED): the account-overlay assertions fail on this empty snapshot
+}
+
+// builtinProviderRule is one account-provider rule dug out of the desktop's
+// bundled builtin table (config.providerConfigRules.providerRules[]) —
+// capture-verbatim camelCase wire fields: the wrapper mirrors exactly these,
+// never edits them (T-06-09).
+type builtinProviderRule struct {
+	ProviderID string   // providerId — the providers/states map key
+	ModelIDs   []string // config.builtinModelIds — carried verbatim
+	AccessType string   // config.access.type — the zhipu-account filter
+	Family     string   // config.access.accountType — the entitlement-gate family
+}
+
+// readBuiltinProviderRules digs the account-provider rules out of the SAME
+// zcode-builtin.json readBuiltinRevision opens. Capture-verbatim camelCase
+// discipline — but UNLIKE the ack dig-outs, undecodable here is a coded
+// error, NOT absent: a malformed table (undecodable JSON, missing
+// providerRules, a rule missing its access block) must fail the build, never
+// push a degraded overlay.
+func readBuiltinProviderRules(path string) ([]builtinProviderRule, error) {
+	return nil, nil // skeleton (plan 06-03 RED): filled by the GREEN step
+}
+
 // readBuiltinRevision reads the recorded revision number out of the active
 // zcode-builtin.json.
 func readBuiltinRevision(path string) (int, error) {
