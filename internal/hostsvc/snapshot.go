@@ -32,6 +32,12 @@ const revisionPrefix = "account-bridge:"
 // {"refreshed":true}).
 const refreshReason = "account-config-sync"
 
+// zhipuAccountAccess is the exact access-type string the account overlay
+// filters the builtin table's rules by (RESEARCH Pattern 2: the
+// config.providerConfigRules.providerRules[] rows whose config.access.type
+// is zhipu-account are the account providers).
+const zhipuAccountAccess = "zhipu-account"
+
 // defaultRevision renders the push revision: account-bridge:<unix-nano> —
 // fresh per build, stable in form.
 func defaultRevision() string {
@@ -164,9 +170,54 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 // basedOnZCodeBuiltinRevision stays the EXACT supervisor.BuiltinRevision
 // formula over the same resolved install path (T-06-08 / the Phase-5 lock).
 func (b *SnapshotBuilder) BuildAccount(install supervisor.Install, entitled func(family string) bool) (Snapshot, error) {
-	_, _ = install, entitled
+	rev, err := readBuiltinRevision(install.BuiltinFile)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: %w", err)
+	}
 
-	return Snapshot{}, nil // skeleton (plan 06-03 RED): the account-overlay assertions fail on this empty snapshot
+	rules, err := readBuiltinProviderRules(install.BuiltinFile)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: %w", err)
+	}
+
+	providers := make(map[string]any, len(rules))
+	states := make(map[string]any, len(rules))
+
+	for _, rule := range rules {
+		if rule.AccessType != zhipuAccountAccess {
+			continue // only zhipu-account rules are account providers (apiKey/personal-layer rows stay out)
+		}
+
+		if !entitled(rule.Family) {
+			continue // the gate may only omit families — never edit entries (T-06-09)
+		}
+
+		providers[rule.ProviderID] = map[string]any{
+			"builtinModelIds": rule.ModelIDs,
+			"access": map[string]any{
+				"type":     rule.AccessType, // the table's own string, verbatim (the filter fixed it to zhipu-account)
+				"entitled": true,
+			},
+		}
+
+		states[rule.ProviderID] = map[string]any{
+			"availability": "available",
+			"entitled":     true,
+			"current":      true, // required for entitled zhipu-account entries (RESEARCH Pattern 2)
+		}
+	}
+
+	basedOn := supervisor.BuiltinRevision(install.BuiltinFile, rev)
+	revision := b.revision()
+
+	params := map[string]any{
+		"revision":                    revision,
+		"basedOnZCodeBuiltinRevision": basedOn,
+		"providers":                   providers,
+		"states":                      states,
+	}
+
+	return Snapshot{Revision: revision, BasedOn: basedOn, Params: params}, nil
 }
 
 // builtinProviderRule is one account-provider rule dug out of the desktop's
@@ -187,7 +238,67 @@ type builtinProviderRule struct {
 // providerRules, a rule missing its access block) must fail the build, never
 // push a degraded overlay.
 func readBuiltinProviderRules(path string) ([]builtinProviderRule, error) {
-	return nil, nil // skeleton (plan 06-03 RED): filled by the GREEN step
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read builtin provider rules: %w", err)
+	}
+
+	var parsed struct {
+		Config struct {
+			ProviderConfigRules struct {
+				ProviderRules []json.RawMessage `json:"providerRules"`
+			} `json:"providerConfigRules"`
+		} `json:"config"`
+	}
+
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil, fmt.Errorf("builtin table %s: parse: %w", path, err)
+	}
+
+	rawRules := parsed.Config.ProviderConfigRules.ProviderRules
+	if rawRules == nil {
+		return nil, fmt.Errorf("builtin table %s: missing config.providerConfigRules.providerRules", path)
+	}
+
+	rules := make([]builtinProviderRule, 0, len(rawRules))
+
+	for i, raw := range rawRules {
+		var rule struct {
+			ProviderID string `json:"providerId"`
+			Config     struct {
+				BuiltinModelIds []string `json:"builtinModelIds"`
+				Access          *struct {
+					Type        string `json:"type"`
+					AccountType string `json:"accountType"`
+				} `json:"access"`
+			} `json:"config"`
+		}
+
+		if err := json.Unmarshal(raw, &rule); err != nil {
+			return nil, fmt.Errorf("builtin table %s: provider rule %d: decode: %w", path, i, err)
+		}
+
+		if rule.ProviderID == "" {
+			return nil, fmt.Errorf("builtin table %s: provider rule %d: missing providerId", path, i)
+		}
+
+		if rule.Config.Access == nil {
+			return nil, fmt.Errorf("builtin table %s: provider rule %d (%s): missing config.access block", path, i, rule.ProviderID)
+		}
+
+		if rule.Config.BuiltinModelIds == nil {
+			return nil, fmt.Errorf("builtin table %s: provider rule %d (%s): missing config.builtinModelIds", path, i, rule.ProviderID)
+		}
+
+		rules = append(rules, builtinProviderRule{
+			ProviderID: rule.ProviderID,
+			ModelIDs:   rule.Config.BuiltinModelIds,
+			AccessType: rule.Config.Access.Type,
+			Family:     rule.Config.Access.AccountType,
+		})
+	}
+
+	return rules, nil
 }
 
 // readBuiltinRevision reads the recorded revision number out of the active
