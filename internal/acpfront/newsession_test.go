@@ -11,6 +11,7 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/acpfront"
 	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
+	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
 
 // Front-tier session/new contract locks (plan 04-03, CORE-02/D-03/V5): each
@@ -234,4 +235,298 @@ func TestSetModelOmitsOptionsWithoutLevel(t *testing.T) {
 		t.Fatalf("setModel model = %s/%s, want %s/%s (the selection rides without options)",
 			model.ProviderID, model.ModelID, corpusProviderID, corpusModelID)
 	}
+}
+
+// settingsCreateResult is the config-options create reply: a full settings
+// snapshot (RESEARCH Pattern 6 schema) whose model.current binds a model
+// DIFFERENT from the follow-up selection — the D-10 follow-up-overrides
+// vector needs the two snapshots to disagree. The available list carries
+// per-model reasoning levels on the Flash entry, a plain entry, and an
+// account-prefixed disabled entry (the D-11 both-paths fixture), plus a
+// thoughtLevel block.
+const settingsCreateResult = `{
+  "session": {"sessionId": "sess_opts", "protocol": {"name": "ZCode Protocol", "version": 1}},
+  "settings": {
+    "model": {
+      "current": {"providerId": "zai-api", "modelId": "GLM-5.3"},
+      "available": [
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash",
+         "description": "The flagship reasoning model",
+         "reasoning": {"levels": [
+            {"value": "high", "label": "High", "description": "deep reasoning"},
+            {"value": "low", "label": "Low"}], "defaultLevel": "high"}},
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"},
+        {"ref": {"providerId": "zai-account", "modelId": "GLM-5-turbo"}, "label": "GLM-5 Turbo",
+         "description": "Legacy plan model", "disabledReason": "deprecated on this account"}
+      ]
+    },
+    "thoughtLevel": {
+      "enabled": true, "current": "low", "defaultLevel": "low",
+      "available": [{"value": "off", "label": "Off"}, {"value": "low", "label": "Low"}]
+    }
+  }
+}`
+
+// settingsSetModelResult is the setModel FOLLOW-UP reply: the CONFIRMED
+// snapshot — model.current now binds the configured selection
+// (zai-api/GLM-5.3-Flash) and thoughtLevel.current moved to high. This is
+// the reply the D-10 currentValue must read (the create reply's older
+// current must NOT survive it).
+const settingsSetModelResult = `{
+  "session": {"sessionId": "sess_opts"},
+  "settings": {
+    "model": {
+      "current": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"},
+      "available": [
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash",
+         "description": "The flagship reasoning model",
+         "reasoning": {"levels": [
+            {"value": "high", "label": "High", "description": "deep reasoning"},
+            {"value": "low", "label": "Low"}], "defaultLevel": "high"}},
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"},
+        {"ref": {"providerId": "zai-account", "modelId": "GLM-5-turbo"}, "label": "GLM-5 Turbo",
+         "description": "Legacy plan model", "disabledReason": "deprecated on this account"}
+      ]
+    },
+    "thoughtLevel": {
+      "enabled": true, "current": "high", "defaultLevel": "high",
+      "available": [{"value": "off", "label": "Off"}, {"value": "high", "label": "High"}]
+    }
+  }
+}`
+
+// settingsScenario composes the per-arm fake: one create reply + one
+// subscribe reply, and the setModel reply ONLY when setModelResult is
+// non-empty (the no-model arm never issues the follow-up). Requests the
+// scenario did not script fail loud (the -32601 unknown-method reply — a
+// silent {} reply would hide contract regressions).
+func settingsScenario(createResult, setModelResult string) *fake.Scenario {
+	rules := []fake.RequestRule{
+		{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: json.RawMessage(createResult)}},
+		{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{Result: json.RawMessage(`{"sessionId":"sess_opts","eventSeq":0,"events":[]}`)}},
+	}
+
+	if setModelResult != "" {
+		rules = append(rules, fake.RequestRule{
+			Method: zcode.MethodSessionSetModel,
+			Reply:  &fake.Reply{Result: json.RawMessage(setModelResult)},
+		})
+	}
+
+	return &fake.Scenario{
+		Name:          "configoptions",
+		OnRequest:     rules,
+		UnknownMethod: &fake.Reply{Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"}},
+		EOFDrainMs:    100,
+	}
+}
+
+// assertModelOptionCurrent digs the model option's select variant out of a
+// client NewSession response and locks its currentValue + entry values
+// verbatim (the wire is the contract).
+func assertModelOptionCurrent(t *testing.T, resp acp.NewSessionResponse, wantCurrent string, wantValues []string) {
+	t.Helper()
+
+	if len(resp.ConfigOptions) == 0 {
+		t.Fatalf("session/new returned no configOptions (the confirmed-reply snapshot never reached the picker): %+v", resp)
+	}
+
+	model := resp.ConfigOptions[0].Select
+	if model == nil {
+		t.Fatalf("configOptions[0] carries no select variant: %+v", resp.ConfigOptions[0])
+	}
+
+	if model.Id != "model" {
+		t.Fatalf("configOptions[0].id = %q, want model", model.Id)
+	}
+
+	if model.CurrentValue != acp.SessionConfigValueId(wantCurrent) {
+		t.Fatalf("model currentValue = %q, want the server-confirmed %q (D-10)", model.CurrentValue, wantCurrent)
+	}
+
+	var got []string
+	if model.Options.Ungrouped != nil {
+		for _, o := range *model.Options.Ungrouped {
+			got = append(got, string(o.Value))
+		}
+	}
+
+	if len(got) != len(wantValues) {
+		t.Fatalf("model entries = %v, want %v", got, wantValues)
+	}
+
+	for i := range wantValues {
+		if got[i] != wantValues[i] {
+			t.Fatalf("model entries[%d] = %q, want %q (verbatim mirror, D-08)", i, got[i], wantValues[i])
+		}
+	}
+}
+
+// TestNewSessionConfigOptions — plan 06-04 Task 3 (MODEL-01 at the
+// harness): session/new returns the configOptions built from the live
+// backend reply snapshots — the setModel FOLLOW-UP reply is the D-10
+// confirmation source when a model is configured, the create reply's
+// snapshot when not, and an unconfirmed (current-less) snapshot omits the
+// model entry entirely.
+func TestNewSessionConfigOptions(t *testing.T) {
+	t.Run("the setModel follow-up reply is the confirmation (D-10)", func(t *testing.T) {
+		h := ComposeFront(t, settingsScenario(settingsCreateResult, settingsSetModelResult),
+			func(conn *zcode.Conn) acp.Agent {
+				front := acpfront.New(conn,
+					acpfront.WithVersion("0.0.0-dev"),
+					acpfront.WithModel(acpfront.ModelSelection{
+						ProviderID: corpusProviderID, ModelID: corpusModelID, ReasoningLevel: corpusReasoningLevel,
+					}))
+
+				return acpport.NewAgent(front)
+			})
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+			t.Fatalf("initialize: %v", err)
+		}
+
+		resp, err := h.client.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatalf("session/new: %v", err)
+		}
+
+		// The FOLLOW-UP reply's confirmed current — the create reply's
+		// zai-api/GLM-5.3 must NOT survive it (the later reply overwrites).
+		assertModelOptionCurrent(t, resp, "zai-api/GLM-5.3-Flash",
+			[]string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3", "zai-account/GLM-5-turbo"})
+
+		// The thought-level option: entries from the BOUND model's
+		// reasoning.levels (D-09), currentValue = the follow-up's confirmed
+		// high — the create reply's low must NOT survive it.
+		if len(resp.ConfigOptions) != 2 {
+			t.Fatalf("configOptions = %d entries, want 2 (model + thought_level)", len(resp.ConfigOptions))
+		}
+
+		thought := resp.ConfigOptions[1].Select
+		if thought == nil || thought.Id != "thought_level" {
+			t.Fatalf("configOptions[1] = %+v, want the thought_level select", resp.ConfigOptions[1])
+		}
+
+		if thought.CurrentValue != "high" {
+			t.Fatalf("thought_level currentValue = %q, want the confirmed high (D-10)", thought.CurrentValue)
+		}
+
+		if thought.Options.Ungrouped == nil || len(*thought.Options.Ungrouped) != 2 {
+			t.Fatalf("thought_level entries = %+v, want the bound model's high/low levels (D-09)", thought.Options)
+		}
+
+		if (*thought.Options.Ungrouped)[0].Name != "High" || (*thought.Options.Ungrouped)[0].Description == nil ||
+			*(*thought.Options.Ungrouped)[0].Description != "deep reasoning" {
+			t.Fatalf("thought_level entries[0] = %+v, want {high, High, deep reasoning} verbatim", (*thought.Options.Ungrouped)[0])
+		}
+	})
+
+	t.Run("the no-model arm renders from the create reply", func(t *testing.T) {
+		h := ComposeFront(t, settingsScenario(settingsCreateResult, ""),
+			func(conn *zcode.Conn) acp.Agent {
+				return acpport.NewAgent(acpfront.New(conn))
+			})
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+			t.Fatalf("initialize: %v", err)
+		}
+
+		resp, err := h.client.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatalf("session/new: %v", err)
+		}
+
+		// No follow-up fired — the create reply's own current is the
+		// confirmed state.
+		assertModelOptionCurrent(t, resp, "zai-api/GLM-5.3",
+			[]string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3", "zai-account/GLM-5-turbo"})
+	})
+
+	t.Run("a reply with no current and no lastUsed omits the model entry (D-10 + locked OQ2)", func(t *testing.T) {
+		create := `{
+		  "session": {"sessionId": "sess_unbound"},
+		  "settings": {
+		    "model": {
+		      "available": [
+		        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"}
+		      ]
+		    }
+		  }
+		}`
+
+		h := ComposeFront(t, settingsScenario(create, ""),
+			func(conn *zcode.Conn) acp.Agent {
+				return acpport.NewAgent(acpfront.New(conn))
+			})
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+			t.Fatalf("initialize: %v", err)
+		}
+
+		resp, err := h.client.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatalf("session/new: %v", err)
+		}
+
+		if len(resp.ConfigOptions) != 0 {
+			t.Fatalf("an unbound session must answer NO configOptions entries (a smaller honest list "+
+				"beats a fabricated currentValue, locked OQ2): %+v", resp.ConfigOptions)
+		}
+	})
+
+	t.Run("the confirmed store is per-session — the second session renders its own snapshot", func(t *testing.T) {
+		// Two create rules (budget 1 each, consumed in order): session A's
+		// snapshot binds zai-api/GLM-5.3, session B's binds the Flash —
+		// each response must reflect its OWN session's snapshot, never the
+		// other's (the store is keyed by session id, the WR-07 bounding).
+		createA := strings.Replace(settingsCreateResult, `"sess_opts"`, `"sess_optsA"`, 1)
+		createB := strings.Replace(settingsSetModelResult, `"sess_opts"`, `"sess_optsB"`, 1)
+
+		sc := &fake.Scenario{
+			Name: "configoptions-two-sessions",
+			OnRequest: []fake.RequestRule{
+				{Method: zcode.MethodSessionCreate, Times: 1, Reply: &fake.Reply{Result: json.RawMessage(createA)}},
+				{Method: zcode.MethodSessionCreate, Times: 1, Reply: &fake.Reply{Result: json.RawMessage(createB)}},
+				{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{Result: json.RawMessage(`{"eventSeq":0,"events":[]}`)}},
+			},
+			UnknownMethod: &fake.Reply{Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"}},
+			EOFDrainMs:    100,
+		}
+
+		h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
+			return acpport.NewAgent(acpfront.New(conn))
+		})
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+			t.Fatalf("initialize: %v", err)
+		}
+
+		respA, err := h.client.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatalf("session/new A: %v", err)
+		}
+
+		respB, err := h.client.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir()})
+		if err != nil {
+			t.Fatalf("session/new B: %v", err)
+		}
+
+		assertModelOptionCurrent(t, respA, "zai-api/GLM-5.3",
+			[]string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3", "zai-account/GLM-5-turbo"})
+
+		assertModelOptionCurrent(t, respB, "zai-api/GLM-5.3-Flash",
+			[]string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3", "zai-account/GLM-5-turbo"})
+	})
 }
