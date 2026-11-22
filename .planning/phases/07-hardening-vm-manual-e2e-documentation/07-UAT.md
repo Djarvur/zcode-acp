@@ -160,7 +160,22 @@ result: awaiting (seeded 2026-11-22 — the user's Orca run has not happened yet
   only from the user's actual runs, human confirmation precedes any evidence commit,
   D-06/T-07-25. Handoff staging re-confirmed 2026-11-22: Orca.AppImage present on this
   machine, the README launch-recipe section present (landed by 07-08), the version
-  floor self-check green (`zcode-acp omp --version` prints 18.1.9+zacp.0).)
+  floor self-check green (`zcode-acp omp --version` prints 18.1.9+zacp.0).
+
+  AGENT PRE-VERIFICATION (2026-11-23, NOT a verdict — the wrapper-side blocker the
+  user's first card run hit is fixed and field-verified by the agent itself):
+  the user's 2026-11-22 card run showed a prompt with no response and no errors.
+  Root cause (gap cycle 3, e30cb97): the desktop's turn-completed signal can arrive
+  BEFORE the reply text reaches the messages projection; the completion-side
+  reconcile's single poll read the not-yet-caught-up projection and the client got
+  an empty reply. Fix: bounded retry window (400ms × 4s) on the reconcile. The
+  agent reproduced the symptom locally with the exact production card argv, fixed
+  it, reinstalled, and verified: 4 consecutive two-prompt same-session runs on the
+  fixed binary — every turn delivered its text chunk before end_turn (8/8 turns).
+  The installed /home/nil/go/bin/zcode-acp is the fixed build (02:20). The user's
+  GUI pass on both auth paths remains the QA-03 gate; the interim "successful"
+  runs on the stale binary were the race's lucky side and are recorded as such in
+  the ledger (experiments/README.md, QA-03 gap cycle 3).)
 
 ## Summary
 
