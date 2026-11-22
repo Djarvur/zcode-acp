@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,8 +114,10 @@ func (p *pipeEnd) Close() error { return errors.Join(p.r.Close(), p.w.Close()) }
 // newInterleaveFront composes one fresh back leg (fake.Serve ⇄ zcode.Conn)
 // with a Front over it and returns the closer the caller MUST run at
 // iteration end — 2000+ fresh legs per test must not stack up until the
-// test's cleanup phase.
-func newInterleaveFront(t *testing.T, sc *fake.Scenario) (*Front, func()) {
+// test's cleanup phase. The closer returns the fake's recorded transcript
+// (serve fully drained — the wire-order assertion surface for the flows
+// that need it).
+func newInterleaveFront(t *testing.T, sc *fake.Scenario) (*Front, func() fake.Transcript) {
 	t.Helper()
 
 	toFakeR, toFakeW := io.Pipe()
@@ -123,21 +126,28 @@ func newInterleaveFront(t *testing.T, sc *fake.Scenario) (*Front, func()) {
 	hostEnd := &pipeEnd{r: toHostR, w: toFakeW}
 	fakeEnd := &pipeEnd{r: toFakeR, w: toHostW}
 
-	serveDone := make(chan struct{})
+	serveDone := make(chan fake.Transcript, 1)
 
 	go func() {
-		_, _ = fake.Serve(fakeEnd, sc)
-		close(serveDone)
+		tr, _ := fake.Serve(fakeEnd, sc)
+		serveDone <- tr
 	}()
 
 	conn := zcode.NewConn(hostEnd)
 	f := New(conn)
 
-	return f, func() {
-		_ = conn.Close()
-		_ = fakeEnd.Close()
+	var once sync.Once
 
-		<-serveDone
+	return f, func() fake.Transcript {
+		var tr fake.Transcript
+
+		once.Do(func() {
+			_ = conn.Close()
+			_ = fakeEnd.Close()
+			tr = <-serveDone
+		})
+
+		return tr
 	}
 }
 
