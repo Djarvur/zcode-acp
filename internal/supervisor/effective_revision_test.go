@@ -192,8 +192,14 @@ func TestEffectiveRevisionNoActiveTree(t *testing.T) {
 
 	// Bare-BuiltinFile arm: no resources copy → the recorded file IS the
 	// bundled candidate (old behavior byte-preserved).
+	flat := t.TempDir()
+	flatBuiltin := filepath.Join(flat, "zcode-builtin.json")
+	if err := os.WriteFile(flatBuiltin, []byte(`{"revision":44}`), 0o600); err != nil {
+		t.Fatalf("write flat builtin: %v", err)
+	}
+
 	bare := supervisor.Install{
-		BuiltinFile: filepath.Join(root, "zcode-builtin.json"),
+		BuiltinFile: flatBuiltin,
 		Root:        t.TempDir(), // a root WITHOUT the resources copy
 	}
 	got, err = supervisor.EffectiveBuiltinRevision(bare, "3.18.2", "")
