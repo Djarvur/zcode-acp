@@ -451,12 +451,12 @@ var errAPIKeyUnconfigured = errors.New("api key not configured " +
 // success arm always carries a non-empty apiKey (the mode's credential);
 // apiKeyId rides whenever the source supplies it.
 func RuntimeHeadersHandler(src KeySource) interact.RuntimeHeadersKeySource {
-	return func(ctx context.Context, _ interact.Request) (string, string, error) {
+	return func(ctx context.Context, _ interact.Request) (string, string, string, error) {
 		apiKey, apiKeyID, ok := src.APIKey(ctx)
 		if !ok || apiKey == "" {
-			return "", "", errAPIKeyUnconfigured
+			return "", "", "", errAPIKeyUnconfigured
 		}
 
-		return apiKey, apiKeyID, nil
+		return apiKey, apiKeyID, "", nil
 	}
 }

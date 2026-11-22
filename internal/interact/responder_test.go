@@ -594,10 +594,10 @@ func assertHeadersExpiry(t *testing.T) {
 
 	headers := interact.NewResponder(
 		interact.WithMethodDeadline(interact.MethodRequestProviderRuntimeHeaders, 50*time.Millisecond),
-		interact.WithRuntimeHeadersKeySource(func(ctx context.Context, _ interact.Request) (string, string, error) {
+		interact.WithRuntimeHeadersKeySource(func(ctx context.Context, _ interact.Request) (string, string, string, error) {
 			<-ctx.Done()
 
-			return "", "", ctx.Err()
+			return "", "", "", ctx.Err()
 		}),
 	)
 
@@ -703,4 +703,167 @@ func collectRacers(t *testing.T, results <-chan served, racers int) int {
 	}
 
 	return replies
+}
+
+// Widened-seam fixtures (plan 06-07 Task 1, RESEARCH Pattern 4/A9): the
+// synthetic material both arms serve — fixture data only, never a real
+// credential (T-5-15).
+const (
+	seamFixtureKey     = "zc-synthetic-seam-fixture-key"
+	seamFixtureKeyID   = "key_seam_1"
+	seamFixtureScope   = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 64 lowercase hex
+	seamFixtureScopeB  = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" // 64 lowercase hex
+	seamFingerprintBad = "NOT-HEX-STUFF"
+)
+
+// seamEnvelope builds one interaction/requestProviderRuntimeHeaders reverse
+// with the given raw params (the caller controls the rejection fields).
+func seamEnvelope(params string) zcode.Envelope {
+	return zcode.Envelope{
+		ID:     &zcode.ID{Str: "seam-1"},
+		Method: interact.MethodRequestProviderRuntimeHeaders,
+		Params: json.RawMessage(params),
+	}
+}
+
+// serveSeamAsk runs one ask through a responder wired with src and marshals
+// the result to its wire bytes (the byte-compat target — codec map keys are
+// sorted, so the bytes ARE the byte-identity proof).
+func serveSeamAsk(
+	t *testing.T, src interact.RuntimeHeadersKeySource, env zcode.Envelope,
+) (wire []byte, werr *zcode.WireError) {
+	t.Helper()
+
+	resp := interact.NewResponder(interact.WithRuntimeHeadersKeySource(src))
+
+	result, serveErr, handled := resp.Serve(context.Background(), env)
+	if !handled {
+		t.Fatal("the runtime-headers ask must be handled by the responder, never silence")
+	}
+
+	out, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+
+	return out, serveErr
+}
+
+// TestRuntimeHeadersSeamWidening locks the widened RuntimeHeadersKeySource
+// seam (plan 06-07 Task 1, Pattern 4/A9): the api-key two-field answer stays
+// byte-compatibly identical (no accountScope key when the source supplies no
+// scope — the Phase-5 corpus bytes), the coding-plan arm joins accountScope
+// inside requestAuth only when supplied, and the coded-error arm carries
+// over untouched (never the failure-shaped headersApplied:false success).
+func TestRuntimeHeadersSeamWidening(t *testing.T) {
+	t.Run("api-key arm stays byte-compat without a scope", func(t *testing.T) {
+		wire, werr := serveSeamAsk(t,
+			func(_ context.Context, _ interact.Request) (string, string, string, error) {
+				return seamFixtureKey, seamFixtureKeyID, "", nil
+			},
+			seamEnvelope(`{"requestId":"rh-seam-1","sessionId":"sess_fix1"}`))
+
+		if werr != nil {
+			t.Fatalf("api-key arm errored: %+v", werr)
+		}
+
+		want := `{"headersApplied":true,"requestAuth":{"apiKey":"` + seamFixtureKey + `","apiKeyId":"` + seamFixtureKeyID + `"}}`
+		if string(wire) != want {
+			t.Fatalf("api-key answer = %s, want byte-identical %s (A9 regression)", wire, want)
+		}
+	})
+
+	t.Run("coding-plan arm joins accountScope when the source supplies it", func(t *testing.T) {
+		wire, werr := serveSeamAsk(t,
+			func(_ context.Context, _ interact.Request) (string, string, string, error) {
+				return seamFixtureKey, seamFixtureKeyID, seamFixtureScope, nil
+			},
+			seamEnvelope(`{"requestId":"rh-seam-2","sessionId":"sess_fix1"}`))
+
+		if werr != nil {
+			t.Fatalf("coding-plan arm errored: %+v", werr)
+		}
+
+		want := `{"headersApplied":true,"requestAuth":{"accountScope":"` + seamFixtureScope +
+			`","apiKey":"` + seamFixtureKey + `","apiKeyId":"` + seamFixtureKeyID + `"}}`
+		if string(wire) != want {
+			t.Fatalf("coding-plan answer = %s, want accountScope inside requestAuth: %s", wire, want)
+		}
+	})
+
+	t.Run("source failure stays the coded error envelope", func(t *testing.T) {
+		wire, werr := serveSeamAsk(t,
+			func(_ context.Context, _ interact.Request) (string, string, string, error) {
+				return "", "", "", errSeamCodedFailure
+			},
+			seamEnvelope(`{"requestId":"rh-seam-3","sessionId":"sess_fix1"}`))
+
+		if werr == nil || werr.Code != zcode.CodeInternalError {
+			t.Fatalf("source failure must wrap as the coded -32603 envelope (PITFALL 3), got %+v", werr)
+		}
+
+		if string(wire) != "null" {
+			t.Fatalf("failure arm carried a result payload %s — never a failure-shaped success", wire)
+		}
+	})
+}
+
+// errSeamCodedFailure is the seam tests' canned source failure (err113).
+var errSeamCodedFailure = errors.New("seam fixture failure")
+
+// TestRuntimeHeadersRejection locks the exported ask-params dig helper (plan
+// 06-07 Task 1, the D-05 re-mint trigger inputs): expectedAccountScope and
+// rejectedProjectTokenFingerprint dig as camelCase top-level strings, each
+// validated as 64 LOWERCASE hex before being returned — a malformed or
+// absent field digs as empty (the package's undecodable-as-absent
+// discipline), and undecodable params classify as absent outright.
+func TestRuntimeHeadersRejection(t *testing.T) {
+	scope, fp := seamFixtureScope, seamFixtureScopeB
+
+	t.Run("well-formed fields dig verbatim", func(t *testing.T) {
+		params := `{"requestId":"rh-dig-1","sessionId":"sess_fix1",` +
+			`"expectedAccountScope":"` + scope + `","rejectedProjectTokenFingerprint":"` + fp + `"}`
+		req := interact.Request{Params: json.RawMessage(params)}
+
+		gotScope, gotFP := interact.RuntimeHeadersRejection(req)
+		if gotScope != scope || gotFP != fp {
+			t.Fatalf("dig = (%q, %q), want (%q, %q) verbatim", gotScope, gotFP, scope, fp)
+		}
+	})
+
+	t.Run("absent fields dig empty", func(t *testing.T) {
+		gotScope, gotFP := interact.RuntimeHeadersRejection(
+			interact.Request{Params: json.RawMessage(`{"requestId":"rh-dig-2"}`)})
+		if gotScope != "" || gotFP != "" {
+			t.Fatalf("absent fields dug (%q, %q), want empty", gotScope, gotFP)
+		}
+
+		gotScope, gotFP = interact.RuntimeHeadersRejection(interact.Request{})
+		if gotScope != "" || gotFP != "" {
+			t.Fatalf("empty params dug (%q, %q), want empty (undecodable-as-absent)", gotScope, gotFP)
+		}
+	})
+
+	t.Run("malformed fields classify as absent", func(t *testing.T) {
+		for name, bad := range map[string]string{
+			"non-hex":       seamFingerprintBad,
+			"uppercase-hex": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			"short":         "abc123",
+			"long":          scope + "ff",
+		} {
+			params := `{"expectedAccountScope":"` + bad + `","rejectedProjectTokenFingerprint":"` + bad + `"}`
+			gotScope, gotFP := interact.RuntimeHeadersRejection(interact.Request{Params: json.RawMessage(params)})
+			if gotScope != "" || gotFP != "" {
+				t.Fatalf("%s field dug (%q, %q), want empty (64-lowercase-hex gate)", name, gotScope, gotFP)
+			}
+		}
+	})
+
+	t.Run("undecodable params classify as absent", func(t *testing.T) {
+		gotScope, gotFP := interact.RuntimeHeadersRejection(
+			interact.Request{Params: json.RawMessage(`{not json`)})
+		if gotScope != "" || gotFP != "" {
+			t.Fatalf("undecodable params dug (%q, %q), want empty", gotScope, gotFP)
+		}
+	})
 }

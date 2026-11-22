@@ -1312,10 +1312,13 @@ func driveCodingPlanAuthCycle(ctx context.Context, d *exchangeDriver) {
 	}))
 
 	// Hook contract: the responder (scripted PAT source + the cipher seam)
-	// is assigned before any frame flows.
+	// is assigned before any frame flows. The scripted source carries NO
+	// scope: the coding-plan-auth-cycle row's expect_answer stays the
+	// byte-locked two-field shape (the widening's byte-compat regression —
+	// plan 06-07 Task 1 keeps this row's reply bytes identical).
 	responder := interact.NewResponder(
-		interact.WithRuntimeHeadersKeySource(func(_ context.Context, _ interact.Request) (string, string, error) {
-			return syntheticFixtureKey, syntheticFixtureKeyID, nil
+		interact.WithRuntimeHeadersKeySource(func(_ context.Context, _ interact.Request) (string, string, string, error) {
+			return syntheticFixtureKey, syntheticFixtureKeyID, "", nil
 		}),
 		interact.WithCredentialDecrypt(interact.NewCredentialDecrypt(corpusFixtureKeyLoader{})),
 	)

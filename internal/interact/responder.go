@@ -87,11 +87,14 @@ type MethodPolicy struct {
 // forwarder answers a coded not-wired error.
 type PermissionForwarder func(ctx context.Context, req Request) (Answer, error)
 
-// RuntimeHeadersKeySource supplies the api-key material for the
-// requestProviderRuntimeHeaders success arm (plan 05-06 injects the real
-// source). A nil source answers a coded error naming the unconfigured key
-// state — never the failure-shaped success arm (PITFALL 3).
-type RuntimeHeadersKeySource func(ctx context.Context, req Request) (apiKey, apiKeyID string, err error)
+// RuntimeHeadersKeySource supplies the credential material for the
+// requestProviderRuntimeHeaders success arm (plan 05-06 injected the api-key
+// source; plan 06-07 widens the signature with accountScope so the
+// coding-plan source can hand over all three fields — Pattern 4/A9). A nil
+// source answers a coded error naming the unconfigured key state — never the
+// failure-shaped success arm (PITFALL 3). The scope is optional: an empty
+// accountScope keeps the api-key two-field answer byte-compatibly identical.
+type RuntimeHeadersKeySource func(ctx context.Context, req Request) (apiKey, apiKeyID, accountScope string, err error)
 
 // Option configures a Responder at construction.
 type Option func(*Responder)
@@ -118,7 +121,8 @@ func WithPermissionForwarder(f PermissionForwarder) Option {
 }
 
 // WithRuntimeHeadersKeySource injects the RuntimeHeadersKeySource seam
-// (plan 05-06 injects the real api-key source).
+// (plan 05-06 injected the api-key source; plan 06-07 swaps in the
+// mode-aware PAT source at the cmd wiring).
 func WithRuntimeHeadersKeySource(src RuntimeHeadersKeySource) Option {
 	return func(r *Responder) {
 		r.keySource = src
@@ -426,7 +430,10 @@ func (r *Responder) handleRuntimeHeaders(ctx context.Context, req Request) (Answ
 		}}, nil
 	}
 
-	apiKey, apiKeyID, keyErr := r.keySource(ctx, req)
+	// Skeleton posture (RED): the widened source's scope is received and
+	// deliberately discarded — the api-key two-field answer stays byte-compat
+	// until GREEN joins the scope (plan 06-07 Task 1).
+	apiKey, apiKeyID, _, keyErr := r.keySource(ctx, req)
 	if keyErr != nil {
 		// A bare handler error wraps as the coded -32603 internal error at
 		// the deliver seam — the honest coded-ERROR arm, never
@@ -446,6 +453,18 @@ func (r *Responder) handleRuntimeHeaders(ctx context.Context, req Request) (Answ
 		"headersApplied": true,
 		"requestAuth":    auth,
 	}}, nil
+}
+
+// RuntimeHeadersRejection digs the D-05 re-mint trigger fields out of a
+// runtime-headers ask's params (plan 06-07, the mode-aware PAT source's
+// inputs): expectedAccountScope and rejectedProjectTokenFingerprint dig as
+// camelCase top-level strings, each validated as 64 LOWERCASE hex before
+// being returned — a malformed or absent field digs as empty, and
+// undecodable params classify as absent outright (the package's
+// paramsString discipline). Neither value is ever logged here: the caller
+// may log digests/scope hashes (they are digests), never token material.
+func RuntimeHeadersRejection(req Request) (expectedScope, rejectedFingerprint string) {
+	return "", "" // skeleton: the dig lands in GREEN (plan 06-07 Task 1)
 }
 
 // answerRuntimePreferences replies with the static runtime-preference
