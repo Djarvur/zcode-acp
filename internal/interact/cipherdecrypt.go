@@ -418,6 +418,55 @@ func decodeLoaderKey(raw []byte) ([]byte, error) {
 	return key, nil
 }
 
+// V1SecretEnvKey is the env key the enc:v1 fallback resolves first (the
+// reference's ZCODE_CREDENTIAL_SECRET — the trimmed value wins).
+const V1SecretEnvKey = "ZCODE_CREDENTIAL_SECRET"
+
+// V1FallbackKeyLoader is the legacy enc:v1 sibling KeyLoader (D-03) joining
+// the SecretToolKeyLoader family behind the same seam — one seam, two
+// layouts. Port attribution (Apache-2.0): the v1 secret resolution and
+// layout are ported from william0wang/zcode-acp v0.89.0
+// src/backend/credential-store.ts (docs/research/reference-adapters.md).
+//
+// The derivation is pure compute — unlike the v2 keyring read it performs
+// NO exec: secret = the trimmed ZCODE_CREDENTIAL_SECRET env value when
+// set, else the machine string
+// `zcode-credential-fallback:<GOOS>:<home>:<username>`; key = sha256(secret).
+type V1FallbackKeyLoader struct {
+	env      map[string]string
+	platform string
+	home     string
+	username string
+}
+
+// NewV1FallbackKeyLoader returns the loader over the caller-provided
+// secret inputs. The machine inputs resolve through the provided seams
+// (nil = the OS defaults) and validate loud: an empty platform, home, or
+// username is a sentinel error — never a silently-empty machine string.
+// env == nil consults the process env at LoadKey time (the reference
+// reads process.env at decrypt time).
+func NewV1FallbackKeyLoader(
+	env map[string]string, platform, home, username func() string,
+) (*V1FallbackKeyLoader, error) {
+	return &V1FallbackKeyLoader{env: env}, nil // RED skeleton (06-01): GREEN lands the derivation
+}
+
+// ResolveV1CredentialSecret is the pure secret-resolution function (the
+// env-then-machine-string order with trim semantics, exposed for the
+// parity vectors): the trimmed non-empty env value wins; otherwise the
+// machine-bound fallback string. Empty machine inputs fail loud.
+func ResolveV1CredentialSecret(
+	env map[string]string, platform, home, username string,
+) (string, error) {
+	return "", nil // RED skeleton (06-01)
+}
+
+// LoadKey resolves the secret and returns sha256(secret) — the exact
+// 32-byte key the enc:v1 layout encrypts under.
+func (l *V1FallbackKeyLoader) LoadKey(_ context.Context) ([]byte, error) {
+	return make([]byte, loaderKeyLen), nil // RED skeleton (06-01)
+}
+
 // ScrubbedEnv builds the loader subprocess env from a parent env via the
 // allowlist (the ChildEnv posture): only the allowlisted keys cross, in
 // allowlist order, each at most once. The cmd wiring passes
