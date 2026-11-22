@@ -2,10 +2,12 @@ package acpfront_test
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
 
+	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
@@ -146,5 +148,200 @@ func TestModelSlashSwitchAppliesViaSetModel(t *testing.T) {
 			t.Fatalf("the back leg records %d session/setModel frame(s), want exactly 2 "+
 				"(the slash switch + the picker follow-up)", len(setModels))
 		}
+	})
+}
+
+// The pinned omp-dialect refusal strings (SESS-03, D-03): startsWith-
+// matched by the client's matchers on code -32603 + data.details — byte-
+// locked here as whole strings (the acceptance is string-exact).
+const (
+	wantUnknownACPModel = "Unknown ACP model: "
+	wantNoModelSelected = "No model selected."
+)
+
+// teeErrorFrame is one decoded agent->client JSON-RPC error frame off the
+// tee — the carriage the Hb matchers classify (Pitfall 1: any other code or
+// field is invisible to them).
+type teeErrorFrame struct {
+	Error struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	} `json:"error"`
+}
+
+// teePromptError finds the one prompt error frame on the tee (client view:
+// "in" = agent->client) and decodes it.
+func teePromptError(t *testing.T, lines []TeeLine) teeErrorFrame {
+	t.Helper()
+
+	idx := teeLineIndex(t, lines, "in", `"error"`, "prompt error frame")
+
+	var frame teeErrorFrame
+	if err := json.Unmarshal([]byte(lines[idx].JSON), &frame); err != nil {
+		t.Fatalf("decode prompt error frame: %v (%s)", err, lines[idx].JSON)
+	}
+
+	return frame
+}
+
+// assertRefusalCarriage byte-locks the refusal frame: code -32603 and
+// data.details EXACTLY wantDetails (the pinned prefix with the selector, or
+// the pinned sentence — no paraphrase anywhere).
+func assertRefusalCarriage(t *testing.T, frame teeErrorFrame, wantDetails string) {
+	t.Helper()
+
+	if frame.Error.Code != acpport.CodeInternal {
+		t.Fatalf("refusal code = %d, want %d (the Hb matchers read ONLY -32603)", frame.Error.Code, acpport.CodeInternal)
+	}
+
+	if len(frame.Error.Data) == 0 {
+		t.Fatalf("refusal frame carries NO data — the matchers read data.details only (Pitfall 1); "+
+			"message was %q", frame.Error.Message)
+	}
+
+	var data struct {
+		Details string `json:"details"`
+	}
+
+	if err := json.Unmarshal(frame.Error.Data, &data); err != nil {
+		t.Fatalf("decode error data: %v (%s)", err, frame.Error.Data)
+	}
+
+	if data.Details != wantDetails {
+		t.Fatalf("data.details = %q, want EXACTLY %q (byte-exact; the client matches startsWith)",
+			data.Details, wantDetails)
+	}
+}
+
+// assertPromptErrorCode asserts one coded frame with the given code and a
+// NULL data payload — the generic seam boundary (the detail seam widens
+// ONLY detail-carrying errors, never a blanket data injection).
+func assertPromptErrorCode(t *testing.T, frame teeErrorFrame, wantCode int) {
+	t.Helper()
+
+	if frame.Error.Code != wantCode {
+		t.Fatalf("error code = %d, want %d", frame.Error.Code, wantCode)
+	}
+
+	if len(frame.Error.Data) != 0 {
+		t.Fatalf("generic error frame must keep data null (the seam widens only "+
+			"detail-carrying errors), got %s", frame.Error.Data)
+	}
+}
+
+// TestModelSlashUnknownRefusalByteLocked — the Task-2 RED target (T-07-15,
+// Pitfall 1): an unknown selector refuses with code -32603 whose
+// data.details is EXACTLY "Unknown ACP model: <name>" — the pinned prefix
+// with its trailing space — and the refusal never touches the backend
+// (validate-first, T-06-17).
+func TestModelSlashUnknownRefusalByteLocked(t *testing.T) {
+	h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult))
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	sid := openSetCfgSession(ctx, t, h)
+
+	_, err := h.client.Prompt(ctx, slashPrompt(sid, "/model nope"))
+	if err == nil {
+		t.Fatal("an unknown selector must refuse, got success")
+	}
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) || rerr.Code != acpport.CodeInternal {
+		t.Fatalf("refusal must surface as coded -32603, got %v", err)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	assertRefusalCarriage(t, teePromptError(t, h.ACPLines()), wantUnknownACPModel+"nope")
+
+	if setModels := transcriptIndexes(tr, "in", `"method":"session/setModel"`); len(setModels) != 0 {
+		t.Fatalf("the refusal must be emitted before any backend call (validate-first) — "+
+			"the back leg records %d session/setModel frame(s)", len(setModels))
+	}
+}
+
+// slashNoModelCreateResult is the no-model-bound arm's snapshot: an
+// available list but NO current/lastUsed binding — the model option renders
+// nothing (D-10 + locked OQ2), so the no-model refusal class fires.
+const slashNoModelCreateResult = `{
+  "session": {"sessionId": "sess_cfg"},
+  "settings": {
+    "model": {
+      "available": [
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash"}
+      ]
+    },
+    "thoughtLevel": {
+      "enabled": true, "current": "low", "defaultLevel": "low",
+      "available": [{"value": "off", "label": "Off"}, {"value": "low", "label": "Low"}]
+    }
+  }
+}`
+
+// TestModelSlashNoModelRefusal — the Task-2 RED target (D-03): both no-
+// model arms — the command with no argument (bare and empty-name forms) and
+// a session with no model binding — refuse with data.details starting
+// "No model selected." on code -32603.
+//
+//nolint:funlen // each subtest is a full harness lock; splitting would scatter its sequencing
+func TestModelSlashNoModelRefusal(t *testing.T) {
+	askRefusal := func(t *testing.T, sc *fake.Scenario, text string) {
+		t.Helper()
+
+		h := newSetCfgFront(t, sc)
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		sid := openSetCfgSession(ctx, t, h)
+
+		_, err := h.client.Prompt(ctx, slashPrompt(sid, text))
+		if err == nil {
+			t.Fatalf("%q must refuse (no model selected), got success", text)
+		}
+
+		if _, trErr := h.Transcript(t); trErr != nil {
+			t.Fatalf("fake transcript: %v", trErr)
+		}
+
+		assertRefusalCarriage(t, teePromptError(t, h.ACPLines()), wantNoModelSelected)
+	}
+
+	t.Run("the bare command refuses the pinned sentence", func(t *testing.T) {
+		askRefusal(t, cfgOptionScenario(cfgCreateResult), "/model")
+	})
+
+	t.Run("the command with a trailing space (empty name) refuses the pinned sentence", func(t *testing.T) {
+		askRefusal(t, cfgOptionScenario(cfgCreateResult), "/model ")
+	})
+
+	t.Run("a session with no model binding refuses the pinned sentence", func(t *testing.T) {
+		askRefusal(t, cfgOptionScenario(slashNoModelCreateResult), "/model "+corpusModelFlashID)
+	})
+
+	t.Run("generic errors keep data null (the seam widens only detail-carrying errors)", func(t *testing.T) {
+		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult))
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		openSetCfgSession(ctx, t, h) // a real session; the ask targets an unknown id
+
+		_, err := h.client.Prompt(ctx, slashPrompt("sess_never", "/model "+corpusModelFlashID))
+		if err == nil {
+			t.Fatal("an unknown session must refuse, got success")
+		}
+
+		if _, trErr := h.Transcript(t); trErr != nil {
+			t.Fatalf("fake transcript: %v", trErr)
+		}
+
+		assertPromptErrorCode(t, teePromptError(t, h.ACPLines()), acpport.CodeInvalidRequest)
 	})
 }
