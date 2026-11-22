@@ -258,7 +258,7 @@ func (f *Front) NewSession(
 	}
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
-		"workspace": map[string]any{"workspacePath": params.Cwd, "workspaceKey": params.Cwd},
+		wireKeyWorkspace: map[string]any{wireKeyWorkspacePath: params.Cwd, wireKeyWorkspaceKey: params.Cwd},
 	})
 	if err != nil {
 		return "", nil, acpport.NewInternal("session/create: %v", err)
@@ -483,6 +483,13 @@ const (
 	wireKeyModelID         = "modelId"
 	wireKeyReasoningLevel  = "reasoningLevel"
 	wireKeyPersistLastUsed = "persistAsWorkspaceLastUsed"
+
+	// wireKeyWorkspace/wireKeyWorkspacePath/wireKeyWorkspaceKey are the
+	// session-create params' workspace-object keys (the probe sessions'
+	// temp-dir cwd shape).
+	wireKeyWorkspace     = "workspace"
+	wireKeyWorkspacePath = "workspacePath"
+	wireKeyWorkspaceKey  = "workspaceKey"
 )
 
 // SetSessionConfigOption applies one client config-option selection

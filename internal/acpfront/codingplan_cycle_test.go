@@ -7,8 +7,10 @@ package acpfront_test
 // account, no real keyring — synthetic fixtures only):
 //
 //	authenticate{zai-individual-coding-plan}
-//	  (the D-02 probe -> the D-03 login read -> the account-overlay push ->
-//	  the registry read-back verdict -> the D-04 mint-once),
+//	  (the D-02 probe -> the D-03 login read -> the entitlement gate ->
+//	  the D-04 EAGER mint arming the cache -> the account-overlay push ->
+//	  the registry read-back verdict — the poke probe runs only when no
+//	  patch latched, which this cycle's refresh patch preempts),
 //	session/new returning configOptions with BOTH entries and the
 //	  reply-confirmed currentValue (MODEL-01/D-10),
 //	session/set_config_option performing a model switch whose response
@@ -335,9 +337,10 @@ func cpCycleHeadersAsk() *fake.Reverse {
 // cyclePat is the composed cycle's PAT double: the ONE surface both the
 // front's PatEnsurer seam and the responder's mode-aware source orchestrate
 // (one cache, one lifecycle — the production composition). The FIRST Ensure
-// warms the cache with the fixture PAT; a SECOND Ensure is a contract
-// violation (the mint-once lock fails loud — the mid-turn ask must serve
-// from the cache with zero extra mints).
+// (the eager mint at authenticate, round-3) warms the cache with the fixture
+// PAT; a SECOND Ensure would be a mint-after-mint contract violation (the
+// mid-turn ask must serve from the cache with zero extra mints — the
+// mint-once lock fails loud).
 type cyclePat struct {
 	mu    sync.Mutex
 	mints int
@@ -479,7 +482,7 @@ func cpCycleAuthenticateLeg(t *testing.T, h *FrontHarness, pat *cyclePat) {
 	}
 
 	if calls := pat.mintsCount(); calls != 1 {
-		t.Fatalf("PAT Ensure ran %d time(s) at auth, want exactly one (mint-once after the verdict)", calls)
+		t.Fatalf("PAT minted %d time(s) at auth, want exactly one (the eager mint, D-04 round-3)", calls)
 	}
 }
 

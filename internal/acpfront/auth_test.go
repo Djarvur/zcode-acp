@@ -711,17 +711,6 @@ type scriptedPat struct {
 	warm  bool
 }
 
-// fixturePat renders the invariant fixture PAT (every serve is the same
-// cached value — the cache identity the asks compare against).
-func (s *scriptedPat) fixturePat() hostsvc.Pat {
-	return hostsvc.Pat{
-		Token:        cpFixPatToken,
-		APIKeyID:     cpFixPatKeyID,
-		Fingerprint:  strings.Repeat("0", 64),
-		AccountScope: strings.Repeat("f", 64),
-	}
-}
-
 // Ensure serves cache-first: one mint, later calls dedupe.
 func (s *scriptedPat) Ensure(_ context.Context) (hostsvc.Pat, error) {
 	s.mu.Lock()
@@ -753,6 +742,17 @@ func (s *scriptedPat) Invalidate(string) {
 	defer s.mu.Unlock()
 
 	s.warm = false
+}
+
+// fixturePat renders the invariant fixture PAT (every serve is the same
+// cached value — the cache identity the asks compare against).
+func (s *scriptedPat) fixturePat() hostsvc.Pat {
+	return hostsvc.Pat{
+		Token:        cpFixPatToken,
+		APIKeyID:     cpFixPatKeyID,
+		Fingerprint:  strings.Repeat("0", 64),
+		AccountScope: strings.Repeat("f", 64),
+	}
 }
 
 // count reports the recorded mint count.
@@ -1035,9 +1035,10 @@ func testCodingPlanReadbackNegative(t *testing.T) {
 }
 
 // testCodingPlanCancelRetry is arm (e): cancel between push and verdict →
-// coded error, no success recorded, no mint; the immediate re-authenticate
-// completes cleanly (the interrupted-authenticate concurrency disposition,
-// re-asserted for the new chain).
+// coded error, no success recorded, the eager mint already armed the cache;
+// the immediate re-authenticate completes cleanly (the
+// interrupted-authenticate concurrency disposition, re-asserted for the new
+// chain).
 func testCodingPlanCancelRetry(t *testing.T) {
 	cfg, probe, pat := codingPlanConfig(t)
 
@@ -1046,6 +1047,44 @@ func testCodingPlanCancelRetry(t *testing.T) {
 		cpRefreshRule(1, authRefreshDelayMs, false), // spent by run 1
 		cpRefreshRule(0, 0, true),                   // run 2's registry surface
 	}, cfg)
+
+	cancelMidChainRun(t, h)
+
+	if calls := pat.count(); calls != 1 {
+		t.Fatalf("PAT minted %d time(s) on the cancelled run, want exactly one — "+
+			"the eager mint arms the cache before the traffic (D-04 round-3); "+
+			"a cancelled run records no success, never a second mint", calls)
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
+		t.Fatalf("auth mode = %q after the cancelled run, want none recorded", mode)
+	}
+
+	// Run 2: the immediate re-authenticate completes cleanly.
+	if _, err := authenticate(h, acpfront.AuthMethodZaiCodingPlan); err != nil {
+		t.Fatalf("re-authenticate after interruption: %v (the retry must be clean)", err)
+	}
+
+	if calls := pat.count(); calls != 1 {
+		t.Fatalf("PAT minted %d time(s) total, want still one — the retry's Ensure "+
+			"dedupes against the cache the eager mint armed (the minter owns caching)", calls)
+	}
+
+	if mode := front.AuthMode(); mode != acpfront.AuthModeCodingPlan {
+		t.Fatalf("auth mode = %q after the clean retry, want %q", mode, acpfront.AuthModeCodingPlan)
+	}
+
+	if calls := probe.count(); calls != 2 {
+		t.Fatalf("probe ran %d time(s), want one per authenticate attempt", calls)
+	}
+}
+
+// cancelMidChainRun drives one coding-plan authenticate on its own context
+// and cancels it mid-chain (inside the held refresh reply — after the push
+// leg, before any verdict): a coded request error must surface, never a
+// fabricated success.
+func cancelMidChainRun(t *testing.T, h *FrontHarness) {
+	t.Helper()
 
 	ctx1, cancel1 := context.WithCancel(context.Background())
 
@@ -1075,34 +1114,6 @@ func testCodingPlanCancelRetry(t *testing.T) {
 	var rerr1 *acp.RequestError
 	if !errors.As(res1.err, &rerr1) {
 		t.Fatalf("interrupted authenticate error %v is not a coded request error", res1.err)
-	}
-
-	if calls := pat.count(); calls != 1 {
-		t.Fatalf("PAT minted %d time(s) on the cancelled run, want exactly one — "+
-			"the eager mint arms the cache before the traffic (D-04 round-3); "+
-			"a cancelled run records no success, never a second mint", calls)
-	}
-
-	if mode := front.AuthMode(); mode != acpfront.AuthModeNone {
-		t.Fatalf("auth mode = %q after the cancelled run, want none recorded", mode)
-	}
-
-	// Run 2: the immediate re-authenticate completes cleanly.
-	if _, err := authenticate(h, acpfront.AuthMethodZaiCodingPlan); err != nil {
-		t.Fatalf("re-authenticate after interruption: %v (the retry must be clean)", err)
-	}
-
-	if calls := pat.count(); calls != 1 {
-		t.Fatalf("PAT minted %d time(s) total, want still one — the retry's Ensure "+
-			"dedupes against the cache the eager mint armed (the minter owns caching)", calls)
-	}
-
-	if mode := front.AuthMode(); mode != acpfront.AuthModeCodingPlan {
-		t.Fatalf("auth mode = %q after the clean retry, want %q", mode, acpfront.AuthModeCodingPlan)
-	}
-
-	if calls := probe.count(); calls != 2 {
-		t.Fatalf("probe ran %d time(s), want one per authenticate attempt", calls)
 	}
 }
 

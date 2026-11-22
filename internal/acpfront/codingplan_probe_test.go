@@ -69,7 +69,7 @@ func (failingPat) Ensure(context.Context) (hostsvc.Pat, error) {
 func TestProbeWantModel(t *testing.T) {
 	const flashSuffix = "-Flash"
 
-	familyA := cpFixAccountProvider + "/" + cpFixAccountModelA  // GLM-5.3
+	familyA := cpFixAccountProvider + "/" + cpFixAccountModelA     // GLM-5.3
 	familyFlash := cpFixAccountProvider + "/" + cpFixAccountModelB // GLM-5.3-Flash
 	apiFlash := "zai-api/GLM-5.3-Flash"
 	apiPlain := "zai-api/GLM-5.3"
@@ -80,7 +80,7 @@ func TestProbeWantModel(t *testing.T) {
 		exp  string
 	}{
 		{"flash preferred within the family", []string{familyA, familyFlash}, familyFlash},
-		{"flash preference is family-scoped, never another family's", []string{apiFlash, familyA, familyFlash}, familyFlash},
+		{"flash preference stays family-scoped", []string{apiFlash, familyA, familyFlash}, familyFlash},
 		{"no flash in the family falls to the family's first", []string{familyA}, familyA},
 		{"no flash and a foreign entry first still picks the family", []string{apiFlash, familyA}, familyA},
 		{"empty family falls back to the first want entry", []string{apiFlash, apiPlain}, apiFlash},
@@ -158,12 +158,17 @@ func cpProbeHeadersAsk() fake.SideEffect {
 // side effects (the runtime-headers ask, then the account-models registry
 // patch — the surface the watcher latches).
 func cpProbeSetModelRule() fake.RequestRule {
+	ref := func(modelID string) string {
+		return `{"ref":{"providerId":"` + cpFixAccountProvider + `","modelId":"` + modelID + `"}}`
+	}
+
+	reply := `{"session":{"sessionId":"` + cpProbeSessionID + `"},` +
+		`"settings":{"model":{"current":` + ref(cpFixAccountModelB) + `,` +
+		`"available":[` + ref(cpFixAccountModelA) + `,` + ref(cpFixAccountModelB) + `]}}}`
+
 	return fake.RequestRule{
 		Method: zcode.MethodSessionSetModel,
-		Reply: &fake.Reply{Result: json.RawMessage(`{"session":{"sessionId":"` + cpProbeSessionID + `"},` +
-			`"settings":{"model":{"current":{"providerId":"` + cpFixAccountProvider + `","modelId":"` + cpFixAccountModelB + `"},` +
-			`"available":[{"ref":{"providerId":"` + cpFixAccountProvider + `","modelId":"` + cpFixAccountModelA + `"}},` +
-			`{"ref":{"providerId":"` + cpFixAccountProvider + `","modelId":"` + cpFixAccountModelB + `"}}]}}}`)},
+		Reply:  &fake.Reply{Result: json.RawMessage(reply)},
 		SideEffects: []fake.SideEffect{
 			cpProbeHeadersAsk(),
 			{Emit: &fake.Emit{
@@ -236,6 +241,32 @@ func TestCodingPlanProbePoke(t *testing.T) {
 	t.Run("the api-key probe stays create -> close, no poke", testAPIKeyProbeUnchanged)
 }
 
+// assertProbePokeSequence is the probe-shape lock shared by the poke arms:
+// exactly one refresh → create → setModel → close in wire order (the
+// create's reply IS the ready gate; the close still trails the poke — the
+// probe session never leaks). Returns the setModel frame's transcript index.
+func assertProbePokeSequence(t *testing.T, tr fake.Transcript) int {
+	t.Helper()
+
+	refreshIdx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry)
+	createIdx := transcriptMethodIndexes(tr, zcode.MethodSessionCreate)
+	setModelIdx := transcriptMethodIndexes(tr, zcode.MethodSessionSetModel)
+	closeIdx := transcriptMethodIndexes(tr, zcode.MethodSessionClose)
+
+	if len(createIdx) != 1 || len(setModelIdx) != 1 || len(closeIdx) != 1 {
+		t.Fatalf("transcript records create×%d setModel×%d close×%d, want exactly one probe poke",
+			len(createIdx), len(setModelIdx), len(closeIdx))
+	}
+
+	if len(refreshIdx) != 1 || refreshIdx[0] >= createIdx[0] ||
+		createIdx[0] >= setModelIdx[0] || setModelIdx[0] >= closeIdx[0] {
+		t.Fatalf("probe order violated: refresh(%v) create(%v) setModel(%v) close(%v)",
+			refreshIdx, createIdx, setModelIdx, closeIdx)
+	}
+
+	return setModelIdx[0]
+}
+
 // testCodingPlanProbePokeHappy is the happy poke lock: refresh emits nothing
 // (the watcher is unlatched), the probe runs create → setModel → close, the
 // poke carries the deterministic account Flash model with
@@ -261,29 +292,10 @@ func testCodingPlanProbePokeHappy(t *testing.T) {
 		t.Fatalf("fake transcript: %v", trErr)
 	}
 
-	// Exactly one probe pair + poke, ordered refresh → create → setModel →
-	// close (the create's reply IS the ready gate; the close still trails
-	// the poke — the probe session never leaks).
-	refreshIdx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry)
-	createIdx := transcriptMethodIndexes(tr, zcode.MethodSessionCreate)
-	setModelIdx := transcriptMethodIndexes(tr, zcode.MethodSessionSetModel)
-	closeIdx := transcriptMethodIndexes(tr, zcode.MethodSessionClose)
-
-	if len(createIdx) != 1 || len(setModelIdx) != 1 || len(closeIdx) != 1 {
-		t.Fatalf("transcript records create×%d setModel×%d close×%d, want exactly one probe poke",
-			len(createIdx), len(setModelIdx), len(closeIdx))
-	}
-
-	if len(refreshIdx) != 1 || refreshIdx[0] >= createIdx[0] ||
-		createIdx[0] >= setModelIdx[0] || setModelIdx[0] >= closeIdx[0] {
-		t.Fatalf("probe order violated: refresh(%v) create(%v) setModel(%v) close(%v)",
-			refreshIdx, createIdx, setModelIdx, closeIdx)
-	}
-
 	// The poke's params: the deterministic account Flash model, the probe
 	// session id, persistAsWorkspaceLastUsed:false, and NO options object
-	// (the probe session has no confirmed reasoning level — omit-shape).
-	poke := tr.Lines[setModelIdx[0]].JSON
+	// (the probe session has no confirmed level — omit-shape).
+	poke := tr.Lines[assertProbePokeSequence(t, tr)].JSON
 
 	for _, marker := range []string{
 		`"sessionId":"` + cpProbeSessionID + `"`,
@@ -353,20 +365,9 @@ func testCodingPlanProbePokeRefused(t *testing.T) {
 		t.Fatalf("fake transcript: %v", trErr)
 	}
 
-	// Both outcomes handled: the close STILL trailed the refused poke.
-	createIdx := transcriptMethodIndexes(tr, zcode.MethodSessionCreate)
-	setModelIdx := transcriptMethodIndexes(tr, zcode.MethodSessionSetModel)
-	closeIdx := transcriptMethodIndexes(tr, zcode.MethodSessionClose)
-
-	if len(createIdx) != 1 || len(setModelIdx) != 1 || len(closeIdx) != 1 {
-		t.Fatalf("transcript records create×%d setModel×%d close×%d, want the full probe even on refusal",
-			len(createIdx), len(setModelIdx), len(closeIdx))
-	}
-
-	if setModelIdx[0] >= closeIdx[0] {
-		t.Fatalf("probe order violated: the refused setModel(%d) must precede the close(%d)",
-			setModelIdx[0], closeIdx[0])
-	}
+	// Both outcomes handled: the full sequence held, the close STILL
+	// trailing the refused poke.
+	assertProbePokeSequence(t, tr)
 
 	// A refused poke never materializes: no runtime-headers ask on the wire.
 	asks := transcriptIndexes(tr, string(fake.DirOut), `"method":"`+interact.MethodRequestProviderRuntimeHeaders+`"`)
