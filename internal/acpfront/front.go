@@ -467,6 +467,24 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// The config-option ids the translator renders (configoptions.go) — the
+// picker's switch keys, the validation whitelist's vocabulary. The model
+// id's string doubles as the setModel params' wire key (the dialect spells
+// both the same).
+const (
+	optionIDModel   = "model"
+	optionIDThought = "thought_level"
+)
+
+// The setModel params' remaining camelCase wire keys (the capture-verbatim
+// dialect spellings — the wireKeySessionID family).
+const (
+	wireKeyProviderID      = "providerId"
+	wireKeyModelID         = "modelId"
+	wireKeyReasoningLevel  = "reasoningLevel"
+	wireKeyPersistLastUsed = "persistAsWorkspaceLastUsed"
+)
+
 // SetSessionConfigOption applies one client config-option selection
 // (MODEL-02, plan 06-06): validate FIRST against the CURRENT confirmed
 // option set — the client's configId/value are untrusted input, and the
@@ -477,9 +495,11 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 // the confirmed-settings store is the validation source: a session with no
 // confirmed snapshot (never opened, or torn down — dropSettings rode the
 // SESS-01 teardown beside dropCwd) answers -32602, never a panic. A valid
-// ask returns the full confirmed option list; the backend mutation arms
-// (the locked OQ1 setModel path, the reply-built re-emit) land with plan
-// 06-06 Task 2.
+// ask maps onto the locked OQ1 wire path (setConfigMutation), the store
+// updates FROM THE MUTATION REPLY (D-10 — the reply IS the confirmation
+// source, so a fabricated currentValue is impossible by construction: the
+// re-emit consumes the store the reply just overwrote), and the FULL
+// rebuilt list returns — the spec MUST the adapter's response carries.
 func (f *Front) SetSessionConfigOption(
 	ctx context.Context, sessionID, configID, value string,
 ) ([]acpport.ConfigOptionDef, error) {
@@ -514,7 +534,119 @@ func (f *Front) SetSessionConfigOption(
 			configID, value, listedOptionValues(def))
 	}
 
-	return options, nil
+	params, err := setConfigMutation(sessionID, s, configID, value)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, params)
+	if err != nil {
+		// WR-04 (plan 05-05): the backend refused the mutation — tear the
+		// session down best-effort instead of orphaning it (T-5-12; the
+		// plan-06-06 disposition for a refused picker setModel).
+		f.closeOrphan(ctx, sessionID, "set_config_option setModel", err)
+
+		return nil, acpport.NewInternal("session/setModel: %v", err)
+	}
+
+	// The reply IS the confirmed state (D-10): the store overwrites from the
+	// reply BEFORE the rebuild — the response-before-store ordering is
+	// impossible by construction (the rebuild reads the store back).
+	f.recordSettings(sessionID, res)
+
+	confirmed, ok := f.latestSettings(sessionID)
+	if !ok {
+		return nil, acpport.NewInternal(
+			"session/set_config_option: %s: the mutation reply snapshot did not record", sessionID)
+	}
+
+	cs, parsed := ParseSettings(confirmed)
+	if !parsed {
+		return nil, acpport.NewInternal(
+			"session/set_config_option: %s: the mutation reply settings do not decode", sessionID)
+	}
+
+	return BuildConfigOptions(cs), nil
+}
+
+// setConfigMutation maps a VALIDATED config-option ask onto the locked OQ1
+// wire path: BOTH switch kinds ride session/setModel. A model switch parses
+// the value with strings.Cut on the FIRST slash only (no composite forms —
+// the backend's display-only $ separator stays out of the wire contract)
+// and carries options.reasoningLevel = the CURRENT confirmed level unless
+// the ask changes it (Pitfall 2: a switch must never silently drop the
+// level — the field-proven binding path per EXP-TURN-01); a thought-level
+// switch carries the CONFIRMED current model unchanged with the requested
+// level. persistAsWorkspaceLastUsed stays false on both paths (the Open
+// Question 3 posture), and the options object emits the documented
+// omit-shape whenever no confirmed level exists (IN-04).
+func setConfigMutation(
+	sessionID string, s Settings, configID, value string,
+) (map[string]any, error) {
+	switch configID {
+	case optionIDModel:
+		providerID, modelID, cut := strings.Cut(value, "/")
+		if !cut {
+			// Unreachable through the validated path (the model option's
+			// listed values are the providerId/modelId serialization) —
+			// fail loud if the invariant ever breaks.
+			return nil, acpport.NewInternal(
+				"session/set_config_option: configId %q: value %q is not the providerId/modelId serialization",
+				configID, value)
+		}
+
+		model := map[string]any{wireKeyProviderID: providerID, wireKeyModelID: modelID}
+
+		if level := confirmedLevel(s); level != "" {
+			model["options"] = map[string]any{wireKeyReasoningLevel: level}
+		}
+
+		return map[string]any{
+			wireKeySessionID:       sessionID,
+			optionIDModel:          model,
+			wireKeyPersistLastUsed: false,
+		}, nil
+
+	case optionIDThought:
+		bound := s.Model.Current
+		if bound == nil {
+			bound = s.Model.LastUsed
+		}
+
+		if bound == nil {
+			// The thought option renders only for a confirmed-level session;
+			// with no confirmed model binding there is nothing honest to
+			// carry on the locked setModel path — never an empty model
+			// object on the wire.
+			return nil, acpport.NewInternal(
+				"session/set_config_option: configId %q: no confirmed model binding to carry (locked OQ1)", configID)
+		}
+
+		return map[string]any{
+			wireKeySessionID: sessionID,
+			optionIDModel: map[string]any{
+				wireKeyProviderID: bound.ProviderID,
+				wireKeyModelID:    bound.ModelID,
+				"options":         map[string]any{wireKeyReasoningLevel: value},
+			},
+			wireKeyPersistLastUsed: false,
+		}, nil
+
+	default:
+		// Unreachable through the validated path — fail loud, never guess.
+		return nil, acpport.NewInternal("session/set_config_option: unmapped configId %q", configID)
+	}
+}
+
+// confirmedLevel reads the CURRENT confirmed reasoning level off the
+// snapshot (settings.thoughtLevel.current under enabled — the D-10 source);
+// empty when the session carries none (the omit-shape arm, IN-04).
+func confirmedLevel(s Settings) string {
+	if !s.ThoughtLevel.Enabled {
+		return ""
+	}
+
+	return s.ThoughtLevel.Current
 }
 
 // configOptionByID finds one rendered option def by its wire id.
@@ -587,18 +719,18 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 	// refusal surfaces for level-strict providers. The configured-with-
 	// level preamble stays byte-locked by the corpus.
 	model := map[string]any{
-		"providerId": f.model.ProviderID,
-		"modelId":    f.model.ModelID,
+		"providerId":   f.model.ProviderID,
+		wireKeyModelID: f.model.ModelID,
 	}
 
 	if f.model.ReasoningLevel != "" {
-		model["options"] = map[string]any{"reasoningLevel": f.model.ReasoningLevel}
+		model["options"] = map[string]any{wireKeyReasoningLevel: f.model.ReasoningLevel}
 	}
 
 	setModelRes, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
-		wireKeySessionID:             sid,
-		"model":                      model,
-		"persistAsWorkspaceLastUsed": false,
+		wireKeySessionID:       sid,
+		optionIDModel:          model,
+		wireKeyPersistLastUsed: false,
 	})
 	if err != nil {
 		// WR-04 (plan 05-05): the create succeeded — the same orphan

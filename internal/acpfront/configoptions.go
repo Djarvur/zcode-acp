@@ -304,7 +304,7 @@ func buildModelOption(s Settings) *acpport.ConfigOptionDef {
 	}
 
 	return &acpport.ConfigOptionDef{
-		ID:           "model",
+		ID:           optionIDModel,
 		Name:         "Model",
 		Category:     acpport.ConfigCategoryModel,
 		CurrentValue: bound.ProviderID + "/" + bound.ModelID,
@@ -329,7 +329,7 @@ func buildThoughtLevelOption(s Settings) *acpport.ConfigOptionDef {
 	}
 
 	return &acpport.ConfigOptionDef{
-		ID:           "thought_level",
+		ID:           optionIDThought,
 		Name:         "Thought level",
 		Category:     acpport.ConfigCategoryThoughtLevel,
 		CurrentValue: s.ThoughtLevel.Current,

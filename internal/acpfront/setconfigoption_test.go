@@ -433,6 +433,8 @@ func assertSingleSetModel(t *testing.T, tr fake.Transcript) string {
 // none does (the IN-04 omit-shape); persistAsWorkspaceLastUsed stays false,
 // and a refused setModel tears the backend session down best-effort (the
 // WR-04 discipline — never an orphan).
+//
+//nolint:funlen // each subtest is a full harness lock; splitting would scatter its sequencing
 func TestSetConfigOptionModelSwitch(t *testing.T) {
 	t.Run("the setModel carries the confirmed level (level-carry vector)", func(t *testing.T) {
 		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, fake.RequestRule{
@@ -445,7 +447,8 @@ func TestSetConfigOptionModelSwitch(t *testing.T) {
 
 		sid := openSetCfgSession(ctx, t, h)
 
-		if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID)); err != nil {
+		ask := setCfgAsk(sid, optionIDModel, corpusModelFlashID)
+		if _, err := h.client.SetSessionConfigOption(ctx, ask); err != nil {
 			t.Fatalf("model switch: %v", err)
 		}
 
@@ -468,7 +471,8 @@ func TestSetConfigOptionModelSwitch(t *testing.T) {
 
 		sid := openSetCfgSession(ctx, t, h)
 
-		if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID)); err != nil {
+		ask := setCfgAsk(sid, optionIDModel, corpusModelFlashID)
+		if _, err := h.client.SetSessionConfigOption(ctx, ask); err != nil {
 			t.Fatalf("model switch: %v", err)
 		}
 
@@ -533,7 +537,8 @@ func TestSetConfigOptionThoughtSwitch(t *testing.T) {
 
 	sid := openSetCfgSession(ctx, t, h)
 
-	if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDThoughtLevel, corpusReasoningLevel)); err != nil {
+	ask := setCfgAsk(sid, optionIDThoughtLevel, corpusReasoningLevel)
+	if _, err := h.client.SetSessionConfigOption(ctx, ask); err != nil {
 		t.Fatalf("thought switch: %v", err)
 	}
 
@@ -604,7 +609,8 @@ func TestSetConfigOptionReEmit(t *testing.T) {
 
 		sid := openSetCfgSession(ctx, t, h)
 
-		if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID)); err != nil {
+		ask := setCfgAsk(sid, optionIDModel, corpusModelFlashID)
+		if _, err := h.client.SetSessionConfigOption(ctx, ask); err != nil {
 			t.Fatalf("model switch: %v", err)
 		}
 
@@ -630,6 +636,8 @@ func TestSetConfigOptionReEmit(t *testing.T) {
 // against the expected neutral defs — id/name/category/currentValue and
 // every entry's value/name/description (the adapter's own select-assembly
 // bytes are locked at the acpport tier; this is the rebuild-source lock).
+//
+//nolint:cyclop // one flat field-by-field deep-compare; splitting would hide the lock
 func assertConfigOptionsMatch(t *testing.T, got []acp.SessionConfigOption, want []acpport.ConfigOptionDef) {
 	t.Helper()
 
@@ -660,7 +668,8 @@ func assertConfigOptionsMatch(t *testing.T, got []acp.SessionConfigOption, want 
 		}
 
 		if len(entries) != len(def.Options) {
-			t.Fatalf("response[%d] entries = %d, want %d (the reply's list verbatim)", i, len(entries), len(def.Options))
+			t.Fatalf("response[%d] entries = %d, want %d (the reply's list verbatim)",
+				i, len(entries), len(def.Options))
 		}
 
 		for j, wantOpt := range def.Options {
