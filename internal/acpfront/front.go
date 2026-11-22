@@ -548,10 +548,18 @@ func (f *Front) SetSessionConfigOption(
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, params)
 	if err != nil {
-		// WR-04 (plan 05-05): the backend refused the mutation — tear the
-		// session down best-effort instead of orphaning it (T-5-12; the
-		// plan-06-06 disposition for a refused picker setModel).
-		f.closeOrphan(ctx, sessionID, "set_config_option setModel", err)
+		// WR-01 (plan 07-01): the refused mutation targets an ESTABLISHED
+		// session — the wire-only orphan close left the front session fully
+		// registered against a dead mutation target (the zombie: later
+		// prompts sent to a dead backend, later picker asks re-failed).
+		// Run the FULL SESS-01 teardown (lifecycle.go: cancel-drain →
+		// backend close → registry Remove → CloseObservers → map drops);
+		// its own failure logs structurally — never a silent skip. The
+		// refusal error the client sees is unchanged.
+		if tearErr := f.CloseSession(ctx, sessionID); tearErr != nil {
+			slog.Warn("acpfront: picker-refusal teardown failed",
+				"session", sessionID, "stage", "set_config_option setModel", "cause", err, "err", tearErr)
+		}
 
 		return nil, acpport.NewInternal("session/setModel: %v", err)
 	}
