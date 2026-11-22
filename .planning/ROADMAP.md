@@ -208,7 +208,7 @@ Plans:
   3. On a machine without a keyring (headless/CI), auth fails fast with a clear actionable error and never hangs a turn
   4. After auth, `session/new` returns `configOptions` covering model and thought level, built from the live provider registry
   5. A client-side config-option change maps to `session/setModel` / `session/setThoughtLevel` on the wire, re-emits the full `configOptions` list, and `currentValue` always reflects the real session state
-**Plans**: 7/8 plans executed
+**Plans**: 8/8 plans executed
 
 Plans:
 **Wave 1**
@@ -227,7 +227,7 @@ Plans:
 - [x] 06-07-PLAN.md — Mode-aware runtime-headers PAT serving (accountScope, D-05 re-mint) + cmd wiring, no new flags (AUTH-02/D-11/D-12)
 
 **Wave 5** *(blocked on 06-06 + 06-07; the real run is the human-gated end-of-phase UAT per D-12 — executor hands off, never autonomous)*
-- [ ] 06-08-PLAN.md — Composed fake full cycle + guarded real tier + REAL RUN checkpoint + evidence (D-12/D-13)
+- [x] 06-08-PLAN.md — Composed fake full cycle + guarded real tier + REAL RUN checkpoint + evidence (D-12/D-13)
 
 ### Phase 7: Hardening, VM & Manual E2E, Documentation
 **Goal**: The done-v1 bar is met: full CI protocol conformance, a reproducible clean-VM scenario, manual E2E confirmed in a real chat-UI client on a real account through both auth paths, and English documentation including the launch recipe for ACP hosts that only accept preset agents.
@@ -254,7 +254,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 15/15 | Complete    | 2026-11-22 |
-| 6. OAuth Coding-Plan Path & Model Picker | 7/8 | In Progress | - |
+| 6. OAuth Coding-Plan Path & Model Picker | 8/8 | In Progress | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
 
 ---
