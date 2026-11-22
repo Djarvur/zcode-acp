@@ -146,7 +146,8 @@ func TestKeyringProbeClassifyMarkerAndDefaultArms(t *testing.T) {
 		}
 
 		if err != nil && strings.Contains(err.Error(), "X11 $DISPLAY") {
-			t.Fatalf("no-desktop-session error %q carries stderr verbatim — coarse-marker classification only", err.Error())
+			t.Fatalf("no-desktop-session error %q carries stderr verbatim — "+
+				"coarse-marker classification only", err.Error())
 		}
 	})
 
