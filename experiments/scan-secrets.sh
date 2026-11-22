@@ -47,10 +47,17 @@ for p in "${patterns[@]}"; do
   #     "zc-synthetic-fixture-not-a-real-key" (self-declaring; the golden
   #     byte-locks it, so the gate allowlists the marker instead of
   #     churning the corpus).
+  #   - Phase-6 plan 06-07: the runtime-headers-PAT corpus/golden fixture
+  #     pair "zc-synthetic-pat-{a,b}-corpus-fixture" (self-declaring; the
+  #     golden byte-locks them — the ask-side byte-compare needs the literal
+  #     values on the line, so the marker allowlist is the established
+  #     posture).
   if [ -n "$out" ]; then
     out=$(printf '%s\n' "$out" |
       grep -vF -e 'enc:v2:os:fix1-synthetic-not-a-real-credential' \
         -e 'zc-synthetic-fixture-not-a-real-key' \
+        -e 'zc-synthetic-pat-a-corpus-fixture' \
+        -e 'zc-synthetic-pat-b-corpus-fixture' \
         -e 'enc:v2:os:3eb1bd439947eb762998e566:MDEyMzQ1Njc4OWFi.Rwp6ooipuq_S1a9bRUi96w._8CfTja4_TaGfE3J22EITiGrt71yrA8FUOaudeSW9t0HDQIYng' || true)
   fi
   if [ -n "$out" ]; then

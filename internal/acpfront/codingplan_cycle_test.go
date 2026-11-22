@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -61,18 +62,70 @@ const (
 	cpCycleCipherReqID = "cp-cycle-cipher-1"
 	cpCycleHdrReqID    = "cp-cycle-hdr-1"
 
-	// cpCycleCipherKey/blob/plaintext are the sealed fixture triple the
+	// cpCycleCipherKey/plaintext are the sealed fixture pair the
 	// coding-plan-auth-cycle corpus row already proven (the responder's
-	// CredentialDecrypt seam decrypts the blob via the fixture loader; the
-	// kid is sha256(key) hex[:24] — computed once and frozen there).
+	// CredentialDecrypt seam decrypts the corpus blob via the fixture
+	// loader; the kid is sha256(key) hex[:24] — computed once and frozen
+	// there). The BLOB itself lives only in the corpus scenario file (one
+	// source of truth — scan-secrets allowlists that exact line); the cycle
+	// digs it out at run time (cpCycleCipherBlobFromCorpus).
 	cpCycleCipherKey       = "0123456789abcdef0123456789abcdef"
 	cpCycleCipherPlaintext = "fixture-synthetic-credential-not-real"
 
-	// cpCycleCipherBlob is the enc:v2:os fixture blob sealed under
-	// cpCycleCipherKey (lll: one concatenated literal).
-	cpCycleCipherBlob = "enc:v2:os:3eb1bd439947eb762998e566:MDEyMzQ1Njc4OWFi.Rwp6ooipuq_S1a9bRUi96w." +
-		"_8CfTja4_TaGfE3J22EITiGrt71yrA8FUOaudeSW9t0HDQIYng"
+	// cpCycleCorpusCipher is the corpus row carrying the sealed blob.
+	cpCycleCorpusCipher = "coding-plan-auth-cycle.json"
+)
 
+// cpCycleCipherBlobFromCorpus digs the sealed credential blob out of the
+// coding-plan-auth-cycle corpus row (the create rule's cipher reverse ask's
+// params.value) — the fixture triple's single committed source. A corpus
+// without the blob fails loud (the fixture contract moved; never guess).
+func cpCycleCipherBlobFromCorpus(t *testing.T) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(tracerScenarioDir + cpCycleCorpusCipher)
+	if err != nil {
+		t.Fatalf("read corpus scenario %s: %v", cpCycleCorpusCipher, err)
+	}
+
+	var doc struct {
+		OnRequest []struct {
+			Method      string `json:"method"`
+			SideEffects []struct {
+				Reverse *struct {
+					Method string `json:"method"`
+					Params struct {
+						Value string `json:"value"`
+					} `json:"params"`
+				} `json:"reverse"`
+			} `json:"side_effects"`
+		} `json:"on_request"`
+	}
+
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode corpus scenario %s: %v", cpCycleCorpusCipher, err)
+	}
+
+	for _, rule := range doc.OnRequest {
+		if rule.Method != zcode.MethodSessionCreate {
+			continue
+		}
+
+		for _, se := range rule.SideEffects {
+			rev := se.Reverse
+			if rev != nil && rev.Method == zcode.MethodRequestCredentialCipher && rev.Params.Value != "" {
+				return rev.Params.Value
+			}
+		}
+	}
+
+	t.Fatalf("corpus scenario %s carries no cipher blob — the fixture contract moved", cpCycleCorpusCipher)
+
+	return ""
+}
+
+// More composed-cycle fixture constants (synthetic markers only).
+const (
 	// cpCycleWorkspace is the scripted workspace path (corpus-verbatim).
 	cpCycleWorkspace = "/tmp/happy-turn-ws"
 
@@ -166,13 +219,15 @@ func cpCycleLifecycleEmit(state string, revision int) fake.SideEffect {
 // asks answer the runtime-preferences and cipher arms), the subscribe, the
 // switch's setModel reply, and the send whose side effects fire the
 // runtime-headers ask MID-TURN with the PAT three-field expect_answer.
-func cpCycleScenario() *fake.Scenario {
+func cpCycleScenario(t *testing.T) *fake.Scenario {
+	t.Helper()
+
 	return &fake.Scenario{
 		Name: "coding-plan-cycle",
 		OnRequest: []fake.RequestRule{
 			cpAckRule(),
 			cpRefreshRule(0, 0, true), // the registry patch latches the watcher (no probe create)
-			cpCycleCreateRule(),
+			cpCycleCreateRule(t),
 			{
 				Method: zcode.MethodSessionSubscribe,
 				Reply: &fake.Reply{Result: json.RawMessage(fmt.Sprintf(
@@ -194,8 +249,10 @@ func cpCycleScenario() *fake.Scenario {
 // cpCycleCreateRule is the cycle's create rule: the settings-bearing reply
 // plus the create window's side effects — lifecycle starting, the
 // runtime-preferences reverse ask, the cipher decrypt reverse ask (the
-// fixture blob's expect_answer carries the plaintext), lifecycle ready.
-func cpCycleCreateRule() fake.RequestRule {
+// corpus blob's expect_answer carries the plaintext), lifecycle ready.
+func cpCycleCreateRule(t *testing.T) fake.RequestRule {
+	t.Helper()
+
 	return fake.RequestRule{
 		Method: zcode.MethodSessionCreate,
 		Reply:  &fake.Reply{Result: json.RawMessage(cpCycleCreateResult())},
@@ -217,7 +274,7 @@ func cpCycleCreateRule() fake.RequestRule {
 					Method: zcode.MethodRequestCredentialCipher,
 					Params: json.RawMessage(fmt.Sprintf(
 						`{"requestId":%q,"operation":"decrypt","value":%q}`,
-						cpCycleCipherReqID, cpCycleCipherBlob)),
+						cpCycleCipherReqID, cpCycleCipherBlobFromCorpus(t))),
 					TimeoutMs: 15000,
 					ExpectAnswer: &fake.Reply{Result: json.RawMessage(fmt.Sprintf(
 						`{"requestId":%q,"result":{"ok":true,"value":%q}}`,
@@ -359,7 +416,7 @@ func newCodingPlanCycleFront(t *testing.T) (*FrontHarness, *cyclePat) {
 	cfg.Install = codingPlanFixtureInstall(t)
 	cfg.ReadbackDeadline = authReadbackDeadline
 
-	h := ComposeFront(t, cpCycleScenario(), func(conn *zcode.Conn) acp.Agent {
+	h := ComposeFront(t, cpCycleScenario(t), func(conn *zcode.Conn) acp.Agent {
 		front := acpfront.New(conn,
 			acpfront.WithVersion("0.0.0-dev"),
 			acpfront.WithAuth(cfg),
