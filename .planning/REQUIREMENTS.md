@@ -52,7 +52,7 @@ Requirements for the initial release. Each maps to roadmap phases.
 ### Session Lifecycle (Orca-wide dialect)
 
 - [x] **SESS-01**: `session/resume` (no replay) and `session/close` (with child-side cleanup) supported
-- [ ] **SESS-02**: `session/delete` answered as a graceful no-op and `session/fork` handled gracefully (never a crash path) — clients that call them keep working
+- [x] **SESS-02**: `session/delete` answered as a graceful no-op and `session/fork` handled gracefully (never a crash path) — clients that call them keep working
 - [ ] **SESS-03**: Full Orca ACP dialect coverage: every method Orca's client calls at card startup and during a turn (per DISC-02) is implemented or gracefully handled, so a card works end-to-end — including the persona CLI contract: `--model <id>` honored at launch (`launchesWithModel:true`) and the `/model <name>` slash prompt with the exact Hb string contracts (`Unknown ACP model: …`, `No model selected.`)
 
 ### Model & Thought-Level Picker
@@ -142,7 +142,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QA-01 | Phase 7 | Pending |
 | QA-02 | Phase 7 | Pending |
 | QA-03 | Phase 7 | Pending |
-| SESS-02 | Phase 7 | Pending |
+| SESS-02 | Phase 7 | Complete |
 | SESS-03 | Phase 7 | Pending |
 
 **Coverage:**
