@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -272,6 +274,8 @@ func goldenDrivers() map[string]driverFunc {
 		"session-lifecycle":          driveSessionLifecycle,
 		"newsession-orphan-close":    driveNewSessionOrphanClose,
 		"auth-apikey":                driveAuthApikey,
+		"coding-plan-auth-cycle":     driveCodingPlanAuthCycle,
+		cpCorpusProbeFailName:        driveCodingPlanProbeFail,
 		"runtime-headers-answer":     driveRuntimeHeadersAnswer,
 		"full-cycle":                 driveFullCycle,
 		"lingering-latch-32010":      driveLingeringLatch32010,
@@ -283,7 +287,58 @@ func goldenDrivers() map[string]driverFunc {
 // (the fake records both directions, so reply addressing is assertable).
 func goldenPostAsserts() map[string]func(t *testing.T, tr fake.Transcript) {
 	return map[string]func(t *testing.T, tr fake.Transcript){
-		"reannounce-dedupe": assertReannounceDedupeTranscript,
+		"reannounce-dedupe":   assertReannounceDedupeTranscript,
+		cpCorpusProbeFailName: assertCodingPlanProbeFailTranscript,
+	}
+}
+
+// goldenNormalizers maps corpus rows to pre-golden transcript prep: the
+// coding-plan rows drive the FRONT's production chain, whose push revision
+// (account-bridge:<unix-nano>) and builtin-table hash
+// (zcode-builtin:44:<sha256 of the resolved fixture path>) are
+// machine-derived BY FORMULA DESIGN (T-5-16: the formula is never
+// hard-coded, never cached). The normalizer substitutes their fixture
+// tokens so the byte-lock stays cross-machine deterministic — the same
+// determinism the auth-apikey row gets from its fixed synthetic builder
+// path. Every OTHER byte stays locked: frame order, methods, params
+// shapes, and the ack/echo pairing all remain byte-exact.
+func goldenNormalizers() map[string]func([]byte) []byte {
+	return map[string]func([]byte) []byte{
+		"coding-plan-auth-cycle": normalizeCodingPlanCorpus,
+		cpCorpusProbeFailName:    normalizeCodingPlanCorpus,
+	}
+}
+
+// The fixture tokens the normalizer substitutes (the ack's scripted echo
+// pairs with the substituted push revision — the golden then SHOWS the
+// receipt pairing).
+const (
+	cpCorpusRevisionToken = "account-bridge:cp-fix1"
+	cpCorpusBuiltinToken  = "zcode-builtin:44:cp-corpus-fixture-hash"
+)
+
+var (
+	cpCorpusRevPattern     = regexp.MustCompile(`account-bridge:\d+`)
+	cpCorpusBuiltinPattern = regexp.MustCompile(`zcode-builtin:44:[0-9a-f]{64}`)
+)
+
+// normalizeCodingPlanCorpus substitutes the two machine-derived tokens.
+func normalizeCodingPlanCorpus(b []byte) []byte {
+	b = cpCorpusRevPattern.ReplaceAll(b, []byte(cpCorpusRevisionToken))
+
+	return cpCorpusBuiltinPattern.ReplaceAll(b, []byte(cpCorpusBuiltinToken))
+}
+
+// assertCodingPlanProbeFailTranscript is the probe-fail row's semantic
+// belt to the byte-lock braces: a probe failure must leave NO push and NO
+// refresh frame on the wire (D-02 ordering, AUTH-04).
+func assertCodingPlanProbeFailTranscript(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	for _, line := range tr.Lines {
+		if strings.Contains(line.JSON, `"method":"provider/`) {
+			t.Fatalf("probe-fail transcript carries a provider frame: %s", line.JSON)
+		}
 	}
 }
 
@@ -316,7 +371,12 @@ func TestGolden(t *testing.T) {
 				post(t, tr)
 			}
 
-			fake.CompareGolden(t, "testdata/golden/"+name+".golden", goldenBytes(tr))
+			golden := goldenBytes(tr)
+			if norm, ok := goldenNormalizers()[name]; ok {
+				golden = norm(golden)
+			}
+
+			fake.CompareGolden(t, "testdata/golden/"+name+".golden", golden)
 		})
 	}
 }
@@ -1084,6 +1144,241 @@ func driveAuthApikey(ctx context.Context, d *exchangeDriver) {
 // research's request shape with a synthetic workspace/modelSelection; the
 // 180 s-scale window configured small at timeout_ms 500; reannounce count 1
 // — the dedupe key carries params.requestId, and the instant answer closes
+// The coding-plan corpus fixtures (plan 06-05). All material is synthetic
+// fixture data — never a real credential (T-5-15; the scan-secrets gate
+// stays green).
+const (
+	// cpCorpusSessionID is the coding-plan row's fixed session id.
+	cpCorpusSessionID = "sess_cp1"
+
+	// cpCorpusProbeFailName is the probe-fail row's corpus name (the three
+	// map keys the row registers under).
+	cpCorpusProbeFailName = "coding-plan-probe-fail"
+
+	// corpusLayoutExplicit is the fixture install layout string.
+	corpusLayoutExplicit = "explicit"
+
+	// corpusWorkspacePath is the fixed synthetic workspace the corpus
+	// preambles create against (byte-deterministic).
+	corpusWorkspacePath = "/tmp/happy-turn-ws"
+
+	// cpCorpusAccountProvider/Family are the fixture builtin table's
+	// zhipu-account rule (the account overlay's single provider).
+	cpCorpusAccountProvider = "account:zai-individual-coding-plan"
+	cpCorpusAccountFamily   = "zai"
+
+	// cpCorpusLoginToken is the fixture store's oauth login (the 06-01
+	// reader serves it Bearer-stripped to the front's coding-plan arm).
+	cpCorpusLoginToken = "fixture-synthetic-not-a-real-login-token"
+
+	// cpCorpusCipherKey is the fixture v2 key (32 bytes) — the blob baked
+	// into the coding-plan-auth-cycle scenario is sealed under exactly this
+	// key with a fixed synthetic IV (its kid is sha256(key) hex[:24],
+	// computed once and frozen; the responder's CredentialDecrypt seam
+	// decrypts it via the fixture loader below, and the scenario's
+	// expect_answer carries the plaintext).
+	cpCorpusCipherKey = "0123456789abcdef0123456789abcdef"
+)
+
+// errCannedProbeFailure is the probe-fail row's injected probe verdict
+// (err113: a static error, never dynamically constructed).
+var errCannedProbeFailure = errors.New("canned probe failure")
+
+// corpusFixtureKeyLoader is the injected KeyLoader the cipher seam decrypts
+// with (the KeyLoader injection discipline — no keyring on CI).
+type corpusFixtureKeyLoader struct{}
+
+// LoadKey returns the fixture 32-byte key.
+func (corpusFixtureKeyLoader) LoadKey(_ context.Context) ([]byte, error) {
+	return []byte(cpCorpusCipherKey), nil
+}
+
+// corpusPat is the PatEnsurer double: counts Ensure calls, returns the
+// synthetic fixture PAT (the mint-once lock reads the counter).
+type corpusPat struct {
+	mu    sync.Mutex
+	calls int
+}
+
+// Ensure replays the fixture PAT and counts the call.
+func (p *corpusPat) Ensure(_ context.Context) (hostsvc.Pat, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+
+	return hostsvc.Pat{
+		Token:        syntheticFixtureKey,
+		APIKeyID:     syntheticFixtureKeyID,
+		Fingerprint:  strings.Repeat("0", 64),
+		AccountScope: strings.Repeat("f", 64),
+	}, nil
+}
+
+// count reports the recorded Ensure count.
+func (p *corpusPat) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.calls
+}
+
+// codingPlanCorpusInstall writes the fixture builtin table (revision 44 +
+// one zhipu-account provider rule — the account overlay's source) into a
+// temp install. The resolved PATH STRING feeds the exact-revision formula;
+// the corpus normalizer substitutes the machine-derived hash so the golden
+// stays cross-machine deterministic.
+func codingPlanCorpusInstall(t *testing.T) supervisor.Install {
+	t.Helper()
+
+	root := t.TempDir()
+	builtin := filepath.Join(root, "zcode-builtin.json")
+
+	doc := `{"revision":44,"config":{"providerConfigRules":{"providerRules":[` +
+		`{"providerId":"` + cpCorpusAccountProvider + `","config":{` +
+		`"builtinModelIds":["GLM-5.3","GLM-5.3-Flash"],` +
+		`"access":{"type":"zhipu-account","accountType":"` + cpCorpusAccountFamily + `"}}}]}}}`
+
+	if err := os.WriteFile(builtin, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write corpus builtin fixture: %v", err)
+	}
+
+	return supervisor.Install{
+		Root:        root,
+		Binary:      filepath.Join(root, "zcode"),
+		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		BuiltinFile: builtin,
+		Layout:      corpusLayoutExplicit,
+	}
+}
+
+// corpusCreds writes the fixture credentials.json (one oauth login entry)
+// and returns the 06-01 store over it — the SAME reader the production
+// coding-plan arm composes.
+func corpusCreds(t *testing.T) *interact.CredentialStore {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "credentials.json")
+
+	doc := `{"oauth:` + cpCorpusAccountFamily + `:access_token":"` + cpCorpusLoginToken + `"}`
+
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write corpus credentials fixture: %v", err)
+	}
+
+	// v2 loader nil: the fixture entry is plaintext (the store's default
+	// dispatch arm — the reader never touches a keyring for it).
+	return interact.NewCredentialStore(path, nil)
+}
+
+// driveCodingPlanAuthCycle replays the coding-plan auth cycle (plan 06-05,
+// AUTH-02): the FRONT's production chain over the scripted wire — the
+// probe-pass (in-process, canned) → the account-overlay push (the ack's
+// providerCount 1 receipt) → the refresh whose registry patch carries the
+// account models (the verdict surface — the watcher latches it, so the
+// probe-create read-back arm never runs and the create below is the
+// post-auth preamble's) → the mint-once (counter-asserted) → the
+// create/subscribe/setModel preamble whose settings carry the account
+// models + the thoughtLevel block and whose reverse asks answer with the
+// scripted cipher decrypt (the CredentialDecrypt seam over the fixture
+// loader — the blob/kid pair is baked into the scenario) and the scripted
+// PAT source. The push revision + builtin hash are normalized to fixture
+// tokens in the golden assembly (goldenNormalizers) — every other byte
+// stays locked.
+func driveCodingPlanAuthCycle(ctx context.Context, d *exchangeDriver) {
+	pat := &corpusPat{}
+
+	//nolint:contextcheck // the Front derives its own process-lifetime base
+	// context by design (front.go New — the containedctx rule); the driver's
+	// ctx bounds only the back-leg calls.
+	front := acpfront.New(d.conn, acpfront.WithAuth(acpfront.AuthConfig{
+		Install: codingPlanCorpusInstall(d.t),
+		Probe:   func(_ context.Context) error { return nil }, // canned probe-pass
+		Creds:   corpusCreds(d.t),
+		Pat:     pat,
+		Entitle: func(_ context.Context, family string) bool { return family == cpCorpusAccountFamily },
+	}))
+
+	// Hook contract: the responder (scripted PAT source + the cipher seam)
+	// is assigned before any frame flows.
+	responder := interact.NewResponder(
+		interact.WithRuntimeHeadersKeySource(func(_ context.Context, _ interact.Request) (string, string, error) {
+			return syntheticFixtureKey, syntheticFixtureKeyID, nil
+		}),
+		interact.WithCredentialDecrypt(interact.NewCredentialDecrypt(corpusFixtureKeyLoader{})),
+	)
+	d.conn.OnRequest = responder.Serve
+
+	if err := front.Authenticate(ctx, acpfront.AuthMethodZaiCodingPlan); err != nil {
+		d.t.Fatalf("authenticate coding-plan: %v", err)
+	}
+
+	if calls := pat.count(); calls != 1 {
+		d.t.Fatalf("PAT Ensure ran %d time(s), want exactly one (mint-once)", calls)
+	}
+
+	// The post-auth preamble: create → subscribe → setModel (the
+	// driveFrontPreamble shape over the coding-plan session; the create
+	// reply carries the account models in settings.model.available and the
+	// thoughtLevel block, and its reverse asks answer the cipher + PAT
+	// arms with expect_answer byte-compare).
+	if _, err := d.call(ctx, zcode.MethodSessionCreate, map[string]any{
+		"workspace": map[string]any{"workspacePath": corpusWorkspacePath, "workspaceKey": corpusWorkspacePath},
+	}); err != nil {
+		d.t.Fatalf("session/create: %v", err)
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSubscribe, map[string]any{
+		wireKeySessionID:    cpCorpusSessionID,
+		wireKeyDeliveryKind: deliveryDesktopContinuous,
+	}); err != nil {
+		d.t.Fatalf("session/subscribe: %v", err)
+	}
+
+	if _, err := d.call(ctx, zcode.MethodSessionSetModel, map[string]any{
+		wireKeySessionID: cpCorpusSessionID,
+		"model": map[string]any{
+			"providerId": cpCorpusAccountProvider,
+			"modelId":    "GLM-5.3",
+			"options":    map[string]any{"reasoningLevel": "high"},
+		},
+		"persistAsWorkspaceLastUsed": false,
+	}); err != nil {
+		d.t.Fatalf("session/setModel: %v", err)
+	}
+}
+
+// driveCodingPlanProbeFail replays the probe-fail ordering row (plan 06-05,
+// AUTH-04): the front's chain with a FAILING prober answers the coded
+// keyring error and NOTHING touches the wire — the transcript carries only
+// the scripted canary (whose unknown-method reply proves the exchange
+// lived; a zero-frame transcript is a harness failure signature). The
+// golden byte-locks the push-absence; the post-assert is the semantic belt.
+func driveCodingPlanProbeFail(ctx context.Context, d *exchangeDriver) {
+	//nolint:contextcheck // the Front derives its own process-lifetime base
+	// context by design (front.go New — the containedctx rule); the driver's
+	// ctx bounds only the back-leg calls.
+	front := acpfront.New(d.conn, acpfront.WithAuth(acpfront.AuthConfig{
+		Install: codingPlanCorpusInstall(d.t),
+		Probe:   func(_ context.Context) error { return errCannedProbeFailure },
+		Creds:   corpusCreds(d.t),
+		Pat:     &corpusPat{},
+		Entitle: func(_ context.Context, family string) bool { return family == cpCorpusAccountFamily },
+	}))
+
+	if err := front.Authenticate(ctx, acpfront.AuthMethodZaiCodingPlan); err == nil {
+		d.t.Fatal("authenticate answered success on a failing probe — never a fabricated success")
+	} else if !strings.Contains(err.Error(), "keyring") {
+		d.t.Fatalf("probe-fail error %v must name the keyring step", err)
+	}
+
+	// The canary: the row's only recorded exchange (the unknown-method
+	// reply the scenario scripts) — every push/refresh frame's ABSENCE is
+	// the lock.
+	if _, err := d.call(ctx, "corpus/probe-fail-canary", map[string]any{}); err == nil {
+		d.t.Fatal("the canary must record the scripted unknown-method error")
+	}
+}
+
 // the schedule before its first envelope, which the golden locks: an
 // answered ask earns no re-announce). The OnRequest hook carries the FULL
 // composition the plan pins: the Responder whose RuntimeHeadersKeySource is

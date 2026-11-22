@@ -526,23 +526,23 @@ func authTeeResponse(t *testing.T, lines []TeeLine, reqIdx int) TeeLine {
 // (AUTH-02/03/04, plan 06-05) — the official chain's arms over the fake
 // transcript:
 //
-//   (a) the happy arm: probe ran, push carries the ACCOUNT overlay, refresh
-//       precedes the verdict, the registry patch carries exactly the
-//       snapshot-derived models (the D-08 verdict-side mirror), the PAT
-//       mint ran exactly once after the verdict, the auth mode recorded;
-//   (b) the probe-fail arm: a canned probe error answers the coded probe
-//       error and NOTHING touches the wire (D-02 ordering, composed-tier
-//       proof — zero push, zero refresh, zero mint);
-//   (c) the no-login arm: an empty store answers the coded desktop-first
-//       error before any traffic, no mint;
-//   (d) the read-back negative: the ack says received but the registry
-//       never confirms — the coded read-back error and NO mint (the mint
-//       happens only after the verdict — the PITFALL-1 discipline's mint
-//       half);
-//   (e) the cancel-interrupt arm: cancel between push and verdict → coded
-//       error, no success recorded, an immediate retry completes cleanly;
-//   (f) the api-key regression: authenticate{zai-api-key} still passes with
-//       the coding-plan seams present (AUTH-03 both-methods).
+//	(a) the happy arm: probe ran, push carries the ACCOUNT overlay, refresh
+//	    precedes the verdict, the registry patch carries exactly the
+//	    snapshot-derived models (the D-08 verdict-side mirror), the PAT
+//	    mint ran exactly once after the verdict, the auth mode recorded;
+//	(b) the probe-fail arm: a canned probe error answers the coded probe
+//	    error and NOTHING touches the wire (D-02 ordering, composed-tier
+//	    proof — zero push, zero refresh, zero mint);
+//	(c) the no-login arm: an empty store answers the coded desktop-first
+//	    error before any traffic, no mint;
+//	(d) the read-back negative: the ack says received but the registry
+//	    never confirms — the coded read-back error and NO mint (the mint
+//	    happens only after the verdict — the PITFALL-1 discipline's mint
+//	    half);
+//	(e) the cancel-interrupt arm: cancel between push and verdict → coded
+//	    error, no success recorded, an immediate retry completes cleanly;
+//	(f) the api-key regression: authenticate{zai-api-key} still passes with
+//	    the coding-plan seams present (AUTH-03 both-methods).
 //
 // All fixture material is synthetic (the scan-secrets gate stays green).
 func TestCodingPlanAuth(t *testing.T) {
@@ -553,6 +553,15 @@ func TestCodingPlanAuth(t *testing.T) {
 	t.Run("interrupted coding-plan authenticate is a clean retry", testCodingPlanCancelRetry)
 	t.Run("api-key arm stays green with the coding-plan seams present", testCodingPlanAPIKeyRegression)
 }
+
+// The arms' static fixture errors (err113: static errors, never dynamic).
+var (
+	// errCannedProbeFailure is the probe-fail arm's injected verdict.
+	errCannedProbeFailure = errors.New("canned probe failure")
+
+	// errScriptedMintDouble guards the mint-once contract at the double.
+	errScriptedMintDouble = errors.New("scripted mint double: second Ensure is a contract violation")
+)
 
 // Coding-plan fixture material — synthetic markers only.
 const (
@@ -610,17 +619,6 @@ func cpRefreshRule(times, delayMs int, withEmit bool) fake.RequestRule {
 	}
 
 	return rule
-}
-
-// cpFixWantModels is the snapshot-derived want list for the fixture table:
-// providerId/modelId over the rule's builtinModelIds, sorted (the
-// derivation the arm computes from BuildAccount's output — the test mirrors
-// it here as the expected value).
-func cpFixWantModels() []string {
-	return []string{
-		cpFixAccountProvider + "/" + cpFixAccountModelA,
-		cpFixAccountProvider + "/" + cpFixAccountModelB,
-	}
 }
 
 // codingPlanFixtureInstall writes a temp install whose zcode-builtin.json
@@ -717,7 +715,7 @@ func (s *scriptedPat) Ensure(_ context.Context) (hostsvc.Pat, error) {
 	s.mu.Unlock()
 
 	if n > 1 {
-		return hostsvc.Pat{}, errors.New("scripted mint double: second Ensure is a contract violation")
+		return hostsvc.Pat{}, errScriptedMintDouble
 	}
 
 	return hostsvc.Pat{
@@ -821,38 +819,7 @@ func testCodingPlanHappy(t *testing.T) {
 		t.Fatalf("fake transcript: %v", trErr)
 	}
 
-	pushIdx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig)
-	refreshIdx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry)
-
-	if len(pushIdx) != 1 || len(refreshIdx) != 1 {
-		t.Fatalf("transcript records push×%d refresh×%d, want exactly one honest chain run",
-			len(pushIdx), len(refreshIdx))
-	}
-
-	if pushIdx[0] >= refreshIdx[0] {
-		t.Fatalf("chain order violated: push(%d) must precede refresh(%d)", pushIdx[0], refreshIdx[0])
-	}
-
-	// The overlay visibility: the PUSH FRAME carries the account provider
-	// entry with its builtinModelIds and the entitled zhipu-account access
-	// (Pattern 2's strict shape, mirrored verbatim from the fixture table).
-	pushJSON := tr.Lines[pushIdx[0]].JSON
-
-	for _, marker := range []string{
-		cpFixAccountProvider, `"builtinModelIds"`, `"zhipu-account"`, `"entitled":true`, `"states"`,
-	} {
-		if !strings.Contains(pushJSON, marker) {
-			t.Fatalf("push frame %s lacks the overlay marker %s", pushJSON, marker)
-		}
-	}
-
-	// The D-08 verdict-side mirror: the registry patch's models equal the
-	// providerId/modelId pairs derived from the PUSHED builtinModelIds (the
-	// want list mirrors what we pushed — never a hardcoded catalog).
-	if !strings.Contains(tr.Lines[refreshIdx[0]-1].JSON+tr.Lines[refreshIdx[0]].JSON,
-		cpFixAccountProvider) {
-		t.Fatalf("no account-models registry surface around the refresh — the verdict would wait forever")
-	}
+	assertCodingPlanHappySequence(t, tr)
 
 	// The probe RAN (one proactive call — the in-process step the
 	// transcript cannot see; arm (b) proves its ordering).
@@ -871,13 +838,64 @@ func testCodingPlanHappy(t *testing.T) {
 	}
 }
 
+// assertCodingPlanHappySequence is the PITFALL-3 transcript lock: exactly
+// one push then one refresh, the PUSH FRAME carrying the account overlay
+// (Pattern 2's strict shape, mirrored verbatim from the fixture table), and
+// the registry patch (the state.updated emit) carrying exactly the
+// providerId/models pairs derived from the PUSHED builtinModelIds — the
+// D-08 verdict-side mirror. The happy arm's success already proves the
+// watcher latched the derived want; this pins the wire surfaces themselves
+// (never a literal catalog).
+func assertCodingPlanHappySequence(t *testing.T, tr fake.Transcript) {
+	t.Helper()
+
+	pushIdx := transcriptMethodIndexes(tr, zcode.MethodProviderUpdateAccountConfig)
+	refreshIdx := transcriptMethodIndexes(tr, zcode.MethodProviderRefreshRegistry)
+
+	if len(pushIdx) != 1 || len(refreshIdx) != 1 {
+		t.Fatalf("transcript records push×%d refresh×%d, want exactly one honest chain run",
+			len(pushIdx), len(refreshIdx))
+	}
+
+	if pushIdx[0] >= refreshIdx[0] {
+		t.Fatalf("chain order violated: push(%d) must precede refresh(%d)", pushIdx[0], refreshIdx[0])
+	}
+
+	pushJSON := tr.Lines[pushIdx[0]].JSON
+
+	for _, marker := range []string{
+		cpFixAccountProvider, `"builtinModelIds"`, `"zhipu-account"`, `"entitled":true`, `"states"`,
+	} {
+		if !strings.Contains(pushJSON, marker) {
+			t.Fatalf("push frame %s lacks the overlay marker %s", pushJSON, marker)
+		}
+	}
+
+	patchFound := false
+
+	for _, line := range tr.Lines {
+		if strings.Contains(line.JSON, `"method":"`+zcode.MethodStateUpdated+`"`) &&
+			strings.Contains(line.JSON, `"`+cpFixAccountProvider+`"`) &&
+			strings.Contains(line.JSON, `"`+cpFixAccountModelA+`"`) &&
+			strings.Contains(line.JSON, `"`+cpFixAccountModelB+`"`) {
+			patchFound = true
+
+			break
+		}
+	}
+
+	if !patchFound {
+		t.Fatal("no account-models registry patch on the transcript — the verdict would wait forever")
+	}
+}
+
 // testCodingPlanProbeFail is arm (b) — the D-02 ordering lock at the
 // composed tier: a canned probe error answers the coded probe error and
 // NOTHING touched the wire (zero push, zero refresh), nothing minted, and
 // no success was recorded.
 func testCodingPlanProbeFail(t *testing.T) {
 	cfg, probe, pat := codingPlanConfig(t)
-	probe.err = errors.New("canned probe failure")
+	probe.err = errCannedProbeFailure
 
 	h, front := newCodingPlanFront(t, []fake.RequestRule{cpAckRule(), cpRefreshRule(0, 0, true)}, cfg)
 
@@ -1019,7 +1037,7 @@ func testCodingPlanCancelRetry(t *testing.T) {
 
 	res1 := <-done1
 	if res1.err == nil {
-		t.Fatal("interrupted coding-plan authenticate answered success — "+
+		t.Fatal("interrupted coding-plan authenticate answered success — " +
 			"a cancelled chain must surface a coded error")
 	}
 

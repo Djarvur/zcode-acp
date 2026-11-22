@@ -1,0 +1,6 @@
+{
+  "name": "coding-plan-probe-fail",
+  "on_request": [],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

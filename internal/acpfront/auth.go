@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -154,10 +155,13 @@ func WithAuth(cfg AuthConfig) Option {
 
 // Authenticate runs one advertised auth method (the Handlers vocabulary).
 // The method id validates against the advertised set; the zai-api-key arm
-// runs the honest chain; the coding-plan arm answers its honest Phase-6
-// disposition; an unknown id answers coded invalid-params. Every
-// non-success is a coded error — never a fabricated success (PITFALL 3),
-// never raw transport noise.
+// runs the honest chain; the coding-plan arm composes the official chain
+// (probe → login → account overlay → registry verdict → mint-once); an
+// unknown id answers coded invalid-params. Every non-success is a coded
+// error — never a fabricated success (PITFALL 3), never raw transport
+// noise. A success records the arm's auth mode (D-11) as its LAST step; a
+// cancelled or failed authenticate records nothing, so a re-authenticate is
+// a clean retry.
 func (f *Front) Authenticate(ctx context.Context, methodID string) error {
 	advertised := advertisedAuthMethods()
 
@@ -171,22 +175,176 @@ func (f *Front) Authenticate(ctx context.Context, methodID string) error {
 			"authenticate: unknown methodId %q (advertised: %s)", methodID, strings.Join(ids, ", "))
 	}
 
-	if methodID != AuthMethodZaiAPIKey {
-		// Honest disposition for the advertised-but-Phase-6 method: never a
-		// fake success, never the misleading -32601 default (D-02).
-		authLog(methodID, "declined (Phase 6)")
+	var err error
 
-		return acpport.NewInternal(
-			"authenticate %s: the OAuth coding-plan flow lands in Phase 6", methodID)
+	switch methodID {
+	case AuthMethodZaiCodingPlan:
+		err = f.authenticateCodingPlan(ctx)
+	default:
+		err = f.authenticateAPIKey(ctx)
 	}
 
-	if err := f.authenticateAPIKey(ctx); err != nil {
+	if err != nil {
 		return err
 	}
+
+	f.recordAuthMode(authModeFor(methodID))
 
 	authLog(methodID, "authenticated (read-back proven)")
 
 	return nil
+}
+
+// authCodingPlanFamily is the provider family the coding-plan arm
+// authenticates (the literal at the production call site; the entitlement
+// gate and the store reader stay family-generic).
+const authCodingPlanFamily = "zai"
+
+// authenticateCodingPlan composes the official individual coding-plan chain
+// (AUTH-02, plan 06-05; 06-RESEARCH.md's composition sketch) at the front
+// tier — every step a coded error naming the step, the verdict ALWAYS the
+// registry read-back (PITFALL 1: the received ack is never the verdict, and
+// the PAT mint happens only AFTER the verdict):
+//
+//  1. the PROACTIVE keyring probe (D-02, AUTH-04) — BEFORE any snapshot
+//     traffic; a failure answers the coded actionable error naming the
+//     missing piece and nothing touches the wire;
+//  2. the desktop login read (D-03/D-12) through the 06-01 credential
+//     store — a missing login answers the coded desktop-first error before
+//     any traffic (T-06-16);
+//  3. the account overlay build (Pattern 2) through BuildAccount with the
+//     production entitlement gate — the gate may only omit families;
+//  4. the want list derived from the BUILT snapshot's providers
+//     (providerId/modelId over each entitled entry's builtinModelIds —
+//     D-08's verdict-side twin: the want list mirrors what we push, never a
+//     hardcoded catalog);
+//  5. the read-back watcher registered BEFORE the push traffic (the conn
+//     hook contract), then push → refresh → the probe-create branch-c gate
+//     → Await — the api-key arm's chain verbatim;
+//  6. the PAT mint (D-04) EXACTLY ONCE, after the verdict;
+//  7. the auth mode record happens in the dispatch after this arm returns
+//     nil (D-11).
+func (f *Front) authenticateCodingPlan(ctx context.Context) error {
+	if f.auth == nil {
+		return acpport.NewInternal("authenticate: auth machinery unconfigured")
+	}
+
+	// 1+2. The probe (D-02) and the desktop login read (D-03/D-12) gate
+	// every wire step — both answer coded actionable errors before any
+	// traffic.
+	if _, err := f.codingPlanLogin(ctx); err != nil {
+		return err
+	}
+
+	// 3. The account overlay (Pattern 2) — the production entitlement gate
+	// wired as the caller-supplied decision (06-03's BuildAccount
+	// contract); a rejected family is omitted, never edited.
+	if f.auth.Entitle == nil {
+		return acpport.NewInternal("authenticate: entitlement gate unconfigured (no familysel gate wired)")
+	}
+
+	snap, err := hostsvc.NewSnapshotBuilder(nil).BuildAccount(f.auth.Install,
+		func(family string) bool { return f.auth.Entitle(ctx, family) })
+	if err != nil {
+		return acpport.NewInternal("authenticate: build snapshot: %v", err)
+	}
+
+	// 4. The want list mirrors the built overlay (D-08's verdict-side twin).
+	want := wantModelsFromSnapshot(snap)
+
+	// 5. The read-back setup — identical to the api-key arm: the watcher
+	// registers BEFORE the push traffic.
+	watchOpts := []hostsvc.WatchOption{}
+	if f.auth.ReadbackDeadline > 0 {
+		watchOpts = append(watchOpts, hostsvc.WithReadbackDeadline(f.auth.ReadbackDeadline))
+	}
+
+	watcher, remove := hostsvc.WatchRegistry(f.conn, want, watchOpts...)
+	defer remove()
+
+	if _, err := hostsvc.PushEnvelope(ctx, f.conn, snap.Params); err != nil {
+		return acpport.NewInternal("authenticate: push snapshot: %v", err)
+	}
+
+	if err := hostsvc.RefreshRegistry(ctx, f.conn); err != nil {
+		return acpport.NewInternal("authenticate: refresh registry: %v", err)
+	}
+
+	if !watcher.Applied() {
+		f.probeCreateReadback(ctx, watcher)
+	}
+
+	// The verdict is the registry's (PITFALL 1): the received ack is
+	// receipt evidence only. A cancelled or expired wait surfaces the
+	// coded read-back error — no mint, no success state.
+	if _, err := watcher.Await(ctx); err != nil {
+		return acpport.NewInternal("authenticate: registry read-back: %v", err)
+	}
+
+	// 6. D-04: the mint runs EXACTLY ONCE and ONLY after the verdict.
+	if f.auth.Pat == nil {
+		return acpport.NewInternal("authenticate: PAT mint unconfigured (no PatEnsurer wired)")
+	}
+
+	if _, err := f.auth.Pat.Ensure(ctx); err != nil {
+		return acpport.NewInternal("authenticate: PAT mint: %v", err)
+	}
+
+	return nil
+}
+
+// codingPlanLogin runs the arm's pre-traffic prologue: the PROACTIVE keyring
+// probe (D-02, AUTH-04 — BEFORE any snapshot traffic; its coded actionable
+// errors wrap verbatim, raw exec noise never passes) then the desktop login
+// read (D-03/D-12) through the 06-01 credential store — a missing login
+// answers the coded desktop-first error before any traffic (T-06-16). The
+// Bearer-stripped login value lives in this call's scope only (the mint
+// seam re-reads its own credential; the value never reaches a log).
+func (f *Front) codingPlanLogin(ctx context.Context) (string, error) {
+	if f.auth.Probe == nil {
+		return "", acpport.NewInternal("authenticate: keyring probe unconfigured (no production prober wired)")
+	}
+
+	if err := f.auth.Probe(ctx); err != nil {
+		return "", acpport.NewInternal("authenticate: keyring unavailable: %v", err)
+	}
+
+	if f.auth.Creds == nil {
+		return "", acpport.NewInternal(
+			"authenticate: no desktop login (log in via the ZCode desktop first)")
+	}
+
+	login, ok := f.auth.Creds.LoginToken(ctx, authCodingPlanFamily)
+	if !ok || login == "" {
+		return "", acpport.NewInternal(
+			"authenticate: no desktop login (log in via the ZCode desktop first)")
+	}
+
+	return login, nil
+}
+
+// wantModelsFromSnapshot derives the read-back want list from the BUILT
+// account snapshot: providerId/modelId over each entitled entry's
+// builtinModelIds, sorted for deterministic watcher matching. This is the
+// D-08 verdict-side twin — the want list mirrors what we push, never a
+// hardcoded catalog; a malformed entry degrades to omission (the build
+// already validated the table).
+func wantModelsFromSnapshot(snap hostsvc.Snapshot) []string {
+	providers, _ := snap.Params["providers"].(map[string]any)
+
+	want := make([]string, 0, len(providers))
+	for providerID, entry := range providers {
+		rule, _ := entry.(map[string]any)
+		modelIDs, _ := rule["builtinModelIds"].([]string)
+
+		for _, modelID := range modelIDs {
+			want = append(want, providerID+"/"+modelID)
+		}
+	}
+
+	sort.Strings(want)
+
+	return want
 }
 
 // authenticateAPIKey runs the AUTH-01 chain: the configured-key gate → the

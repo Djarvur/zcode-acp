@@ -1,0 +1,2 @@
+in	{"id":1,"method":"corpus/probe-fail-canary","params":{}}
+out	{"id":1,"error":{"code":-32601,"message":"MethodNotFound"}}

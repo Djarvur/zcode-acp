@@ -1,0 +1,92 @@
+{
+  "name": "coding-plan-auth-cycle",
+  "on_request": [
+    {
+      "method": "provider/updateAccountConfig",
+      "reply": {"result": {"receivedRevision": "account-bridge:cp-fix1", "providerCount": 1, "status": "received"}}
+    },
+    {
+      "method": "provider/refreshRegistry",
+      "reply": {"result": {"refreshed": true}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"scope": "registry", "reason": "registry_refresh", "revision": 3,
+                       "patch": {"providers": {"account:zai-individual-coding-plan": {"models": ["GLM-5.3", "GLM-5.3-Flash"]}}}}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/create",
+      "reply": {"result": {"session": {"sessionId": "sess_cp1"}, "protocol": {"name": "ZCode Protocol", "version": 1},
+                           "settings": {"model": {"current": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+                                                  "available": [
+                                                    {"ref": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"}, "label": "GLM-5.3", "providerLabel": "zai",
+                                                     "reasoning": {"levels": [{"value": "high", "label": "High"}, {"value": "medium", "label": "Medium"}], "defaultLevel": "high"}},
+                                                    {"ref": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash", "providerLabel": "zai"}
+                                                  ]},
+                                       "thoughtLevel": {"enabled": true, "current": "high", "defaultLevel": "high",
+                                                        "available": [{"value": "high", "label": "High"}, {"value": "medium", "label": "Medium"}]}}}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_cp1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {"sessionId": "sess_cp1", "scope": "runtime-materialization"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"nativeSearchEnhancementsEnabled": false, "memoryEnabled": false}}
+          }
+        },
+        {
+          "reverse": {
+            "method": "interaction/requestCredentialCipher",
+            "params": {"requestId": "cp-cipher-fix1", "operation": "decrypt",
+                       "value": "enc:v2:os:3eb1bd439947eb762998e566:MDEyMzQ1Njc4OWFi.Rwp6ooipuq_S1a9bRUi96w._8CfTja4_TaGfE3J22EITiGrt71yrA8FUOaudeSW9t0HDQIYng"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"requestId": "cp-cipher-fix1", "result": {"ok": true, "value": "fixture-synthetic-credential-not-real"}}}
+          }
+        },
+        {
+          "reverse": {
+            "method": "interaction/requestProviderRuntimeHeaders",
+            "params": {"requestId": "cp-hdr-fix1", "sessionId": "sess_cp1",
+                       "workspace": {"workspacePath": "/tmp/happy-turn-ws"},
+                       "modelSelection": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+                       "providerId": "zhipu-account", "reason": "model-request"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"headersApplied": true, "requestAuth": {"apiKey": "zc-synthetic-fixture-not-a-real-key", "apiKeyId": "key_fixture_1"}}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_cp1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {"result": {"sessionId": "sess_cp1", "eventSeq": 0, "events": []}}
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {"session": {"sessionId": "sess_cp1"},
+                           "settings": {"model": {"current": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"},
+                                                  "available": [
+                                                    {"ref": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3"}, "label": "GLM-5.3", "providerLabel": "zai",
+                                                     "reasoning": {"levels": [{"value": "high", "label": "High"}, {"value": "medium", "label": "Medium"}], "defaultLevel": "high"}},
+                                                    {"ref": {"providerId": "account:zai-individual-coding-plan", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash", "providerLabel": "zai"}
+                                                  ]}}}}
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}
