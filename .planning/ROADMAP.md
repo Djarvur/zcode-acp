@@ -27,7 +27,7 @@ agents (Phase 7).
 - [x] **Phase 3: ZCode Back Leg — Codec, Fake App-Server, Supervisor** - JSONL codec, scriptable fake app-server with golden transcripts in CI, desktop discovery + process supervisor, turn state machine (completed 2026-11-20)
 - [x] **Phase 4: ACP Front — Minimal Chat Loop** - initialize, session/new (+ setModel workaround), streamed prompt turns with thoughts and cancel (completed 2026-11-20)
 - [x] **Phase 5: Interactions & Full Chat Cycle (api-key)** - Host-managed interaction responder, tool-call streaming, permission bridging, api-key auth, resume/close (completed 2026-11-22)
-- [ ] **Phase 6: OAuth Coding-Plan Path & Model Picker** - Official OAuth chain end-to-end (snapshot, cipher, PAT), both auth methods working, registry-driven configOptions
+- [x] **Phase 6: OAuth Coding-Plan Path & Model Picker** - Official OAuth chain end-to-end (snapshot, cipher, PAT), both auth methods working, registry-driven configOptions (completed 2026-11-22)
 - [ ] **Phase 7: Hardening, VM & Manual E2E, Documentation** - CI protocol conformance, dialect compatibility no-ops, VM scenario, manual E2E, English docs + preset-agent launch recipe
 
 ## Phase Details
@@ -208,7 +208,7 @@ Plans:
   3. On a machine without a keyring (headless/CI), auth fails fast with a clear actionable error and never hangs a turn
   4. After auth, `session/new` returns `configOptions` covering model and thought level, built from the live provider registry
   5. A client-side config-option change maps to `session/setModel` / `session/setThoughtLevel` on the wire, re-emits the full `configOptions` list, and `currentValue` always reflects the real session state
-**Plans**: 8/8 plans executed
+**Plans**: 8/8 plans complete
 
 Plans:
 **Wave 1**
@@ -254,7 +254,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 15/15 | Complete    | 2026-11-22 |
-| 6. OAuth Coding-Plan Path & Model Picker | 8/8 | In Progress | - |
+| 6. OAuth Coding-Plan Path & Model Picker | 8/8 | Complete    | 2026-11-22 |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
 
 ---
