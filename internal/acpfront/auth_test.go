@@ -622,7 +622,10 @@ func cpRefreshRule(times, delayMs int, withEmit bool) fake.RequestRule {
 
 // codingPlanFixtureInstall writes a temp install whose zcode-builtin.json
 // carries revision 44 AND one zhipu-account provider rule (the account
-// overlay's source table — BuildAccount reads the rules verbatim).
+// overlay's source table — BuildAccount reads the rules verbatim; the rule's
+// access block is COMPLETE {type, mode, accountType}: a mode-less zhipu rule
+// is a coded build error — the pushed access must satisfy the runtime's
+// complete strict zhipu-account access schema).
 func codingPlanFixtureInstall(t *testing.T) supervisor.Install {
 	t.Helper()
 
@@ -632,7 +635,8 @@ func codingPlanFixtureInstall(t *testing.T) supervisor.Install {
 	doc := `{"revision":44,"config":{"providerConfigRules":{"providerRules":[` +
 		`{"providerId":"` + cpFixAccountProvider + `","config":{` +
 		`"builtinModelIds":["` + cpFixAccountModelA + `","` + cpFixAccountModelB + `"],` +
-		`"access":{"type":"zhipu-account","accountType":"` + cpFixAccountFamily + `"}}}]}}}`
+		`"access":{"type":"zhipu-account","mode":"individual-coding-plan",` +
+		`"accountType":"` + cpFixAccountFamily + `"}}}]}}}`
 
 	if err := os.WriteFile(builtin, []byte(doc), 0o600); err != nil {
 		t.Fatalf("write builtin fixture: %v", err)

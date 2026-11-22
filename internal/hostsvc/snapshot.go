@@ -48,6 +48,7 @@ var (
 	errMissingProviderRules   = errors.New("missing config.providerConfigRules.providerRules")
 	errMissingProviderID      = errors.New("missing providerId")
 	errMissingAccessBlock     = errors.New("missing config.access block")
+	errMissingAccessMode      = errors.New("missing config.access mode")
 	errMissingBuiltinModelIDs = errors.New("missing config.builtinModelIds")
 )
 
@@ -168,7 +169,13 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 // Pattern 2 — the NON-empty overlay, the exact opposite shape of
 // BuildRevision's intentional empty one): providers carries one entry per
 // builtin-table rule whose config.access.type is zhipu-account, each
-// {builtinModelIds: verbatim from the table, access {type, entitled true}};
+// {builtinModelIds: verbatim from the table, access {type, accountType,
+// mode, entitled true}} — the COMPLETE access schema: the runtime registry
+// validates each pushed provider against the strict completeZhipuAccount
+// access schema and silently EXCLUDES a provider with validation issues
+// (the EXP-CODINGPLAN-CYCLE-01 attempt-4 symptom: "Provider Registry 中不
+// 存在 Model" with state.updated never carrying the account models), so
+// accountType + mode are propagated verbatim from the table rule;
 // states carries per provider {availability available, entitled true,
 // current true}. The rules come from the desktop's OWN bundled table — the
 // SAME install.BuiltinFile readBuiltinRevision opens (D-08's snapshot-side
@@ -208,11 +215,16 @@ func (b *SnapshotBuilder) BuildAccount(
 			continue // the gate may only omit families — never edit entries (T-06-09)
 		}
 
+		// access is the table's own access block mirrored with entitled
+		// true — every field capture-verbatim, the COMPLETE schema the
+		// runtime registry validates (missing fields = silent registry drop).
 		providers[rule.ProviderID] = map[string]any{
 			"builtinModelIds": rule.ModelIDs,
 			"access": map[string]any{
-				"type":     rule.AccessType, // the table's own string, verbatim (the filter fixed it to zhipu-account)
-				"entitled": true,
+				"type":        rule.AccessType,
+				"accountType": rule.Family,
+				"mode":        rule.AccessMode,
+				"entitled":    true,
 			},
 		}
 
@@ -249,7 +261,8 @@ type builtinProviderRule struct {
 	ProviderID string   // providerId — the providers/states map key
 	ModelIDs   []string // config.builtinModelIds — carried verbatim
 	AccessType string   // config.access.type — the zhipu-account filter
-	Family     string   // config.access.accountType — the entitlement-gate family
+	Family     string   // config.access.accountType — the entitlement-gate family + pushed access
+	AccessMode string   // config.access.mode — the complete-access-schema mode, pushed verbatim
 }
 
 // readBuiltinProviderRules digs the account-provider rules out of the SAME
@@ -298,8 +311,13 @@ func readBuiltinProviderRules(path string) ([]builtinProviderRule, error) {
 
 // digBuiltinRule decodes one raw provider rule out of the builtin table and
 // locks its required fields — a rule missing its providerId, its access
-// block, or its model list fails the build with the same coded class as the
-// table-level checks (capture-verbatim camelCase wire fields, never renamed).
+// block, its model list, or (for a zhipu-account row) its access mode fails
+// the build with the same coded class as the table-level checks
+// (capture-verbatim camelCase wire fields, never renamed). The mode lock is
+// the completeness requirement: the runtime registry validates each pushed
+// zhipu-account provider against the COMPLETE access schema and silently
+// excludes a provider with validation issues (EXP-CODINGPLAN-CYCLE-01
+// attempt-4), so a mode-less rule can never mirror into a valid push.
 func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRule, error) {
 	//nolint:tagliatelle // wire shape: the desktop's builtin-table keys are capture-verbatim camelCase
 	var rule struct {
@@ -309,6 +327,7 @@ func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRul
 			Access          *struct {
 				Type        string `json:"type"`
 				AccountType string `json:"accountType"`
+				Mode        string `json:"mode"`
 			} `json:"access"`
 		} `json:"config"`
 	}
@@ -327,6 +346,11 @@ func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRul
 			path, i, rule.ProviderID, errMissingAccessBlock)
 	}
 
+	if rule.Config.Access.Type == zhipuAccountAccess && rule.Config.Access.Mode == "" {
+		return builtinProviderRule{}, fmt.Errorf("builtin table %s: provider rule %d (%s): %w",
+			path, i, rule.ProviderID, errMissingAccessMode)
+	}
+
 	if rule.Config.BuiltinModelIDs == nil {
 		return builtinProviderRule{}, fmt.Errorf("builtin table %s: provider rule %d (%s): %w",
 			path, i, rule.ProviderID, errMissingBuiltinModelIDs)
@@ -337,6 +361,7 @@ func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRul
 		ModelIDs:   rule.Config.BuiltinModelIDs,
 		AccessType: rule.Config.Access.Type,
 		Family:     rule.Config.Access.AccountType,
+		AccessMode: rule.Config.Access.Mode,
 	}, nil
 }
 

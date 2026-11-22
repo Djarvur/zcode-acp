@@ -1278,9 +1278,11 @@ func (p *corpusPat) count() int {
 }
 
 // codingPlanCorpusInstall writes the fixture builtin table (revision 44 +
-// one zhipu-account provider rule — the account overlay's source) into a
-// temp install. The resolved PATH STRING feeds the exact-revision formula;
-// the corpus normalizer substitutes the machine-derived hash so the golden
+// one zhipu-account provider rule with a COMPLETE access block — the account
+// overlay's source; BuildAccount refuses a mode-less zhipu rule, the pushed
+// access must satisfy the runtime's complete strict schema) into a temp
+// install. The resolved PATH STRING feeds the exact-revision formula; the
+// corpus normalizer substitutes the machine-derived hash so the golden
 // stays cross-machine deterministic.
 func codingPlanCorpusInstall(t *testing.T) supervisor.Install {
 	t.Helper()
@@ -1291,7 +1293,8 @@ func codingPlanCorpusInstall(t *testing.T) supervisor.Install {
 	doc := `{"revision":44,"config":{"providerConfigRules":{"providerRules":[` +
 		`{"providerId":"` + cpCorpusAccountProvider + `","config":{` +
 		`"builtinModelIds":["GLM-5.3","GLM-5.3-Flash"],` +
-		`"access":{"type":"zhipu-account","accountType":"` + cpCorpusAccountFamily + `"}}}]}}}`
+		`"access":{"type":"zhipu-account","mode":"individual-coding-plan",` +
+		`"accountType":"` + cpCorpusAccountFamily + `"}}}]}}}`
 
 	if err := os.WriteFile(builtin, []byte(doc), 0o600); err != nil {
 		t.Fatalf("write corpus builtin fixture: %v", err)
