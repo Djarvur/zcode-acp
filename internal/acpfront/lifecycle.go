@@ -58,8 +58,9 @@ const closeTurnWait = 10 * time.Second
 // WR-02) and is recorded for the reattached id so the session's tool
 // diff/location paths resolve absolute (Pitfall 5 off the resume path).
 // A resume racing a close is rejected coded-clean at entry and re-checked
-// just before Register — no machine observer leak, no zombie registration
-// (plan 05-10 WR-03).
+// inside the registerIfOpen section — the re-check and the Register are ONE
+// closingMu-guarded critical section (plan 07-01 WR-05, hardening the
+// plan-05-10 WR-03 gate): no machine observer leak, no zombie registration.
 func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (string, error) {
 	if sessionID == "" {
 		return "", acpport.NewInvalidParams("session/resume: sessionId must not be empty")
@@ -111,26 +112,22 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (strin
 		return "", acpport.NewInternal("session/resume subscribe: %v", err)
 	}
 
-	// In-process reattach (the registry still holds the id from an earlier
-	// open): release the previous machine's observers before Register
-	// replaces it — the WR-07 discipline (Register is last-wins; without
-	// this the old machine's fan-out entries would leak).
-	if prev, getErr := f.registry.Get(sid); getErr == nil && prev.Machine != nil {
-		prev.Machine.CloseObservers()
-	}
+	// The machine registers on the conn's fan-out AFTER the tap — the same
+	// flush-before-stopReason registration order NewSession relies on. The
+	// construction stays OUTSIDE the close gate (its observer registrations
+	// are conn-mutex work; only the close-gate section below is atomic).
+	machine := turn.NewMachine(f.conn, sid, turn.NewPollWatcher(f.conn, turn.PollConfig{}))
 
-	// WR-03 (plan 05-10): the mandatory re-check immediately before
-	// Register — a resume that entered before close marked the set can
-	// never register its machine into a session mid-teardown (the Register
-	// after close's snapshot+Remove window is the observer-leak arm).
-	if f.isClosing(sessionID) {
+	// WR-05 (plan 07-01): the mandatory WR-03 re-check, the reattach
+	// release, and the Register are ONE closingMu-guarded section — a
+	// resume that entered before close marked the set can never register
+	// its machine into a session mid-teardown (the Register after close's
+	// snapshot+Remove window is the observer-leak arm), and its reattach
+	// release can never race the teardown's own CloseObservers on the same
+	// machine.
+	if !f.registerIfOpen(sid, machine) {
 		return "", acpport.NewInvalidRequest("session/resume: %s: the session is closing or closed", sessionID)
 	}
-
-	// The machine registers on the conn's fan-out AFTER the tap — the same
-	// flush-before-stopReason registration order NewSession relies on.
-	machine := turn.NewMachine(f.conn, sid, turn.NewPollWatcher(f.conn, turn.PollConfig{}))
-	f.registry.Register(core.Session{ID: sid, Machine: machine})
 
 	slog.Info("acpfront: session resumed", "session", sid)
 
@@ -272,4 +269,50 @@ func (f *Front) closeWait() time.Duration {
 	}
 
 	return closeTurnWait
+}
+
+// registerIfOpen is the resume path's ONE closingMu-guarded section (WR-05,
+// plan 07-01): the closing re-check, the in-process reattach's previous
+// machine release, and the registry Register run under the SAME critical
+// section, so a resume that survived the entry gate can never register its
+// machine into a session mid-teardown — either the mark is already set (the
+// caller answers the coded closing rejection and the registered machine is
+// left untouched) or the machine registers before any later close can mark,
+// and that close's snapshot-based teardown sees and releases it. The
+// reattach release (Register is last-wins — the WR-07 discipline: without
+// the release the previous machine's fan-out entries would leak) lives
+// inside the section so it can never race the teardown's own CloseObservers
+// on the same machine (a data race the WR-05 stress probe caught on the
+// unguarded pre-check placement). The closing set is read inline under the
+// held lock — no nested isClosing call — and Register runs only while the
+// mutex is still held.
+//
+// Lock-order discipline (one-way nesting): closingMu -> registry lock and
+// closingMu -> conn fan-out mutexes (CloseObservers' remove funcs) here; no
+// path takes either and then closingMu. CloseSession releases closingMu
+// before its registry Get/Remove and its teardown CloseObservers (its
+// marking section holds closingMu alone — so a section-holder excludes it
+// from marking until the section completes, and its CloseObservers either
+// preceded the section's unmarked read or follows it), the registry's own
+// methods never call back into the front, and the conn's delivery side
+// invokes observers under the fan-out mutexes the remove funcs also take —
+// none of those callback paths re-enter closingMu.
+func (f *Front) registerIfOpen(sessionID string, machine *turn.Machine) bool {
+	f.closingMu.Lock()
+	defer f.closingMu.Unlock()
+
+	if f.closing[sessionID] {
+		return false
+	}
+
+	// In-process reattach (the registry still holds the id from an earlier
+	// open): release the previous machine's observers before Register
+	// replaces it.
+	if prev, getErr := f.registry.Get(sessionID); getErr == nil && prev.Machine != nil {
+		prev.Machine.CloseObservers()
+	}
+
+	f.registry.Register(core.Session{ID: sessionID, Machine: machine})
+
+	return true
 }
