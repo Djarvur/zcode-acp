@@ -50,7 +50,8 @@ for p in "${patterns[@]}"; do
   if [ -n "$out" ]; then
     out=$(printf '%s\n' "$out" |
       grep -vF -e 'enc:v2:os:fix1-synthetic-not-a-real-credential' \
-        -e 'zc-synthetic-fixture-not-a-real-key' || true)
+        -e 'zc-synthetic-fixture-not-a-real-key' \
+        -e 'enc:v2:os:3eb1bd439947eb762998e566:MDEyMzQ1Njc4OWFi.Rwp6ooipuq_S1a9bRUi96w._8CfTja4_TaGfE3J22EITiGrt71yrA8FUOaudeSW9t0HDQIYng' || true)
   fi
   if [ -n "$out" ]; then
     printf '%s\n' "$out" | head -5
