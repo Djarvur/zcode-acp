@@ -18,7 +18,11 @@ import (
 // BuildAccount produces the NON-empty account-provider overlay mirrored from
 // the desktop's OWN bundled builtin table (D-08's snapshot-side twin) —
 // providers one entry per zhipu-account rule ({builtinModelIds verbatim,
-// access {type, entitled}}), states per provider {availability, entitled,
+// access {type, accountType, mode, entitled}} — the COMPLETE access schema:
+// the runtime registry validates each pushed provider against the strict
+// completeZhipuAccountAccessDataSchema and SILENTLY EXCLUDES a provider with
+// validation issues (EXP-CODINGPLAN-CYCLE-01 attempt-4 poke "Provider
+// Registry 中不存在 Model")), states per provider {availability, entitled,
 // current}. The Phase-5 empty-overlay builder (TestSnapshotEnvelope) stays
 // byte-untouched. The entitlement gate is a decision the builder RECEIVES —
 // it may only omit families, never edit entries (T-06-09).
@@ -84,6 +88,22 @@ func wantZhipuProviders() map[string][]string {
 	return map[string][]string{
 		"account:zai-individual-coding-plan":      {"GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"},
 		"account:bigmodel-individual-coding-plan": {"GLM-5.2"},
+	}
+}
+
+// wantZhipuAccess is the pushed access's accountType+mode pair per fixture
+// zhipu-account rule — capture-verbatim values from the fixture table's
+// access block. The runtime registry validates each pushed provider against
+// the COMPLETE access schema ({type, accountType, mode, entitled}, strict
+// zod): an access missing accountType or mode is a validation issue, and a
+// provider with validation issues is silently excluded from the registry —
+// exactly the EXP-CODINGPLAN-CYCLE-01 attempt-4 setModel poke symptom
+// ("Provider Registry 中不存在 Model", state.updated never carrying the
+// account models).
+func wantZhipuAccess() map[string][2]string {
+	return map[string][2]string{
+		"account:zai-individual-coding-plan":      {"zai", "individual-coding-plan"},
+		"account:bigmodel-individual-coding-plan": {"bigmodel", "individual-coding-plan"},
 	}
 }
 
@@ -242,8 +262,11 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 			t.Fatalf("providers[%s].access missing or not an object: %v", pid, entry["access"])
 		}
 
-		if len(access) != 2 {
-			t.Fatalf("providers[%s].access keys = %v, want exactly [entitled type]", pid, keysOfAny(access))
+		if len(access) != 4 {
+			t.Fatalf("providers[%s].access keys = %v, want exactly [accountType entitled mode type] "+
+				"(the complete access schema — an access missing accountType/mode fails the runtime's "+
+				"strict zhipu-account validation and the provider is silently excluded from the registry)",
+				pid, keysOfAny(access))
 		}
 
 		if access["type"] != "zhipu-account" {
@@ -252,6 +275,18 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 
 		if access["entitled"] != true {
 			t.Fatalf("providers[%s].access.entitled = %v, want true (entitled account entry)", pid, access["entitled"])
+		}
+
+		wantAccess := wantZhipuAccess()[pid]
+
+		if access["accountType"] != wantAccess[0] {
+			t.Fatalf("providers[%s].access.accountType = %v, want the table's %q verbatim "+
+				"(capture-verbatim — never a wrapper-side literal)", pid, access["accountType"], wantAccess[0])
+		}
+
+		if access["mode"] != wantAccess[1] {
+			t.Fatalf("providers[%s].access.mode = %v, want the table's %q verbatim "+
+				"(capture-verbatim — never a wrapper-side literal)", pid, access["mode"], wantAccess[1])
 		}
 	}
 
@@ -374,7 +409,8 @@ const accountTableRuleNoAccess = `{
 }`
 
 // accountTableRuleNoModels is the fixture table with the first zhipu rule's
-// model list stripped — the same coded class (a rule that cannot be mirrored).
+// model list stripped (its access block stays COMPLETE) — the same coded
+// class (a rule that cannot be mirrored).
 const accountTableRuleNoModels = `{
   "revision": 44,
   "config": {
@@ -384,6 +420,31 @@ const accountTableRuleNoModels = `{
           "providerId": "account:zai-individual-coding-plan",
           "providerName": "Z.AI Individual Coding Plan",
           "config": {
+            "access": {"type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "zai"}
+          }
+        }
+      ]
+    }
+  }
+}`
+
+// accountTableRuleNoMode is the fixture table with the first zhipu rule's
+// access mode stripped (models + accountType stay) — the same coded
+// missing-access class: a zhipu-account rule without mode cannot build a
+// COMPLETE access schema push, and the runtime registry would silently
+// exclude the provider (EXP-CODINGPLAN-CYCLE-01 attempt-4 symptom) — the
+// wrapper must refuse the build, never push the incomplete access.
+const accountTableRuleNoMode = `{
+  "revision": 44,
+  "config": {
+    "providerConfigRules": {
+      "providerRules": [
+        {
+          "providerId": "account:zai-individual-coding-plan",
+          "providerName": "Z.AI Individual Coding Plan",
+          "config": {
+            "group": "zai-family",
+            "builtinModelIds": ["GLM-5.3"],
             "access": {"type": "zhipu-account", "accountType": "zai"}
           }
         }
@@ -465,6 +526,23 @@ func TestAccountSnapshotGateOmission(t *testing.T) {
 	assertModelIDsVerbatim(t, "providers[account:zai-individual-coding-plan]",
 		entry["builtinModelIds"], wantZhipuProviders()["account:zai-individual-coding-plan"])
 
+	// The surviving entry's access stays COMPLETE and unedited: the gate's
+	// omission of the bigmodel family must not strip or rewrite the zai
+	// entry's accountType/mode (the gate may only omit, never edit — T-06-09).
+	access, ok := entry["access"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers[account:zai-individual-coding-plan].access missing: %v", entry["access"])
+	}
+
+	wantAccess := wantZhipuAccess()["account:zai-individual-coding-plan"]
+
+	if len(access) != 4 || access["accountType"] != wantAccess[0] || access["mode"] != wantAccess[1] ||
+		access["type"] != "zhipu-account" || access["entitled"] != true {
+		t.Fatalf("providers[account:zai-individual-coding-plan].access = %v, want the table-verbatim "+
+			"complete schema {type zhipu-account, accountType %q, mode %q, entitled true}",
+			keysOfAny(access), wantAccess[0], wantAccess[1])
+	}
+
 	var states map[string]any
 	if err := json.Unmarshal(got["states"], &states); err != nil {
 		t.Fatalf("states does not decode: %v (%s)", err, got["states"])
@@ -501,14 +579,17 @@ func TestAccountSnapshotNoRules(t *testing.T) {
 
 // TestAccountSnapshotMalformedTable locks the tampering arm: undecodable
 // JSON, a missing providerRules key, a rule missing its access block (and
-// the same coded class for a rule missing its model list) each answer the
-// coded build error — never a partial push, never a panic.
+// the same coded class for a rule missing its model list or its access
+// mode — a zhipu-account rule without mode cannot build the COMPLETE access
+// schema push) each answer the coded build error — never a partial push,
+// never a panic.
 func TestAccountSnapshotMalformedTable(t *testing.T) {
 	arms := map[string]string{
 		"undecodable JSON":              accountTableUndecodable,
 		"missing providerRules key":     accountTableMissingRules,
 		"rule missing its access block": accountTableRuleNoAccess,
 		"rule missing its model list":   accountTableRuleNoModels,
+		"rule missing its access mode":  accountTableRuleNoMode,
 	}
 
 	for name, table := range arms {
