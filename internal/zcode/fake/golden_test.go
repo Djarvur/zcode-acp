@@ -852,7 +852,7 @@ func drivePermissionCancel(ctx context.Context, d *exchangeDriver) {
 	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), toClientW, toAgentR)
 	_ = acp.NewClientSideConnection(client, toAgentW, toClientR)
 
-	sid, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: "/tmp/perm-cancel-ws"})
+	sid, _, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: "/tmp/perm-cancel-ws"})
 	if err != nil {
 		t.Fatalf("front.NewSession: %v", err)
 	}
