@@ -258,8 +258,16 @@ agent_start() { # agent_start [VAR=VALUE ...] — extra env applies to the child
 	RUN_PID="$AGENT_PID"
 }
 
-agent_send() { # agent_send <json-line>
-	printf '%s\n' "$1" >&"${AGENT[1]}"
+agent_send() { # agent_send <json-line> — a dead coproc turns sends into no-ops
+	# (the wrapper exited; its failure was recorded by the stage's own checks —
+	# under set -u the exited coproc UNSETS the AGENT array, so guard the access
+	# instead of crashing the whole scenario on the failure path)
+	local fd="${AGENT[1]:-}"
+	if [ -z "$fd" ]; then
+		AGENT_DEAD=1
+		return 0
+	fi
+	printf '%s\n' "$1" >&"$fd" 2>/dev/null || AGENT_DEAD=1
 }
 
 agent_expect() { # agent_expect <request-id> <timeout-seconds> — sets REPLY_LINE
