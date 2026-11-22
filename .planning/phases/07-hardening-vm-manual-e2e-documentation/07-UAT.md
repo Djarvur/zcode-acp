@@ -3,7 +3,7 @@ status: awaiting-user
 phase: 07-Hardening, VM & Manual E2E, Documentation
 source: [07-09-PLAN.md]
 started: 2026-11-22T14:35:36Z
-updated: 2026-11-22T14:47:30Z
+updated: 2026-11-22T14:52:00Z
 ---
 
 ## Current Test
@@ -85,27 +85,67 @@ expected: |
   (user_setup: the api-key value for path 1; the desktop logged into the individual
   coding plan with an unlocked keyring for path 2), follow the README launch recipe
   ("Connecting to preset-agent-only hosts") — ONE override + ONE env mechanism per
-  path — and run the card E2E:
+  path — and run the card E2E.
 
-  - PATH 1 (api-key): add the card -> the wrapper authenticates zai-api-key -> account
-    models render -> send one prompt that triggers a tool call + permission prompt ->
-    approve -> the streamed reply completes.
-  - PATH 2 (coding-plan): desktop logged in, keyring unlocked -> the card opens ->
-    authenticate zai-individual-coding-plan (read-back proven, PAT minted) -> the
-    account models render -> one streamed turn completes.
-  - BOTH paths: `/model <name>` switch from the picker (a typo expects the card's own
-    styling — "Unknown ACP model"); a model picked BEFORE launch is honored at session
-    creation (check the wrapper's launch log for the --model binding); Stop closes the
-    card cleanly; interrupting a turn resolves the cancel; no crash paths anywhere.
+  Setup (both paths): configure the omp card per the recipe — the per-agent command
+  override set to `~/bin/zcode-acp-omp omp` (shim) or `/path/to/zcode-acp omp`
+  (direct), and for the api-key path the env arrives via the shim or an
+  `agentDefaultEnv` entry (the override string itself can never carry it — the
+  tokenizer rejects `VAR=val cmd`). The recipe is the ONLY document to follow; where
+  the client persists `agentCmdOverrides` underneath is a labeled known-unknown this
+  run confirms (configure through the Settings UI, do not hand-edit a settings file).
 
-  EXPECTED: both paths complete a full turn; close/cancel clean; the two OBSERVATION
-  items recorded — which id shape Orca actually passes as `--model` (A1, read from the
-  wrapper's launch log line) and how the picker behaves with configOptions but no
-  models field (A3). A failed leg records the honest verdict per path; the phase stays
-  open (the 05-14 discipline).
+  PATH 1 — api-key (checklist, RESEARCH Pattern 8 verbatim mechanics):
+    1. shim/env carries ZCODE_ACP_API_KEY (the value lives only in your own
+       env file / client settings — never in a doc, script, or the override string)
+    2. add the card -> the card opens
+    3. authenticate{zai-api-key} succeeds
+    4. the account models render in the picker
+    5. send one prompt that triggers a tool call + permission prompt -> approve ->
+       the streamed reply completes
+
+  PATH 2 — coding-plan (checklist, RESEARCH Pattern 8 verbatim mechanics):
+    1. the desktop logged into the individual coding plan + the keyring unlocked
+    2. the card opens
+    3. authenticate{zai-individual-coding-plan} succeeds (read-back proven, PAT
+       minted via the official chain)
+    4. the account models render in the picker
+    5. one streamed turn completes
+
+  BOTH paths (every step on each path):
+    - `/model <name>` switch from the picker — a REAL model switches live; a typo
+      expects the card's own styling on the refusal ("Unknown ACP model: <name>")
+    - `--model` honored when a model is picked BEFORE launch on a fresh card
+      (launchesWithModel:true) — check the wrapper's launch log for the `--model`
+      binding (the wrapper logs only to stderr)
+    - Stop the card -> clean close (session/close; an intermittent 10 s
+      boundary toast is documented-and-tolerated, see README Troubleshooting)
+    - interrupt a turn -> the cancel resolves cleanly
+    - no crash paths anywhere
+
+  OBSERVATIONS (recorded, never assumed — closes the flagged COVERAGE items):
+    - A1: the exact `--model` id shape Orca actually passes (read the wrapper's
+      launch log line; the wrapper parses provider/model and fails honestly on
+      other shapes)
+    - A3: how the picker behaves with configOptions but no `models` field (the
+      wrapper advertises no models field; `/model` prompts are implemented
+      regardless — belt and braces per D-03)
+
+  EXPECTED: both paths complete a full turn; close/cancel clean; no crash paths.
+  A failed leg records the honest verdict per path; the phase stays open (the
+  05-14 discipline).
+
+  RECORD: verdicts PER PATH + both observations into this entry; update the
+  experiments/README.md QA-03 ledger row with the spend actuals; capture
+  discipline per the ground rules (raw captures outside the repo, scrub before
+  commit); scan-secrets on the tree AND the staged diff before any evidence
+  commit; the human's confirmation precedes the commit. REQUIREMENTS.md stays
+  untouched (the checkbox flips are the orchestrator's post-verification act).
 result: awaiting (seeded 2026-11-22 — the user's Orca run has not happened yet; verdicts
   only from the user's actual runs, human confirmation precedes any evidence commit,
-  D-06/T-07-25.)
+  D-06/T-07-25. Handoff staging re-confirmed 2026-11-22: Orca.AppImage present on this
+  machine, the README launch-recipe section present (landed by 07-08), the version
+  floor self-check green (`zcode-acp omp --version` prints 18.1.9+zacp.0).)
 
 ## Summary
 
