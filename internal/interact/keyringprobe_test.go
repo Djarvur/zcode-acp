@@ -17,18 +17,18 @@ import (
 // 06-05) arm by arm — 06-RESEARCH.md Pattern 5's probed failure table made
 // executable:
 //
-//   (a) the secret-tool binary is absent → the coded install hint NAMING
-//       the package (libsecret-tools) with NO subprocess attempted;
-//   (b) the D-Bus bus cannot autolaunch → the coded no-desktop-session
-//       hint, classified from the coarse marker — never stderr verbatim;
-//   (c) an empty keyring answer → the coded log-in-via-desktop hint;
-//   (d) the argv contract: the probe runs the LOADER'S LookupCommand argv
-//       (one argv source) under a bounded context with the loader's
-//       scrubbed env;
-//   (e) a lookup path that cannot resolve (no credentials.json) → the
-//       log-in hint with no subprocess attempted;
-//   (f) the never-hangs lock: a hung subprocess seam answers the coded
-//       timeout well inside the test's own watchdog bound.
+//	(a) the secret-tool binary is absent → the coded install hint NAMING
+//	    the package (libsecret-tools) with NO subprocess attempted;
+//	(b) the D-Bus bus cannot autolaunch → the coded no-desktop-session
+//	    hint, classified from the coarse marker — never stderr verbatim;
+//	(c) an empty keyring answer → the coded log-in-via-desktop hint;
+//	(d) the argv contract: the probe runs the LOADER'S LookupCommand argv
+//	    (one argv source) under a bounded context with the loader's
+//	    scrubbed env;
+//	(e) a lookup path that cannot resolve (no credentials.json) → the
+//	    log-in hint with no subprocess attempted;
+//	(f) the never-hangs lock: a hung subprocess seam answers the coded
+//	    timeout well inside the test's own watchdog bound.
 //
 // All subprocess material is synthetic fixture data — the scan-secrets gate
 // stays green.

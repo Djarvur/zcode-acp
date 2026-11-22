@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os/exec"
 	"time"
 )
@@ -30,10 +32,6 @@ import (
 // stderr content. The lookup argv comes from the SecretToolKeyLoader's
 // LookupCommand (one argv source — the probe never re-derives the lookup
 // shape) and runs under a bounded context with the loader's scrubbed env.
-
-// errKeyringProbeStub is the compiling skeleton's marker (plan 06-05 RED):
-// the GREEN step replaces the probe body with the real implementation.
-var errKeyringProbeStub = errors.New("keyring probe skeleton: not implemented")
 
 // The probed failure classes' sentinels — the coded messages ARE the
 // client-facing actionable text (the authenticate arm wraps these verbatim;
@@ -157,8 +155,86 @@ func defaultKeyringProbeExec(ctx context.Context, argv, env []string) (stdout, s
 	return out.Bytes(), errBuf.Bytes(), err
 }
 
-// probe runs one proactive probe (the skeleton arm — GREEN replaces this
-// body with the real classification).
+// The structural-log codes for the probe's arms (the class name only —
+// latency and class are the ONLY probe facts ever logged; no value, no
+// stderr content).
+const (
+	probeClassOK               = "ok"
+	probeClassBinaryMissing    = "binary-missing"
+	probeClassNoDesktopSession = "no-desktop-session"
+	probeClassNoEntry          = "no-entry"
+	probeClassTimeout          = "timeout"
+	probeClassCancelled        = "cancelled"
+)
+
+// probe runs one proactive probe: LookPath gate → the loader's LookupCommand
+// argv (one argv source) under a bounded context with the scrubbed env →
+// coarse-signal classification into the coded arms. The arm class and
+// latency are the only logged facts (T-5-17 inheritance — never a value,
+// never stderr content).
 func (p *keyringProber) probe(ctx context.Context) error {
-	return errKeyringProbeStub
+	started := time.Now()
+
+	class, err := p.classify(ctx)
+
+	slog.Info("interact: keyring probe", "class", class,
+		"latency_ms", time.Since(started).Milliseconds())
+
+	return err
+}
+
+// classify runs the probed sequence and maps each failure mode to its coded
+// arm (06-RESEARCH.md Pattern 5's failure table). Every non-nil error wraps
+// one of the exported sentinels — the authenticate arm's client-facing
+// actionable text.
+func (p *keyringProber) classify(ctx context.Context) (string, error) {
+	// 1. LookPath FIRST (D-02): an absent binary is the cheapest honest
+	// verdict and never spawns a subprocess.
+	if _, err := p.lookPath(p.bin); err != nil {
+		return probeClassBinaryMissing, fmt.Errorf("%w: %v", ErrKeyringBinaryMissing, err)
+	}
+
+	// 2. The loader's exact argv — one argv source (the probe never
+	// re-derives the lookup shape). An unresolvable credentials path fails
+	// HERE, before any subprocess: a fresh machine is simply not logged in
+	// (the log-in hint).
+	argv, env, err := p.loader.LookupCommand()
+	if err != nil {
+		return probeClassNoEntry,
+			fmt.Errorf("%w: no readable desktop credentials (%v)", ErrKeyringNoEntry, err)
+	}
+
+	// 3. The bounded exec: the ≤5s ceiling contains any prompt path nobody
+	// can answer headless (Pitfall 5; A3 belt-and-braces).
+	pctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+
+	stdout, stderr, execErr := p.exec(pctx, argv, env)
+
+	// 4. Classification, coarsest signals first. The probe's OWN bounded
+	// ctx state is authoritative for the timeout arm (the exec error's
+	// wording is an implementation detail). A cancelled PARENT ctx surfaces
+	// the cancellation, not a probe-class verdict. The autolaunch marker in
+	// stderr is the no-desktop-session class; everything else (rc≠0 or an
+	// empty answer) is the log-in hint. Success = rc 0 with a non-empty
+	// answer — the answer bytes themselves are discarded unread beyond the
+	// emptiness check (the probe proves availability, it is not the key
+	// reader).
+	switch {
+	case ctx.Err() != nil:
+		return probeClassCancelled, fmt.Errorf("keyring probe cancelled: %w", ctx.Err())
+
+	case errors.Is(pctx.Err(), context.DeadlineExceeded):
+		return probeClassTimeout, fmt.Errorf("%w (%s ceiling)", ErrKeyringLookupTimeout, p.timeout)
+
+	case execErr == nil && len(bytes.TrimSpace(stdout)) > 0:
+		return probeClassOK, nil
+
+	case execErr != nil && bytes.Contains(stderr, []byte(autolaunchMarker)):
+		return probeClassNoDesktopSession, fmt.Errorf("%w: %v", ErrKeyringNoDesktopSession, execErr)
+
+	default:
+		return probeClassNoEntry,
+			fmt.Errorf("%w (keyring lookup answered empty or rc≠0)", ErrKeyringNoEntry)
+	}
 }
