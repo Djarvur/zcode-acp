@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -35,6 +36,11 @@ const (
 	childRunAsNodeEnv = "ELECTRON_RUN_AS_NODE"
 	// childBuiltinEnv carries the newest zcode-builtin.json into the child.
 	childBuiltinEnv = "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"
+	// childPersonalEnv carries the personal provider config into the child —
+	// resolveNodeProviderRuntimePaths requires BOTH paths paired; a worker
+	// started with only the builtin path runs degraded (account models never
+	// publish — EXP-CODINGPLAN-CYCLE-01 attempts 1-6 field proof).
+	childPersonalEnv = "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"
 	// helperRunFlag targets the helper test inside the re-executed binary.
 	helperRunFlag = "-test.run=^TestSpawnEnvHelper$"
 
@@ -99,7 +105,7 @@ func hostileParentEnv() []string {
 // allowedChildKeys is the exact key set the child may observe: the allowlist
 // copies (PATH, HOME) plus the two ZCode contract vars — nothing else.
 func allowedChildKeys() []string {
-	return []string{"PATH", "HOME", childRunAsNodeEnv, childBuiltinEnv}
+	return []string{"PATH", "HOME", childRunAsNodeEnv, childBuiltinEnv, childPersonalEnv}
 }
 
 // spawnReport is the helper child's JSON self-report: the environment it
@@ -188,6 +194,13 @@ func assertObservedEnv(t *testing.T, inst supervisor.Install, report spawnReport
 
 	if got := report.Env[childBuiltinEnv]; got != inst.BuiltinFile {
 		t.Fatalf("child observed %s = %q, want the injected builtin path %q", childBuiltinEnv, got, inst.BuiltinFile)
+	}
+
+	wantPersonal := filepath.Join(report.Env["HOME"], ".zcode", "v2", "provider_config.json")
+	if got := report.Env[childPersonalEnv]; got != wantPersonal {
+		// resolveNodeProviderRuntimePaths requires the builtin+personal pair.
+		t.Fatalf("child observed %s = %q, want the desktop-parity personal path %q",
+			childPersonalEnv, got, wantPersonal)
 	}
 
 	if got := report.Env["PATH"]; got != fixturePathValue {

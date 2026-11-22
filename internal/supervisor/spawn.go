@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,13 @@ const (
 	childRunAsNodeValue = "1"
 	// childBuiltinVar carries the newest zcode-builtin.json into the child.
 	childBuiltinVar = "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"
+	// childPersonalVar carries the personal provider config into the child:
+	// resolveNodeProviderRuntimePaths requires the builtin and personal paths
+	// PAIRED — a worker started with only the builtin path runs its provider
+	// registry degraded (updateAccountConfig acks, account models never
+	// publish — EXP-CODINGPLAN-CYCLE-01 attempts 1-6). The desktop passes the
+	// same pair (provider-runtime-env.ts:88-99).
+	childPersonalVar = "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"
 	// appServerSubcommand and stdioFlag are the argv tail of the spawn line.
 	appServerSubcommand = "app-server"
 	stdioFlag           = "--stdio"
@@ -50,8 +58,9 @@ const (
 	allowlistHomeVar = "HOME"
 
 	// contractEnvVarCount is the number of contract env vars ChildEnv sets
-	// beyond the allowlist copies (ELECTRON_RUN_AS_NODE + the builtin var).
-	contractEnvVarCount = 2
+	// beyond the allowlist copies (ELECTRON_RUN_AS_NODE + the builtin and
+	// personal provider config paths).
+	contractEnvVarCount = 3
 
 	// stderrCapDefault is the child stderr forward cap — the probe precedent
 	// (app-server-probe.mjs STDERR_CAP_BYTES = 64 KiB, PITFALL 2). Beyond the
@@ -146,6 +155,14 @@ func ChildEnv(inst Install, parentEnv []string) []string {
 
 	if inst.BuiltinFile != "" {
 		env = append(env, childBuiltinVar+"="+inst.BuiltinFile)
+	}
+
+	// The personal path pairs with the builtin one (resolveNodeProviderRuntimePaths
+	// throws unless both are present): the desktop passes the same pair
+	// (provider-runtime-env.ts:88-99). Derived from the child's own HOME —
+	// the desktop's dataBaseDir default — never from the wrapper's cwd.
+	if home, ok := parent["HOME"]; ok && home != "" {
+		env = append(env, childPersonalVar+"="+filepath.Join(home, ".zcode", "v2", "provider_config.json"))
 	}
 
 	return env
