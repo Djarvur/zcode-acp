@@ -82,8 +82,92 @@ type PatHeadersSourceDeps struct {
 // mutable retry state across asks.
 func PatHeadersSource(deps PatHeadersSourceDeps) interact.RuntimeHeadersKeySource {
 	return func(ctx context.Context, req interact.Request) (string, string, string, error) {
-		// Skeleton posture (RED): full delegation to the static arm — the
-		// coding-plan arms land in GREEN (plan 06-07 Task 2).
-		return deps.APIKeyFallback(ctx, req)
+		// D-11 mode selection: only the recorded coding-plan mode reaches
+		// the PAT answer — api-key mode and the unauthenticated None (the
+		// static arm's unconfigured posture covers the pre-auth ask)
+		// delegate byte-compatibly.
+		if deps.Mode == nil || deps.Mode() != patModeCodingPlan {
+			return deps.fallback(ctx, req)
+		}
+
+		if deps.Minter == nil {
+			return "", "", "", errPatSourceUnwired
+		}
+
+		expectedScope, rejectedFP := interact.RuntimeHeadersRejection(req)
+
+		pat, ok := deps.Minter.Cached(ctx)
+		if !ok || pat.Token == "" {
+			// The PAT-less arm (pre-auth or post-invalidate): the coded
+			// error naming the unauthenticated state — never an empty
+			// success arm, and the ask-side never mints into an
+			// unauthenticated state (the mint runs at authenticate, D-04).
+			return "", "", "", ErrPatLoginRequired
+		}
+
+		// The scope gate FIRST (T-06-22): a mismatching expectedAccountScope
+		// means the sign-in changed — the stale PAT would ride the old
+		// entitlement, so the coded scope-invalidated error answers before
+		// any token is served (including before the fingerprint re-mint,
+		// which may only run against the CURRENT scope). An absent field
+		// checks nothing.
+		if expectedScope != "" && expectedScope != pat.AccountScope {
+			return "", "", "", ErrPatScopeInvalidated
+		}
+
+		// The D-05 reactive trigger: a rejected fingerprint equal to the
+		// CACHED fingerprint means the backend rejected exactly this token —
+		// drop the cache and re-mint EXACTLY ONCE within this ask. A
+		// different (or malformed→absent) fingerprint is not our token; the
+		// cached answer serves.
+		if rejectedFP != "" && rejectedFP == pat.Fingerprint {
+			deps.Minter.Invalidate("rejected-fingerprint-match")
+
+			fresh, err := deps.Minter.Ensure(ctx)
+			if err != nil {
+				// The minter's coded project_token errors pass through
+				// UNWRAPPED — the sentinel is the wire's match surface
+				// (consumers match the coded class, never the message
+				// prose); wrapping would hide it behind the responder's
+				// -32603 framing chain.
+				//
+				//nolint:wrapcheck // the coded pass-through IS the contract (sentinel matching at the deliver seam)
+				return "", "", "", err
+			}
+
+			// The second-failure arm: the re-minted fingerprint rejected
+			// again — the one-shot recovery is exhausted; the honest coded
+			// error answers (mints stop at two total, T-06-23).
+			if fresh.Fingerprint == rejectedFP {
+				return "", "", "", ErrPatRejectionLoop
+			}
+
+			// The fresh token must still satisfy the ask's expectation: a
+			// re-mint against a changed sign-in answers the scope refusal,
+			// never the mismatched fresh token.
+			if expectedScope != "" && expectedScope != fresh.AccountScope {
+				return "", "", "", ErrPatScopeInvalidated
+			}
+
+			return fresh.Token, fresh.APIKeyID, fresh.AccountScope, nil
+		}
+
+		// The plain cached answer (Pattern 4's success arm — accountScope is
+		// load-bearing: it enables the backend's one-shot rejected-PAT
+		// recovery).
+		return pat.Token, pat.APIKeyID, pat.AccountScope, nil
 	}
+}
+
+// fallback serves the ask through the api-key fallback (the static arm); a
+// nil fallback answers the coded missing-wiring error — never a fabricated
+// success and never a panic.
+func (d PatHeadersSourceDeps) fallback(
+	ctx context.Context, req interact.Request,
+) (apiKey, apiKeyID, accountScope string, err error) {
+	if d.APIKeyFallback == nil {
+		return "", "", "", errPatSourceUnwired
+	}
+
+	return d.APIKeyFallback(ctx, req)
 }

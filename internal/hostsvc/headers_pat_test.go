@@ -7,6 +7,7 @@ package hostsvc_test
 // arms run under -race with concurrent asks.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,17 +25,17 @@ import (
 // credential — T-5-15; the fingerprints/scopes are 64-lowercase-hex shape
 // constants the ask schema pins).
 const (
-	patFixtureTokenA  = "zc-synthetic-pat-a-fixture"
-	patFixtureTokenB  = "zc-synthetic-pat-b-fixture"
-	patFixtureKeyIDA  = "key_pat_a"
-	patFixtureKeyIDB  = "key_pat_b"
-	patFixtureFPA     = "1111111111111111111111111111111111111111111111111111111111111111" // sha256-shape of PAT-A
-	patFixtureFPB     = "2222222222222222222222222222222222222222222222222222222222222222" // sha256-shape of PAT-B
-	patFixtureScopeA  = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	patFixtureScopeB  = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	patFixtureBadHex  = "not-hex-at-all"
-	patFixtureModeKey = "zc-synthetic-static-fixture-key"
-	patFixtureModeID  = "key_static_9"
+	patFixtureTokenA = "zc-synthetic-pat-a-fixture"
+	patFixtureTokenB = "zc-synthetic-pat-b-fixture"
+	patFixtureKeyIDA = "key_pat_a"
+	patFixtureKeyIDB = "key_pat_b"
+	patFixtureFPA    = "1111111111111111111111111111111111111111111111111111111111111111" // sha256-shape of PAT-A
+	patFixtureFPB    = "2222222222222222222222222222222222222222222222222222222222222222" // sha256-shape of PAT-B
+	patFixtureScopeA = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	patFixtureScopeB = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	patFixtureBadHex = "not-hex-at-all"
+	patFixtureModeID = "key_static_9"
+	patFixtureModeTk = "zc-synthetic-static-fixture-key"
 )
 
 // errFixtureEnsureFailure is the scripted Ensure failure arm (err113).
@@ -121,10 +122,40 @@ func patFixture(token, keyID, fingerprint, scope string) hostsvc.Pat {
 	}
 }
 
+// patAskExtra builds the ask params' rejection-field suffix ("" = absent;
+// the JSON rides verbatim into the params object).
+func patAskExtra(scope, fingerprint string) string {
+	out := ""
+	if scope != "" {
+		out += fmt.Sprintf(`,"expectedAccountScope":%q`, scope)
+	}
+
+	if fingerprint != "" {
+		out += fmt.Sprintf(`,"rejectedProjectTokenFingerprint":%q`, fingerprint)
+	}
+
+	return out
+}
+
+// patWantAnswer is the strict success-arm wire shape for the given material
+// (codec-sorted requestAuth keys; an empty scope OMITS the accountScope key
+// — the byte-compat two-field rule).
+func patWantAnswer(scope, token, keyID string) string {
+	fields := ""
+	if scope != "" {
+		fields += fmt.Sprintf(`"accountScope":%q,`, scope)
+	}
+
+	fields += fmt.Sprintf(`"apiKey":%q,"apiKeyId":%q`, token, keyID)
+
+	return `{"headersApplied":true,"requestAuth":{` + fields + `}}`
+}
+
 // patEnvelope builds one runtime-headers ask; extra JSON fields (the
 // rejection pair) ride verbatim.
 func patEnvelope(reqID, extra string) zcode.Envelope {
-	params := fmt.Sprintf(`{"requestId":%q,"sessionId":"sess_cp1","providerId":"zhipu-account","reason":"model-request"%s}`,
+	params := fmt.Sprintf(
+		`{"requestId":%q,"sessionId":"sess_cp1","providerId":"zhipu-account","reason":"model-request"%s}`,
 		reqID, extra)
 
 	return zcode.Envelope{
@@ -170,7 +201,9 @@ func codingPlanMode() func() string {
 
 // newPatSource wires the source under test with the given minter, mode, and
 // fallback (every field populated — the exhaustruct discipline).
-func newPatSource(minter *scriptMinter, mode func() string, fallback interact.RuntimeHeadersKeySource) interact.RuntimeHeadersKeySource {
+func newPatSource(
+	minter *scriptMinter, mode func() string, fallback interact.RuntimeHeadersKeySource,
+) interact.RuntimeHeadersKeySource {
 	return hostsvc.PatHeadersSource(hostsvc.PatHeadersSourceDeps{
 		Minter:         minter,
 		Mode:           mode,
@@ -181,291 +214,25 @@ func newPatSource(minter *scriptMinter, mode func() string, fallback interact.Ru
 // TestPatHeadersSource is the RED target: arms a-g over the mode-aware
 // source (plan 06-07 Task 2).
 func TestPatHeadersSource(t *testing.T) {
-	t.Run("happy arm answers from the warm cache with zero mints", func(t *testing.T) {
-		minter := &scriptMinter{
-			cache:        patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
-			hasCache:     true,
-			defaultHappy: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeB),
-		}
+	t.Run("happy arm answers from the warm cache with zero mints", testPatHappyArm)
 
-		wire, werr := servePatAsk(t,
-			newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
-			patEnvelope("pat-a", ""))
+	t.Run("fingerprint match drops the cache and re-mints exactly once", testPatFingerprintArm)
 
-		if werr != nil {
-			t.Fatalf("happy arm errored: %+v", werr)
-		}
+	t.Run("second consecutive rejection surfaces the coded error and stops", testPatSecondRejectionArm)
 
-		want := `{"headersApplied":true,"requestAuth":{"accountScope":"` + patFixtureScopeA +
-			`","apiKey":"` + patFixtureTokenA + `","apiKeyId":"` + patFixtureKeyIDA + `"}}`
-		if string(wire) != want {
-			t.Fatalf("happy answer = %s, want the cached three-field answer %s", wire, want)
-		}
+	t.Run("a failed re-mint passes the minter's coded error through", testPatEnsureFailureArm)
 
-		ensures, _ := minter.counts()
-		if ensures != 0 {
-			t.Fatalf("happy arm minted %d time(s), want 0 (Cached consumed)", ensures)
-		}
-	})
+	t.Run("scope mismatch refuses before any token is served", testPatScopeRefusalArm)
 
-	t.Run("fingerprint match drops the cache and re-mints exactly once", func(t *testing.T) {
-		minter := &scriptMinter{
-			cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
-			hasCache: true,
-			ensureScript: []scriptedEnsure{
-				{pat: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeB)},
-			},
-		}
+	t.Run("scope gate outranks the fingerprint re-mint", testPatScopeFirstArm)
 
-		extra := `,"expectedAccountScope":"` + patFixtureScopeA + `","rejectedProjectTokenFingerprint":"` + patFixtureFPA + `"`
-		wire, werr := servePatAsk(t,
-			newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
-			patEnvelope("pat-b", extra))
+	t.Run("empty cache answers the coded unauthenticated state", testPatEmptyCacheArm)
 
-		if werr != nil {
-			t.Fatalf("fingerprint arm errored: %+v", werr)
-		}
+	t.Run("api-key mode delegates byte-compatibly to the static source", testPatAPIKeyDelegationArm)
 
-		want := `{"headersApplied":true,"requestAuth":{"accountScope":"` + patFixtureScopeB +
-			`","apiKey":"` + patFixtureTokenB + `","apiKeyId":"` + patFixtureKeyIDB + `"}}`
-		if string(wire) != want {
-			t.Fatalf("re-mint answer = %s, want the fresh PAT-B answer %s", wire, want)
-		}
+	t.Run("malformed rejection field digests as absent and serves the cache", testPatMalformedFieldArm)
 
-		ensures, invalidates := minter.counts()
-		if ensures != 1 {
-			t.Fatalf("fingerprint arm minted %d time(s), want exactly 1 (the D-05 one-shot)", ensures)
-		}
-
-		if invalidates != 1 {
-			t.Fatalf("fingerprint arm invalidated %d time(s), want exactly 1", invalidates)
-		}
-	})
-
-	t.Run("second consecutive rejection surfaces the coded error and stops", func(t *testing.T) {
-		minter := &scriptMinter{
-			cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
-			hasCache: true,
-			ensureScript: []scriptedEnsure{
-				// The re-mint produced the SAME fingerprint again — the
-				// backend rejects it a second time.
-				{pat: patFixture("zc-synthetic-pat-c-fixture", "key_pat_c", patFixtureFPA, patFixtureScopeA)},
-			},
-		}
-
-		extra := `,"rejectedProjectTokenFingerprint":"` + patFixtureFPA + `"`
-		wire, werr := servePatAsk(t,
-			newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
-			patEnvelope("pat-c", extra))
-
-		if werr == nil {
-			t.Fatalf("second rejection answered %s — want the coded error, never a loop", wire)
-		}
-
-		if !strings.Contains(werr.Message, hostsvc.ErrPatRejectionLoop.Error()) {
-			t.Fatalf("second rejection message = %q, want the %s coded class", werr.Message, hostsvc.ErrPatRejectionLoop.Error())
-		}
-
-		ensures, _ := minter.counts()
-		if ensures != 1 {
-			t.Fatalf("second-rejection arm minted %d time(s), want exactly 1 (2 total with the original — never an infinite loop)", ensures)
-		}
-	})
-
-	t.Run("scope mismatch refuses before any token is served", func(t *testing.T) {
-		minter := &scriptMinter{
-			cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
-			hasCache: true,
-		}
-
-		extra := `,"expectedAccountScope":"` + patFixtureScopeB + `"`
-		wire, werr := servePatAsk(t,
-			newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
-			patEnvelope("pat-d", extra))
-
-		if werr == nil {
-			t.Fatalf("scope mismatch answered %s — want the coded scope-invalidated error, never the stale token", wire)
-		}
-
-		if !strings.Contains(werr.Message, hostsvc.ErrPatScopeInvalidated.Error()) {
-			t.Fatalf("scope error message = %q, want the %s coded class", werr.Message, hostsvc.ErrPatScopeInvalidated.Error())
-		}
-
-		ensures, invalidates := minter.counts()
-		if ensures != 0 || invalidates != 0 {
-			t.Fatalf("scope arm minted/invalidated (%d/%d), want (0/0) — refusal only", ensures, invalidates)
-		}
-	})
-
-	t.Run("scope gate outranks the fingerprint re-mint", func(t *testing.T) {
-		// Both triggers at once: the scope refusal must answer BEFORE the
-		// re-mint fires (T-06-22 — the stale PAT would ride the old
-		// entitlement; the re-mint arm only runs against the CURRENT scope).
-		minter := &scriptMinter{
-			cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
-			hasCache: true,
-			ensureScript: []scriptedEnsure{
-				{pat: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeB)},
-			},
-		}
-
-		extra := `,"expectedAccountScope":"` + patFixtureScopeB + `","rejectedProjectTokenFingerprint":"` + patFixtureFPA + `"`
-		_, werr := servePatAsk(t,
-			newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
-			patEnvelope("pat-d2", extra))
-
-		if werr == nil || !strings.Contains(werr.Message, hostsvc.ErrPatScopeInvalidated.Error()) {
-			t.Fatalf("combined ask error = %+v, want the scope refusal to outrank the re-mint", werr)
-		}
-
-		ensures, _ := minter.counts()
-		if ensures != 0 {
-			t.Fatalf("combined arm minted %d time(s), want 0 (scope gate first)", ensures)
-		}
-	})
-
-	t.Run("empty cache answers the coded unauthenticated state", func(t *testing.T) {
-		minter := &scriptMinter{} // no cache — pre-auth / post-invalidate
-
-		wire, werr := servePatAsk(t,
-			newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
-			patEnvelope("pat-e", ""))
-
-		if werr == nil {
-			t.Fatalf("empty cache answered %s — want the coded error naming the unauthenticated state, never an empty success arm", wire)
-		}
-
-		if !strings.Contains(werr.Message, hostsvc.ErrPatLoginRequired.Error()) {
-			t.Fatalf("PAT-less message = %q, want the %s coded class", werr.Message, hostsvc.ErrPatLoginRequired.Error())
-		}
-
-		ensures, _ := minter.counts()
-		if ensures != 0 {
-			t.Fatalf("PAT-less arm minted %d time(s), want 0 (the ask-side never mints into an unauthenticated state)", ensures)
-		}
-	})
-
-	t.Run("api-key mode delegates byte-compatibly to the static source", func(t *testing.T) {
-		static := hostsvc.RuntimeHeadersHandler(hostsvc.NewStaticKey(patFixtureModeKey, patFixtureModeID))
-
-		mode := func() string { return "api-key" }
-
-		wire, werr := servePatAsk(t, newPatSource(&scriptMinter{}, mode, static), patEnvelope("pat-f", ""))
-		if werr != nil {
-			t.Fatalf("api-key delegation errored: %+v", werr)
-		}
-
-		// Byte-compat: the SAME ask through the static handler alone must
-		// marshal identical bytes.
-		direct, directErr := servePatAsk(t, static, patEnvelope("pat-f-direct", ""))
-		if directErr != nil {
-			t.Fatalf("static handler errored: %+v", directErr)
-		}
-
-		if string(wire) != string(direct) {
-			t.Fatalf("api-key delegation = %s, want byte-identical %s (the static arm's answer)", wire, direct)
-		}
-
-		want := `{"headersApplied":true,"requestAuth":{"apiKey":"` + patFixtureModeKey + `","apiKeyId":"` + patFixtureModeID + `"}}`
-		if string(wire) != want {
-			t.Fatalf("api-key delegation = %s, want the two-field static answer %s", wire, want)
-		}
-
-		// The unauthenticated mode delegates too — the static arm's
-		// unconfigured posture covers the pre-auth ask (the recorded mode is
-		// empty until authenticate succeeds).
-		noneMode := func() string { return "" }
-
-		_, unauthErr := servePatAsk(t, newPatSource(&scriptMinter{}, noneMode, unconfiguredFallback()), patEnvelope("pat-f2", ""))
-		if unauthErr == nil || !strings.Contains(unauthErr.Message, "ZCODE_ACP_API_KEY") {
-			t.Fatalf("unauthenticated mode must delegate to the static arm's unconfigured posture, got %+v", unauthErr)
-		}
-	})
-
-	t.Run("malformed rejection field digests as absent and serves the cache", func(t *testing.T) {
-		minter := &scriptMinter{
-			cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
-			hasCache: true,
-		}
-
-		extra := `,"rejectedProjectTokenFingerprint":"` + patFixtureBadHex + `"`
-		wire, werr := servePatAsk(t,
-			newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
-			patEnvelope("pat-g", extra))
-
-		if werr != nil {
-			t.Fatalf("malformed-field arm errored: %+v", werr)
-		}
-
-		want := `{"headersApplied":true,"requestAuth":{"accountScope":"` + patFixtureScopeA +
-			`","apiKey":"` + patFixtureTokenA + `","apiKeyId":"` + patFixtureKeyIDA + `"}}`
-		if string(wire) != want {
-			t.Fatalf("malformed-field answer = %s, want the plain cached answer %s", wire, want)
-		}
-
-		ensures, _ := minter.counts()
-		if ensures != 0 {
-			t.Fatalf("malformed field triggered %d mint(s), want 0 (a malformed field classifies as absent)", ensures)
-		}
-
-		// A well-formed fingerprint that does NOT match the cache is equally
-		// not our token — the plain cached answer, no re-mint.
-		extra = `,"rejectedProjectTokenFingerprint":"` + patFixtureFPB + `"`
-		wire2, werr2 := servePatAsk(t,
-			newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
-			patEnvelope("pat-g2", extra))
-
-		if werr2 != nil || string(wire2) != want {
-			t.Fatalf("mismatching-fingerprint arm = (%s, %+v), want the plain cached answer %s", wire2, werr2, want)
-		}
-	})
-
-	t.Run("concurrent fingerprint asks each re-mint exactly once", func(t *testing.T) {
-		const askers = 8
-
-		minter := &scriptMinter{
-			cache:        patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
-			hasCache:     true,
-			defaultHappy: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeB),
-		}
-
-		src := newPatSource(minter, codingPlanMode(), unconfiguredFallback())
-		extra := `,"rejectedProjectTokenFingerprint":"` + patFixtureFPA + `"`
-
-		var (
-			wg      sync.WaitGroup
-			mu      sync.Mutex
-			badAsks int
-		)
-
-		for i := range askers {
-			wg.Add(1)
-
-			go func(n int) {
-				defer wg.Done()
-
-				wire, werr := servePatAskInGoroutine(src, patEnvelope(fmt.Sprintf("pat-race-%d", n), extra))
-				mu.Lock()
-				defer mu.Unlock()
-
-				if werr != nil || string(wire) != patWantB() {
-					badAsks++
-				}
-			}(i)
-		}
-
-		wg.Wait()
-
-		if badAsks != 0 {
-			t.Fatalf("%d/%d concurrent asks got a wrong answer", badAsks, askers)
-		}
-
-		ensures, invalidates := minter.counts()
-		if ensures != askers || invalidates != askers {
-			t.Fatalf("concurrent asks minted/invalidated (%d/%d), want (%d/%d) — exactly one re-mint per ask",
-				ensures, invalidates, askers, askers)
-		}
-	})
+	t.Run("concurrent asks ride one re-mint without corruption", testPatConcurrentArm)
 }
 
 // servePatAskInGoroutine is the goroutine-safe ask runner (no *testing.T —
@@ -486,8 +253,369 @@ func servePatAskInGoroutine(src interact.RuntimeHeadersKeySource, env zcode.Enve
 	return out, serveErr
 }
 
-// patWantB is the fresh-PAT-B wire shape the race arm asserts on.
-func patWantB() string {
-	return `{"headersApplied":true,"requestAuth":{"accountScope":"` + patFixtureScopeB +
-		`","apiKey":"` + patFixtureTokenB + `","apiKeyId":"` + patFixtureKeyIDB + `"}}`
+// wellShapedPatAnswer reports whether the marshaled payload is the strict
+// success shape with all three fields present and non-empty (the shape is
+// deterministic across the pre-/post-re-mint timing; the exact token is not).
+func wellShapedPatAnswer(wire []byte) bool {
+	var parsed struct {
+		HeadersApplied bool `json:"headersApplied"`
+		RequestAuth    struct {
+			APIKey       string `json:"apiKey"`
+			APIKeyID     string `json:"apiKeyId"`
+			AccountScope string `json:"accountScope"`
+		} `json:"requestAuth"`
+	}
+
+	if err := json.Unmarshal(wire, &parsed); err != nil {
+		return false
+	}
+
+	return parsed.HeadersApplied &&
+		parsed.RequestAuth.APIKey != "" &&
+		parsed.RequestAuth.APIKeyID != "" &&
+		parsed.RequestAuth.AccountScope != ""
+}
+
+// testPatHappyArm locks the warm-cache answer: the cached three-field PAT serves with zero mints (Cached consumed).
+func testPatHappyArm(t *testing.T) {
+	minter := &scriptMinter{
+		cache:        patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
+		hasCache:     true,
+		defaultHappy: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeA),
+	}
+
+	wire, werr := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-a", patAskExtra("", "")))
+
+	if werr != nil {
+		t.Fatalf("happy arm errored: %+v", werr)
+	}
+
+	want := patWantAnswer(patFixtureScopeA, patFixtureTokenA, patFixtureKeyIDA)
+	if string(wire) != want {
+		t.Fatalf("happy answer = %s, want the cached three-field answer %s", wire, want)
+	}
+
+	if ensures, _ := minter.counts(); ensures != 0 {
+		t.Fatalf("happy arm minted %d time(s), want 0 (Cached consumed)", ensures)
+	}
+}
+
+// testPatFingerprintArm locks the D-05 one-shot: a rejected fingerprint equal to the cached one drops the cache and
+// re-mints EXACTLY once, answering the fresh token under the unchanged scope.
+func testPatFingerprintArm(t *testing.T) {
+	// The realistic rejection shape: the backend rejected THIS token
+	// (expiry/revocation) while the sign-in is UNCHANGED — the echoed
+	// expectedAccountScope equals the cached scope and the re-minted
+	// token keeps it (the scope digest covers the login, not the token).
+	minter := &scriptMinter{
+		cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
+		hasCache: true,
+		ensureScript: []scriptedEnsure{
+			{pat: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeA)},
+		},
+	}
+
+	wire, werr := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-b", patAskExtra(patFixtureScopeA, patFixtureFPA)))
+
+	if werr != nil {
+		t.Fatalf("fingerprint arm errored: %+v", werr)
+	}
+
+	want := patWantAnswer(patFixtureScopeA, patFixtureTokenB, patFixtureKeyIDB)
+	if string(wire) != want {
+		t.Fatalf("re-mint answer = %s, want the fresh PAT-B answer %s", wire, want)
+	}
+
+	ensures, invalidates := minter.counts()
+	if ensures != 1 {
+		t.Fatalf("fingerprint arm minted %d time(s), want exactly 1 (the D-05 one-shot)", ensures)
+	}
+
+	if invalidates != 1 {
+		t.Fatalf("fingerprint arm invalidated %d time(s), want exactly 1", invalidates)
+	}
+}
+
+// testPatSecondRejectionArm locks the second-failure refusal: the re-minted fingerprint rejected again answers the
+// coded ErrPatRejectionLoop class and stops (two total mints, never a loop).
+func testPatSecondRejectionArm(t *testing.T) {
+	minter := &scriptMinter{
+		cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
+		hasCache: true,
+		ensureScript: []scriptedEnsure{
+			// The re-mint produced the SAME fingerprint again — the
+			// backend rejects it a second time.
+			{pat: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPA, patFixtureScopeA)},
+		},
+	}
+
+	wire, werr := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-c", patAskExtra("", patFixtureFPA)))
+
+	if werr == nil {
+		t.Fatalf("second rejection answered %s — want the coded error, never a loop", wire)
+	}
+
+	if !strings.Contains(werr.Message, hostsvc.ErrPatRejectionLoop.Error()) {
+		t.Fatalf("second rejection message = %q, want the %s coded class",
+			werr.Message, hostsvc.ErrPatRejectionLoop.Error())
+	}
+
+	if ensures, _ := minter.counts(); ensures != 1 {
+		t.Fatalf("second-rejection arm minted %d time(s), want exactly 1 "+
+			"(2 total with the original — never an infinite loop)", ensures)
+	}
+}
+
+// testPatEnsureFailureArm locks the pass-through: a failed re-mint answers the minter's coded error class, never a
+// fabricated success, with no silent retry.
+func testPatEnsureFailureArm(t *testing.T) {
+	minter := &scriptMinter{
+		cache:        patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
+		hasCache:     true,
+		ensureScript: []scriptedEnsure{{err: errFixtureEnsureFailure}},
+	}
+
+	wire, werr := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-c2", patAskExtra("", patFixtureFPA)))
+
+	if werr == nil {
+		t.Fatalf("failed re-mint answered %s — want the coded error envelope, never a fabricated success", wire)
+	}
+
+	if !strings.Contains(werr.Message, errFixtureEnsureFailure.Error()) {
+		t.Fatalf("re-mint failure message = %q, want the minter's coded class passed through", werr.Message)
+	}
+
+	if ensures, _ := minter.counts(); ensures != 1 {
+		t.Fatalf("failed re-mint arm minted %d time(s), want exactly 1 (no silent retry)", ensures)
+	}
+}
+
+// testPatScopeRefusalArm locks T-06-22: an expectedAccountScope mismatch answers the coded scope-invalidated error
+// before any token is served, minting nothing.
+func testPatScopeRefusalArm(t *testing.T) {
+	minter := &scriptMinter{
+		cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
+		hasCache: true,
+	}
+
+	wire, werr := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-d", patAskExtra(patFixtureScopeB, "")))
+
+	if werr == nil {
+		t.Fatalf("scope mismatch answered %s — want the coded scope-invalidated error, never the stale token", wire)
+	}
+
+	if !strings.Contains(werr.Message, hostsvc.ErrPatScopeInvalidated.Error()) {
+		t.Fatalf("scope error message = %q, want the %s coded class",
+			werr.Message, hostsvc.ErrPatScopeInvalidated.Error())
+	}
+
+	ensures, invalidates := minter.counts()
+	if ensures != 0 || invalidates != 0 {
+		t.Fatalf("scope arm minted/invalidated (%d/%d), want (0/0) — refusal only", ensures, invalidates)
+	}
+}
+
+// testPatScopeFirstArm locks the trigger order: the scope refusal outranks the fingerprint re-mint when both ride one
+// ask.
+func testPatScopeFirstArm(t *testing.T) {
+	// Both triggers at once: the scope refusal must answer BEFORE the
+	// re-mint fires (T-06-22 — the stale PAT would ride the old
+	// entitlement; the re-mint arm only runs against the CURRENT scope).
+	minter := &scriptMinter{
+		cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
+		hasCache: true,
+		ensureScript: []scriptedEnsure{
+			{pat: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeB)},
+		},
+	}
+
+	_, werr := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-d2", patAskExtra(patFixtureScopeB, patFixtureFPA)))
+
+	if werr == nil || !strings.Contains(werr.Message, hostsvc.ErrPatScopeInvalidated.Error()) {
+		t.Fatalf("combined ask error = %+v, want the scope refusal to outrank the re-mint", werr)
+	}
+
+	if ensures, _ := minter.counts(); ensures != 0 {
+		t.Fatalf("combined arm minted %d time(s), want 0 (scope gate first)", ensures)
+	}
+}
+
+// testPatEmptyCacheArm locks the PAT-less arm: an empty cache answers the coded unauthenticated state and never mints
+// from the ask side.
+func testPatEmptyCacheArm(t *testing.T) {
+	minter := &scriptMinter{} // no cache — pre-auth / post-invalidate
+
+	wire, werr := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-e", patAskExtra("", "")))
+
+	if werr == nil {
+		t.Fatalf("empty cache answered %s — want the coded error naming the "+
+			"unauthenticated state, never an empty success arm", wire)
+	}
+
+	if !strings.Contains(werr.Message, hostsvc.ErrPatLoginRequired.Error()) {
+		t.Fatalf("PAT-less message = %q, want the %s coded class",
+			werr.Message, hostsvc.ErrPatLoginRequired.Error())
+	}
+
+	if ensures, _ := minter.counts(); ensures != 0 {
+		t.Fatalf("PAT-less arm minted %d time(s), want 0 (the ask-side never mints "+
+			"into an unauthenticated state)", ensures)
+	}
+}
+
+// testPatAPIKeyDelegationArm locks D-11's other half: api-key (and unauthenticated None) mode delegates byte-
+// compatibly to the static source.
+func testPatAPIKeyDelegationArm(t *testing.T) {
+	static := hostsvc.RuntimeHeadersHandler(hostsvc.NewStaticKey(patFixtureModeTk, patFixtureModeID))
+	mode := func() string { return "api-key" }
+
+	wire, werr := servePatAsk(t, newPatSource(&scriptMinter{}, mode, static),
+		patEnvelope("pat-f", patAskExtra("", "")))
+	if werr != nil {
+		t.Fatalf("api-key delegation errored: %+v", werr)
+	}
+
+	// Byte-compat: the SAME ask through the static handler alone must
+	// marshal identical bytes.
+	direct, directErr := servePatAsk(t, static, patEnvelope("pat-f-direct", patAskExtra("", "")))
+	if directErr != nil {
+		t.Fatalf("static handler errored: %+v", directErr)
+	}
+
+	if !bytes.Equal(wire, direct) {
+		t.Fatalf("api-key delegation = %s, want byte-identical %s (the static arm's answer)", wire, direct)
+	}
+
+	want := patWantAnswer("", patFixtureModeTk, patFixtureModeID)
+	if string(wire) != want {
+		t.Fatalf("api-key delegation = %s, want the two-field static answer %s", wire, want)
+	}
+
+	// The unauthenticated mode delegates too — the static arm's
+	// unconfigured posture covers the pre-auth ask (the recorded mode is
+	// empty until authenticate succeeds).
+	noneMode := func() string { return "" }
+
+	_, unauthErr := servePatAsk(t, newPatSource(&scriptMinter{}, noneMode, unconfiguredFallback()),
+		patEnvelope("pat-f2", patAskExtra("", "")))
+	if unauthErr == nil || !strings.Contains(unauthErr.Message, "ZCODE_ACP_API_KEY") {
+		t.Fatalf("unauthenticated mode must delegate to the static arm's "+
+			"unconfigured posture, got %+v", unauthErr)
+	}
+}
+
+// testPatMalformedFieldArm locks the dig discipline: a malformed (or valid-but-mismatching) rejection field
+// classifies as absent and serves the plain cached answer.
+func testPatMalformedFieldArm(t *testing.T) {
+	minter := &scriptMinter{
+		cache:    patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
+		hasCache: true,
+	}
+
+	want := patWantAnswer(patFixtureScopeA, patFixtureTokenA, patFixtureKeyIDA)
+
+	wire, werr := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-g", patAskExtra("", patFixtureBadHex)))
+
+	if werr != nil {
+		t.Fatalf("malformed-field arm errored: %+v", werr)
+	}
+
+	if string(wire) != want {
+		t.Fatalf("malformed-field answer = %s, want the plain cached answer %s", wire, want)
+	}
+
+	if ensures, _ := minter.counts(); ensures != 0 {
+		t.Fatalf("malformed field triggered %d mint(s), want 0 (a malformed field classifies as absent)", ensures)
+	}
+
+	// A well-formed fingerprint that does NOT match the cache is equally
+	// not our token — the plain cached answer, no re-mint.
+	wire2, werr2 := servePatAsk(t,
+		newPatSource(minter, codingPlanMode(), unconfiguredFallback()),
+		patEnvelope("pat-g2", patAskExtra("", patFixtureFPB)))
+
+	if werr2 != nil || string(wire2) != want {
+		t.Fatalf("mismatching-fingerprint arm = (%s, %+v), want the plain cached answer %s", wire2, werr2, want)
+	}
+}
+
+// testPatConcurrentArm locks the race posture: plain asks ride one fingerprint re-mint with all answers well-shaped
+// and exactly one Invalidate+Ensure (-race clean).
+func testPatConcurrentArm(t *testing.T) {
+	// The deterministic concurrency shape: ONE ask carries the rejected
+	// fingerprint (exactly one Invalidate+Ensure — after it lands, the
+	// cache holds the fresh token no fingerprint matches anymore) while
+	// the plain asks ride along concurrently. Every ask must answer a
+	// well-shaped success (the pre- or post-re-mint cached token — both
+	// are current), never an error, and the counters must show exactly
+	// the one re-mint. -race proves the per-ask bookkeeping corrupts
+	// nothing.
+	const (
+		plainAskers    = 7
+		fingerprinters = 1
+		askers         = plainAskers + fingerprinters
+	)
+
+	minter := &scriptMinter{
+		cache:        patFixture(patFixtureTokenA, patFixtureKeyIDA, patFixtureFPA, patFixtureScopeA),
+		hasCache:     true,
+		defaultHappy: patFixture(patFixtureTokenB, patFixtureKeyIDB, patFixtureFPB, patFixtureScopeA),
+	}
+
+	src := newPatSource(minter, codingPlanMode(), unconfiguredFallback())
+
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		badAsks int
+	)
+
+	for i := range askers {
+		wg.Add(1)
+
+		rejection := ""
+		if i == 0 {
+			rejection = patAskExtra("", patFixtureFPA)
+		}
+
+		go func(n int, extra string) {
+			defer wg.Done()
+
+			wire, werr := servePatAskInGoroutine(src, patEnvelope(fmt.Sprintf("pat-race-%d", n), extra))
+			mu.Lock()
+			defer mu.Unlock()
+
+			if werr != nil || !wellShapedPatAnswer(wire) {
+				badAsks++
+			}
+		}(i, rejection)
+	}
+
+	wg.Wait()
+
+	if badAsks != 0 {
+		t.Fatalf("%d/%d concurrent asks got a wrong answer", badAsks, askers)
+	}
+
+	ensures, invalidates := minter.counts()
+	if ensures != fingerprinters || invalidates != fingerprinters {
+		t.Fatalf("concurrent asks minted/invalidated (%d/%d), want (%d/%d) — "+
+			"exactly one re-mint, the riders unaffected", ensures, invalidates, fingerprinters, fingerprinters)
+	}
 }
