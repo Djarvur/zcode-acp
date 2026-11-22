@@ -270,6 +270,7 @@ func goldenDrivers() map[string]driverFunc {
 		"desktop-nodelta-pollerror":      driveDesktopNodeltaPollError,
 		"desktop-nodelta-slowpoll":       driveDesktopNodeltaSlowPoll,
 		"desktop-nodelta-noassistant":    driveDesktopNodeltaNoAssistant,
+		"desktop-terminal-signal":        driveDesktopTerminalSignal,
 		"no-reasoning":                   driveNoReasoning,
 		"send-refused-32010":             driveSendRefused32010,
 		"complete-then-cancel":           driveCompleteThenCancel,
@@ -808,6 +809,26 @@ func driveDesktopNodeltaPollError(ctx context.Context, d *exchangeDriver) {
 // are the acpfront tier's lock).
 func driveDesktopNodeltaSlowPoll(ctx context.Context, d *exchangeDriver) {
 	driveDesktopReconcileTurn(ctx, d)
+}
+
+// driveDesktopTerminalSignal: the QA-03 field-blocker corpus row (the REAL
+// desktop's terminal surface, EXP-VM-QA02-family dumps 2026-11-23, green106
+// — raw3/raw4 shapes scrubbed) — the front preamble, then the send whose
+// ordered side effects replay the capture-verbatim turn-start arc
+// (state.running → computer-use turn-started → v4 turn.started → session/
+// event turn.started). The REAL terminal signals (computer-use
+// turn-completed + v4/telemetry turn.terminal status success) and the
+// model.streaming deltas ride the THIRD session/messages rule: the second
+// rule's 7s delay models the model's silent think outlasting the front's
+// quiet floor (the field failure shape — the delayed-terminal semantics are
+// the acpfront tier's lock, TestDesktopTerminalSignalTiming). This replay
+// locks the scripted wire arc itself: no poll is driven here (a poll would
+// stall the exchange on the scripted delay for no back-tier fact).
+func driveDesktopTerminalSignal(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
+
+	h := happyTurnHarness{t: d.t, conn: d.conn}
+	h.send(ctx)
 }
 
 // driveDesktopReconcileTurn is the shared reconcile-row body: the front

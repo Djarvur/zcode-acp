@@ -49,8 +49,14 @@ const (
 
 	// wire keys of the turn-scoped carrier params (dialect §5: every
 	// carrier carries the turnId; session envelopes are session-scoped).
-	wireKeySessionID = "sessionId"
-	wireKeyTurnID    = "turnId"
+	wireKeySessionID      = "sessionId"
+	wireKeyTurnID         = "turnId"
+	wireKeyKind           = "kind"
+	wireKeyEventID        = "eventId"
+	wireKeySequenceNumber = "sequenceNumber"
+	wireKeyTimestamp      = "timestamp"
+	wireKeyMessages       = "messages"
+	wireKeyType           = "type"
 
 	// unknownMethodReply is the fake's unknown-method -32601 reply message
 	// (goconst: the literal repeats across the programmatic scenarios).
@@ -114,7 +120,7 @@ func messagesRule(t *testing.T) fake.RequestRule {
 	return fake.RequestRule{
 		Method: zcode.MethodSessionMessages,
 		Reply: &fake.Reply{Result: rawOf(t, map[string]any{
-			"messages":       []any{},
+			wireKeyMessages:  []any{},
 			wireKeySessionID: fixSessionID,
 		})},
 	}
@@ -131,7 +137,7 @@ func statePatch(t *testing.T, status, reason string) fake.SideEffect {
 		"revision":       1,
 		"scope":          "session",
 		wireKeySessionID: fixSessionID,
-		"type":           "state.updated",
+		wireKeyType:      "state.updated",
 	})
 }
 
@@ -140,7 +146,7 @@ func sessionEvent(t *testing.T, kind, turnID string) fake.SideEffect {
 	t.Helper()
 
 	return emit(t, zcode.MethodSessionEvent, map[string]any{
-		"type":         kind,
+		wireKeyType:    kind,
 		"seq":          4,
 		wireKeyTurnID:  turnID,
 		"traceId":      "trace_fix1",
@@ -154,7 +160,7 @@ func v4Telemetry(t *testing.T, kind, turnID string) fake.SideEffect {
 	t.Helper()
 
 	return emit(t, turn.MethodV4Telemetry, map[string]any{
-		"kind":           kind,
+		wireKeyKind:      kind,
 		wireKeyTurnID:    turnID,
 		"eventSeq":       2,
 		wireKeySessionID: fixSessionID,
@@ -168,12 +174,12 @@ func computerUse(t *testing.T, kind, turnID string) fake.SideEffect {
 	t.Helper()
 
 	return emit(t, turn.MethodComputerUseOperation, map[string]any{
-		"kind":           kind,
-		wireKeyTurnID:    turnID,
-		"sequenceNumber": 1,
-		wireKeySessionID: fixSessionID,
-		"eventId":        "ev_fix1",
-		"timestamp":      "2026-01-01T00:00:00Z",
+		wireKeyKind:           kind,
+		wireKeyTurnID:         turnID,
+		wireKeySequenceNumber: 1,
+		wireKeySessionID:      fixSessionID,
+		wireKeyEventID:        "ev_fix1",
+		wireKeyTimestamp:      "2026-01-01T00:00:00Z",
 	})
 }
 
@@ -436,7 +442,7 @@ func pollPage(t *testing.T, messages ...string) []zcode.Envelope {
 	t.Helper()
 
 	b, err := json.Marshal(map[string]any{
-		"messages":       messages,
+		wireKeyMessages:  messages,
 		wireKeySessionID: fixSessionID,
 	})
 	if err != nil {

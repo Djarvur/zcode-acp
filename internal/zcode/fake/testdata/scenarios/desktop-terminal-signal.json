@@ -1,0 +1,124 @@
+{
+  "name": "desktop-terminal-signal",
+  "on_request": [
+    {
+      "method": "session/create",
+      "reply": {
+        "result": {"session": {"sessionId": "sess_fix1"}, "protocol": {"name": "ZCode Protocol", "version": 1}}
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "starting", "generation": 1, "revision": 1, "lastError": null}
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {"sessionId": "sess_fix1", "scope": "runtime-materialization"},
+            "timeout_ms": 15000,
+            "expect_answer": {"result": {"nativeSearchEnhancementsEnabled": false, "memoryEnabled": false}}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {"sessionId": "sess_fix1", "state": "ready", "generation": 1, "revision": 2, "lastError": null}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {
+        "result": {"sessionId": "sess_fix1", "eventSeq": 0, "events": []}
+      }
+    },
+    {
+      "method": "session/setModel",
+      "reply": {"result": {}}
+    },
+    {
+      "method": "session/send",
+      "times": 1,
+      "reply": {"result": {"accepted": true, "sessionId": "sess_fix1", "stateRevision": 1}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {"patch": {"status": "running"}, "reason": "prompt_started", "revision": 1, "scope": "session", "sessionId": "sess_fix1", "type": "state.updated"}
+          }
+        },
+        {
+          "emit": {
+            "method": "computer-use/operation-event",
+            "params": {"eventId": "evt_cu_start", "sequenceNumber": 4, "sessionId": "sess_fix1", "timestamp": 1795371946926, "kind": "turn-started", "turnId": "turn_fix1"}
+          }
+        },
+        {
+          "emit": {
+            "method": "v4/telemetry/event",
+            "params": {"memoryEnabled": false, "version": 1, "eventId": "evt_cu_start", "eventSeq": 4, "occurredAt": 1795371946926, "sessionId": "sess_fix1", "turnId": "turn_fix1", "kind": "turn.started", "modelName": "GLM-5.3-Flash", "modelProvider": "zai-api"}
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_cu_start", "payload": {"executionStartedAt": 1795371946826, "turnNumber": 0, "messageId": "msg_fix1", "foregroundExecutionId": "runtime_command_1", "queryId": "query_fix1"}, "seq": 6, "sessionId": "sess_fix1", "timestamp": 1795371946827, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "turn.started"}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/messages",
+      "times": 1,
+      "reply": {"result": {"messages": [], "sessionId": "sess_fix1"}}
+    },
+    {
+      "method": "session/messages",
+      "times": 1,
+      "delay_ms": 7000,
+      "reply": {"result": {"messages": [], "sessionId": "sess_fix1"}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_delta1", "payload": {"assistantMessageId": "msg_fix1", "delta": "Thinking", "done": false, "kind": "reasoning_delta"}, "seq": 7, "sessionId": "sess_fix1", "timestamp": 1795371951072, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/messages",
+      "times": 1,
+      "reply": {"result": {"messages": [], "sessionId": "sess_fix1"}}
+    },
+    {
+      "method": "session/messages",
+      "reply": {"result": {"messages": [], "sessionId": "sess_fix1"}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {"deliveryKind": "desktop-continuous", "eventId": "evt_delta2", "payload": {"assistantMessageId": "msg_fix1", "delta": "ok", "done": false, "kind": "text_delta"}, "seq": 8, "sessionId": "sess_fix1", "timestamp": 1795371951333, "traceId": "trace_fix1", "turnId": "turn_fix1", "type": "model.streaming"}
+          }
+        },
+        {
+          "emit": {
+            "method": "computer-use/operation-event",
+            "params": {"eventId": "evt_cu_done", "sequenceNumber": 30, "sessionId": "sess_fix1", "timestamp": 1795371951553, "kind": "turn-completed", "turnId": "turn_fix1"}
+          }
+        },
+        {
+          "emit": {
+            "method": "v4/telemetry/event",
+            "params": {"memoryEnabled": false, "version": 1, "eventId": "evt_cu_done", "eventSeq": 30, "occurredAt": 1795371951553, "sessionId": "sess_fix1", "turnId": "turn_fix1", "kind": "turn.terminal", "status": "success", "resultType": "success", "durationMs": 4701, "tokenCount": 16, "toolCallCount": 0}
+          }
+        }
+      ]
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}
