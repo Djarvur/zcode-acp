@@ -103,6 +103,40 @@ type McpServerDef struct {
 	Kind string // "stdio" | "http" | "sse" | "acp"
 }
 
+// Neutral config-option categories (MODEL-01, plan 06-04): the ACP wire
+// strings the adapter maps onto the SDK's SessionConfigOptionCategory —
+// the same wire-string vocabulary discipline as ToolKind*/PermKind*.
+const (
+	ConfigCategoryModel        = "model"
+	ConfigCategoryThoughtLevel = "thought_level"
+)
+
+// SelectOptionDef is one selectable value of a config-option select list
+// (MODEL-01, D-08 verbatim mirror): the backend's label and description
+// ride exactly as reported — the wrapper never filters, renames, or
+// enriches the list (a disabledReason-carrying entry stays present, as
+// reported).
+type SelectOptionDef struct {
+	Value       string
+	Name        string
+	Description string
+}
+
+// ConfigOptionDef is one neutral session config option (MODEL-01): a
+// select list the client renders as the model / thought-level picker.
+// CurrentValue is SERVER-CONFIRMED ONLY (D-10) — when the backend reports
+// no confirmed current the whole option is omitted from the list (locked
+// OQ2: a smaller honest list beats a fabricated selection). The adapter
+// alone assembles the SDK select variant from this vocabulary; the neutral
+// shape never carries SDK types across the seam (D-01).
+type ConfigOptionDef struct {
+	ID           string
+	Name         string
+	Category     string
+	CurrentValue string
+	Options      []SelectOptionDef
+}
+
 // PromptParams is the decoded prompt turn request: the session id and the
 // prompt content joined into one string (text blocks verbatim;
 // resource_link blocks contribute their URI — Assumption A3).
