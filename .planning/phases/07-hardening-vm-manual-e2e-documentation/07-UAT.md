@@ -3,7 +3,7 @@ status: awaiting-user
 phase: 07-Hardening, VM & Manual E2E, Documentation
 source: [07-09-PLAN.md]
 started: 2026-11-22T14:35:36Z
-updated: 2026-11-22T14:41:08Z
+updated: 2026-11-22T14:47:30Z
 ---
 
 ## Current Test
@@ -40,6 +40,24 @@ expected: |
 
     bash scripts/vm-e2e.sh --binary <path-to-zcode-acp>
 
+  The exact sequence to run (copy-pasteable; the VM needs NO dev toolchain — the binary
+  is built or fetched off the VM per the script header):
+
+    # dev host — build the static binary
+    go build -o zcode-acp ./cmd/zcode-acp
+    # move the script + the binary to the VM (scp, shared folder — any channel)
+    scp scripts/vm-e2e.sh zcode-acp <user>@<vm-host>:~/
+    # on the VM — the whole scenario (all five stages in order)
+    bash ~/vm-e2e.sh --binary ~/zcode-acp
+    # or stage-by-stage (each stage runs standalone):
+    bash ~/vm-e2e.sh --stage discovery
+    bash ~/vm-e2e.sh --stage run --binary ~/zcode-acp
+    bash ~/vm-e2e.sh --stage no-keyring --binary ~/zcode-acp
+    bash ~/vm-e2e.sh --stage auth-apikey --binary ~/zcode-acp      # set ZCODE_ACP_API_KEY in the shell first (value never echoed)
+    bash ~/vm-e2e.sh --stage auth-codingplan --binary ~/zcode-acp  # needs secret-tool + the desktop login + unlocked keyring
+    # hardened full run: missing auth preconditions become FAILs instead of SKIPs
+    bash ~/vm-e2e.sh --require-auth --binary ~/zcode-acp
+
   Expected: every stage's named check prints PASS on a VM with the desktop install
   (discovery, run/arc, auth stages per what the VM has configured, the no-keyring stage
   observing its sentinel arm verbatim); the final line names all PASS
@@ -49,10 +67,17 @@ expected: |
   the discovery check may legitimately FAIL with the actionable per-row diagnostics —
   record which arm was observed; a failed run is recorded honestly (machine findings go
   to the verifier; a fix would be a new gap plan).
+
+  RECORD: paste the script's summary output into this entry's result field verbatim,
+  note which keyring sentinel arm the no-keyring stage observed, then confirm
+  "evidence recorded" before any evidence commit (scan-secrets on the tree AND the
+  staged diff first; the experiments/README.md QA-02 ledger row records the actuals).
 result: awaiting (seeded 2026-11-22 — the user's VM run has not happened yet; the executor
   never fabricates a VM result, D-05/T-07-25. Host pre-verification is already green:
   2026-11-22 the run stage passed 5/5 checks on the dev machine with the built binary,
-  `mise run ci` exit 0, and `go vet -tags realdesktop ./test/realdesktop/` clean.)
+  `mise run ci` exit 0, and `go vet -tags realdesktop ./test/realdesktop/` clean.
+  Stage runnability re-confirmed at handoff staging: `bash -n` clean, `--stage discovery`
+  PASS live, header build-or-fetch instructions match the actual build command.)
 
 ### 2. QA-03 — the Orca card E2E through BOTH auth paths on the real account (the phase USER GATE, D-06)
 expected: |
