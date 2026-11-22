@@ -56,7 +56,11 @@ const closeTurnWait = 10 * time.Second
 // ResumeSessionRequest.Cwd and MUST be absolute (the session-setup MUST —
 // validated BEFORE any backend call, the T-4-01 parity guard, plan 05-10
 // WR-02) and is recorded for the reattached id so the session's tool
-// diff/location paths resolve absolute (Pitfall 5 off the resume path).
+// diff/location paths resolve absolute (Pitfall 5 off the resume path);
+// the reply's settings snapshot is recorded for the same id (WR-01,
+// 07-REVIEW — the D-10 source the picker and the /model slash validate
+// against, since the resume leg carries no setModel follow-up that would
+// re-record it).
 // A resume racing a close is rejected coded-clean at entry and re-checked
 // inside the registerIfOpen section — the re-check and the Register are ONE
 // closingMu-guarded critical section (plan 07-01 WR-05, hardening the
@@ -101,6 +105,17 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (strin
 	// sessionCwdLocked read).
 	f.recordCwd(sid, cwd)
 
+	// WR-01 (07-REVIEW): the resume reply IS the confirmed snapshot (D-10 —
+	// createSessionID's own contract states session/create and
+	// session/resume carry the SAME full snapshot shape), so it is recorded
+	// beside the cwd exactly like NewSession records the create reply.
+	// Without it every resumed session answers SetSessionConfigOption the
+	// misleading -32602 "no confirmed settings (unknown session)" and the
+	// /model slash the pinned no-model refusal despite the
+	// backend-confirmed binding (no setModel follow-up re-records it — the
+	// binding persists backend-side).
+	f.recordSettings(sid, res)
+
 	// The re-issued subscribe (the D-03 gate applies to a reattached
 	// session exactly as to a new one — session/event pushes are gated on
 	// the deliveryKind record, Pitfall 1). No setModel: the binding
@@ -109,11 +124,12 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (strin
 		wireKeySessionID: sid,
 		"deliveryKind":   "desktop-continuous",
 	}); err != nil {
-		// WR-04 (plan 07-01): the cwd recorded above must not leak — this
-		// path has no orphan close (the backend session pre-existed), so
-		// the drop rides the refusal return itself (the WR-07 bounding
-		// invariant holds on failure paths too).
+		// WR-04 (plan 07-01): the cwd AND the settings snapshot recorded
+		// above must not leak — this path has no orphan close (the backend
+		// session pre-existed), so the drops ride the refusal return itself
+		// (the WR-07 bounding invariant holds on failure paths too).
 		f.dropCwd(sid)
+		f.dropSettings(sid)
 
 		return "", acpport.NewInternal("session/resume subscribe: %v", err)
 	}
