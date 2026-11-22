@@ -208,12 +208,12 @@ Plans:
   3. On a machine without a keyring (headless/CI), auth fails fast with a clear actionable error and never hangs a turn
   4. After auth, `session/new` returns `configOptions` covering model and thought level, built from the live provider registry
   5. A client-side config-option change maps to `session/setModel` / `session/setThoughtLevel` on the wire, re-emits the full `configOptions` list, and `currentValue` always reflects the real session state
-**Plans**: 1/8 plans executed
+**Plans**: 2/8 plans executed
 
 Plans:
 **Wave 1**
 - [x] 06-01-PLAN.md — Credential store reader + enc:v1 fallback loader behind the KeyLoader seam (AUTH-02, D-03)
-- [ ] 06-02-PLAN.md — PAT minter: official api.z.ai chain + accountScope + in-process cache (AUTH-02, D-04/D-06/D-07)
+- [x] 06-02-PLAN.md — PAT minter: official api.z.ai chain + accountScope + in-process cache (AUTH-02, D-04/D-06/D-07)
 - [ ] 06-03-PLAN.md — Account-provider overlay snapshot (BuildAccount, verbatim zhipu-account mirror) (AUTH-02)
 - [ ] 06-04-PLAN.md — configOptions translator + capability advertisement + session/new options (MODEL-01, D-08/D-09/D-10)
 
@@ -254,7 +254,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. ZCode Back Leg — Codec, Fake App-Server, Supervisor | 9/9 | Complete    | 2026-11-20 |
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 15/15 | Complete    | 2026-11-22 |
-| 6. OAuth Coding-Plan Path & Model Picker | 1/8 | In Progress | - |
+| 6. OAuth Coding-Plan Path & Model Picker | 2/8 | In Progress | - |
 | 7. Hardening, VM & Manual E2E, Documentation | 0/TBD | Not started | - |
 
 ---
