@@ -359,6 +359,14 @@ func (f *Front) Prompt(
 		return "", acpport.NewInvalidRequest("session/prompt: %s: the session is closing or closed", params.SessionID)
 	}
 
+	// SESS-03 slash intercept (plan 07-05, D-03): the omp dialect sends
+	// model switches as prompt turns — the command form is consumed HERE,
+	// before acquireTurn, so a refused switch never holds the front-wide
+	// turn slot (a refusal and a normal prompt never serialize behind it).
+	if stop, handled, slashErr := f.promptModelSlash(sdkCtx, params, sink); handled {
+		return stop, slashErr
+	}
+
 	turnCtx, release, err := f.acquireTurn(params.SessionID, sink)
 	if err != nil {
 		return "", err // the pre-validated closing rejection (acquireTurn gate)
@@ -418,6 +426,25 @@ func (f *Front) Prompt(
 	}
 }
 
+// modelSlashSelector detects the omp dialect's /model command form in one
+// prompt text (SESS-03, plan 07-05, D-03) and returns the selector: the
+// command alone (or with an empty remainder) yields the empty selector —
+// the no-model refusal arm; the remainder after ONE separating space is the
+// selector verbatim (no trimming, no case folding — the byte-equality
+// contract). "/modelfoo" is NOT the command: it reports not-a-command and
+// the caller treats the prompt as a literal turn.
+func modelSlashSelector(text string) (selector string, isCommand bool) {
+	if text == modelSlashCommand {
+		return "", true
+	}
+
+	if rest, ok := strings.CutPrefix(text, modelSlashSpace); ok {
+		return rest, true
+	}
+
+	return "", false
+}
+
 // Cancel cancels the session's active turn exactly once (D-05): the
 // machine's bypass-lane Cancel is idempotent — repeats and
 // cancel-after-complete are no-ops (Phase 3 proven). The prompt call
@@ -474,6 +501,20 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 const (
 	optionIDModel   = "model"
 	optionIDThought = "thought_level"
+)
+
+// The omp dialect's /model slash-prompt command form (SESS-03, plan 07-05,
+// D-03): model switching is a prompt convention, not a method — the prompt
+// text is exactly the command or the command plus ONE separating space
+// (case-sensitive; "/modelfoo" is NOT the command and falls through as a
+// normal prompt). The happy switch's one short confirmation text chunk is
+// worded freely (A2 — the client classifies only refusals, never success
+// text); the refusal strings carry their own pinned contracts (plan Task 2).
+const (
+	modelSlashCommand = "/model"
+	modelSlashSpace   = modelSlashCommand + " "
+
+	modelSwitchedConfirmationPrefix = "Model switched to "
 )
 
 // The setModel params' remaining camelCase wire keys (the capture-verbatim
@@ -595,6 +636,94 @@ func (f *Front) DeleteSession(ctx context.Context, sessionID string) error {
 	}
 
 	return f.CloseSession(ctx, sessionID)
+}
+
+// promptModelSlash runs the /model slash-prompt intercept (SESS-03, plan
+// 07-05, D-03): a prompt turn whose text is the command form resolves the
+// selector against the session's confirmed configOptions listed values
+// (validate-first, the T-06-17 posture — a refusal is emitted before any
+// backend call and no backend setModel ever carries an unvalidated string)
+// and, on a match, applies it through the SAME machinery the picker's model
+// arm uses (setConfigMutation: the confirmed reasoning level, explicit
+// persist-false) — then resolves as a normal completed turn with one short
+// confirmation text chunk (A2). The handled return carries the turn's
+// outcome; a not-a-command text reports handled=false and falls through to
+// the normal turn path.
+//
+// The intercept runs BEFORE acquireTurn (the Prompt call site), so a
+// refused switch never holds the front-wide turn slot.
+func (f *Front) promptModelSlash(
+	ctx context.Context, params acpport.PromptParams, sink acpport.UpdateSink,
+) (acpport.StopReason, bool, error) {
+	selector, isCommand := modelSlashSelector(params.Text)
+	if !isCommand {
+		return "", false, nil
+	}
+
+	if selector == "" {
+		// The no-argument arm: nothing to resolve — the no-model refusal
+		// class (plan Task 2 pins the wire carriage and strings).
+		return "", true, acpport.NewInternal("session/prompt /model: no model selected")
+	}
+
+	// The validation source is the SAME confirmed-settings read the picker
+	// uses (latestSettings -> BuildConfigOptions): the listed values are the
+	// providerId/modelId serializations (configoptions.go), compared byte-
+	// exact — no case folding, no trimming of the selector itself.
+	raw, ok := f.latestSettings(params.SessionID)
+	if !ok {
+		return "", true, acpport.NewInternal("session/prompt /model: no model selected (unknown session)")
+	}
+
+	s, parsed := ParseSettings(raw)
+	if !parsed {
+		return "", true, acpport.NewInternal(
+			"session/prompt /model: %s: the confirmed settings snapshot does not decode", params.SessionID)
+	}
+
+	def := configOptionByID(BuildConfigOptions(s), optionIDModel)
+	if def == nil {
+		// The snapshot binds no model (D-10: an unbound session renders no
+		// model option) — the no-model refusal class.
+		return "", true, acpport.NewInternal("session/prompt /model: no model selected (no model bound)")
+	}
+
+	if !configOptionListed(def, selector) {
+		// The validate-first refusal: never a backend call (plan Task 2
+		// upgrades this arm to the pinned data.details carriage).
+		return "", true, acpport.NewInternal("session/prompt /model: unknown ACP model %q", selector)
+	}
+
+	mutation, err := setConfigMutation(params.SessionID, s, optionIDModel, selector)
+	if err != nil {
+		return "", true, err
+	}
+
+	res, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, mutation)
+	if err != nil {
+		// WR-01 parity (plan 07-01): a refused slash setModel runs the same
+		// full SESS-01 teardown as the picker refusal — never a zombie front
+		// session against a dead mutation target.
+		f.teardownAfterPickerRefusal(ctx, params.SessionID, err)
+
+		return "", true, acpport.NewInternal("session/setModel: %v", err)
+	}
+
+	// The reply IS the confirmed state (D-10) — the same settings update the
+	// picker performs.
+	f.recordSettings(params.SessionID, res)
+
+	// A2: one short confirmation text chunk — the client classifies only
+	// refusals (error frames), never success text.
+	if err := sink(ctx, acpport.SessionNote{
+		SessionID: params.SessionID,
+		Kind:      acpport.NoteMessage,
+		Delta:     modelSwitchedConfirmationPrefix + selector,
+	}); err != nil {
+		return "", true, acpport.NewInternal("session/prompt: %v", err)
+	}
+
+	return acpport.StopEndTurn, true, nil
 }
 
 // teardownAfterPickerRefusal runs the WR-01 full SESS-01 teardown after a

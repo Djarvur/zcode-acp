@@ -27,8 +27,8 @@ import (
 //   - TestModelSlashRefusalHoldsNoTurnSlot / TestModelSlashSelectorByteEquality /
 //     TestModelSlashCarriesConfirmedLevel (plan Task 3): the edge arms.
 
-// slashPrompt is the client's /model prompt ask (the omp dialect's
-// `text:e=>`/model ${e}`` wire shape — one text block).
+// slashPrompt is the client's /model prompt ask (the omp dialect's wire
+// shape — one text block carrying "/model <name>").
 func slashPrompt(sessionID, text string) acp.PromptRequest {
 	return acp.PromptRequest{
 		SessionId: acp.SessionId(sessionID),
