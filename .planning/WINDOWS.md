@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 13
+open_count: 14
 waived_count: 0
 fixed_count: 1
-total_count: 14
-last_updated: 2026-11-21T10:08:55.578Z
+total_count: 15
+last_updated: 2026-11-22T04:52:07.817Z
 ---
 
 # Broken Windows Ledger
@@ -29,6 +29,7 @@ last_updated: 2026-11-21T10:08:55.578Z
 | 12 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:52.672Z |  |
 | 13 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:58.318Z |  |
 | 14 | 05 | unmet-truth | test/realdesktop/apicycle_test.go | 208 | REAL RUN attempt 2 (EXP-APIKEY-CYCLE-02): file-read tool turn refused by the desktop turn latch ('another prompt is already running') — the real-tier full cycle remains unproven; auth read-back leg field-proven; next gap plan must add a turn-latch drain between sends | open |  | 2026-11-21T10:08:55.578Z |  |
+| 15 | 6 | unrun-verify | test/realdesktop/codingplan_test.go |  | TestCodingPlanFullCycle real-account run is the human-gated end-of-phase UAT (D-12/D-13): executor prepared harness+runbook+ledger row PENDING; the run executes under human control at phase verification, never autonomously, never CI | open |  | 2026-11-22T04:52:07.817Z |  |
 
 ````json
 [
@@ -211,6 +212,19 @@ last_updated: 2026-11-21T10:08:55.578Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-21T10:08:55.578Z",
+    "resolved_at": null,
+    "milestone": "v0.20.0"
+  },
+  {
+    "id": 15,
+    "kind": "unrun-verify",
+    "phase": "6",
+    "file": "test/realdesktop/codingplan_test.go",
+    "line": null,
+    "description": "TestCodingPlanFullCycle real-account run is the human-gated end-of-phase UAT (D-12/D-13): executor prepared harness+runbook+ledger row PENDING; the run executes under human control at phase verification, never autonomously, never CI",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-22T04:52:07.817Z",
     "resolved_at": null,
     "milestone": "v0.20.0"
   }
