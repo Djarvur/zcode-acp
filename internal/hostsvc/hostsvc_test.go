@@ -32,6 +32,17 @@ import (
 // real credential; the scan-secrets gate stays green).
 const syntheticTestKey = "zc-synthetic-test-key"
 
+// fixtureLayoutExplicit is the explicit-layout supervisor.Install the
+// fixtures build (the override discovery mode — supervisor's Install doc).
+const fixtureLayoutExplicit = "explicit"
+
+// envelopeKeys is the strict push envelope's exactly-four key set (the
+// schema both the api-key and the account builders must emit — extra
+// members are parse errors on the wire).
+func envelopeKeys() []string {
+	return []string{"revision", "basedOnZCodeBuiltinRevision", "providers", "states"}
+}
+
 // fixtureInstall writes a temp install whose zcode-builtin.json records the
 // given revision int. The formula input is the resolved absolute PATH
 // STRING, so two temp dirs with equal revision ints must produce different
@@ -51,7 +62,7 @@ func fixtureInstall(t *testing.T, rev int) supervisor.Install {
 		Binary:      filepath.Join(root, "zcode"),
 		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
 		BuiltinFile: builtin,
-		Layout:      "explicit",
+		Layout:      fixtureLayoutExplicit,
 	}
 }
 
@@ -131,7 +142,7 @@ func assertStrictEnvelope(t *testing.T, snap hostsvc.Snapshot) {
 		t.Fatalf("decode envelope: %v (%s)", err, wire)
 	}
 
-	wantKeys := []string{"revision", "basedOnZCodeBuiltinRevision", "providers", "states"}
+	wantKeys := envelopeKeys()
 	if len(got) != len(wantKeys) {
 		t.Fatalf("envelope keys = %v, want exactly %v (strict schema — extra fields are parse errors)",
 			keysOf(got), wantKeys)

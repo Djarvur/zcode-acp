@@ -145,6 +145,8 @@ func selectionKind(raw json.RawMessage) (string, bool) {
 // settingDoc is the minimal decode of the desktop's setting.json — the
 // capture-verbatim camelCase wire keys the verified rule reads. selections
 // values stay raw so the kind dig can degrade per family.
+//
+//nolint:tagliatelle // wire shape: the desktop's setting.json keys are capture-verbatim camelCase
 type settingDoc struct {
 	ProviderFamilyConnectionSelections map[string]json.RawMessage `json:"providerFamilyConnectionSelections"`
 	ModelProviderFamilyModes           map[string]string          `json:"modelProviderFamilyModes"`

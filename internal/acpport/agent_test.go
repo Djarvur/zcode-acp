@@ -209,7 +209,8 @@ func TestInitCapabilities(t *testing.T) {
 	// is AgentCapabilities.SessionCapabilities.Options (the empty-struct
 	// pointer; nil means unadvertised).
 	if resp.AgentCapabilities.SessionCapabilities.Options == nil {
-		t.Fatalf("initialize must advertise sessionCapabilities.options (the empty-struct opt-in, D-11): %+v", resp.AgentCapabilities.SessionCapabilities)
+		t.Fatalf("initialize must advertise sessionCapabilities.options (the empty-struct opt-in, D-11): %+v",
+			resp.AgentCapabilities.SessionCapabilities)
 	}
 
 	if resp.ProtocolVersion != acp.ProtocolVersionNumber {
@@ -219,33 +220,6 @@ func TestInitCapabilities(t *testing.T) {
 	assertAgentInfo(t, resp.AgentInfo)
 	assertAuthMethods(t, resp.AuthMethods)
 	assertHonestFrame(t, resp)
-}
-
-// newSessionConfigOptions is the canned neutral option list the scripted
-// Handlers replay — the adapter's select-assembly counterparty (model +
-// thought_level, the translation table's two entries; the provider ids mix
-// zai-api and the account prefix — D-11's both-paths posture).
-var newSessionConfigOptions = []acpport.ConfigOptionDef{
-	{
-		ID:           "model",
-		Name:         "Model",
-		Category:     acpport.ConfigCategoryModel,
-		CurrentValue: "zai-api/GLM-5.3-Flash",
-		Options: []acpport.SelectOptionDef{
-			{Value: "zai-api/GLM-5.3-Flash", Name: "GLM-5.3-Flash", Description: "The flagship reasoning model"},
-			{Value: "zai-account/GLM-5-turbo", Name: "GLM-5 Turbo"},
-		},
-	},
-	{
-		ID:           "thought_level",
-		Name:         "Thought level",
-		Category:     acpport.ConfigCategoryThoughtLevel,
-		CurrentValue: "high",
-		Options: []acpport.SelectOptionDef{
-			{Value: "high", Name: "High", Description: "deep reasoning"},
-			{Value: "low", Name: "Low"},
-		},
-	},
 }
 
 // newSessionConfigOptionsFrame is the byte-exact configOptions assembly:
@@ -267,6 +241,33 @@ const newSessionConfigOptionsFrame = `{"configOptions":[` +
 // returned, exclusively via the SDK select variant, and the assembled union
 // passes the SDK's own Validate (exactly one variant, name required).
 func TestNewSessionAssemblesConfigOptions(t *testing.T) {
+	// The canned neutral option list the scripted Handlers replay — the
+	// adapter's select-assembly counterparty (model + thought_level, the
+	// translation table's two entries; the provider ids mix zai-api and the
+	// account prefix — D-11's both-paths posture).
+	newSessionConfigOptions := []acpport.ConfigOptionDef{
+		{
+			ID:           "model",
+			Name:         "Model",
+			Category:     acpport.ConfigCategoryModel,
+			CurrentValue: "zai-api/GLM-5.3-Flash",
+			Options: []acpport.SelectOptionDef{
+				{Value: "zai-api/GLM-5.3-Flash", Name: "GLM-5.3-Flash", Description: "The flagship reasoning model"},
+				{Value: "zai-account/GLM-5-turbo", Name: "GLM-5 Turbo"},
+			},
+		},
+		{
+			ID:           "thought_level",
+			Name:         "Thought level",
+			Category:     acpport.ConfigCategoryThoughtLevel,
+			CurrentValue: "high",
+			Options: []acpport.SelectOptionDef{
+				{Value: "high", Name: "High", Description: "deep reasoning"},
+				{Value: "low", Name: "Low"},
+			},
+		},
+	}
+
 	h := newScriptedHandlers()
 	h.newSessionOptions = newSessionConfigOptions
 
@@ -1804,7 +1805,9 @@ func (s *scriptedHandlers) Initialize(ctx context.Context) (acpport.InitReport, 
 // NewSession records the params and replays the canned session id plus
 // the canned neutral options (plan 06-04 — the adapter's select-assembly
 // counterparty).
-func (s *scriptedHandlers) NewSession(ctx context.Context, params acpport.NewSessionParams) (string, []acpport.ConfigOptionDef, error) {
+func (s *scriptedHandlers) NewSession(
+	ctx context.Context, params acpport.NewSessionParams,
+) (string, []acpport.ConfigOptionDef, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

@@ -303,7 +303,10 @@ const settingsSetModelResult = `{
 func settingsScenario(createResult, setModelResult string) *fake.Scenario {
 	rules := []fake.RequestRule{
 		{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: json.RawMessage(createResult)}},
-		{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{Result: json.RawMessage(`{"sessionId":"sess_opts","eventSeq":0,"events":[]}`)}},
+		{
+			Method: zcode.MethodSessionSubscribe,
+			Reply:  &fake.Reply{Result: json.RawMessage(`{"sessionId":"sess_opts","eventSeq":0,"events":[]}`)},
+		},
 	}
 
 	if setModelResult != "" {
@@ -314,10 +317,12 @@ func settingsScenario(createResult, setModelResult string) *fake.Scenario {
 	}
 
 	return &fake.Scenario{
-		Name:          "configoptions",
-		OnRequest:     rules,
-		UnknownMethod: &fake.Reply{Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"}},
-		EOFDrainMs:    100,
+		Name:      "configoptions",
+		OnRequest: rules,
+		UnknownMethod: &fake.Reply{
+			Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: fakeMethodNotFound},
+		},
+		EOFDrainMs: 100,
 	}
 }
 
@@ -328,7 +333,8 @@ func assertModelOptionCurrent(t *testing.T, resp acp.NewSessionResponse, wantCur
 	t.Helper()
 
 	if len(resp.ConfigOptions) == 0 {
-		t.Fatalf("session/new returned no configOptions (the confirmed-reply snapshot never reached the picker): %+v", resp)
+		t.Fatalf("session/new returned no configOptions (the confirmed-reply snapshot never "+
+			"reached the picker): %+v", resp)
 	}
 
 	model := resp.ConfigOptions[0].Select
@@ -336,7 +342,7 @@ func assertModelOptionCurrent(t *testing.T, resp acp.NewSessionResponse, wantCur
 		t.Fatalf("configOptions[0] carries no select variant: %+v", resp.ConfigOptions[0])
 	}
 
-	if model.Id != "model" {
+	if model.Id != optionIDModel {
 		t.Fatalf("configOptions[0].id = %q, want model", model.Id)
 	}
 
@@ -368,6 +374,8 @@ func assertModelOptionCurrent(t *testing.T, resp acp.NewSessionResponse, wantCur
 // confirmation source when a model is configured, the create reply's
 // snapshot when not, and an unconfirmed (current-less) snapshot omits the
 // model entry entirely.
+//
+//nolint:funlen,gocognit,cyclop // each subtest is a full harness lock; splitting would scatter its sequencing
 func TestNewSessionConfigOptions(t *testing.T) {
 	t.Run("the setModel follow-up reply is the confirmation (D-10)", func(t *testing.T) {
 		h := ComposeFront(t, settingsScenario(settingsCreateResult, settingsSetModelResult),
@@ -395,8 +403,8 @@ func TestNewSessionConfigOptions(t *testing.T) {
 
 		// The FOLLOW-UP reply's confirmed current — the create reply's
 		// zai-api/GLM-5.3 must NOT survive it (the later reply overwrites).
-		assertModelOptionCurrent(t, resp, "zai-api/GLM-5.3-Flash",
-			[]string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3", "zai-account/GLM-5-turbo"})
+		assertModelOptionCurrent(t, resp, corpusModelFlashID,
+			[]string{corpusModelFlashID, corpusModelPlainID, corpusAccountModelID})
 
 		// The thought-level option: entries from the BOUND model's
 		// reasoning.levels (D-09), currentValue = the follow-up's confirmed
@@ -406,11 +414,11 @@ func TestNewSessionConfigOptions(t *testing.T) {
 		}
 
 		thought := resp.ConfigOptions[1].Select
-		if thought == nil || thought.Id != "thought_level" {
+		if thought == nil || thought.Id != optionIDThoughtLevel {
 			t.Fatalf("configOptions[1] = %+v, want the thought_level select", resp.ConfigOptions[1])
 		}
 
-		if thought.CurrentValue != "high" {
+		if thought.CurrentValue != corpusReasoningLevel {
 			t.Fatalf("thought_level currentValue = %q, want the confirmed high (D-10)", thought.CurrentValue)
 		}
 
@@ -420,7 +428,8 @@ func TestNewSessionConfigOptions(t *testing.T) {
 
 		if (*thought.Options.Ungrouped)[0].Name != "High" || (*thought.Options.Ungrouped)[0].Description == nil ||
 			*(*thought.Options.Ungrouped)[0].Description != "deep reasoning" {
-			t.Fatalf("thought_level entries[0] = %+v, want {high, High, deep reasoning} verbatim", (*thought.Options.Ungrouped)[0])
+			t.Fatalf("thought_level entries[0] = %+v, want {high, High, deep reasoning} verbatim",
+				(*thought.Options.Ungrouped)[0])
 		}
 	})
 
@@ -444,8 +453,8 @@ func TestNewSessionConfigOptions(t *testing.T) {
 
 		// No follow-up fired — the create reply's own current is the
 		// confirmed state.
-		assertModelOptionCurrent(t, resp, "zai-api/GLM-5.3",
-			[]string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3", "zai-account/GLM-5-turbo"})
+		assertModelOptionCurrent(t, resp, corpusModelPlainID,
+			[]string{corpusModelFlashID, corpusModelPlainID, corpusAccountModelID})
 	})
 
 	t.Run("a reply with no current and no lastUsed omits the model entry (D-10 + locked OQ2)", func(t *testing.T) {
@@ -496,10 +505,15 @@ func TestNewSessionConfigOptions(t *testing.T) {
 			OnRequest: []fake.RequestRule{
 				{Method: zcode.MethodSessionCreate, Times: 1, Reply: &fake.Reply{Result: json.RawMessage(createA)}},
 				{Method: zcode.MethodSessionCreate, Times: 1, Reply: &fake.Reply{Result: json.RawMessage(createB)}},
-				{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{Result: json.RawMessage(`{"eventSeq":0,"events":[]}`)}},
+				{
+					Method: zcode.MethodSessionSubscribe,
+					Reply:  &fake.Reply{Result: json.RawMessage(`{"eventSeq":0,"events":[]}`)},
+				},
 			},
-			UnknownMethod: &fake.Reply{Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"}},
-			EOFDrainMs:    100,
+			UnknownMethod: &fake.Reply{
+				Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: fakeMethodNotFound},
+			},
+			EOFDrainMs: 100,
 		}
 
 		h := ComposeFront(t, sc, func(conn *zcode.Conn) acp.Agent {
@@ -523,10 +537,10 @@ func TestNewSessionConfigOptions(t *testing.T) {
 			t.Fatalf("session/new B: %v", err)
 		}
 
-		assertModelOptionCurrent(t, respA, "zai-api/GLM-5.3",
-			[]string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3", "zai-account/GLM-5-turbo"})
+		assertModelOptionCurrent(t, respA, corpusModelPlainID,
+			[]string{corpusModelFlashID, corpusModelPlainID, corpusAccountModelID})
 
-		assertModelOptionCurrent(t, respB, "zai-api/GLM-5.3-Flash",
-			[]string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3", "zai-account/GLM-5-turbo"})
+		assertModelOptionCurrent(t, respB, corpusModelFlashID,
+			[]string{corpusModelFlashID, corpusModelPlainID, corpusAccountModelID})
 	})
 }

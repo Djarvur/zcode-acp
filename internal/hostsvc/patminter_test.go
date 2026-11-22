@@ -48,6 +48,10 @@ const (
 	fixtureKeyID          = "key-7"
 	fixtureKeyListPath    = "/api/biz/v1/organization/org-1/projects/proj-1/api_keys"
 	fixtureAccessPath     = "/api/biz/v1/organization/org-1/projects/proj-1/api_keys/key-7/access_tokens"
+
+	// fixtureFamily is the account-provider family the fixtures gate and
+	// mint against (the production call site's literal — interact's gate doc).
+	fixtureFamily = "zai"
 )
 
 // fixtureBaseTime returns the pinned clock base: the expiry/refresh math
@@ -549,7 +553,7 @@ func TestPatMinterHappyPath(t *testing.T) {
 // JWT folds as null, a present JWT as a string.
 func TestAccountScopeDigest(t *testing.T) {
 	t.Run("pinned vector matches the same-array construction", func(t *testing.T) {
-		payload, merr := json.Marshal([]any{"zai", "individual-coding-plan", nil, fixtureLoginToken, nil})
+		payload, merr := json.Marshal([]any{fixtureFamily, "individual-coding-plan", nil, fixtureLoginToken, nil})
 		if merr != nil {
 			t.Fatalf("marshal scope array: %v", merr)
 		}
@@ -578,7 +582,8 @@ func TestAccountScopeDigest(t *testing.T) {
 	})
 
 	t.Run("present JWT folds as a string in the array", func(t *testing.T) {
-		payload, merr := json.Marshal([]any{"zai", "individual-coding-plan", nil, fixtureLoginToken, fixtureJWTToken})
+		payload, merr := json.Marshal(
+			[]any{fixtureFamily, "individual-coding-plan", nil, fixtureLoginToken, fixtureJWTToken})
 		if merr != nil {
 			t.Fatalf("marshal scope array: %v", merr)
 		}

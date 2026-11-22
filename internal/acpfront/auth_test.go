@@ -65,7 +65,7 @@ const authRefreshStateUpdated = `{"scope":"registry","reason":"registry_refresh"
 // authFixWantModels is the read-back want list (the corpus-locked zai-api
 // pair — the fixtures' registry patch carries exactly these).
 func authFixWantModels() []string {
-	return []string{"zai-api/GLM-5.3-Flash", "zai-api/GLM-5.3"}
+	return []string{corpusModelFlashID, corpusModelPlainID}
 }
 
 // stubAuthKey is the in-test KeySource double (the hostsvc binding).
@@ -140,10 +140,12 @@ func authRefreshRule(times, delayMs int, withEmit bool) fake.RequestRule {
 // authScenario wraps per-arm rules into the fail-loud scenario shape.
 func authScenario(rules []fake.RequestRule) *fake.Scenario {
 	return &fake.Scenario{
-		Name:          "auth-test",
-		OnRequest:     rules,
-		UnknownMethod: &fake.Reply{Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"}},
-		EOFDrainMs:    100,
+		Name:      "auth-test",
+		OnRequest: rules,
+		UnknownMethod: &fake.Reply{
+			Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: fakeMethodNotFound},
+		},
+		EOFDrainMs: 100,
 	}
 }
 

@@ -44,6 +44,25 @@ const (
 	corpusReasoningLevel = "high"
 )
 
+// The wire literals the Phase-6 tests lock against (goconst): the
+// corpus-locked provider-qualified model ids the want-lists spell, the
+// dialect's config-option ids, and the JSON literals the assertions
+// compare for — extraction single-sources each capture-verbatim spelling.
+const (
+	corpusModelFlashID   = corpusProviderID + "/" + corpusModelID // zai-api/GLM-5.3-Flash — the configured selection
+	corpusModelPlainID   = "zai-api/GLM-5.3"                      // the fixtures' plain (non-reasoning) entry
+	corpusAccountModelID = "zai-account/GLM-5-turbo"              // the fixtures' account-prefixed disabled entry
+
+	optionIDModel        = "model"         // BuildConfigOptions' model option id (MODEL-01)
+	optionIDThoughtLevel = "thought_level" // BuildConfigOptions' thought-level option id
+
+	reasoningLevelLow = "low" // the fixtures' non-default reasoning level
+
+	jsonNullLiteral = "null" // the JSON null literal (malformed-vector name and value)
+
+	fakeMethodNotFound = "MethodNotFound" // the fake's unknown-method reply message
+)
+
 const (
 	// tracerScenarioDir reaches the corpus from this package's test dir.
 	tracerScenarioDir = "../zcode/fake/testdata/scenarios/"
@@ -163,7 +182,7 @@ func transcriptIndexes(tr fake.Transcript, dir, substr string) []int {
 
 // jsonIsNull reports whether a raw JSON value is the null literal.
 func jsonIsNull(raw json.RawMessage) bool {
-	return string(raw) == "null"
+	return string(raw) == jsonNullLiteral
 }
 
 // chunkText digs the text out of a collected session update (both chunk
@@ -511,7 +530,7 @@ func assertSetModelFrame(t *testing.T, raw string) {
 			model.ProviderID, model.ModelID, raw)
 	}
 
-	if model.Options.ReasoningLevel != "high" {
+	if model.Options.ReasoningLevel != corpusReasoningLevel {
 		t.Fatalf("setModel reasoningLevel = %q, want high (refusal trap — level rides model.options): %s",
 			model.Options.ReasoningLevel, raw)
 	}

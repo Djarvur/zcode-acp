@@ -38,6 +38,19 @@ const refreshReason = "account-config-sync"
 // is zhipu-account are the account providers).
 const zhipuAccountAccess = "zhipu-account"
 
+// The coded account-build error classes (static sentinels — the variable
+// detail rides fmt.Errorf %w, never a bare dynamic error; the messages keep
+// the capture-verbatim wire-key spellings).
+var (
+	errNoRulesToEntitle = errors.New("provider rules to entitle after the entitlement gate — " +
+		"an account push with nothing to entitle is a misconfiguration, " +
+		"never an empty overlay silently pushed on the coding-plan path")
+	errMissingProviderRules   = errors.New("missing config.providerConfigRules.providerRules")
+	errMissingProviderID      = errors.New("missing providerId")
+	errMissingAccessBlock     = errors.New("missing config.access block")
+	errMissingBuiltinModelIDs = errors.New("missing config.builtinModelIds")
+)
+
 // defaultRevision renders the push revision: account-bridge:<unix-nano> —
 // fresh per build, stable in form.
 func defaultRevision() string {
@@ -169,7 +182,10 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 //
 // basedOnZCodeBuiltinRevision stays the EXACT supervisor.BuiltinRevision
 // formula over the same resolved install path (T-06-08 / the Phase-5 lock).
-func (b *SnapshotBuilder) BuildAccount(install supervisor.Install, entitled func(family string) bool) (Snapshot, error) {
+func (b *SnapshotBuilder) BuildAccount(
+	install supervisor.Install,
+	entitled func(family string) bool,
+) (Snapshot, error) {
 	rev, err := readBuiltinRevision(install.BuiltinFile)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: %w", err)
@@ -211,9 +227,8 @@ func (b *SnapshotBuilder) BuildAccount(install supervisor.Install, entitled func
 	revision := b.revision()
 
 	if len(providers) == 0 {
-		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: builtin table %s: no %s provider rules to entitle "+
-			"after the entitlement gate — an account push with nothing to entitle is a misconfiguration, "+
-			"never an empty overlay silently pushed on the coding-plan path", install.BuiltinFile, zhipuAccountAccess)
+		return Snapshot{}, fmt.Errorf("hostsvc: snapshot: builtin table %s: no %s %w",
+			install.BuiltinFile, zhipuAccountAccess, errNoRulesToEntitle)
 	}
 
 	params := map[string]any{
@@ -249,6 +264,7 @@ func readBuiltinProviderRules(path string) ([]builtinProviderRule, error) {
 		return nil, fmt.Errorf("read builtin provider rules: %w", err)
 	}
 
+	//nolint:tagliatelle // wire shape: the desktop's builtin-table keys are capture-verbatim camelCase
 	var parsed struct {
 		Config struct {
 			ProviderConfigRules struct {
@@ -263,48 +279,65 @@ func readBuiltinProviderRules(path string) ([]builtinProviderRule, error) {
 
 	rawRules := parsed.Config.ProviderConfigRules.ProviderRules
 	if rawRules == nil {
-		return nil, fmt.Errorf("builtin table %s: missing config.providerConfigRules.providerRules", path)
+		return nil, fmt.Errorf("builtin table %s: %w", path, errMissingProviderRules)
 	}
 
 	rules := make([]builtinProviderRule, 0, len(rawRules))
 
 	for i, raw := range rawRules {
-		var rule struct {
-			ProviderID string `json:"providerId"`
-			Config     struct {
-				BuiltinModelIds []string `json:"builtinModelIds"`
-				Access          *struct {
-					Type        string `json:"type"`
-					AccountType string `json:"accountType"`
-				} `json:"access"`
-			} `json:"config"`
+		rule, err := digBuiltinRule(path, i, raw)
+		if err != nil {
+			return nil, err
 		}
 
-		if err := json.Unmarshal(raw, &rule); err != nil {
-			return nil, fmt.Errorf("builtin table %s: provider rule %d: decode: %w", path, i, err)
-		}
-
-		if rule.ProviderID == "" {
-			return nil, fmt.Errorf("builtin table %s: provider rule %d: missing providerId", path, i)
-		}
-
-		if rule.Config.Access == nil {
-			return nil, fmt.Errorf("builtin table %s: provider rule %d (%s): missing config.access block", path, i, rule.ProviderID)
-		}
-
-		if rule.Config.BuiltinModelIds == nil {
-			return nil, fmt.Errorf("builtin table %s: provider rule %d (%s): missing config.builtinModelIds", path, i, rule.ProviderID)
-		}
-
-		rules = append(rules, builtinProviderRule{
-			ProviderID: rule.ProviderID,
-			ModelIDs:   rule.Config.BuiltinModelIds,
-			AccessType: rule.Config.Access.Type,
-			Family:     rule.Config.Access.AccountType,
-		})
+		rules = append(rules, rule)
 	}
 
 	return rules, nil
+}
+
+// digBuiltinRule decodes one raw provider rule out of the builtin table and
+// locks its required fields — a rule missing its providerId, its access
+// block, or its model list fails the build with the same coded class as the
+// table-level checks (capture-verbatim camelCase wire fields, never renamed).
+func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRule, error) {
+	//nolint:tagliatelle // wire shape: the desktop's builtin-table keys are capture-verbatim camelCase
+	var rule struct {
+		ProviderID string `json:"providerId"`
+		Config     struct {
+			BuiltinModelIDs []string `json:"builtinModelIds"`
+			Access          *struct {
+				Type        string `json:"type"`
+				AccountType string `json:"accountType"`
+			} `json:"access"`
+		} `json:"config"`
+	}
+
+	if err := json.Unmarshal(raw, &rule); err != nil {
+		return builtinProviderRule{}, fmt.Errorf("builtin table %s: provider rule %d: decode: %w", path, i, err)
+	}
+
+	if rule.ProviderID == "" {
+		return builtinProviderRule{}, fmt.Errorf("builtin table %s: provider rule %d: %w",
+			path, i, errMissingProviderID)
+	}
+
+	if rule.Config.Access == nil {
+		return builtinProviderRule{}, fmt.Errorf("builtin table %s: provider rule %d (%s): %w",
+			path, i, rule.ProviderID, errMissingAccessBlock)
+	}
+
+	if rule.Config.BuiltinModelIDs == nil {
+		return builtinProviderRule{}, fmt.Errorf("builtin table %s: provider rule %d (%s): %w",
+			path, i, rule.ProviderID, errMissingBuiltinModelIDs)
+	}
+
+	return builtinProviderRule{
+		ProviderID: rule.ProviderID,
+		ModelIDs:   rule.Config.BuiltinModelIDs,
+		AccessType: rule.Config.Access.Type,
+		Family:     rule.Config.Access.AccountType,
+	}, nil
 }
 
 // readBuiltinRevision reads the recorded revision number out of the active

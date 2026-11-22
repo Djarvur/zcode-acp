@@ -75,6 +75,8 @@ const translatorFixture = `{
 
 // TestConfigOptionsTranslator is the plan 06-04 Task 1 RED target: the
 // settings -> configOptions translator over the fixture snapshots.
+//
+//nolint:funlen,gocognit,gocyclo,cyclop,maintidx // one lock per subtest; splitting would scatter contract commentary
 func TestConfigOptionsTranslator(t *testing.T) {
 	t.Run("verbatim mirror of the settings snapshot (D-08)", func(t *testing.T) {
 		s, ok := acpfront.ParseSettings(json.RawMessage(translatorFixture))
@@ -89,12 +91,14 @@ func TestConfigOptionsTranslator(t *testing.T) {
 		}
 
 		model := got[0]
-		if model.ID != "model" || model.Category != acpport.ConfigCategoryModel {
-			t.Fatalf("options[0] = {ID %q Category %q}, want {model, %s}", model.ID, model.Category, acpport.ConfigCategoryModel)
+		if model.ID != optionIDModel || model.Category != acpport.ConfigCategoryModel {
+			t.Fatalf("options[0] = {ID %q Category %q}, want {model, %s}",
+				model.ID, model.Category, acpport.ConfigCategoryModel)
 		}
 
-		if model.CurrentValue != "zai-api/GLM-5.3-Flash" {
-			t.Fatalf("model CurrentValue = %q, want the server-confirmed settings.model.current serialization zai-api/GLM-5.3-Flash (D-10)", model.CurrentValue)
+		if model.CurrentValue != corpusModelFlashID {
+			t.Fatalf("model CurrentValue = %q, want the server-confirmed settings.model.current "+
+				"serialization zai-api/GLM-5.3-Flash (D-10)", model.CurrentValue)
 		}
 
 		// D-08 verbatim mirror: one entry per available model, wire order,
@@ -103,27 +107,29 @@ func TestConfigOptionsTranslator(t *testing.T) {
 		// filtered); contextWindow/reasoning/defaultLevel never enriched
 		// into the entries.
 		want := []acpport.SelectOptionDef{
-			{Value: "zai-api/GLM-5.3-Flash", Name: "GLM-5.3-Flash", Description: "The flagship reasoning model"},
-			{Value: "zai-api/GLM-5.3", Name: "GLM-5.3"},
-			{Value: "zai-account/GLM-5-turbo", Name: "GLM-5 Turbo", Description: "Legacy plan model"},
+			{Value: corpusModelFlashID, Name: "GLM-5.3-Flash", Description: "The flagship reasoning model"},
+			{Value: corpusModelPlainID, Name: "GLM-5.3"},
+			{Value: corpusAccountModelID, Name: "GLM-5 Turbo", Description: "Legacy plan model"},
 		}
 		assertSelectOptions(t, model.Options, want)
 
 		thought := got[1]
-		if thought.ID != "thought_level" || thought.Category != acpport.ConfigCategoryThoughtLevel {
-			t.Fatalf("options[1] = {ID %q Category %q}, want {thought_level, %s}", thought.ID, thought.Category, acpport.ConfigCategoryThoughtLevel)
+		if thought.ID != optionIDThoughtLevel || thought.Category != acpport.ConfigCategoryThoughtLevel {
+			t.Fatalf("options[1] = {ID %q Category %q}, want {thought_level, %s}",
+				thought.ID, thought.Category, acpport.ConfigCategoryThoughtLevel)
 		}
 
-		if thought.CurrentValue != "high" {
-			t.Fatalf("thought_level CurrentValue = %q, want the confirmed settings.thoughtLevel.current %q (D-10)", thought.CurrentValue, "high")
+		if thought.CurrentValue != corpusReasoningLevel {
+			t.Fatalf("thought_level CurrentValue = %q, want the confirmed settings.thoughtLevel.current %q (D-10)",
+				thought.CurrentValue, corpusReasoningLevel)
 		}
 
 		// D-09: the BOUND model's reasoning.levels drive the entries — the
 		// thoughtLevel.available fallback list (with its off level) is NOT
 		// used while the bound model carries levels.
 		wantLevels := []acpport.SelectOptionDef{
-			{Value: "high", Name: "High", Description: "deep reasoning"},
-			{Value: "low", Name: "Low"},
+			{Value: corpusReasoningLevel, Name: "High", Description: "deep reasoning"},
+			{Value: reasoningLevelLow, Name: "Low"},
 		}
 		assertSelectOptions(t, thought.Options, wantLevels)
 	})
@@ -159,7 +165,7 @@ func TestConfigOptionsTranslator(t *testing.T) {
 		}
 
 		thought := got[1]
-		if thought.ID != "thought_level" {
+		if thought.ID != optionIDThoughtLevel {
 			t.Fatalf("options[1].ID = %q, want thought_level", thought.ID)
 		}
 
@@ -168,11 +174,11 @@ func TestConfigOptionsTranslator(t *testing.T) {
 		// .available verbatim.
 		wantLevels := []acpport.SelectOptionDef{
 			{Value: "off", Name: "Off", Description: "no reasoning"},
-			{Value: "low", Name: "Low"},
+			{Value: reasoningLevelLow, Name: "Low"},
 		}
 		assertSelectOptions(t, thought.Options, wantLevels)
 
-		if thought.CurrentValue != "low" {
+		if thought.CurrentValue != reasoningLevelLow {
 			t.Fatalf("thought_level CurrentValue = %q, want low (D-10)", thought.CurrentValue)
 		}
 	})
@@ -199,10 +205,11 @@ func TestConfigOptionsTranslator(t *testing.T) {
 		got := acpfront.BuildConfigOptions(s)
 
 		if len(got) != 1 {
-			t.Fatalf("BuildConfigOptions = %d options, want 1 (the model entry OMITTED — a smaller honest list beats a fabricated currentValue): %+v", len(got), got)
+			t.Fatalf("BuildConfigOptions = %d options, want 1 (the model entry OMITTED — "+
+				"a smaller honest list beats a fabricated currentValue): %+v", len(got), got)
 		}
 
-		if got[0].ID != "thought_level" {
+		if got[0].ID != optionIDThoughtLevel {
 			t.Fatalf("the surviving option = %q, want thought_level", got[0].ID)
 		}
 	})
@@ -224,12 +231,13 @@ func TestConfigOptionsTranslator(t *testing.T) {
 
 		got := acpfront.BuildConfigOptions(s)
 
-		if len(got) != 1 || got[0].ID != "model" {
+		if len(got) != 1 || got[0].ID != optionIDModel {
 			t.Fatalf("BuildConfigOptions = %+v, want the model entry only (no thoughtLevel block in the snapshot)", got)
 		}
 
-		if got[0].CurrentValue != "zai-api/GLM-5.3" {
-			t.Fatalf("model CurrentValue = %q, want the lastUsed fallback serialization zai-api/GLM-5.3 (D-10)", got[0].CurrentValue)
+		if got[0].CurrentValue != corpusModelPlainID {
+			t.Fatalf("model CurrentValue = %q, want the lastUsed fallback serialization zai-api/GLM-5.3 (D-10)",
+				got[0].CurrentValue)
 		}
 	})
 
@@ -255,8 +263,9 @@ func TestConfigOptionsTranslator(t *testing.T) {
 
 		got := acpfront.BuildConfigOptions(s)
 
-		if len(got) != 1 || got[0].ID != "model" {
-			t.Fatalf("BuildConfigOptions = %+v, want the model entry only (enabled:false omits the thought-level entry)", got)
+		if len(got) != 1 || got[0].ID != optionIDModel {
+			t.Fatalf("BuildConfigOptions = %+v, want the model entry only "+
+				"(enabled:false omits the thought-level entry)", got)
 		}
 	})
 
@@ -282,8 +291,9 @@ func TestConfigOptionsTranslator(t *testing.T) {
 
 		got := acpfront.BuildConfigOptions(s)
 
-		if len(got) != 1 || got[0].ID != "model" {
-			t.Fatalf("BuildConfigOptions = %+v, want the model entry only (empty current omits the thought-level entry)", got)
+		if len(got) != 1 || got[0].ID != optionIDModel {
+			t.Fatalf("BuildConfigOptions = %+v, want the model entry only "+
+				"(empty current omits the thought-level entry)", got)
 		}
 	})
 
@@ -304,21 +314,26 @@ func TestConfigOptionsTranslator(t *testing.T) {
 
 		got := acpfront.BuildConfigOptions(s)
 
-		if len(got) != 1 || got[0].ID != "model" {
-			t.Fatalf("BuildConfigOptions = %+v, want the model entry only (no thoughtLevel block, nothing synthesized)", got)
+		if len(got) != 1 || got[0].ID != optionIDModel {
+			t.Fatalf("BuildConfigOptions = %+v, want the model entry only "+
+				"(no thoughtLevel block, nothing synthesized)", got)
 		}
 	})
 
 	t.Run("malformed snapshots degrade to absent fields, never a panic", func(t *testing.T) {
 		for name, raw := range map[string]string{
-			"empty":         ``,
-			"null":          `null`,
-			"garbage":       `{not json at all`,
-			"wrong-shape":   `[1,2,3]`,
-			"wrong-typed":   `{"settings":{"model":{"current":42,"available":"nope","lastUsed":true},"thoughtLevel":{"enabled":"yes","current":7,"available":9}}}`,
-			"missing-refs":  `{"settings":{"model":{"current":{},"available":[{"ref":{}}]}}}`,
-			"partial-loss":  `{"settings":{"model":{"current":{"providerId":"zai-api"},"available":[{"ref":{"providerId":"zai-api"}}]}}}`,
-			"level-garbage": `{"settings":{"model":{"current":{"providerId":"zai-api","modelId":"GLM-5.3"},"available":[{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"},"label":"GLM-5.3","reasoning":{"levels":"nope"}}]}}}`,
+			"empty":       ``,
+			"null":        jsonNullLiteral,
+			"garbage":     `{not json at all`,
+			"wrong-shape": `[1,2,3]`,
+			"wrong-typed": `{"settings":{"model":{"current":42,"available":"nope","lastUsed":true},` +
+				`"thoughtLevel":{"enabled":"yes","current":7,"available":9}}}`,
+			"missing-refs": `{"settings":{"model":{"current":{},"available":[{"ref":{}}]}}}`,
+			"partial-loss": `{"settings":{"model":{"current":{"providerId":"zai-api"},` +
+				`"available":[{"ref":{"providerId":"zai-api"}}]}}}`,
+			"level-garbage": `{"settings":{"model":{"current":{"providerId":"zai-api","modelId":"GLM-5.3"},` +
+				`"available":[{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"},"label":"GLM-5.3",` +
+				`"reasoning":{"levels":"nope"}}]}}}`,
 		} {
 			t.Run(name, func(t *testing.T) {
 				// A panic anywhere in the dig or the translate fails the

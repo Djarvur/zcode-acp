@@ -243,7 +243,9 @@ func (f *Front) Initialize(ctx context.Context) (acpport.InitReport, error) {
 // Handlers contract (plan 06-04) returns the session's config options —
 // the confirmed-reply capture that fills them lands in Task 3 (06-04
 // sequencing: the signature widens here, the settings store follows).
-func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams) (string, []acpport.ConfigOptionDef, error) {
+func (f *Front) NewSession(
+	ctx context.Context, params acpport.NewSessionParams,
+) (string, []acpport.ConfigOptionDef, error) {
 	// Spec input validation (RESEARCH Security Domain V5, T-4-01): the ACP
 	// session-setup contract makes cwd MUST-be-absolute — validate BEFORE
 	// any backend call so a rejected session/new never touches the back-leg
@@ -285,38 +287,8 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 	// arm).
 	f.recordSettings(sid, res)
 
-	if f.model != nil {
-		// IN-04 (plan 05-05): the options object rides ONLY when a level is
-		// configured — an empty level emits the documented omit-shape (never
-		// `"options":{"reasoningLevel":""}`), so the backend's own actionable
-		// refusal surfaces for level-strict providers. The configured-with-
-		// level preamble stays byte-locked by the corpus.
-		model := map[string]any{
-			"providerId": f.model.ProviderID,
-			"modelId":    f.model.ModelID,
-		}
-
-		if f.model.ReasoningLevel != "" {
-			model["options"] = map[string]any{"reasoningLevel": f.model.ReasoningLevel}
-		}
-
-		setModelRes, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
-			wireKeySessionID:             sid,
-			"model":                      model,
-			"persistAsWorkspaceLastUsed": false,
-		})
-		if err != nil {
-			// WR-04: same orphan discipline for the setModel refusal —
-			// every post-create failure closes the backend session.
-			f.closeOrphan(ctx, sid, "setModel", err)
-
-			return "", nil, acpport.NewInternal("session/setModel: %v", err)
-		}
-
-		// The follow-up reply is the CONFIRMED state (D-10): it overwrites
-		// the create snapshot — an unconfirmed target is never shown
-		// selected.
-		f.recordSettings(sid, setModelRes)
+	if err := f.applyConfiguredModel(ctx, sid); err != nil {
+		return "", nil, err
 	}
 
 	// The machine registers on the conn's fan-out AFTER the tap (constructed
@@ -490,6 +462,56 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 	if slotHeld {
 		fireTakenPendings(take)
 	}
+
+	return nil
+}
+
+// applyConfiguredModel runs the session/setModel follow-up ONLY when a
+// model selection is configured (Open Question 4 resolution) with explicit
+// persistAsWorkspaceLastUsed:false (Open Question 3 resolution), then lets
+// the follow-up reply overwrite the create snapshot as the CONFIRMED state
+// (D-10 — an unconfirmed target is never shown selected). A no-op answer
+// (nil error, nothing recorded) when no model is bound — the create reply's
+// snapshot stays the confirmed one. A refused follow-up fails the caller
+// with the coded internal error exactly as the inline arm did.
+func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
+	if f.model == nil {
+		return nil
+	}
+
+	// IN-04 (plan 05-05): the options object rides ONLY when a level is
+	// configured — an empty level emits the documented omit-shape (never
+	// `"options":{"reasoningLevel":""}`), so the backend's own actionable
+	// refusal surfaces for level-strict providers. The configured-with-
+	// level preamble stays byte-locked by the corpus.
+	model := map[string]any{
+		"providerId": f.model.ProviderID,
+		"modelId":    f.model.ModelID,
+	}
+
+	if f.model.ReasoningLevel != "" {
+		model["options"] = map[string]any{"reasoningLevel": f.model.ReasoningLevel}
+	}
+
+	setModelRes, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
+		wireKeySessionID:             sid,
+		"model":                      model,
+		"persistAsWorkspaceLastUsed": false,
+	})
+	if err != nil {
+		// WR-04 (plan 05-05): the create succeeded — the same orphan
+		// discipline as the subscribe refusal: every post-create failure
+		// closes the backend session best-effort instead of orphaning it
+		// (T-5-12).
+		f.closeOrphan(ctx, sid, "setModel", err)
+
+		return acpport.NewInternal("session/setModel: %v", err)
+	}
+
+	// The follow-up reply is the CONFIRMED state (D-10): it overwrites
+	// the create snapshot — an unconfirmed target is never shown
+	// selected.
+	f.recordSettings(sid, setModelRes)
 
 	return nil
 }

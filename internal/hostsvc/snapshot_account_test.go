@@ -78,10 +78,13 @@ const accountFixtureTable = `{
 
 // wantZhipuProviders is the exact providers/states shape the fixture's
 // zhipu-account rules must build (all-entitled gate): model lists are the
-// table's arrays verbatim, entitlement true.
-var wantZhipuProviders = map[string][]string{
-	"account:zai-individual-coding-plan":      {"GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"},
-	"account:bigmodel-individual-coding-plan": {"GLM-5.2"},
+// table's arrays verbatim, entitlement true. (A function keeps the fixture
+// gochecknoglobals-clean — the accountFixtureTable precedent.)
+func wantZhipuProviders() map[string][]string {
+	return map[string][]string{
+		"account:zai-individual-coding-plan":      {"GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"},
+		"account:bigmodel-individual-coding-plan": {"GLM-5.2"},
+	}
 }
 
 // accountFixtureInstall writes a temp install whose zcode-builtin.json is the
@@ -103,7 +106,7 @@ func accountFixtureInstall(t *testing.T) supervisor.Install {
 		Binary:      filepath.Join(root, "zcode"),
 		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
 		BuiltinFile: builtin,
-		Layout:      "explicit",
+		Layout:      fixtureLayoutExplicit,
 	}
 }
 
@@ -122,7 +125,7 @@ func decodeEnvelope(t *testing.T, snap hostsvc.Snapshot) map[string]json.RawMess
 		t.Fatalf("decode envelope: %v (%s)", err, wire)
 	}
 
-	wantKeys := []string{"revision", "basedOnZCodeBuiltinRevision", "providers", "states"}
+	wantKeys := envelopeKeys()
 	if len(got) != len(wantKeys) {
 		t.Fatalf("envelope keys = %v, want exactly %v (strict schema — extra fields are parse errors)",
 			keysOf(got), wantKeys)
@@ -170,6 +173,8 @@ func assertModelIDsVerbatim(t *testing.T, what string, got any, want []string) {
 // supervisor.BuiltinRevision output for the fixture path AND changes when the
 // path changes (T-06-08), and the revision is the builder's non-empty
 // account-bridge form.
+//
+//nolint:funlen,gocognit,gocyclo,cyclop // one mirror flow over one snapshot; splitting would rebuild it per arm
 func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 	instA := accountFixtureInstall(t)
 	instB := accountFixtureInstall(t) // same table bytes, different resolved path
@@ -213,20 +218,21 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 		t.Fatalf("providers does not decode as a record: %v (%s)", err, got["providers"])
 	}
 
-	if len(providers) != len(wantZhipuProviders) {
+	if len(providers) != len(wantZhipuProviders()) {
 		t.Fatalf("providers keys = %v, want exactly the zhipu-account rules %v "+
 			"(a non-zhipu rule leaked in or a family went missing)",
-			keysOfAny(providers), keysOfStr(wantZhipuProviders))
+			keysOfAny(providers), keysOfStr(wantZhipuProviders()))
 	}
 
-	for pid, models := range wantZhipuProviders {
+	for pid, models := range wantZhipuProviders() {
 		entry, ok := providers[pid].(map[string]any)
 		if !ok {
 			t.Fatalf("providers[%s] missing or not an object: %v", pid, providers[pid])
 		}
 
 		if len(entry) != 2 {
-			t.Fatalf("providers[%s] keys = %v, want exactly [access builtinModelIds] (strict zod shape)", pid, keysOfAny(entry))
+			t.Fatalf("providers[%s] keys = %v, want exactly [access builtinModelIds] (strict zod shape)",
+				pid, keysOfAny(entry))
 		}
 
 		assertModelIDsVerbatim(t, "providers["+pid+"]", entry["builtinModelIds"], models)
@@ -254,12 +260,12 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 		t.Fatalf("states does not decode as a record: %v (%s)", err, got["states"])
 	}
 
-	if len(states) != len(wantZhipuProviders) {
+	if len(states) != len(wantZhipuProviders()) {
 		t.Fatalf("states keys = %v, want exactly the entitled providers %v",
-			keysOfAny(states), keysOfStr(wantZhipuProviders))
+			keysOfAny(states), keysOfStr(wantZhipuProviders()))
 	}
 
-	for pid := range wantZhipuProviders {
+	for pid := range wantZhipuProviders() {
 		st, ok := states[pid].(map[string]any)
 		if !ok {
 			t.Fatalf("states[%s] missing or not an object: %v", pid, states[pid])
@@ -271,7 +277,8 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 		}
 
 		if st["availability"] != "available" {
-			t.Fatalf("states[%s].availability = %v, want available (entitled zhipu-account entry)", pid, st["availability"])
+			t.Fatalf("states[%s].availability = %v, want available (entitled zhipu-account entry)",
+				pid, st["availability"])
 		}
 
 		if st["entitled"] != true {
@@ -279,7 +286,8 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 		}
 
 		if st["current"] != true {
-			t.Fatalf("states[%s].current = %v, want true (required for entitled zhipu-account entries)", pid, st["current"])
+			t.Fatalf("states[%s].current = %v, want true (required for entitled zhipu-account entries)",
+				pid, st["current"])
 		}
 	}
 }
@@ -401,7 +409,7 @@ func writeBuiltinTable(t *testing.T, body string) supervisor.Install {
 		Binary:      filepath.Join(root, "zcode"),
 		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
 		BuiltinFile: builtin,
-		Layout:      "explicit",
+		Layout:      fixtureLayoutExplicit,
 	}
 }
 
@@ -432,7 +440,7 @@ func TestAccountSnapshotGateOmission(t *testing.T) {
 	fixed := "account-bridge:gate-fix1"
 	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return fixed }))
 
-	snap, err := b.BuildAccount(inst, func(family string) bool { return family == "zai" })
+	snap, err := b.BuildAccount(inst, func(family string) bool { return family == fixtureFamily })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -455,7 +463,7 @@ func TestAccountSnapshotGateOmission(t *testing.T) {
 	}
 
 	assertModelIDsVerbatim(t, "providers[account:zai-individual-coding-plan]",
-		entry["builtinModelIds"], wantZhipuProviders["account:zai-individual-coding-plan"])
+		entry["builtinModelIds"], wantZhipuProviders()["account:zai-individual-coding-plan"])
 
 	var states map[string]any
 	if err := json.Unmarshal(got["states"], &states); err != nil {
@@ -521,7 +529,8 @@ func TestAccountSnapshotMalformedTable(t *testing.T) {
 func TestPushEnvelopeCompat(t *testing.T) {
 	inst := accountFixtureInstall(t)
 
-	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return "account-bridge:compat-fix1" }))
+	b := hostsvc.NewSnapshotBuilder(nil,
+		hostsvc.WithRevisionSource(func() string { return "account-bridge:compat-fix1" }))
 
 	snap, err := b.BuildAccount(inst, allEntitled)
 	if err != nil {
@@ -541,7 +550,8 @@ func TestPushEnvelopeCompat(t *testing.T) {
 	}
 
 	if ack.Status != "received" {
-		t.Fatalf("ack status = %q, want received — PushEnvelope must consume the account Snapshot's Params unchanged", ack.Status)
+		t.Fatalf("ack status = %q, want received — PushEnvelope must consume the account "+
+			"Snapshot's Params unchanged", ack.Status)
 	}
 
 	if ack.ReceivedRevision != "account-bridge:peer-fix1" {
