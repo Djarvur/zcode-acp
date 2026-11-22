@@ -126,7 +126,7 @@ func TestAgentBinaryEndToEnd(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), e2eUpdateWait)
 		defer cancel()
 
-		out, err := exec.CommandContext(ctx, agentBin, "--version").Output()
+		out, err := exec.CommandContext(ctx, agentBin, ompFlagVersion).Output()
 		if err != nil {
 			t.Fatalf("--version: %v", err)
 		}
@@ -184,9 +184,9 @@ func e2eRunTwoLoopRide(t *testing.T, agentBin, fakeBin string) {
 	defer rideCancel()
 
 	wrapper := exec.CommandContext(rideCtx, agentBin,
-		"--app-server", installRoot,
-		"--model", e2eProvider+"/"+e2eModel,
-		"--reasoning-level", e2eLevel)
+		ompFlagAppServer, installRoot,
+		ompFlagModel, e2eProvider+"/"+e2eModel,
+		ompFlagLevel, e2eLevel)
 	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // own group: the cleanup can take the whole tree down
 
 	stderrBuf := &e2eSyncBuffer{}
@@ -256,7 +256,7 @@ func e2eRunResponderLeg(t *testing.T, agentBin, fakeBin string) {
 	rideCtx, rideCancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
 	defer rideCancel()
 
-	wrapper := exec.CommandContext(rideCtx, agentBin, "--app-server", installRoot)
+	wrapper := exec.CommandContext(rideCtx, agentBin, ompFlagAppServer, installRoot)
 	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stderrBuf := &e2eSyncBuffer{}
@@ -708,6 +708,14 @@ func (b *e2eSyncBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
+// String snapshots the captured stderr.
+func (b *e2eSyncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
 // dump logs the captured stderr.
 func (b *e2eSyncBuffer) dump(t *testing.T) {
 	t.Helper()
@@ -878,11 +886,18 @@ func (c *e2eCollector) hasUpdateText(want string) bool {
 	return false
 }
 
-// ompFloorVersion is the compatibility floor the version answers must meet
-// (plan 07-04, D-03): the client's probe blocks the card below 17.0.5
-// outright and model selectors resolve only from 18.1.9 — the locked stamp
-// decision prints the 18.1.9 floor.
-var ompFloorVersion = semverTriple{major: 18, minor: 1, patch: 9}
+// Test-surface string constants (the goconst discipline): the omp argv
+// tokens and the matrix's model ids repeat across the ride/scan vectors.
+const (
+	ompFlagVersion   = "--version"
+	ompFlagAppServer = "--app-server"
+	ompFlagModel     = "--model"
+	ompFlagLevel     = "--reasoning-level"
+	ompCardMarker    = "acp"
+	ompModelShort    = "zai-api/GLM"
+	ompModelLower    = "zai-api/glm-5.3"
+	ompModelBadShape = "no-slash"
+)
 
 // semverTriple is the parsed major.minor.patch of a version answer.
 type semverTriple struct {
@@ -924,17 +939,26 @@ func parseSemverLine(line string) (semverTriple, bool) {
 	return semverTriple{major: major, minor: minor, patch: patch}, true
 }
 
-// ompVersionAtLeast reports whether the got triple is >= the floor triple.
-func ompVersionAtLeast(got, floor semverTriple) bool {
-	if got.major != floor.major {
-		return got.major > floor.major
+// ompVersionAtLeast reports whether the got triple meets the compatibility
+// floor the phase stamps (plan 07-04, D-03): the client's probe blocks the
+// card below 17.0.5 outright and model selectors resolve only from 18.1.9
+// — the locked stamp decision prints the 18.1.9 floor.
+func ompVersionAtLeast(got semverTriple) bool {
+	const (
+		floorMajor = 18
+		floorMinor = 1
+		floorPatch = 9
+	)
+
+	if got.major != floorMajor {
+		return got.major > floorMajor
 	}
 
-	if got.minor != floor.minor {
-		return got.minor > floor.minor
+	if got.minor != floorMinor {
+		return got.minor > floorMinor
 	}
 
-	return got.patch >= floor.patch
+	return got.patch >= floorPatch
 }
 
 // ompRunVersionProbe runs the built binary with argv and returns its stdout
@@ -975,10 +999,9 @@ func ompAssertVersionFloor(t *testing.T, out string) {
 		t.Fatalf("version answer %q does not parse as the `zcode-acp <semver>` line", lines[0])
 	}
 
-	if !ompVersionAtLeast(got, ompFloorVersion) {
-		t.Fatalf("version answer %q parses to %d.%d.%d, want >= the %d.%d.%d floor",
-			lines[0], got.major, got.minor, got.patch,
-			ompFloorVersion.major, ompFloorVersion.minor, ompFloorVersion.patch)
+	if !ompVersionAtLeast(got) {
+		t.Fatalf("version answer %q parses to %d.%d.%d, want >= the 18.1.9 floor",
+			lines[0], got.major, got.minor, got.patch)
 	}
 }
 
@@ -993,8 +1016,8 @@ func TestOmpVersionProbeFloor(t *testing.T) {
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 
 	for _, argv := range [][]string{
-		{"omp", "--version"},
-		{"omp", "acp", "--version"},
+		{ompSubcommand, ompFlagVersion},
+		{ompSubcommand, ompCardMarker, ompFlagVersion},
 	} {
 		t.Run(strings.Join(argv, " "), func(t *testing.T) {
 			ompAssertVersionFloor(t, ompRunVersionProbe(t, agentBin, argv))
@@ -1009,7 +1032,7 @@ func TestOmpVersionProbeFloor(t *testing.T) {
 func TestRootVersionFloor(t *testing.T) {
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 
-	ompAssertVersionFloor(t, ompRunVersionProbe(t, agentBin, []string{"--version"}))
+	ompAssertVersionFloor(t, ompRunVersionProbe(t, agentBin, []string{ompFlagVersion}))
 }
 
 // ompBindingScenario is the omp launch-binding ride's scenario (path
@@ -1032,16 +1055,18 @@ type ompSetModelPayload struct {
 	persistFalse   bool
 }
 
-// ompRunBindingRide spawns the built binary with the omp argv shape over
-// the fake install root, drives initialize + session/new (the launch
-// binding fires inside session/new's post-create follow-up), then closes
-// stdin for the clean staged shutdown and returns the fake transcript. The
-// fake install root rides BOTH the --app-server flag and the env override —
-// the flag wins post-dispatch (root-tested precedence), while the env keeps
-// any pre-dispatch fall-through hermetic (the fake, never a real desktop).
-func ompRunBindingRide(
-	t *testing.T, agentBin, fakeBin string, ompArgs []string, scenario string,
-) []e2eTranscriptLine {
+// ompRunAcpRide spawns the built binary with argv (the ride appends the
+// --app-server override), drives initialize + session/new — the launch
+// binding fires inside session/new's post-create follow-up — then closes
+// stdin for the clean staged shutdown and returns the fake transcript plus
+// the wrapper's captured stderr (the dispatch discriminator: only the omp
+// arm logs the "zcode-acp omp:" namespace). The fake install root rides
+// BOTH the --app-server flag and the env override — the flag wins
+// post-dispatch (root-tested precedence), while the env keeps any
+// pre-dispatch fall-through hermetic (the fake, never a real desktop).
+func ompRunAcpRide(
+	t *testing.T, agentBin, fakeBin string, argv []string, scenario string,
+) (lines []e2eTranscriptLine, stderr string) {
 	t.Helper()
 
 	scenarioAbs, err := filepath.Abs(scenario)
@@ -1056,8 +1081,7 @@ func ompRunBindingRide(
 	rideCtx, rideCancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
 	defer rideCancel()
 
-	argv := append([]string{"omp", "acp"}, append(ompArgs, "--app-server", installRoot)...)
-	wrapper := exec.CommandContext(rideCtx, agentBin, argv...)
+	wrapper := exec.CommandContext(rideCtx, agentBin, append(argv, ompFlagAppServer, installRoot)...)
 	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	wrapper.Env = append(os.Environ(),
 		"ZCODE_ACP_APP_SERVER="+installRoot,
@@ -1094,7 +1118,150 @@ func ompRunBindingRide(
 
 	e2eWaitExit(t, wrapper)
 
-	return e2eWaitTranscript(t, transcriptPath)
+	return e2eWaitTranscript(t, transcriptPath), stderrBuf.String()
+}
+
+// TestOmpFlagSet is the omp argv contract's unit matrix over ompParse (the
+// ompFlagSet pass): the card surface re-tokenizes after the `acp`
+// positional — tolerance arms answer no error, and the config arms compose
+// into parseConfig's validation (the SAME sentinels as the root arm).
+func TestOmpFlagSet(t *testing.T) {
+	t.Run("unknown flags tolerated and counted", testOmpFlagSetUnknownTolerated)
+
+	t.Run("unknown flag without a separate value tolerated", testOmpFlagSetUnknownValueless)
+
+	t.Run("the bare acp positional is ignored", testOmpFlagSetBarePositional)
+
+	t.Run("plugin-dir and session-dir accepted and ignored", testOmpFlagSetCardFlagsIgnored)
+
+	t.Run("version answers in any position", testOmpFlagSetVersionAnyPosition)
+
+	t.Run("bad model shape answers the honest errModelShape error", testOmpFlagSetBadShape)
+
+	t.Run("level without model answers the existing sentinel", testOmpFlagSetLevelWithoutModel)
+
+	t.Run("the omp parse composes into parseConfig with env fallbacks", testOmpFlagSetEnvCompose)
+}
+
+// testOmpFlagSetUnknownTolerated locks the tolerance contract: an unknown
+// flag plus its value token is skipped and counted, and the following
+// known flag still parses.
+func testOmpFlagSetUnknownTolerated(t *testing.T) {
+	opts, err := ompParse([]string{ompCardMarker, "--future-flag", "v", ompFlagModel, ompModelShort})
+	if err != nil {
+		t.Fatalf("the unknown-flag tolerance contract broke: %v", err)
+	}
+
+	if opts.unknownCount != 1 {
+		t.Fatalf("unknownCount = %d, want 1 (one tolerated flag)", opts.unknownCount)
+	}
+
+	if opts.model != ompModelShort {
+		t.Fatalf("model = %q, want the flag parsed after the tolerated unknown", opts.model)
+	}
+}
+
+// testOmpFlagSetUnknownValueless locks the value-less unknown arm: a dash
+// token following an unknown flag is never consumed as its value.
+func testOmpFlagSetUnknownValueless(t *testing.T) {
+	opts, err := ompParse([]string{"--future-flag", ompFlagModel, ompModelShort})
+	if err != nil {
+		t.Fatalf("value-less unknown flag must tolerate: %v", err)
+	}
+
+	if opts.unknownCount != 1 || opts.model != ompModelShort {
+		t.Fatalf("unknownCount = %d model = %q, want 1 and the parsed model", opts.unknownCount, opts.model)
+	}
+}
+
+// testOmpFlagSetBarePositional locks the card-marker arm: the bare `acp`
+// positional parses clean and leaks nothing into the config.
+func testOmpFlagSetBarePositional(t *testing.T) {
+	opts, err := ompParse([]string{ompCardMarker})
+	if err != nil {
+		t.Fatalf("the card's acp marker must parse clean: %v", err)
+	}
+
+	if opts.version || opts.model != "" || opts.appServer != "" {
+		t.Fatalf("the bare positional leaked into the config: %+v", opts)
+	}
+}
+
+// testOmpFlagSetCardFlagsIgnored locks the accepted-and-ignored arm: the
+// card's own flags register without error.
+func testOmpFlagSetCardFlagsIgnored(t *testing.T) {
+	opts, err := ompParse([]string{ompCardMarker, "--plugin-dir", "/plugins", "--session-dir", "/sessions"})
+	if err != nil {
+		t.Fatalf("the card's own flags must parse clean (accepted-and-ignored): %v", err)
+	}
+
+	if !opts.pluginDirSet || !opts.sessionDirSet {
+		t.Fatalf("card flags not registered as accepted-ignored: %+v", opts)
+	}
+}
+
+// testOmpFlagSetVersionAnyPosition locks the any-position version answer
+// at the parse tier.
+func testOmpFlagSetVersionAnyPosition(t *testing.T) {
+	for _, argv := range [][]string{
+		{ompSubcommand, ompFlagVersion},
+		{ompSubcommand, ompCardMarker, ompFlagVersion},
+	} {
+		opts, err := ompParse(argv)
+		if err != nil || !opts.version {
+			t.Fatalf("%v: version = %v err = %v, want the any-position answer", argv, opts.version, err)
+		}
+	}
+}
+
+// testOmpFlagSetBadShape locks the honest-shape arm: the re-tokenizing
+// parse succeeds and config validation answers the errModelShape wrap
+// naming the got value.
+func testOmpFlagSetBadShape(t *testing.T) {
+	opts, err := ompParse([]string{ompCardMarker, ompFlagModel, ompModelBadShape})
+	if err != nil {
+		t.Fatalf("the shape error belongs to config validation, not the re-tokenizing parse: %v", err)
+	}
+
+	_, cfgErr := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
+	if !errors.Is(cfgErr, errModelShape) {
+		t.Fatalf("config err = %v, want the errModelShape sentinel", cfgErr)
+	}
+
+	if !strings.Contains(cfgErr.Error(), ompModelBadShape) {
+		t.Fatalf("config err %q must name the got value", cfgErr)
+	}
+}
+
+// testOmpFlagSetLevelWithoutModel locks the level-without-model arm: the
+// parse succeeds and validation answers the existing sentinel.
+func testOmpFlagSetLevelWithoutModel(t *testing.T) {
+	opts, err := ompParse([]string{ompCardMarker, ompFlagLevel, "high"})
+	if err != nil {
+		t.Fatalf("the parse must succeed and let validation reject: %v", err)
+	}
+
+	_, cfgErr := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
+	if !errors.Is(cfgErr, errLevelWithoutModel) {
+		t.Fatalf("config err = %v, want the errLevelWithoutModel sentinel", cfgErr)
+	}
+}
+
+// testOmpFlagSetEnvCompose locks the composition arm: the omp parse feeds
+// parseConfig whose env fallbacks ride unchanged.
+func testOmpFlagSetEnvCompose(t *testing.T) {
+	t.Setenv(envModel, "zai-api/GLM-5.3-Flash")
+
+	opts, err := ompParse([]string{ompCardMarker})
+	if err != nil {
+		t.Fatalf("bare card argv must parse clean: %v", err)
+	}
+
+	cfg, cfgErr := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
+	if cfgErr != nil || cfg.model == nil ||
+		cfg.model.ProviderID != "zai-api" || cfg.model.ModelID != "GLM-5.3-Flash" {
+		t.Fatalf("env fallback lost under the omp arm: cfg %+v err %v", cfg, cfgErr)
+	}
 }
 
 // ompFindSetModelLine returns the transcript line carrying the backend
@@ -1148,7 +1315,9 @@ func ompDecodeSetModel(t *testing.T, raw string) ompSetModelPayload {
 // ompAssertBound asserts one decoded payload against the want ids and the
 // option-shape expectation (wantLevel "" with wantOptions false = the
 // omit-shape arm).
-func ompAssertBound(t *testing.T, payload ompSetModelPayload, raw, provider, model string, wantOptions bool, wantLevel string) {
+func ompAssertBound(
+	t *testing.T, payload ompSetModelPayload, raw, provider, model string, wantOptions bool, wantLevel string,
+) {
 	t.Helper()
 
 	if payload.providerID != provider || payload.modelID != model {
@@ -1181,8 +1350,8 @@ func TestOmpLaunchBinding(t *testing.T) {
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
 	t.Run("the omp --model rides the setModel follow-up verbatim", func(t *testing.T) {
-		lines := ompRunBindingRide(t, agentBin, fakeBin,
-			[]string{"--model", "zai-api/glm-5.3"}, e2eScenario)
+		lines, _ := ompRunAcpRide(t, agentBin, fakeBin,
+			[]string{ompSubcommand, ompCardMarker, ompFlagModel, ompModelLower}, e2eScenario)
 
 		line, ok := ompFindSetModelLine(lines)
 		if !ok {
@@ -1195,8 +1364,8 @@ func TestOmpLaunchBinding(t *testing.T) {
 	})
 
 	t.Run("the reasoning default derives from the create-reply snapshot", func(t *testing.T) {
-		lines := ompRunBindingRide(t, agentBin, fakeBin,
-			[]string{"--model", "zai-api/GLM-5.3-Flash"}, ompBindingScenario)
+		lines, _ := ompRunAcpRide(t, agentBin, fakeBin,
+			[]string{ompSubcommand, ompCardMarker, ompFlagModel, "zai-api/GLM-5.3-Flash"}, ompBindingScenario)
 
 		line, ok := ompFindSetModelLine(lines)
 		if !ok {
@@ -1208,8 +1377,9 @@ func TestOmpLaunchBinding(t *testing.T) {
 	})
 
 	t.Run("an explicit level wins over the snapshot default", func(t *testing.T) {
-		lines := ompRunBindingRide(t, agentBin, fakeBin,
-			[]string{"--model", "zai-api/GLM-5.3-Flash", "--reasoning-level", "low"}, ompBindingScenario)
+		lines, _ := ompRunAcpRide(t, agentBin, fakeBin, []string{
+			ompSubcommand, ompCardMarker, ompFlagModel,
+			"zai-api/GLM-5.3-Flash", ompFlagLevel, "low"}, ompBindingScenario)
 
 		line, ok := ompFindSetModelLine(lines)
 		if !ok {
@@ -1221,108 +1391,194 @@ func TestOmpLaunchBinding(t *testing.T) {
 	})
 }
 
-// TestOmpFlagSet is the omp argv contract's unit matrix over ompParse (the
-// ompFlagSet pass): the card surface re-tokenizes after the `acp`
-// positional — tolerance arms answer no error, and the config arms compose
-// into parseConfig's validation (the SAME sentinels as the root arm).
-func TestOmpFlagSet(t *testing.T) {
-	t.Run("unknown flags tolerated and counted", func(t *testing.T) {
-		opts, err := ompParse([]string{"acp", "--future-flag", "v", "--model", "zai-api/GLM"})
-		if err != nil {
-			t.Fatalf("the unknown-flag tolerance contract broke: %v", err)
+// ompRunExpectExitCode runs the built binary with argv (hermetic: the env
+// override names a nonexistent path so no arm can fall into production
+// discovery), asserts the exact exit class, and returns the wrapper's
+// stderr for the honest-message assertions.
+func ompRunExpectExitCode(t *testing.T, bin string, argv []string, wantCode int) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), e2eUpdateWait)
+	defer cancel()
+
+	stderrBuf := &e2eSyncBuffer{}
+
+	cmd := exec.CommandContext(ctx, bin, argv...)
+	cmd.Env = append(os.Environ(), "ZCODE_ACP_APP_SERVER="+filepath.Join(t.TempDir(), "no-such-install"))
+	cmd.Stderr = stderrBuf
+
+	err := cmd.Run()
+
+	exitErr := &exec.ExitError{}
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("%v: err = %v, want an ExitError carrying the %d class", argv, err, wantCode)
+	}
+
+	if code := exitErr.ExitCode(); code != wantCode {
+		t.Fatalf("%v: exit = %d, want %d (stderr %q)", argv, code, wantCode, stderrBuf.String())
+	}
+
+	return stderrBuf.String()
+}
+
+// TestRootModeUnchanged (plan 07-04 task 3): the pre-phase root vectors
+// still pass with the omp arm present in the binary — root --version, root
+// --model acp mode (the setModel follow-up binds at the root path too, with
+// no omp-arm log lines on stderr), and the usage exit class on a bad root
+// config. The wiring seams test (TestWiringCodingPlanSeams) runs in-suite
+// unchanged.
+func TestRootModeUnchanged(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
+
+	t.Run("root --version prints the stamped floor line", func(t *testing.T) {
+		ompAssertVersionFloor(t, ompRunVersionProbe(t, agentBin, []string{ompFlagVersion}))
+	})
+
+	t.Run("root --model acp mode still binds via the setModel follow-up", func(t *testing.T) {
+		lines, stderr := ompRunAcpRide(t, agentBin, fakeBin,
+			[]string{ompFlagModel, e2eProvider + "/" + e2eModel, ompFlagLevel, e2eLevel}, ompBindingScenario)
+
+		line, ok := ompFindSetModelLine(lines)
+		if !ok {
+			t.Fatal("no session/setModel fired — the root --model path regressed")
 		}
 
-		if opts.unknownCount != 1 {
-			t.Fatalf("unknownCount = %d, want 1 (one tolerated flag)", opts.unknownCount)
-		}
+		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, e2eProvider, e2eModel, true, e2eLevel)
 
-		if opts.model != "zai-api/GLM" {
-			t.Fatalf("model = %q, want the flag parsed after the tolerated unknown", opts.model)
+		if strings.Contains(stderr, "zcode-acp omp:") {
+			t.Fatalf("the root path logged omp-arm lines — the dispatch switched arms: %s", stderr)
 		}
 	})
 
-	t.Run("unknown flag without a separate value tolerated", func(t *testing.T) {
-		opts, err := ompParse([]string{"--future-flag", "--model", "zai-api/GLM"})
-		if err != nil {
-			t.Fatalf("value-less unknown flag must tolerate: %v", err)
-		}
+	t.Run("bad root config exits with the usage class", func(t *testing.T) {
+		stderr := ompRunExpectExitCode(t, agentBin, []string{ompFlagModel, ompModelBadShape}, exitInvalidConfig)
 
-		if opts.unknownCount != 1 || opts.model != "zai-api/GLM" {
-			t.Fatalf("unknownCount = %d model = %q, want 1 and the parsed model", opts.unknownCount, opts.model)
+		if !strings.Contains(stderr, "--model must be providerId/modelId") ||
+			!strings.Contains(stderr, ompModelBadShape) {
+			t.Fatalf("root usage error %q must name the shape sentinel and the got value", stderr)
 		}
 	})
+}
 
-	t.Run("the bare acp positional is ignored", func(t *testing.T) {
-		opts, err := ompParse([]string{"acp"})
-		if err != nil {
-			t.Fatalf("the card's acp marker must parse clean: %v", err)
-		}
+// TestOmpRootCoexistence locks the dispatch switch: the first positional is
+// the ONLY switch — the same --model binding rides either arm, the unit
+// scan proves the value-token rule (a flag value equal to omp never
+// hijacks the arm), and the omp arm's stderr namespace discriminates the
+// two paths.
+func TestOmpRootCoexistence(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
-		if opts.version || opts.model != "" || opts.appServer != "" {
-			t.Fatalf("the bare positional leaked into the config: %+v", opts)
-		}
-	})
-
-	t.Run("plugin-dir and session-dir accepted and ignored", func(t *testing.T) {
-		opts, err := ompParse([]string{"acp", "--plugin-dir", "/plugins", "--session-dir", "/sessions"})
-		if err != nil {
-			t.Fatalf("the card's own flags must parse clean (accepted-and-ignored): %v", err)
-		}
-
-		if !opts.pluginDirSet || !opts.sessionDirSet {
-			t.Fatalf("card flags not registered as accepted-ignored: %+v", opts)
-		}
-	})
-
-	t.Run("version answers in any position", func(t *testing.T) {
-		for _, argv := range [][]string{{"omp", "--version"}, {"omp", "acp", "--version"}} {
-			opts, err := ompParse(argv)
-			if err != nil || !opts.version {
-				t.Fatalf("%v: version = %v err = %v, want the any-position answer", argv, opts.version, err)
+	t.Run("first-positional dispatch is the only switch (unit scan)", func(t *testing.T) {
+		for _, tc := range []struct {
+			args []string
+			want bool
+		}{
+			{[]string{ompSubcommand, ompCardMarker, ompFlagModel, ompModelShort}, true},
+			{[]string{ompSubcommand, ompFlagVersion}, true},
+			{[]string{ompFlagModel, ompModelShort}, false},
+			{[]string{ompFlagModel, ompSubcommand}, false}, // the flag's value token — never a positional
+			{[]string{ompFlagAppServer, "/x", ompSubcommand, ompFlagVersion}, true},
+			{[]string{}, false},
+			{[]string{ompCardMarker, ompFlagModel, ompModelShort}, false}, // the bare card marker alone is not omp
+			// after the terminator everything is positional
+			{[]string{"--", ompSubcommand}, true},
+		} {
+			if got := ompRequested(tc.args); got != tc.want {
+				t.Fatalf("ompRequested(%v) = %v, want %v (first-positional dispatch is the only switch)",
+					tc.args, got, tc.want)
 			}
 		}
 	})
 
-	t.Run("bad model shape answers the honest errModelShape error", func(t *testing.T) {
-		opts, err := ompParse([]string{"acp", "--model", "no-slash"})
-		if err != nil {
-			t.Fatalf("the shape error belongs to config validation, not the re-tokenizing parse: %v", err)
+	t.Run("root --model rides the root path", func(t *testing.T) {
+		lines, stderr := ompRunAcpRide(t, agentBin, fakeBin,
+			[]string{ompFlagModel, ompModelLower}, e2eScenario)
+
+		line, ok := ompFindSetModelLine(lines)
+		if !ok {
+			t.Fatal("no session/setModel fired — the root --model path regressed")
 		}
 
-		_, cfgErr := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
-		if !errors.Is(cfgErr, errModelShape) {
-			t.Fatalf("config err = %v, want the errModelShape sentinel", cfgErr)
-		}
+		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, "zai-api", "glm-5.3", false, "")
 
-		if !strings.Contains(cfgErr.Error(), `got "no-slash"`) {
-			t.Fatalf("config err %q must name the got value", cfgErr)
-		}
-	})
-
-	t.Run("level without model answers the existing sentinel", func(t *testing.T) {
-		opts, err := ompParse([]string{"acp", "--reasoning-level", "high"})
-		if err != nil {
-			t.Fatalf("the parse must succeed and let validation reject: %v", err)
-		}
-
-		_, cfgErr := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
-		if !errors.Is(cfgErr, errLevelWithoutModel) {
-			t.Fatalf("config err = %v, want the errLevelWithoutModel sentinel", cfgErr)
+		if strings.Contains(stderr, "zcode-acp omp:") {
+			t.Fatalf("root argv must not log omp-arm lines: %s", stderr)
 		}
 	})
 
-	t.Run("the omp parse composes into parseConfig with env fallbacks", func(t *testing.T) {
-		t.Setenv(envModel, "zai-api/GLM-5.3-Flash")
+	t.Run("omp acp --model rides the omp arm", func(t *testing.T) {
+		lines, stderr := ompRunAcpRide(t, agentBin, fakeBin,
+			[]string{ompSubcommand, ompCardMarker, ompFlagModel, ompModelLower}, e2eScenario)
 
-		opts, err := ompParse([]string{"acp"})
-		if err != nil {
-			t.Fatalf("bare card argv must parse clean: %v", err)
+		line, ok := ompFindSetModelLine(lines)
+		if !ok {
+			t.Fatal("no session/setModel fired — the omp arm's binding regressed")
 		}
 
-		cfg, cfgErr := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
-		if cfgErr != nil || cfg.model == nil ||
-			cfg.model.ProviderID != "zai-api" || cfg.model.ModelID != "GLM-5.3-Flash" {
-			t.Fatalf("env fallback lost under the omp arm: cfg %+v err %v", cfg, cfgErr)
+		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, "zai-api", "glm-5.3", false, "")
+
+		if !strings.Contains(stderr, "zcode-acp omp: model selection bound at launch") {
+			t.Fatalf("the omp arm must announce the launch binding (ids/shapes only): %s", stderr)
+		}
+	})
+}
+
+// TestOmpExitCodes locks the exit-code classes: a malformed omp config
+// exits with the SAME usage class as the root path (exitInvalidConfig,
+// distinct from the runtime exit 1) and the honest message names the
+// contract; runtime failures stay the exit-1 class on both arms.
+func TestOmpExitCodes(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+	noSuchInstall := filepath.Join(t.TempDir(), "no-such-install")
+
+	t.Run("malformed omp model shape exits with the usage class", func(t *testing.T) {
+		stderr := ompRunExpectExitCode(t, agentBin,
+			[]string{ompSubcommand, ompCardMarker, ompFlagModel, ompModelBadShape}, exitInvalidConfig)
+
+		// The slog text handler escapes quotes inside the err value —
+		// assert the sentinel and the got value by their stable fragments.
+		if !strings.Contains(stderr, "--model must be providerId/modelId") ||
+			!strings.Contains(stderr, ompModelBadShape) {
+			t.Fatalf("omp usage error %q must name the shape sentinel and the got value", stderr)
+		}
+	})
+
+	t.Run("omp level without model exits with the usage class", func(t *testing.T) {
+		stderr := ompRunExpectExitCode(t, agentBin,
+			[]string{ompSubcommand, ompCardMarker, ompFlagLevel, "high"}, exitInvalidConfig)
+
+		if !strings.Contains(stderr, "--reasoning-level set without --model") {
+			t.Fatalf("omp usage error %q must name the level-without-model sentinel", stderr)
+		}
+	})
+
+	t.Run("root bad config exits with the same usage class", func(t *testing.T) {
+		stderr := ompRunExpectExitCode(t, agentBin, []string{ompFlagModel, ompModelBadShape}, exitInvalidConfig)
+
+		if !strings.Contains(stderr, "--model must be providerId/modelId") {
+			t.Fatalf("root usage error %q must name the shape sentinel", stderr)
+		}
+	})
+
+	t.Run("omp runtime failure stays the distinct exit-1 class", func(t *testing.T) {
+		stderr := ompRunExpectExitCode(t, agentBin,
+			[]string{ompSubcommand, ompCardMarker, ompFlagAppServer, noSuchInstall}, 1)
+
+		// The nonexistent-install override rides discovery's step 1 and
+		// fails loud at spawn — the honest runtime failure framing (the
+		// usage class never fires; exit 1 is the distinct runtime class).
+		if !strings.Contains(stderr, "zcode-acp: exiting after failure") {
+			t.Fatalf("runtime failure %q must carry the exiting-after-failure framing", stderr)
+		}
+	})
+
+	t.Run("root runtime failure stays the distinct exit-1 class", func(t *testing.T) {
+		stderr := ompRunExpectExitCode(t, agentBin, []string{ompFlagAppServer, noSuchInstall}, 1)
+
+		if !strings.Contains(stderr, "zcode-acp: exiting after failure") {
+			t.Fatalf("runtime failure %q must carry the exiting-after-failure framing", stderr)
 		}
 	})
 }

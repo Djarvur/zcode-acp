@@ -132,14 +132,17 @@ func main() {
 // byte-identical for non-omp argv).
 const ompSubcommand = "omp"
 
-// ompRootValueFlags are the root arm's flag names that consume a separate
-// value token; the dispatch pre-scan skips those values so an argv like
-// `--model omp` stays a root invocation instead of hijacking the arm.
-var ompRootValueFlags = map[string]bool{
-	"app-server":      true,
-	"model":           true,
-	"reasoning-level": true,
-	"api-key":         true,
+// ompRootValueConsumes reports whether the named root flag consumes a
+// separate value token; the dispatch pre-scan skips those values so an
+// argv like `--model omp` stays a root invocation instead of hijacking
+// the arm.
+func ompRootValueConsumes(name string) bool {
+	switch name {
+	case "app-server", "model", "reasoning-level", "api-key":
+		return true
+	}
+
+	return false
 }
 
 // ompRequested reports whether the argv selects the omp card arm: the first
@@ -162,7 +165,7 @@ func ompRequested(args []string) bool {
 
 			if strings.HasPrefix(arg, "-") {
 				name := strings.TrimLeft(arg, "-")
-				if !strings.Contains(name, "=") && ompRootValueFlags[name] && i+1 < len(args) {
+				if !strings.Contains(name, "=") && ompRootValueConsumes(name) && i+1 < len(args) {
 					i++ // the flag's value token — never a positional
 				}
 
@@ -215,13 +218,15 @@ func ompFlagSet() (*flag.FlagSet, *ompFlagValues) {
 	fs.SetOutput(io.Discard)
 
 	return fs, &ompFlagValues{
-		version:        fs.Bool("version", false, "print version and exit"),
-		appServer:      fs.String("app-server", "", "path to a ZCode install root (or app-server binary) overriding discovery"),
+		version: fs.Bool("version", false, "print version and exit"),
+		appServer: fs.String("app-server", "",
+			"path to a ZCode install root (or app-server binary) overriding discovery"),
 		model:          fs.String("model", "", "backend model selection as providerId/modelId"),
 		reasoningLevel: fs.String("reasoning-level", "", "reasoning level for --model"),
 		apiKey:         fs.String("api-key", "", "z.ai API key for authenticate{zai-api-key}"),
 		pluginDir:      fs.String("plugin-dir", "", "accepted and ignored (the omp card visuals contract)"),
-		sessionDir:     fs.String("session-dir", "", "accepted and ignored (the client's disposable discovery launches)"),
+		sessionDir: fs.String("session-dir", "",
+			"accepted and ignored (the client's disposable discovery launches)"),
 	}
 }
 
