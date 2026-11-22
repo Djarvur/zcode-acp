@@ -165,6 +165,10 @@ None - no external service configuration required.
 - 07-09's QA-03 checklist row "/model <name> switch from the picker" now exercises a fully-locked wrapper surface; a typo'd switch renders the card's own Unknown-model styling instead of a generic failure
 - `mise run ci` green at wave close (exit 0, all 10 packages under -race); `bash experiments/scan-secrets.sh` exit 0
 
+## Self-Check: PASSED
+
+All five created/modified files exist on disk; all seven commits (b3acf06, ab112b8, 16ab4db, 7c0a7a3, e210c6d, 8894087, 7087a43) are ancestors of HEAD. Measured commits from the plan ledger: 6 task commits + 1 docs commit between plan_head_before 9253a01 and HEAD.
+
 ---
 *Phase: 07-hardening-vm-manual-e2e-documentation*
 *Completed: 2026-11-22*
