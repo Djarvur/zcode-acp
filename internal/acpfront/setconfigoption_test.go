@@ -37,14 +37,13 @@ import (
 // fail loud (the -32601 unknown-method reply — a silent {} reply would hide
 // contract regressions).
 func cfgOptionScenario(createResult string, extra ...fake.RequestRule) *fake.Scenario {
-	rules := []fake.RequestRule{
-		{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: json.RawMessage(createResult)}},
-		{
+	rules := make([]fake.RequestRule, 0, 2+len(extra))
+	rules = append(rules,
+		fake.RequestRule{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: json.RawMessage(createResult)}},
+		fake.RequestRule{
 			Method: zcode.MethodSessionSubscribe,
 			Reply:  &fake.Reply{Result: json.RawMessage(`{"sessionId":"sess_cfg","eventSeq":0,"events":[]}`)},
-		},
-	}
-
+		})
 	rules = append(rules, extra...)
 
 	return &fake.Scenario{
@@ -152,6 +151,8 @@ func assertInvalidParamsNaming(t *testing.T, err error, mustContain ...string) {
 // set/values (the CONTEXT discretion lock: coded invalid-params, never a
 // crash path), and NO backend frame leaves the wrapper — validation gates
 // every backend call.
+//
+//nolint:funlen // each subtest is a full harness lock; splitting would scatter its sequencing
 func TestSetConfigOptionInvalid(t *testing.T) {
 	t.Run("unknown configId names it and the allowed set", func(t *testing.T) {
 		h := newSetCfgFront(t, cfgOptionScenario(settingsCreateResult))
@@ -222,7 +223,8 @@ func TestSetConfigOptionInvalid(t *testing.T) {
 
 		sid := openSetCfgSession(ctx, t, h)
 
-		if _, closeErr := h.client.CloseSession(ctx, acp.CloseSessionRequest{SessionId: acp.SessionId(sid)}); closeErr != nil {
+		closeReq := acp.CloseSessionRequest{SessionId: acp.SessionId(sid)}
+		if _, closeErr := h.client.CloseSession(ctx, closeReq); closeErr != nil {
 			t.Fatalf("close: %v", closeErr)
 		}
 
@@ -236,4 +238,442 @@ func TestSetConfigOptionInvalid(t *testing.T) {
 		assertNoBackendMutation(t, tr)
 		assertInvalidParamsNaming(t, err, sid)
 	})
+}
+
+// cfgCreateResult is the mutation vectors' create snapshot: the PLAIN
+// GLM-5.3 binds (its entry carries no reasoning block, so the thought
+// picker falls back to thoughtLevel.available [off, low]) and the
+// confirmed level is low — the level-carry vector's CURRENT confirmed
+// level.
+const cfgCreateResult = `{
+  "session": {"sessionId": "sess_cfg"},
+  "settings": {
+    "model": {
+      "current": {"providerId": "zai-api", "modelId": "GLM-5.3"},
+      "available": [
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash",
+         "description": "The flagship reasoning model",
+         "reasoning": {"levels": [
+            {"value": "high", "label": "High", "description": "deep reasoning"},
+            {"value": "low", "label": "Low"}], "defaultLevel": "high"}},
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"}
+      ]
+    },
+    "thoughtLevel": {
+      "enabled": true, "current": "low", "defaultLevel": "low",
+      "available": [{"value": "off", "label": "Off"}, {"value": "low", "label": "Low"}]
+    }
+  }
+}`
+
+// cfgSetModelReply is the model switch's afterStateMutation reply: the
+// CONFIRMED snapshot with the NEW current (Flash) and a CHANGED available
+// list (GLM-5.3 first now) — the re-emit vector's reply-only source, kept
+// deliberately different from cfgCreateResult on BOTH surfaces so a
+// pre-ask rebuild cannot pass.
+const cfgSetModelReply = `{
+  "session": {"sessionId": "sess_cfg"},
+  "settings": {
+    "model": {
+      "current": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"},
+      "available": [
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"},
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash",
+         "description": "The flagship reasoning model",
+         "reasoning": {"levels": [
+            {"value": "high", "label": "High", "description": "deep reasoning"},
+            {"value": "low", "label": "Low"}], "defaultLevel": "high"}}
+      ]
+    },
+    "thoughtLevel": {
+      "enabled": true, "current": "low", "defaultLevel": "low",
+      "available": [{"value": "off", "label": "Off"}, {"value": "low", "label": "Low"}]
+    }
+  }
+}`
+
+// cfgNoLevelCreateResult is the omit-shape arm's snapshot: NO thoughtLevel
+// block at all — no confirmed level exists, so a model switch must emit the
+// documented omit-shape (never an empty-level options object, IN-04).
+const cfgNoLevelCreateResult = `{
+  "session": {"sessionId": "sess_cfg"},
+  "settings": {
+    "model": {
+      "current": {"providerId": "zai-api", "modelId": "GLM-5.3"},
+      "available": [
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash"},
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"}
+      ]
+    }
+  }
+}`
+
+// cfgFlashBoundCreateResult is the thought-switch vector's snapshot: the
+// Flash binds (the thought picker renders ITS reasoning.levels [high, low],
+// so "high" is listed) and the confirmed level is low.
+const cfgFlashBoundCreateResult = `{
+  "session": {"sessionId": "sess_cfg"},
+  "settings": {
+    "model": {
+      "current": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"},
+      "available": [
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash",
+         "description": "The flagship reasoning model",
+         "reasoning": {"levels": [
+            {"value": "high", "label": "High", "description": "deep reasoning"},
+            {"value": "low", "label": "Low"}], "defaultLevel": "high"}},
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"}
+      ]
+    },
+    "thoughtLevel": {
+      "enabled": true, "current": "low", "defaultLevel": "low",
+      "available": [{"value": "off", "label": "Off"}, {"value": "low", "label": "Low"}]
+    }
+  }
+}`
+
+// cfgThoughtReply is the thought switch's afterStateMutation reply: the
+// CONFIRMED snapshot with thoughtLevel.current moved to high — the
+// re-emit's confirmation source.
+const cfgThoughtReply = `{
+  "session": {"sessionId": "sess_cfg"},
+  "settings": {
+    "model": {
+      "current": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"},
+      "available": [
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"}, "label": "GLM-5.3-Flash",
+         "description": "The flagship reasoning model",
+         "reasoning": {"levels": [
+            {"value": "high", "label": "High", "description": "deep reasoning"},
+            {"value": "low", "label": "Low"}], "defaultLevel": "high"}},
+        {"ref": {"providerId": "zai-api", "modelId": "GLM-5.3"}, "label": "GLM-5.3"}
+      ]
+    },
+    "thoughtLevel": {
+      "enabled": true, "current": "high", "defaultLevel": "high",
+      "available": [{"value": "off", "label": "Off"}, {"value": "high", "label": "High"}]
+    }
+  }
+}`
+
+// setCfgModelFrame is the setModel request frame's payload shape (the
+// dialect's camelCase wire keys, capture-verbatim).
+type setCfgModelFrame struct {
+	Params struct {
+		Model struct {
+			ProviderID string          `json:"providerId"`
+			ModelID    string          `json:"modelId"`
+			Options    json.RawMessage `json:"options"`
+		} `json:"model"`
+		PersistAsWorkspaceLastUsed *bool `json:"persistAsWorkspaceLastUsed"`
+	} `json:"params"`
+}
+
+// assertSetCfgModelFrame byte-locks one setModel request frame: the
+// provider/model ids, the options object (wantLevel "" = the omit-shape —
+// the options key must be ABSENT, never an empty level), and explicit
+// persistAsWorkspaceLastUsed:false.
+func assertSetCfgModelFrame(t *testing.T, raw, providerID, modelID, wantLevel string) {
+	t.Helper()
+
+	var frame setCfgModelFrame
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("decode setModel frame: %v (%s)", err, raw)
+	}
+
+	model := frame.Params.Model
+	if model.ProviderID != providerID || model.ModelID != modelID {
+		t.Fatalf("setModel model = %s/%s, want %s/%s: %s", model.ProviderID, model.ModelID, providerID, modelID, raw)
+	}
+
+	if wantLevel == "" {
+		if len(model.Options) != 0 {
+			t.Fatalf("setModel must carry the omit-shape (no options key), got %s: %s", model.Options, raw)
+		}
+
+		return
+	}
+
+	var opts struct {
+		ReasoningLevel string `json:"reasoningLevel"`
+	}
+
+	if err := json.Unmarshal(model.Options, &opts); err != nil {
+		t.Fatalf("decode setModel options: %v (%s: %s)", err, model.Options, raw)
+	}
+
+	if opts.ReasoningLevel != wantLevel {
+		t.Fatalf("setModel options.reasoningLevel = %q, want %q (the level must ride options): %s",
+			opts.ReasoningLevel, wantLevel, raw)
+	}
+
+	if frame.Params.PersistAsWorkspaceLastUsed == nil || *frame.Params.PersistAsWorkspaceLastUsed {
+		t.Fatalf("setModel persistAsWorkspaceLastUsed must be explicitly false: %s", raw)
+	}
+}
+
+// assertSingleSetModel asserts exactly one session/setModel frame on the
+// back leg and returns it.
+func assertSingleSetModel(t *testing.T, tr fake.Transcript) string {
+	t.Helper()
+
+	setModels := transcriptIndexes(tr, "in", `"method":"session/setModel"`)
+	if len(setModels) != 1 {
+		t.Fatalf("back leg records %d session/setModel frame(s), want exactly 1", len(setModels))
+	}
+
+	return tr.Lines[setModels[0]].JSON
+}
+
+// TestSetConfigOptionModelSwitch — the Task-2 RED target (Pitfall 2): a
+// valid model value maps to exactly one session/setModel whose model object
+// parses with strings.Cut on the FIRST slash only and whose options carry
+// the CURRENT confirmed level when one exists (the level-carry vector — a
+// switch must never silently drop the level) or omit options entirely when
+// none does (the IN-04 omit-shape); persistAsWorkspaceLastUsed stays false,
+// and a refused setModel tears the backend session down best-effort (the
+// WR-04 discipline — never an orphan).
+func TestSetConfigOptionModelSwitch(t *testing.T) {
+	t.Run("the setModel carries the confirmed level (level-carry vector)", func(t *testing.T) {
+		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, fake.RequestRule{
+			Method: zcode.MethodSessionSetModel,
+			Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+		}))
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		sid := openSetCfgSession(ctx, t, h)
+
+		if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID)); err != nil {
+			t.Fatalf("model switch: %v", err)
+		}
+
+		tr, trErr := h.Transcript(t)
+		if trErr != nil {
+			t.Fatalf("fake transcript: %v", trErr)
+		}
+
+		assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), corpusProviderID, corpusModelID, reasoningLevelLow)
+	})
+
+	t.Run("no confirmed level emits the omit-shape (IN-04)", func(t *testing.T) {
+		h := newSetCfgFront(t, cfgOptionScenario(cfgNoLevelCreateResult, fake.RequestRule{
+			Method: zcode.MethodSessionSetModel,
+			Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+		}))
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		sid := openSetCfgSession(ctx, t, h)
+
+		if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID)); err != nil {
+			t.Fatalf("model switch: %v", err)
+		}
+
+		tr, trErr := h.Transcript(t)
+		if trErr != nil {
+			t.Fatalf("fake transcript: %v", trErr)
+		}
+
+		assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), corpusProviderID, corpusModelID, "")
+	})
+
+	t.Run("a refused setModel closes the backend session (WR-04, never an orphan)", func(t *testing.T) {
+		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult,
+			fake.RequestRule{
+				Method: zcode.MethodSessionSetModel,
+				Reply: &fake.Reply{Error: &zcode.WireError{
+					Code: zcode.CodeInternalError, Message: "Reasoning level is required for this model",
+				}},
+			},
+			fake.RequestRule{
+				Method: zcode.MethodSessionClose,
+				Reply:  &fake.Reply{Result: json.RawMessage(`{"closed":true}`)},
+			}))
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		sid := openSetCfgSession(ctx, t, h)
+
+		_, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID))
+		if err == nil {
+			t.Fatal("a refused setModel must fail the ask, got success")
+		}
+
+		tr, trErr := h.Transcript(t)
+		if trErr != nil {
+			t.Fatalf("fake transcript: %v", trErr)
+		}
+
+		// The refusal surfaced honestly AND the just-mutated backend session
+		// was torn down best-effort — the transcript shows BOTH frames.
+		if closes := transcriptIndexes(tr, "in", `"method":"session/close"`); len(closes) != 1 {
+			t.Fatalf("a refused setModel must close the backend session best-effort (WR-04) — "+
+				"the back leg records %d session/close frame(s)", len(closes))
+		}
+	})
+}
+
+// TestSetConfigOptionThoughtSwitch — the Task-2 RED target (locked OQ1): a
+// valid thought_level value travels on the SAME proven setModel path — the
+// CONFIRMED current model rides unchanged and options.reasoningLevel = the
+// requested level; no dedicated setThoughtLevel frame may exist anywhere on
+// the wire.
+func TestSetConfigOptionThoughtSwitch(t *testing.T) {
+	h := newSetCfgFront(t, cfgOptionScenario(cfgFlashBoundCreateResult, fake.RequestRule{
+		Method: zcode.MethodSessionSetModel,
+		Reply:  &fake.Reply{Result: json.RawMessage(cfgThoughtReply)},
+	}))
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	sid := openSetCfgSession(ctx, t, h)
+
+	if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDThoughtLevel, corpusReasoningLevel)); err != nil {
+		t.Fatalf("thought switch: %v", err)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	// The setModel path is the ONLY mutation frame, and the confirmed model
+	// rides unchanged with the requested level.
+	assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), corpusProviderID, corpusModelID, corpusReasoningLevel)
+
+	for _, line := range tr.Lines {
+		if strings.Contains(line.JSON, "setThoughtLevel") {
+			t.Fatalf("the dedicated setThoughtLevel method is locked out of the v1 wire (OQ1): %s", line.JSON)
+		}
+	}
+}
+
+// TestSetConfigOptionReEmit — the Task-2 RED target (D-10/T-06-19): the
+// response re-emits the FULL option list rebuilt FROM THE MUTATION REPLY's
+// settings snapshot — never the pre-ask one — and the confirmed store
+// updates from the reply before the rebuild (a follow-up ask validates
+// against the reply-confirmed set).
+func TestSetConfigOptionReEmit(t *testing.T) {
+	t.Run("the response reflects the reply, not the pre-ask snapshot", func(t *testing.T) {
+		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, fake.RequestRule{
+			Method: zcode.MethodSessionSetModel,
+			Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+		}))
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		sid := openSetCfgSession(ctx, t, h)
+
+		resp, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID))
+		if err != nil {
+			t.Fatalf("model switch: %v", err)
+		}
+
+		// The reply-built expectation — the ONLY source (D-10). The reply's
+		// available list and current differ from cfgCreateResult's on
+		// purpose: a pre-ask rebuild fails this comparison on both.
+		replySettings, parsed := acpfront.ParseSettings(json.RawMessage(cfgSetModelReply))
+		if !parsed {
+			t.Fatal("the fixture reply must parse")
+		}
+
+		want := acpfront.BuildConfigOptions(replySettings)
+
+		assertConfigOptionsMatch(t, resp.ConfigOptions, want)
+	})
+
+	t.Run("the store updated from the reply before the rebuild (follow-up validates against it)", func(t *testing.T) {
+		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult,
+			fake.RequestRule{
+				Method: zcode.MethodSessionSetModel, Times: 1,
+				Reply: &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+			},
+			fake.RequestRule{
+				Method: zcode.MethodSessionSetModel,
+				Reply:  &fake.Reply{Result: json.RawMessage(cfgThoughtReply)},
+			}))
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		sid := openSetCfgSession(ctx, t, h)
+
+		if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID)); err != nil {
+			t.Fatalf("model switch: %v", err)
+		}
+
+		// "high" is listed ONLY in the reply-confirmed set (the pre-ask
+		// fixture's thought list is [off, low] — the plain bound model has
+		// no reasoning block): the ask succeeding proves the store updated
+		// from the reply BEFORE this validation ran.
+		resp, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDThoughtLevel, corpusReasoningLevel))
+		if err != nil {
+			t.Fatalf("the follow-up must validate against the REPLY-confirmed set: %v", err)
+		}
+
+		replySettings, parsed := acpfront.ParseSettings(json.RawMessage(cfgThoughtReply))
+		if !parsed {
+			t.Fatal("the fixture reply must parse")
+		}
+
+		assertConfigOptionsMatch(t, resp.ConfigOptions, acpfront.BuildConfigOptions(replySettings))
+	})
+}
+
+// assertConfigOptionsMatch deep-compares the client response's option list
+// against the expected neutral defs — id/name/category/currentValue and
+// every entry's value/name/description (the adapter's own select-assembly
+// bytes are locked at the acpport tier; this is the rebuild-source lock).
+func assertConfigOptionsMatch(t *testing.T, got []acp.SessionConfigOption, want []acpport.ConfigOptionDef) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("response list = %d entries, want the reply-built %d", len(got), len(want))
+	}
+
+	for i, def := range want {
+		sel := got[i].Select
+		if sel == nil {
+			t.Fatalf("response[%d] carries no select variant: %+v", i, got[i])
+		}
+
+		category := ""
+		if sel.Category != nil {
+			category = string(*sel.Category)
+		}
+
+		if string(sel.Id) != def.ID || sel.Name != def.Name ||
+			category != def.Category || string(sel.CurrentValue) != def.CurrentValue {
+			t.Fatalf("response[%d] = id %q name %q category %q current %q, want %q/%q/%q/%q (reply-built, D-10)",
+				i, sel.Id, sel.Name, category, sel.CurrentValue, def.ID, def.Name, def.Category, def.CurrentValue)
+		}
+
+		var entries []acp.SessionConfigSelectOption
+		if sel.Options.Ungrouped != nil {
+			entries = *sel.Options.Ungrouped
+		}
+
+		if len(entries) != len(def.Options) {
+			t.Fatalf("response[%d] entries = %d, want %d (the reply's list verbatim)", i, len(entries), len(def.Options))
+		}
+
+		for j, wantOpt := range def.Options {
+			gotOpt := entries[j]
+			desc := ""
+			if gotOpt.Description != nil {
+				desc = *gotOpt.Description
+			}
+
+			if string(gotOpt.Value) != wantOpt.Value || gotOpt.Name != wantOpt.Name || desc != wantOpt.Description {
+				t.Fatalf("response[%d] entry %d = %q/%q/%q, want %q/%q/%q (D-08 verbatim mirror)",
+					i, j, gotOpt.Value, gotOpt.Name, desc, wantOpt.Value, wantOpt.Name, wantOpt.Description)
+			}
+		}
+	}
 }
