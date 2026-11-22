@@ -1,0 +1,284 @@
+{
+  "name": "desktop-nodelta-slowpoll",
+  "on_request": [
+    {
+      "method": "session/create",
+      "reply": {
+        "result": {
+          "session": {
+            "sessionId": "sess_fix1"
+          },
+          "protocol": {
+            "name": "ZCode Protocol",
+            "version": 1
+          }
+        }
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {
+              "sessionId": "sess_fix1",
+              "state": "starting",
+              "generation": 1,
+              "revision": 1,
+              "lastError": null
+            }
+          }
+        },
+        {
+          "reverse": {
+            "method": "session/requestRuntimePreferences",
+            "params": {
+              "sessionId": "sess_fix1",
+              "scope": "runtime-materialization"
+            },
+            "timeout_ms": 15000,
+            "expect_answer": {
+              "result": {
+                "nativeSearchEnhancementsEnabled": false,
+                "memoryEnabled": false
+              }
+            }
+          }
+        },
+        {
+          "emit": {
+            "method": "session/lifecycle/changed",
+            "params": {
+              "sessionId": "sess_fix1",
+              "state": "ready",
+              "generation": 1,
+              "revision": 2,
+              "lastError": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {
+        "result": {
+          "sessionId": "sess_fix1",
+          "eventSeq": 0,
+          "events": []
+        }
+      }
+    },
+    {
+      "method": "session/setModel",
+      "reply": {
+        "result": {}
+      }
+    },
+    {
+      "method": "session/send",
+      "reply": {
+        "result": {
+          "accepted": true,
+          "sessionId": "sess_fix1",
+          "stateRevision": 1
+        }
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {
+              "patch": {
+                "status": "running"
+              },
+              "reason": "prompt_started",
+              "revision": 1,
+              "scope": "session",
+              "sessionId": "sess_fix1",
+              "type": "state.updated"
+            }
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {
+              "deliveryKind": "desktop-continuous",
+              "eventId": "evt_fix1",
+              "payload": {
+                "executionStartedAt": 1795338154700,
+                "turnNumber": 0,
+                "messageId": "msg_fixa2",
+                "foregroundExecutionId": "runtime_command_1",
+                "queryId": "query_fix1"
+              },
+              "seq": 6,
+              "sessionId": "sess_fix1",
+              "timestamp": 1795338154701,
+              "traceId": "trace_fix1",
+              "turnId": "turn_fix1",
+              "type": "turn.started"
+            }
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {
+              "deliveryKind": "desktop-continuous",
+              "eventId": "evt_fix2",
+              "payload": {
+                "response": "ok",
+                "resultType": "success",
+                "toolCallCount": 0,
+                "turnId": "turn_fix1"
+              },
+              "seq": 7,
+              "sessionId": "sess_fix1",
+              "timestamp": 1795338159500,
+              "traceId": "trace_fix1",
+              "turnId": "turn_fix1",
+              "type": "turn.completed"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/messages",
+      "reply": {
+        "result": {
+          "messages": [
+            {
+              "info": {
+                "agent": "zcode-agent",
+                "cost": 0,
+                "finish": "completed",
+                "messageId": "msg_part_fix1_message",
+                "model": {
+                  "providerId": "zai-api",
+                  "modelId": "GLM-5.3-Flash"
+                },
+                "role": "assistant",
+                "semantics": {
+                  "origin": "system",
+                  "kind": "timeline_event",
+                  "uiVisibility": "visible",
+                  "providerVisibility": "hidden",
+                  "transcriptVisibility": "visible"
+                },
+                "sessionId": "sess_fix1",
+                "time": {
+                  "created": 1795338154600,
+                  "completed": 1795338154600
+                }
+              },
+              "parts": [
+                {
+                  "messageId": "msg_part_fix1_message",
+                  "partId": "part_part_fix1_timeline",
+                  "sessionId": "sess_fix1",
+                  "display": "separator",
+                  "status": "completed",
+                  "timelineType": "model_change",
+                  "type": "timeline"
+                }
+              ]
+            },
+            {
+              "info": {
+                "agent": "zcode-agent",
+                "messageId": "msg_fixu1",
+                "role": "user",
+                "semantics": {
+                  "origin": "real_user",
+                  "kind": "user_prompt",
+                  "uiVisibility": "visible",
+                  "providerVisibility": "visible",
+                  "transcriptVisibility": "visible"
+                },
+                "sessionId": "sess_fix1",
+                "time": {
+                  "created": 1795338154700
+                }
+              },
+              "parts": [
+                {
+                  "messageId": "msg_fixu1",
+                  "partId": "part_fixu1",
+                  "sessionId": "sess_fix1",
+                  "text": "Reply with the single word: ok",
+                  "type": "text"
+                }
+              ]
+            },
+            {
+              "info": {
+                "agent": "zcode-agent",
+                "cost": 0,
+                "finish": "stop",
+                "messageId": "msg_fixa2",
+                "model": {
+                  "providerId": "zai-api",
+                  "modelId": "GLM-5.3-Flash"
+                },
+                "parentMessageId": "msg_fixu1",
+                "role": "assistant",
+                "semantics": {
+                  "origin": "agent_runtime",
+                  "kind": "assistant_response",
+                  "uiVisibility": "visible",
+                  "providerVisibility": "visible",
+                  "transcriptVisibility": "visible"
+                },
+                "sessionId": "sess_fix1",
+                "time": {
+                  "created": 1795338154804,
+                  "completed": 1795338159469
+                }
+              },
+              "parts": [
+                {
+                  "messageId": "msg_fixa2",
+                  "partId": "part_fixa1",
+                  "sessionId": "sess_fix1",
+                  "type": "step-start"
+                },
+                {
+                  "messageId": "msg_fixa2",
+                  "partId": "part_fixa2",
+                  "sessionId": "sess_fix1",
+                  "text": "The user asked for the single word: ok",
+                  "type": "reasoning"
+                },
+                {
+                  "messageId": "msg_fixa2",
+                  "partId": "part_fixa3",
+                  "sessionId": "sess_fix1",
+                  "text": "ok",
+                  "type": "text"
+                },
+                {
+                  "messageId": "msg_fixa2",
+                  "partId": "part_fixa4",
+                  "sessionId": "sess_fix1",
+                  "cost": 0,
+                  "reason": "stop",
+                  "type": "step-finish"
+                }
+              ]
+            }
+          ],
+          "sessionId": "sess_fix1"
+        }
+      },
+      "delay_ms": 3000
+    }
+  ],
+  "unknown_method": {
+    "error": {
+      "code": -32601,
+      "message": "MethodNotFound"
+    }
+  },
+  "eof_drain_ms": 100
+}
