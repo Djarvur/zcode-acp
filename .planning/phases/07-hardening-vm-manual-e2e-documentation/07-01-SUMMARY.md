@@ -210,3 +210,10 @@ None — no external service configuration required.
 ---
 *Phase: 07-hardening-vm-manual-e2e-documentation*
 *Completed: 2026-11-22*
+
+## Self-Check: PASSED
+
+- Created files verified on disk: lifecycle_internal_test.go, failurepaths_internal_test.go, pickerrefusal_internal_test.go, the three tdd RED records, and this SUMMARY.
+- All 8 plan commits verified as HEAD ancestors: f4338cd, 8fce234, 4ea7238, c9262e8, c5c340f, ca973e4, 649b23c, 3b11e07.
+- Commits measured from the persisted ledger: 7 (plan_head_before 4b6d98a → plan_head_after 649b23c; the metadata commit 3b11e07 rides after).
+- Gate greps at close: closingMu.Lock() = 3 (>= 2), if f.settings == nil = 0, the picker-refusal orphan-close call site = 0; `mise run ci` exit 0.
