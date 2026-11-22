@@ -302,10 +302,13 @@ func isUnknownFlagError(err error) bool {
 // runOmp is the omp card arm (plan 07-04, D-03): answer the client's
 // version probe in any position under omp — the probe shape is
 // `<program> <prefixArgs> --version`, prefix args included, card args
-// absent — then delegate to the standard acp path. Task-1 scope: the
-// version answer plus this delegation stub; the card's own argv surface
-// (--model launch binding, accepted-and-ignored logging, honest shape
-// errors) is task 2's contract, so the post-omp flags stay unbound here.
+// absent — then bind the card's --model selection and serve the standard
+// ACP mode. The re-tokenized argv feeds the SAME parseConfig validation
+// (identical sentinels, env fallbacks, exitInvalidConfig usage class as
+// the root arm); the accepted-and-ignored card flags and the tolerated
+// unknowns surface as debug lines naming their contracts, and the launch
+// binding logs ids and shapes only — never credential or env values
+// (T-07-12).
 func runOmp(args []string) {
 	// stderr slog first: every omp-arm diagnostic (parse, config, runtime)
 	// stays off stdout — stdout carries the probe answer / protocol only.
@@ -324,11 +327,37 @@ func runOmp(args []string) {
 		return
 	}
 
-	cfg, err := parseConfig("", "", "", "")
+	// Accepted-and-ignored card flags: one debug line each naming the
+	// contract — the disposable discovery launch (--session-dir) and the
+	// visuals-configured chat launch (--plugin-dir) must never break
+	// startup.
+	if opts.pluginDirSet {
+		slog.Debug("zcode-acp omp: --plugin-dir accepted and ignored (the card visuals contract)")
+	}
+
+	if opts.sessionDirSet {
+		slog.Debug("zcode-acp omp: --session-dir accepted and ignored (the client's disposable discovery launch)")
+	}
+
+	if opts.unknownCount > 0 {
+		slog.Debug("zcode-acp omp: unknown card flags tolerated and ignored", "count", opts.unknownCount)
+	}
+
+	cfg, err := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
 	if err != nil {
 		slog.Error("zcode-acp omp: invalid configuration", "err", err)
 
 		os.Exit(exitInvalidConfig)
+	}
+
+	if cfg.model != nil {
+		// Launch binding notice: provider/model ids and whether the level
+		// rode explicitly (the snapshot default fills it inside the front)
+		// — shapes only, never credential or env values.
+		slog.Info("zcode-acp omp: model selection bound at launch",
+			"provider", cfg.model.ProviderID,
+			"model", cfg.model.ModelID,
+			"levelExplicit", cfg.model.ReasoningLevel != "")
 	}
 
 	if err := run(cfg); err != nil {

@@ -732,6 +732,17 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 		return nil
 	}
 
+	// The reasoning level's default chain (plan 07-04, D-03): the explicit
+	// configured level first, else the target model's backend-confirmed
+	// defaultLevel from the create-reply snapshot (recorded just above the
+	// follow-up), else "" — the IN-04 omit-shape whose backend refusal is
+	// the honest answer for level-strict providers. Never a fabricated
+	// level: an unlisted target answers "".
+	level := f.model.ReasoningLevel
+	if level == "" {
+		level = f.snapshotDefaultLevel(sid, f.model.ProviderID, f.model.ModelID)
+	}
+
 	// IN-04 (plan 05-05): the options object rides ONLY when a level is
 	// configured — an empty level emits the documented omit-shape (never
 	// `"options":{"reasoningLevel":""}`), so the backend's own actionable
@@ -742,8 +753,8 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 		wireKeyModelID: f.model.ModelID,
 	}
 
-	if f.model.ReasoningLevel != "" {
-		model["options"] = map[string]any{wireKeyReasoningLevel: f.model.ReasoningLevel}
+	if level != "" {
+		model["options"] = map[string]any{wireKeyReasoningLevel: level}
 	}
 
 	setModelRes, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
@@ -767,6 +778,32 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 	f.recordSettings(sid, setModelRes)
 
 	return nil
+}
+
+// snapshotDefaultLevel derives the target model's backend-confirmed default
+// reasoning level from the session's latest recorded snapshot (plan 07-04,
+// D-03's level-default chain): the create reply is recorded before the
+// setModel follow-up fires, so a target the snapshot lists answers its
+// defaultLevel; an unlisted target, a level-less entry, or an undecodable
+// snapshot answers "" — the omit-shape arm, never a fabricated level.
+func (f *Front) snapshotDefaultLevel(sid, providerID, modelID string) string {
+	raw, ok := f.latestSettings(sid)
+	if !ok {
+		return ""
+	}
+
+	s, parsed := ParseSettings(raw)
+	if !parsed {
+		return ""
+	}
+
+	for _, entry := range s.Model.Available {
+		if entry.Ref.ProviderID == providerID && entry.Ref.ModelID == modelID {
+			return entry.DefaultLevel
+		}
+	}
+
+	return ""
 }
 
 // watchCancelFanIn is the prompt's cancel fan-in goroutine body (D-05):
