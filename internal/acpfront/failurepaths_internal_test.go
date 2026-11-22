@@ -151,6 +151,12 @@ func TestCreateFailurePathsLeaveNoMapEntries(t *testing.T) {
 		}
 
 		assertNoEntryForSID(t, "the subscribe-refused resume", f.cwds)
+
+		// WR-01 (07-REVIEW): the resume now records the reply's confirmed
+		// settings snapshot beside the cwd — the subscribe-failure path must
+		// drop BOTH (the WR-07 bounding invariant holds on the resume failure
+		// path exactly as on the create failure paths).
+		assertNoSettingsForSID(t, "the subscribe-refused resume", f.settings)
 	})
 
 	t.Run("the happy path still records and the teardown still drops (IN-04 liveness)", func(t *testing.T) {

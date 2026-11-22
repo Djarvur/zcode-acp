@@ -279,6 +279,115 @@ func TestResumeRecordsCwd(t *testing.T) {
 	}
 }
 
+// TestResumeRecordsConfirmedSettings locks WR-01 (07-REVIEW): the resume
+// reply IS a confirmed settings snapshot — createSessionID's own contract
+// states session/create and session/resume carry the SAME full snapshot
+// shape, and D-10 names the reply the confirmation source — so
+// ResumeSession must record it beside the cwd. Without the record every
+// resumed session answers the picker's model arm the misleading -32602
+// "no confirmed settings (unknown session)" and the /model slash the
+// pinned "No model selected." refusal despite a backend-confirmed
+// binding. The harness carries NO session/new leg: the snapshot arrives
+// ONLY through the resume reply, so a pass proves the resume path
+// recorded it.
+func TestResumeRecordsConfirmedSettings(t *testing.T) {
+	// resumeScenario composes the pure-resume harness: cfgOptionScenario's
+	// create rule never fires (no session/new is driven); the settings
+	// snapshot rides the resume reply verbatim (create-shaped) and the
+	// setModel rule answers the picker/slash mutation.
+	resumeScenario := func() *fake.Scenario {
+		return cfgOptionScenario(cfgCreateResult,
+			fake.RequestRule{
+				Method: zcode.MethodSessionResume,
+				Reply:  &fake.Reply{Result: json.RawMessage(cfgCreateResult)},
+			},
+			fake.RequestRule{
+				Method: zcode.MethodSessionSetModel,
+				Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+			})
+	}
+
+	// resumeSetCfgSession runs the initialize + PURE resume preamble (no
+	// session/new — the snapshot must come from the resume reply alone) and
+	// returns the resumed session id.
+	resumeSetCfgSession := func(ctx context.Context, t *testing.T, h *FrontHarness) string {
+		t.Helper()
+
+		if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
+			t.Fatalf("initialize: %v", err)
+		}
+
+		if _, err := h.client.ResumeSession(ctx, acp.ResumeSessionRequest{
+			SessionId: acp.SessionId("sess_cfg"),
+			Cwd:       t.TempDir(),
+		}); err != nil {
+			t.Fatalf("session/resume: %v", err)
+		}
+
+		return "sess_cfg"
+	}
+
+	t.Run("the picker's model arm validates against the resume reply", func(t *testing.T) {
+		h := newSetCfgFront(t, resumeScenario())
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		sid := resumeSetCfgSession(ctx, t, h)
+
+		// The ask targets a value the RESUME reply lists: success proves the
+		// store recorded the resume snapshot; the -32602 unknown-session
+		// answer is the WR-01 bug this test pins.
+		if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID)); err != nil {
+			t.Fatalf("the resumed session must validate the picker ask against the "+
+				"resume reply's confirmed snapshot (the reply IS the D-10 source): %v", err)
+		}
+
+		tr, trErr := h.Transcript(t)
+		if trErr != nil {
+			t.Fatalf("fake transcript: %v", trErr)
+		}
+
+		// The mutation payload byte-locks the picker arm's shape over the
+		// resumed session: the listed target ids and the RESUME reply's
+		// confirmed level.
+		assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), corpusProviderID, corpusModelID, reasoningLevelLow)
+	})
+
+	t.Run("the /model slash resolves the resume reply's binding", func(t *testing.T) {
+		h := newSetCfgFront(t, resumeScenario())
+
+		ctx, cancel := h.ExchangeCtx()
+		defer cancel()
+
+		sid := resumeSetCfgSession(ctx, t, h)
+
+		resp, err := h.client.Prompt(ctx, slashPrompt(sid, "/model "+corpusModelFlashID))
+		if err != nil {
+			t.Fatalf("the /model switch on a resumed session must resolve against the "+
+				"resume reply's confirmed binding (never the pinned no-model refusal): %v", err)
+		}
+
+		if resp.StopReason != acp.StopReasonEndTurn {
+			t.Fatalf("stopReason = %q, want end_turn", resp.StopReason)
+		}
+
+		tr, trErr := h.Transcript(t)
+		if trErr != nil {
+			t.Fatalf("fake transcript: %v", trErr)
+		}
+
+		// The intercept consumed the command: exactly the ONE setModel
+		// mutation, zero literal sends.
+		assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), corpusProviderID, corpusModelID, reasoningLevelLow)
+
+		if sends := transcriptIndexes(tr, "in", `"method":"session/send"`); len(sends) != 0 {
+			t.Fatalf("the intercept must consume the /model prompt (the literal text never "+
+				"reaches the backend) — the back leg records %d session/send frame(s)", len(sends))
+		}
+	})
+}
+
 // TestResumeRejectsRelativeCwd locks WR-02's validation arm (plan 05-10):
 // a non-absolute (or empty) resume cwd answers the coded invalid-params
 // rejection BEFORE any backend call — a rejected resume never touches the
