@@ -200,6 +200,7 @@ func (f *Front) CloseSession(ctx context.Context, sessionID string) error {
 	f.registry.Remove(sessionID)
 	st.Machine.CloseObservers()
 	f.dropCwd(sessionID)
+	f.dropSettings(sessionID)
 
 	f.closingMu.Lock()
 	delete(f.closing, sessionID)

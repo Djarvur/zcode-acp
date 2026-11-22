@@ -96,6 +96,16 @@ type Front struct {
 	cwdMu sync.Mutex
 	cwds  map[string]string
 
+	// settingsMu guards the per-session confirmed-settings store (session
+	// id → the latest confirmed backend reply settings snapshot, plan
+	// 06-04): recorded at session/new from the create reply and AGAIN from
+	// the setModel follow-up reply when it fired (the later reply
+	// overwrites — the follow-up IS the D-10 confirmation), dropped at
+	// teardown beside dropCwd (the WR-07 bounding — the map stays bounded
+	// with the registry).
+	settingsMu sync.Mutex
+	settings   map[string]json.RawMessage
+
 	// streamCeiling is the configured per-turn stream queue byte ceiling
 	// (WithStreamCeiling; zero → the documented default at pump build).
 	streamCeiling int
@@ -177,6 +187,7 @@ func New(conn *zcode.Conn, opts ...Option) *Front {
 		version:  "0.0.0-dev",
 		perm:     newPermissionBridge(),
 		cwds:     make(map[string]string),
+		settings: make(map[string]json.RawMessage),
 		newTurnCtx: func() (context.Context, context.CancelFunc) {
 			return context.WithCancel(baseCtx)
 		},
@@ -259,6 +270,12 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 		return "", nil, acpport.NewInternal("session/subscribe: %v", err)
 	}
 
+	// The create reply IS the first confirmed snapshot (Pattern 7's
+	// reply-snapshot fact): capture it BEFORE the follow-up so a snapshot-
+	// carrying reply renders even with no model configured (the no-model
+	// arm).
+	f.recordSettings(sid, res)
+
 	if f.model != nil {
 		// IN-04 (plan 05-05): the options object rides ONLY when a level is
 		// configured — an empty level emits the documented omit-shape (never
@@ -274,17 +291,23 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 			model["options"] = map[string]any{"reasoningLevel": f.model.ReasoningLevel}
 		}
 
-		if _, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
+		setModelRes, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
 			wireKeySessionID:             sid,
 			"model":                      model,
 			"persistAsWorkspaceLastUsed": false,
-		}); err != nil {
+		})
+		if err != nil {
 			// WR-04: same orphan discipline for the setModel refusal —
 			// every post-create failure closes the backend session.
 			f.closeOrphan(ctx, sid, "setModel", err)
 
 			return "", nil, acpport.NewInternal("session/setModel: %v", err)
 		}
+
+		// The follow-up reply is the CONFIRMED state (D-10): it overwrites
+		// the create snapshot — an unconfirmed target is never shown
+		// selected.
+		f.recordSettings(sid, setModelRes)
 	}
 
 	// The machine registers on the conn's fan-out AFTER the tap (constructed
@@ -294,11 +317,25 @@ func (f *Front) NewSession(ctx context.Context, params acpport.NewSessionParams)
 	machine := turn.NewMachine(f.conn, sid, turn.NewPollWatcher(f.conn, turn.PollConfig{}))
 	f.registry.Register(core.Session{ID: sid, Machine: machine})
 
+	// The confirmed snapshot -> configOptions (MODEL-01): the latest
+	// recorded snapshot — the setModel follow-up's when it fired, the
+	// create reply's otherwise — translates through the verbatim mirror;
+	// an unbound session renders no options at all (D-10 + locked OQ2:
+	// never a fabricated currentValue). The reply IS the confirmation
+	// source (Pitfall 6): nothing here reads any other state.
+	confirmed, ok := f.latestSettings(sid)
+
+	var options []acpport.ConfigOptionDef
+
+	if ok {
+		if s, parsed := ParseSettings(confirmed); parsed {
+			options = BuildConfigOptions(s)
+		}
+	}
+
 	slog.Info("acpfront: session opened", "session", sid)
 
-	// Task 3 (plan 06-04) fills the options from the confirmed reply
-	// snapshots; the signature carries them from this commit on.
-	return sid, nil, nil
+	return sid, options, nil
 }
 
 // wireKeySessionID is the dialect's camelCase session-id params key (the
@@ -512,6 +549,43 @@ func (f *Front) recordCwd(sessionID, cwd string) {
 	defer f.cwdMu.Unlock()
 
 	f.cwds[sessionID] = cwd
+}
+
+// recordSettings stores one session's latest confirmed settings snapshot
+// (plan 06-04): session/new records the create reply's snapshot and again
+// the setModel follow-up's — the later reply overwrites, because the
+// follow-up reply IS the server-confirmed state (D-10).
+func (f *Front) recordSettings(sessionID string, raw json.RawMessage) {
+	f.settingsMu.Lock()
+	defer f.settingsMu.Unlock()
+
+	if f.settings == nil {
+		f.settings = make(map[string]json.RawMessage)
+	}
+
+	f.settings[sessionID] = raw
+}
+
+// latestSettings copies one session's confirmed settings snapshot out
+// under the store lock; an unknown session (or one whose replies carried
+// no snapshot) answers absent — the omission arms render honestly.
+func (f *Front) latestSettings(sessionID string) (json.RawMessage, bool) {
+	f.settingsMu.Lock()
+	defer f.settingsMu.Unlock()
+
+	raw, ok := f.settings[sessionID]
+
+	return raw, ok
+}
+
+// dropSettings removes one session's confirmed-settings entry (SESS-01
+// teardown, beside dropCwd — the map stays bounded with the registry, the
+// WR-07 discipline).
+func (f *Front) dropSettings(sessionID string) {
+	f.settingsMu.Lock()
+	defer f.settingsMu.Unlock()
+
+	delete(f.settings, sessionID)
 }
 
 // dropCwd removes one session's cwd entry (SESS-01 teardown — the map
