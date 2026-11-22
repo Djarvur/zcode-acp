@@ -106,28 +106,44 @@ func qa03Delta(t *testing.T, deltaKind, text string, seq int) fake.SideEffect {
 	})
 }
 
-// qa03StableMessagesRule is one stable session/messages poll rule — the
-// think-pause poll surface: identical bytes every poll, so the poll-surface
-// quiet gate arms exactly as it did in the field runs.
-func qa03StableMessagesRule(t *testing.T) fake.RequestRule {
+// qa03PollRule builds one session/messages poll rule for the delayed-
+// terminal script: times caps its matches (0 = unlimited), delayMs holds
+// the reply (the scripted silent think), sideEffects ride the rule — the
+// ordered emission shape the watcher's next poll consumes. STABLE reply
+// bytes every poll — the think-pause poll surface: identical bytes each
+// time, so the poll-surface quiet gate arms exactly as it did in the field
+// runs.
+func qa03PollRule(t *testing.T, times int, sideEffects []fake.SideEffect) fake.RequestRule {
 	t.Helper()
 
 	return fake.RequestRule{
-		Method: zcode.MethodSessionMessages,
-		Reply: &fake.Reply{Result: rawOf(t, map[string]any{
-			wireKeyMessages:  []any{},
-			wireKeySessionID: fixSessionID,
-		})},
+		Method:      zcode.MethodSessionMessages,
+		Times:       times,
+		Reply:       qa03StableReply(t),
+		SideEffects: sideEffects,
 	}
+}
+
+// qa03StableReply is the stable poll-surface reply payload.
+func qa03StableReply(t *testing.T) *fake.Reply {
+	t.Helper()
+
+	return &fake.Reply{Result: rawOf(t, map[string]any{
+		wireKeyMessages:  []any{},
+		wireKeySessionID: fixSessionID,
+	})}
 }
 
 // qa03Run drives one scenario through the machine exchange and asserts the
 // single resolution carries the expected reason and resolving-signal record
-// — the shared body of the real-shape tests.
-func qa03Run(t *testing.T, sc *fake.Scenario, want turn.SignalKind) {
+// — the shared body of the real-shape tests. budget overrides the
+// quiet-settle veto budget (0 = the default); the quiet-resolving arms use
+// a small budget so the fallback lands well inside the exchange window.
+func qa03Run(t *testing.T, sc *fake.Scenario, budget int, want turn.SignalKind) {
 	t.Helper()
 
 	ex := startTurnExchange(t, sc)
+	ex.machine.MaxQuietVetoes = budget
 
 	ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
 	defer cancel()
@@ -159,7 +175,7 @@ func TestRealTerminalShapesResolve(t *testing.T) {
 			qa03CUCompleted(t, fixTurnID),
 		)
 
-		qa03Run(t, sc, turn.SignalTerminalEvent)
+		qa03Run(t, sc, 0, turn.SignalTerminalEvent)
 	})
 
 	t.Run("v4 telemetry turn.terminal success raw shape", func(t *testing.T) {
@@ -169,9 +185,9 @@ func TestRealTerminalShapesResolve(t *testing.T) {
 			qa03V4Terminal(t, fixTurnID),
 		)
 
-		// RED: the live v4 terminal kind is not in the classifier's switch —
-		// the turn resolves off the quiet floor instead of the terminal.
-		qa03Run(t, sc, turn.SignalTerminalEvent)
+		// The live v4 terminal kind must complete the turn — never the
+		// quiet floor it fell back to before the kind was classified.
+		qa03Run(t, sc, 0, turn.SignalTerminalEvent)
 	})
 }
 
@@ -187,7 +203,7 @@ func TestRealTerminalForeignTurnIDNeverResolves(t *testing.T) {
 		qa03V4Terminal(t, "turn_foreign2"),
 	)
 
-	qa03Run(t, sc, turn.SignalQuietWindow)
+	qa03Run(t, sc, 2, turn.SignalQuietWindow)
 }
 
 // delayedTerminalScenario is the field bug as a script: the send carries the
@@ -206,13 +222,6 @@ func TestRealTerminalForeignTurnIDNeverResolves(t *testing.T) {
 func delayedTerminalScenario(t *testing.T) *fake.Scenario {
 	t.Helper()
 
-	stableReply := func() *fake.Reply {
-		return &fake.Reply{Result: rawOf(t, map[string]any{
-			wireKeyMessages:  []any{},
-			wireKeySessionID: fixSessionID,
-		})}
-	}
-
 	return &fake.Scenario{
 		Name: "turn-qa03-terminal-signal",
 		OnRequest: []fake.RequestRule{
@@ -220,24 +229,20 @@ func delayedTerminalScenario(t *testing.T) *fake.Scenario {
 				statePatch(t, statusRunning, reasonPromptStarted),
 				qa03CUStarted(t, fixTurnID),
 			),
-			qa03StableMessagesRule(t), // poll 1 — the think's stable surface
+			qa03PollRule(t, 1, nil), // poll 1 — the think's stable surface
 			{
 				Method:  zcode.MethodSessionMessages, // poll 2 — the silent think outlasts the floor
 				Times:   1,
 				DelayMs: 100,
-				Reply:   stableReply(),
+				Reply:   qa03StableReply(t),
 				SideEffects: []fake.SideEffect{
 					qa03Delta(t, "reasoning_delta", "Thinking", 7), // the orphan chunk's source
 				},
 			},
-			{
-				Method: zcode.MethodSessionMessages, // poll 3 — the floor instant: NO reply text yet
-				Times:  1,
-				Reply:  stableReply(),
-			},
+			qa03PollRule(t, 1, nil), // poll 3 — the floor instant: NO reply text yet (the field truth)
 			{
 				Method: zcode.MethodSessionMessages, // poll 4 — the REAL terminal lands after the floor
-				Reply:  stableReply(),
+				Reply:  qa03StableReply(t),
 				SideEffects: []fake.SideEffect{
 					qa03Delta(t, "text_delta", "ok", 8), // the reply text, still pending at the floor
 					qa03CUCompleted(t, fixTurnID),
@@ -290,4 +295,82 @@ func TestTerminalSignalBeatsQuietFloor(t *testing.T) {
 	}
 
 	ex.finish(t)
+}
+
+// silentStartAnnouncedScenario is the budget script: the desktop's
+// turn-started operation event announces the turn, the poll surface stays
+// byte-stable, and NO terminal EVER arrives — the EXP-APIKEY-CYCLE-02 truth
+// (a genuinely completed turn may present no terminal envelope at all),
+// played against a start-announced turn whose runtime went silent.
+func silentStartAnnouncedScenario(t *testing.T) *fake.Scenario {
+	t.Helper()
+
+	return &fake.Scenario{
+		Name: "turn-qa03-veto-budget",
+		OnRequest: []fake.RequestRule{
+			sendRule(t,
+				statePatch(t, statusRunning, reasonPromptStarted),
+				qa03CUStarted(t, fixTurnID),
+			),
+			qa03PollRule(t, 0, nil), // the byte-stable surface, forever
+		},
+		UnknownMethod: &fake.Reply{Error: &zcode.WireError{
+			Code:    zcode.CodeMethodNotFound,
+			Message: unknownMethodReply,
+		}},
+		EOFDrainMs: 50,
+	}
+}
+
+// The veto budget is the fallback's honest bound (the no-hang contract): a
+// start-announced turn vetoes quiet settles only while the budget holds —
+// budget consecutive silent settles — and then the quiet window resolves
+// the turn after all. A start-announced turn whose promised terminal never
+// lands (a runtime gone silent mid-turn) still ends; it never hangs.
+func TestQuietVetoBudgetEndsSilentStartAnnouncedTurn(t *testing.T) {
+	sc := silentStartAnnouncedScenario(t)
+
+	ex := startTurnExchange(t, sc)
+	ex.machine.MaxQuietVetoes = 2
+
+	ctx, cancel := context.WithTimeout(context.Background(), variantWindow)
+	defer cancel()
+
+	reason, err := ex.machine.Run(ctx, "Reply with exactly: OK")
+	if err != nil {
+		t.Fatalf("Run: turn did not resolve within the exchange window: %v", err)
+	}
+
+	if reason != turn.StopCompleted {
+		t.Fatalf("Run reason = %q, want %q", reason, turn.StopCompleted)
+	}
+
+	assertResolution(t, ex.spy, turn.StopCompleted, turn.SignalQuietWindow)
+
+	// The budget held the floor's first settles off: with quiet 40 ms and
+	// floor 2x40 ms, the first settle is eligible at ~80 ms and each veto
+	// re-arms a full fresh window — a budget of 2 resolves on the THIRD
+	// settle, never before two full silent windows past the first eligible
+	// settle.
+	floor := 2 * 40 * time.Millisecond
+	twoWindows := 2 * 40 * time.Millisecond
+
+	if got := ex.spy.snapshot(); got[0].At.Before(ex.machine.AckAt().Add(floor + twoWindows)) {
+		t.Fatalf("quiet resolution at %v fired before the veto budget elapsed "+
+			"(ack %v + floor %v + two vetoed settle windows %v) — the budget did not hold",
+			got[0].At, ex.machine.AckAt(), floor, twoWindows)
+	}
+
+	ex.finish(t)
+}
+
+// The no-signal regression (the quiet fallback's own family, task 3e): a
+// turn with NO start announcement keeps the legacy settle timing — the
+// floor's first eligible settle resolves it, nothing vetoed.
+func TestQuietWindowUnchangedWithoutStartSignal(t *testing.T) {
+	sc := completionScenario(t,
+		statePatch(t, statusRunning, reasonPromptStarted),
+	)
+
+	qa03Run(t, sc, 0, turn.SignalQuietWindow)
 }

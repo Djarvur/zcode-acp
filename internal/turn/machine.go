@@ -6,10 +6,25 @@
 // resolution on absence of evidence).
 //
 // Wire truth: docs/protocol/app-server-dialect.md §5 (the shipped 3.18.2
-// surface). The completion half of §5 is V-SRC-only on the real wire, so
-// the terminal classifier is carrier-tolerant by design (RESEARCH Open
-// Question 1 resolution): it matches turnId + terminal kind across the
-// known carriers; live reconciliation is Phase 5/6 work.
+// surface). The terminal envelope IS observed live on 3.18.2
+// (EXP-VM-QA02-family dumps, 2026-11-23): the real desktop announces the
+// completion on computer-use/operation-event (kind "turn-completed") and
+// v4/telemetry/event (kind "turn.terminal" with status "success"), and the
+// phase-1 EXP-TURN-01 degradation (terminal never observed) is resolved.
+// The classifier is carrier-tolerant by design (RESEARCH Open Question 1
+// resolution): it matches turnId + terminal kind across the known carriers
+// — the bundle-taxonomy kinds stay classified for other runtime families.
+//
+// Completion timing (QA-03 field blocker): a turn whose start was announced
+// on a terminal-proven carrier (the two carriers above) has a terminal
+// signal coming — the quiet-window fallback may not end such a turn while
+// the veto budget holds, because the real desktop can think silently for
+// seconds past the send-latency floor before the terminal lands (the
+// 2026-11-22 field runs: end_turn at the floor, 0.1 s after the first
+// delta, reply text cut off). The budget bounds the fallback honestly: a
+// start-announced turn gone silent for the whole budget resolves over the
+// quiet window after all (the EXP-APIKEY-CYCLE-02 truth — a completed turn
+// may present no terminal at all).
 package turn
 
 import (
@@ -56,8 +71,11 @@ const (
 	SignalIdlePatch SignalKind = "idle-patch"
 
 	// SignalQuietWindow — the poll watcher's quiet-window settlement; the
-	// D-02 fallback and the only completion path proven end-to-end
-	// (dialect §5 :141).
+	// D-02 fallback (dialect §5 :141), kept for runtime families that
+	// present no terminal surface (EXP-APIKEY-CYCLE-02: a genuinely
+	// completed turn may present no terminal envelope at all) and for
+	// start-announced turns whose promised terminal never arrives within
+	// the veto budget.
 	SignalQuietWindow SignalKind = "quiet-window"
 
 	// SignalCancel — the turn resolved through the bypass-lane
@@ -92,10 +110,23 @@ type Resolution struct {
 // kinds with dots, the computer-use operation family with hyphens — each
 // carrying the turnId. The classifier matches turnId + kind, so the same
 // terminal classification fires whichever carrier delivers the signal.
+//
+// Live truth (EXP-VM-QA02-family dumps, 2026-11-23): the real 3.18.2
+// desktop completes turns with the computer-use "turn-completed" literal
+// AND the v4 telemetry "turn.terminal" literal (status/resultType
+// "success") — the bundle taxonomy's "turn.completed"/"turn.failed" remain
+// classified for other runtime families (D-02: keep both signal families
+// armed).
 const (
 	KindTurnStarted   = "turn.started" // session/event + v4 telemetry
 	KindTurnCompleted = "turn.completed"
 	KindTurnFailed    = "turn.failed"
+
+	// KindTurnTerminal is the real 3.18.2 desktop's v4/telemetry terminal
+	// kind (raw3.out:84): the outcome rides the params "status" field —
+	// "success" (the only value observed live) completes the turn; the
+	// failure vocabulary resolves it failed.
+	KindTurnTerminal = "turn.terminal"
 
 	KindTurnStartedCU   = "turn-started" // computer-use operation events
 	KindTurnCompletedCU = "turn-completed"
@@ -114,6 +145,17 @@ const (
 // latch consumes (dialect §5: only "running" was ever observed live — the
 // recorded A4 assumption; "leaving running" implies running was seen).
 const statusRunningPatch = "running"
+
+// DefaultMaxQuietVetoes is the quiet-settle veto budget for start-announced
+// turns (QA-03): how many consecutive quiet-window settlements — with NO
+// intervening envelope observation, i.e. no evidence of life — a turn may
+// veto while waiting for its promised terminal signal. Each vetoed settle
+// is one full quiet window of the watcher's re-armed gate, so the default
+// bounds the wait at ~2 minutes of TOTAL silence at the dialect defaults
+// (2500 ms quiet) before the honest quiet fallback resolves. The real
+// desktop's think pauses sit well inside it (the field runs: 4-5 s), while
+// a start-announced turn whose runtime died mid-turn still ends.
+const DefaultMaxQuietVetoes = 48
 
 // machineState is the turn lifecycle (RESEARCH Pattern 6): idle → running →
 // cancelling → done. The cancelling transitions land with 03-08's cancel;
@@ -160,10 +202,17 @@ type Machine struct {
 	// runs on the observing goroutine.
 	OnResolve func(Resolution)
 
+	// MaxQuietVetoes overrides the quiet-settle veto budget for
+	// start-announced turns (QA-03; DefaultMaxQuietVetoes when zero).
+	// Assign before any turn runs, like OnResolve.
+	MaxQuietVetoes int
+
 	mu          sync.Mutex
 	state       machineState
 	turnID      string
 	runningSeen bool
+	startProven bool
+	quietVetoes int
 	resolved    bool
 	resolution  Resolution
 	resolvedCh  chan struct{}
@@ -357,6 +406,24 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 		return
 	}
 
+	// Activity feed (QA-03): a watcher whose settle gate consumes live wire
+	// activity hears every mid-turn envelope through the machine's one
+	// observe funnel — the poll watcher resets its gate on session-scoped
+	// notifications, so a streaming turn never settles mid-generation.
+	if af, ok := m.watcher.(ActivityFeed); ok {
+		af.ObserveActivity(env)
+	}
+
+	// Any REAL notification observed mid-turn is evidence of life on the
+	// turn's wire: the veto budget (quietVetoes) counts only TOTAL silence,
+	// so a streaming turn never exhausts it. The watcher's poll echo (the
+	// synthetic session/messages envelope each poll delivers) is presence
+	// evidence, not wire life — it must not refill the budget, or a silent
+	// think polling a byte-stable surface would veto forever.
+	if env.Method != zcode.MethodSessionMessages {
+		m.quietVetoes = 0
+	}
+
 	reason, terminal := m.classifyTerminalLocked(env)
 	if terminal {
 		m.resolveLocked(Resolution{Reason: reason, Signal: SignalTerminalEvent, At: time.Now()})
@@ -393,12 +460,15 @@ func (m *Machine) guardTurnLocked() error {
 }
 
 // beginTurnLocked starts a fresh turn: the per-turn signal state (the
-// learned turnId, the running-patch latch, the resolution record) resets;
-// the lifetime resolution counter does not — it is the exactly-once proof.
+// learned turnId, the running-patch latch, the start-announcement record,
+// the veto budget, the resolution record) resets; the lifetime resolution
+// counter does not — it is the exactly-once proof.
 func (m *Machine) beginTurnLocked() {
 	m.state = stateRunning
 	m.turnID = ""
 	m.runningSeen = false
+	m.startProven = false
+	m.quietVetoes = 0
 	m.resolved = false
 	m.resolution = Resolution{}
 	m.ackAt = time.Time{}
@@ -417,9 +487,17 @@ func (m *Machine) finishTurn() {
 
 // onWatcherObservation funnels watcher deliveries into the one observe
 // path. The quiet-window settlement resolves completed — the settle gate
-// (after the send-latency floor, both owned by the watcher) IS the
-// end-of-turn verdict of the only path proven end-to-end (dialect §5 :141;
-// the probe harness's quiet-window end mode).
+// (after the send-latency floor, both owned by the watcher) is the
+// end-of-turn verdict of the fallback path (dialect §5 :141; the probe
+// harness's quiet-window end mode) — EXCEPT for a start-announced turn:
+// when the active turn's start was announced on a terminal-proven carrier
+// (computer-use/operation-event or v4/telemetry/event, both live-proven on
+// 3.18.2), a terminal signal is coming, and the settle may not end the turn
+// while the veto budget holds (QA-03: the real desktop can think silently
+// past the floor; ending the turn at the floor cut the reply off). Each
+// vetoed settle spends one budget unit; the budget refills on ANY observed
+// envelope (evidence of life). A cancelling turn never vetoes — the
+// user-requested stop keeps its early cancelled resolution.
 func (m *Machine) onWatcherObservation(obs Observation) {
 	if obs.Quiet {
 		m.mu.Lock()
@@ -434,6 +512,17 @@ func (m *Machine) onWatcherObservation(obs Observation) {
 			return
 		}
 
+		// The start-announced veto (QA-03): the promised terminal signal has
+		// not landed yet — observation only, no resolution. The budget is
+		// the honest bound: after maxQuietVetoes consecutive silent settles
+		// the quiet fallback resolves after all (EXP-APIKEY-CYCLE-02: a
+		// completed turn may present no terminal at all).
+		if m.startProven && m.quietVetoes < m.maxQuietVetoes() {
+			m.quietVetoes++
+
+			return
+		}
+
 		m.resolveLocked(Resolution{Reason: StopCompleted, Signal: SignalQuietWindow, At: time.Now()})
 
 		return
@@ -442,6 +531,16 @@ func (m *Machine) onWatcherObservation(obs Observation) {
 	if obs.Env != nil {
 		m.ObserveEnvelope(*obs.Env)
 	}
+}
+
+// maxQuietVetoes resolves the veto budget: the injected override wins when
+// positive, else the dialect-scaled default.
+func (m *Machine) maxQuietVetoes() int {
+	if m.MaxQuietVetoes > 0 {
+		return m.MaxQuietVetoes
+	}
+
+	return DefaultMaxQuietVetoes
 }
 
 // observeRouterEvent is the machine's face on the conn's reverse-request
@@ -520,11 +619,14 @@ func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 
 // classifyTerminalLocked reports the terminal StopReason when env is a
 // turnId-matched terminal signal across the known carriers (RESEARCH Open
-// Question 1 resolution — carrier-tolerant by design, since terminal-event
-// wrapping is V-SRC-only on the real wire). Turn-start kinds record the
-// turn's id; a terminal whose turnId does not match the turn's id is NOT a
-// completion signal (a foreign turn's envelope must never resolve this
-// turn).
+// Question 1 resolution — carrier-tolerant by design; the real 3.18.2
+// surface is now live-observed: computer-use "turn-completed" and v4
+// telemetry "turn.terminal", EXP-VM-QA02-family dumps 2026-11-23). Turn
+// -start kinds record the turn's id; a start on a TERMINAL-PROVEN carrier
+// additionally arms the quiet-settle veto (QA-03: the family promised a
+// terminal signal). A terminal whose turnId does not match the turn's id is
+// NOT a completion signal (a foreign turn's envelope must never resolve
+// this turn).
 func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) {
 	field, ok := carrierKindField(env.Method)
 	if !ok {
@@ -540,6 +642,10 @@ func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) 
 			m.turnID = turnID
 		}
 
+		if m.startProvenCarrier(env.Method) {
+			m.startProven = true
+		}
+
 		return "", false
 	case KindTurnCompleted, KindTurnCompletedCU:
 		if !m.turnIDMatchesLocked(turnID) {
@@ -553,14 +659,50 @@ func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) 
 		}
 
 		return StopFailed, true
+	case KindTurnTerminal:
+		if !m.turnIDMatchesLocked(turnID) {
+			return "", false
+		}
+
+		return terminalStatusReason(paramsString(env.Params, "status")), true
 	}
 
 	return "", false
 }
 
+// startProvenCarrier reports whether a start signal on this carrier proves
+// a terminal signal will follow: the two carriers whose terminal envelopes
+// are live-observed on the real 3.18.2 desktop (computer-use/operation-
+// event turn-completed AND v4/telemetry/event turn.terminal, same turnId —
+// EXP-VM-QA02-family dumps). The session/event carrier's start does NOT
+// arm the veto: its turn-started observation predates any observed
+// terminal on that carrier, and the capture-family turns it characterizes
+// are exactly the ones the quiet fallback is proven to end (dialect §5).
+func (m *Machine) startProvenCarrier(method string) bool {
+	return method == MethodComputerUseOperation || method == MethodV4Telemetry
+}
+
+// terminalStatusReason maps a v4 turn.terminal params status to the
+// StopReason (raw3.out:84 verbatim: status/resultType "success" — the only
+// value observed live). "success" (or an absent status — the terminal kind
+// itself is the completion announcement) completes the turn; the known
+// failure vocabulary resolves it failed; any other unobserved value
+// completes — the terminal fired, and only the recorded failure literals
+// may claim otherwise.
+func terminalStatusReason(status string) StopReason {
+	switch status {
+	case "failed", "error":
+		return StopFailed
+	}
+
+	return StopCompleted
+}
+
 // carrierKindField maps a carrier method to the params field that carries
 // its kind literal (dialect §5 signal tables): session/event uses "type",
-// the v4 telemetry and computer-use operation families use "kind".
+// the v4 telemetry and computer-use operation families use "kind" (live
+// truth: the v4 family's terminal literal is "turn.terminal", the
+// computer-use family's "turn-completed" — both turnId-scoped).
 func carrierKindField(method string) (string, bool) {
 	switch method {
 	case zcode.MethodSessionEvent:
