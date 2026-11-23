@@ -156,9 +156,9 @@ expected: |
   commit); scan-secrets on the tree AND the staged diff before any evidence
   commit; the human's confirmation precedes the commit. REQUIREMENTS.md stays
   untouched (the checkbox flips are the orchestrator's post-verification act).
-result: awaiting (seeded 2026-11-22 — the user's Orca run has not happened yet; verdicts
-  only from the user's actual runs, human confirmation precedes any evidence commit,
-  D-06/T-07-25. Handoff staging re-confirmed 2026-11-22: Orca.AppImage present on this
+result: passed (2026-11-23 — path 2 by the user's real run, path 1 accepted-closed by
+  the user's recorded decision; the full trail below records every step honestly,
+  D-06/T-07-25 satisfied: the human's runs and the explicit acceptance precede this flip. Handoff staging re-confirmed 2026-11-22: Orca.AppImage present on this
   machine, the README launch-recipe section present (landed by 07-08), the version
   floor self-check green (`zcode-acp omp --version` prints 18.1.9+zacp.0).
 
@@ -206,17 +206,18 @@ result: awaiting (seeded 2026-11-22 — the user's Orca run has not happened yet
   by the agent's probe (runtime loads the workflow, tool calls render, permission
   asks fire) — typed as text; the commands catalog in the autocomplete menu is
   not advertised (outside the v1 dialect; post-v1 wish).
-  PATH 1 (api-key) — not run: the card env mechanism for a real api key is
-  user setup and the user has not opted to configure it; verdict pending the
-  user's call (run it, or accept the path-2 + piecewise evidence as the QA-03
-  verdict for v1).
+  PATH 1 (api-key) — accepted by the user's recorded decision (2026-11-23,
+  AskUserQuestion answer "Считать пройденным"): the coding-plan path is the
+  phase goal (OAuth + model picker); the api-key surface is covered by the
+  repository test tier. QA-03 VERDICT: PASSED (path 2 real run + piecewise
+  evidence; path 1 accepted-closed by the user).
 
 ## Summary
 
 total: 2
-passed: 1
+passed: 2
 issues: 0
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 
