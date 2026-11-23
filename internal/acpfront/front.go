@@ -122,6 +122,12 @@ type Front struct {
 	settingsMu sync.Mutex
 	settings   map[string]json.RawMessage
 
+	// catalogRoots are the slash-command catalog scan roots for SKILLS
+	// (v0.21.0, CAT-02); commandRoots the same for COMMAND manifests.
+	// Empty both — the catalog carries only the /model item.
+	catalogRoots []string
+	commandRoots []string
+
 	// streamCeiling is the configured per-turn stream queue byte ceiling
 	// (WithStreamCeiling; zero → the documented default at pump build).
 	streamCeiling int
@@ -156,6 +162,21 @@ type Option func(*Front)
 // binary's version var arrives in plan 04-05; unset stays "0.0.0-dev".
 func WithVersion(version string) Option {
 	return func(f *Front) { f.version = version }
+}
+
+// WithCatalogRoots sets the slash-command catalog scan roots (v0.21.0):
+// every root is a directory whose direct children are skill manifests
+// (SKILL.md frontmatter). Unset/empty — the catalog carries only the
+// /model entry.
+func WithCatalogRoots(roots ...string) Option {
+	return func(f *Front) { f.catalogRoots = roots }
+}
+
+// WithCommandRoots sets the slash-command catalog scan roots for COMMAND
+// manifests (v0.21.0: the zcode CLI's `~/.zcode/commands/*.md` layout).
+// Unset — no command items.
+func WithCommandRoots(roots ...string) Option {
+	return func(f *Front) { f.commandRoots = roots }
 }
 
 // WithModel sets the model selection the session/new leg binds via the
@@ -675,6 +696,39 @@ func (f *Front) DeleteSession(ctx context.Context, sessionID string) error {
 	}
 
 	return f.CloseSession(ctx, sessionID)
+}
+
+// CommandCatalog is the adapter's CatalogProvider callback (v0.21.0,
+// CAT-01/CAT-03): the session's autocomplete items — the scanned skills
+// alphabetically, then the /model entry whose prompt form
+// (`/model <selector>`) is the omp card's switch contract
+// (resolvesSelectorsFrom 18.1.9; the wrapper stamps 18.1.9+zacp.0).
+func (f *Front) CommandCatalog(ctx context.Context, sessionID string) []acpport.CommandItem {
+	roots := f.catalogRoots
+	if cwd := f.sessionCwdLocked(sessionID); cwd != "" {
+		roots = append(roots[:len(roots):len(roots)], WorkspaceCatalogRoots(cwd)...)
+	}
+
+	skills := SkillItems(roots)
+	commands := CommandItems(append(f.commandRoots[:len(f.commandRoots):len(f.commandRoots)],
+		WorkspaceCommandRoots(f.sessionCwdLocked(sessionID))...))
+
+	items := make([]acpport.CommandItem, 0, len(commands)+len(skills)+1)
+	for _, c := range commands {
+		items = append(items, acpport.CommandItem{Name: c.Name, Description: c.Description, Hint: c.Hint})
+	}
+
+	for _, s := range skills {
+		items = append(items, acpport.CommandItem{Name: s.Name, Description: s.Description})
+	}
+
+	items = append(items, acpport.CommandItem{
+		Name:        "model",
+		Description: "Switch the session model (provider/model, e.g. zai-api/GLM-5.3-Flash)",
+		Hint:        "<selector>",
+	})
+
+	return items
 }
 
 // slashTurnBusy reports whether the named session's own turn holds the

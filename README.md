@@ -194,7 +194,20 @@ messages, never a hang.
   -32603 with the text in the error details, exactly the carriage the card's
   matchers read.
 
-### 5. Client-set environment
+### 5. The slash-command autocomplete
+
+The card's composer menu lists the wrapper's catalog: every ZCode command
+(`~/.zcode/commands/*.md` + the `~/.agents/commands` compat root — e.g. the
+whole gsd-* set with their argument hints), every skill
+(`~/.zcode/skills/**/SKILL.md`, the `~/.agents/skills` compat root, and the
+installed plugin caches — name/description from the SKILL.md frontmatter),
+and the built-in `/model`. The catalog rides one `available_commands_update`
+per session (the client's own discovery scan consumes it — nothing to
+configure); workspace-level command/skill dirs (`<cwd>/.zcode[/agents]`)
+join per session when present. Picking an entry sends its `/name` as the
+prompt text — exactly the form the runtime already executes.
+
+### 6. Client-set environment
 
 The client sets `PI_NO_PTY=1` for the omp card; this wrapper ignores it —
 ACP is a pipe protocol, no PTY is ever allocated. The card's agent-home

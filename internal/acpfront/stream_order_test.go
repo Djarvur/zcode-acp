@@ -149,8 +149,12 @@ func testStreamOrderZeroDelta(t *testing.T) {
 	}
 
 	lines := h.ACPLines()
-	if got := len(teeLineIndexes(lines, "in", `"sessionUpdate"`)); got != 0 {
-		t.Fatalf("tee records %d session/update frames on a zero-delta turn, want 0", got)
+	// The available_commands_update catalog frame is a legitimate non-chunk
+	// session/update (v0.21.0) — the zero-frame lock covers CHUNK kinds.
+	chunks := len(teeLineIndexes(lines, "in", `"agent_message_chunk"`)) +
+		len(teeLineIndexes(lines, "in", `"agent_thought_chunk"`))
+	if chunks != 0 {
+		t.Fatalf("tee records %d chunk frames on a zero-delta turn, want 0", chunks)
 	}
 }
 

@@ -47,6 +47,26 @@ func noteToNotification(note SessionNote) (acp.SessionNotification, error) {
 			SessionId: acp.SessionId(note.SessionID),
 			Update:    toolUpdate(note.Tool),
 		}, nil
+	case NoteCatalog:
+		commands := make([]acp.AvailableCommand, 0, len(note.Catalog))
+		for _, item := range note.Catalog {
+			cmd := acp.AvailableCommand{Name: item.Name, Description: item.Description}
+			if item.Hint != "" {
+				cmd.Input = &acp.AvailableCommandInput{
+					Unstructured: &acp.UnstructuredCommandInput{Hint: item.Hint},
+				}
+			}
+
+			commands = append(commands, cmd)
+		}
+
+		return acp.SessionNotification{
+			SessionId: acp.SessionId(note.SessionID),
+			Update: acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+				SessionUpdate:     "available_commands_update",
+				AvailableCommands: commands,
+			}},
+		}, nil
 	default:
 		return acp.SessionNotification{}, NewInternal("acpport: unknown session note kind %q", note.Kind)
 	}

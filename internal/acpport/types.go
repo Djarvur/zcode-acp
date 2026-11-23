@@ -188,6 +188,10 @@ const (
 	NoteMessage SessionNoteKind = "message"
 	NoteThought SessionNoteKind = "thought"
 	NoteTool    SessionNoteKind = "tool"
+
+	// NoteCatalog carries the slash-command catalog (v0.21.0 CAT-01): ONE
+	// available_commands_update per session/new, skills + the /model item.
+	NoteCatalog SessionNoteKind = "catalog"
 )
 
 // SessionNote is one streaming content delta (D-04): one backend
@@ -202,6 +206,18 @@ type SessionNote struct {
 
 	// Tool carries the neutral tool-call vocabulary when Kind is NoteTool.
 	Tool *ToolNote
+
+	// Catalog carries the slash-command items when Kind is NoteCatalog.
+	Catalog []CommandItem
+}
+
+// CommandItem is one neutral autocomplete item (v0.21.0): the command name,
+// its human description, and the optional input hint. SDK types never
+// cross the seam.
+type CommandItem struct {
+	Name        string
+	Description string
+	Hint        string
 }
 
 // ACP tool-call kinds (05-RESEARCH.md Pattern 4 mapping table, the SDK's

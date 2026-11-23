@@ -17,6 +17,11 @@ import (
 // no items (a machine without user skills still gets the /model entry
 // from the emitter, never an error).
 
+// skillManifestHeadCap bounds the SKILL.md head read the frontmatter
+// parse sees — frontmatter lives in the first screenful; the body never
+// influences the catalog item.
+const skillManifestHeadCap = 4096
+
 // CatalogItem is one neutral autocomplete item: the command name the
 // client renders, its description, and the optional input hint (the
 // /model entry carries "<selector>").
@@ -27,13 +32,135 @@ type CatalogItem struct {
 }
 
 // DefaultCatalogRoots resolves the catalog scan roots for a home
-// directory: the user skills dir first, then the installed plugin-cache
-// skills glob (the zcode CLI's plugin layout:
+// directory (the zcode source's roots, zcode-src skillsService.ts:65-77):
+// the user skills dir, the `~/.agents/skills` compat root, then the
+// installed plugin-cache skills glob (the zcode CLI's plugin layout:
 // plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>).
 func DefaultCatalogRoots(home string) []string {
 	return []string{
 		filepath.Join(home, ".zcode", "skills"),
+		filepath.Join(home, ".agents", "skills"),
 		filepath.Join(home, ".zcode", "cli", "plugins", "cache", "*", "*", "*", "skills"),
+	}
+}
+
+// DefaultCommandRoots resolves the command scan roots for a home
+// directory (the zcode source's user-level pair, commandDataSync.ts:38):
+// `~/.zcode/commands` first, the `~/.agents/commands` compat root second —
+// a stem collision keeps the first root's entry.
+func DefaultCommandRoots(home string) []string {
+	return []string{
+		filepath.Join(home, ".zcode", "commands"),
+		filepath.Join(home, ".agents", "commands"),
+	}
+}
+
+// CommandItems scans the command roots: every top-level `*.md` file is ONE
+// command (the zcode CLI's slash-command layout). The item name is the
+// file STEM — the form the runtime provably invokes (`/gsd-manager`, the
+// 2026-11-23 probe) — while the description and argument-hint ride the
+// frontmatter; a file without a usable frontmatter head skips silently.
+// Entries sort by name; stem collisions across roots keep the first
+// root's entry (.zcode outranks the compat dir).
+func CommandItems(roots []string) []CatalogItem {
+	seen := map[string]bool{}
+	var items []CatalogItem
+
+	for _, root := range roots {
+		matches, err := filepath.Glob(filepath.Join(root, "*.md"))
+		if err != nil {
+			slog.Debug("acpfront: command root glob failed", "root", root, "err", err)
+
+			continue
+		}
+
+		sort.Strings(matches)
+
+		for _, manifest := range matches {
+			name := strings.TrimSuffix(filepath.Base(manifest), ".md")
+
+			_, description, hint, hasFrontmatter := parseCommandManifest(manifest)
+			if !hasFrontmatter {
+				continue
+			}
+
+			key := strings.ToLower(strings.TrimSpace(name))
+			if seen[key] {
+				continue
+			}
+
+			seen[key] = true
+			items = append(items, CatalogItem{Name: name, Description: description, Hint: hint})
+		}
+	}
+
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+
+	return items
+}
+
+// parseCommandManifest reads one command .md's frontmatter description and
+// argument-hint (the capture-verbatim fields of the gsd-core command
+// files); the invocation name stays the caller's stem decision.
+func parseCommandManifest(path string) (name, description, hint string, hasFrontmatter bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		slog.Debug("acpfront: command manifest unreadable", "path", path, "err", err)
+
+		return "", "", "", false
+	}
+
+	head := string(data)
+	if len(head) > skillManifestHeadCap {
+		head = head[:skillManifestHeadCap]
+	}
+
+	rest, ok := strings.CutPrefix(head, "---\n")
+	if !ok {
+		return "", "", "", false
+	}
+
+	fence := strings.Index(rest, "\n---")
+	if fence < 0 {
+		return "", "", "", false
+	}
+
+	for _, line := range strings.Split(rest[:fence], "\n") {
+		if v, ok := strings.CutPrefix(line, "name:"); ok && name == "" {
+			name = strings.TrimSpace(v)
+		}
+
+		if v, ok := strings.CutPrefix(line, "description:"); ok && description == "" {
+			description = strings.Trim(strings.TrimSpace(v), `"`)
+		}
+
+		if v, ok := strings.CutPrefix(line, "argument-hint:"); ok && hint == "" {
+			hint = strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+
+	return name, description, hint, true
+}
+
+// WorkspaceCommandRoots resolves the per-session workspace command roots
+// (the zcode source's workspace-level commands pair,
+// commandsService.ts:56-57): the session cwd's `.zcode/commands` and its
+// `.agents/commands` compat root.
+func WorkspaceCommandRoots(cwd string) []string {
+	return []string{
+		filepath.Join(cwd, ".zcode", "commands"),
+		filepath.Join(cwd, ".agents", "commands"),
+	}
+}
+
+// WorkspaceCatalogRoots resolves the per-session workspace roots (the
+// zcode source's workspace-level pair, skillsService.ts:60-70): the
+// session cwd's `.zcode/skills` and its `.agents/skills` compat root —
+// later roots lose to earlier ones on a name collision.
+func WorkspaceCatalogRoots(cwd string) []string {
+	return []string{
+		filepath.Join(cwd, ".zcode", "skills"),
+		filepath.Join(cwd, ".agents", "skills"),
 	}
 }
 
@@ -72,11 +199,12 @@ func SkillItems(roots []string) []CatalogItem {
 				name = filepath.Base(filepath.Dir(manifest))
 			}
 
-			if seen[name] {
+			key := strings.ToLower(strings.TrimSpace(name))
+			if seen[key] {
 				continue
 			}
 
-			seen[name] = true
+			seen[key] = true
 			entries = append(entries, entry{name: name, description: description})
 		}
 	}
@@ -106,8 +234,8 @@ func parseSkillManifest(path string) (name, description string, hasFrontmatter b
 	}
 
 	head := string(data)
-	if len(head) > 4096 {
-		head = head[:4096]
+	if len(head) > skillManifestHeadCap {
+		head = head[:skillManifestHeadCap]
 	}
 
 	rest, ok := strings.CutPrefix(head, "---\n")
@@ -126,7 +254,7 @@ func parseSkillManifest(path string) (name, description string, hasFrontmatter b
 		}
 
 		if v, ok := strings.CutPrefix(line, "description:"); ok && description == "" {
-			description = strings.TrimSpace(strings.Trim(v, `"`))
+			description = strings.Trim(strings.TrimSpace(v), `"`)
 		}
 	}
 

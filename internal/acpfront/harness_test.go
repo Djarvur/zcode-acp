@@ -194,13 +194,24 @@ func (c *RecordingClient) SessionUpdate(ctx context.Context, params acp.SessionN
 	return nil
 }
 
-// DrainUpdates snapshots the collected updates in arrival order.
+// DrainUpdates snapshots the collected CHUNK updates in arrival order —
+// message/thought chunks and tool calls (the catalog's
+// available_commands_update frame is a session-level nicety, not a turn
+// update: it rides the ACPLines tee and the goldens instead, so the
+// chunk-count contracts read unchanged). Everything collected stays
+// reachable through the raw tee.
 func (c *RecordingClient) DrainUpdates() []ACPUpdate {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	updates := make([]ACPUpdate, len(c.updates))
-	copy(updates, c.updates)
+	updates := make([]ACPUpdate, 0, len(c.updates))
+	for i := range c.updates {
+		u := &c.updates[i]
+		if u.Update.AgentMessageChunk != nil || u.Update.AgentThoughtChunk != nil ||
+			u.Update.ToolCall != nil || u.Update.ToolCallUpdate != nil {
+			updates = append(updates, *u)
+		}
+	}
 
 	return updates
 }

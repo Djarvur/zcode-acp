@@ -1,3 +1,4 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_fix1","update":{"availableCommands":[{"description":"Switch the session model (provider/model, e.g. zai-api/GLM-5.3-Flash)","input":{"hint":"\u003cselector\u003e"},"name":"model"}],"sessionUpdate":"available_commands_update"}}}
 {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_fix1","update":{"content":{"text":"Answer:","type":"text"},"sessionUpdate":"agent_message_chunk"}}}
 {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_fix1","update":{"content":{"text":" done","type":"text"},"sessionUpdate":"agent_message_chunk"}}}
 {"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}

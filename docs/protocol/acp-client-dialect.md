@@ -571,9 +571,15 @@ agent never sent the catalog update):
   skill roots to the card (`--plugin-dir`); version window `18.1.5` ≤ v < `18.1.9` disables it —
   the wrapper's stamp (`18.1.9+zacp.0`) is on the enabled side.
 
-**Wrapper consequence (the v0.21.0 feature)**: on `session/new` the wrapper emits ONE
-`session/update` with `sessionUpdate: "available_commands_update"` whose items are the
-ZCode skills (scanned from `~/.zcode/skills/**/SKILL.md` + plugin caches, name/description
-from frontmatter) plus the wrapper's own `/model` — the same list for chat and discovery
-sessions. No delete-capability advertisement is required (the client's disposable-storage
-arm suffices; the wrapper answers `session/delete` regardless — SESS-02).
+**Wrapper consequence — SHIPPED (v0.21.0 Phase 8)**: on `session/new` the wrapper emits ONE
+`session/update` with `sessionUpdate: "available_commands_update"` whose items are the ZCode
+commands (`~/.zcode/commands/*.md` + the `~/.agents/commands` compat root — the item name is
+the FILE STEM, the form the runtime provably invokes; description/argument-hint from the
+frontmatter), the ZCode skills (`~/.zcode/skills/**/SKILL.md`, the `~/.agents/skills` compat
+root, the plugin caches, and the session cwd's workspace pair — name/description from the
+SKILL.md frontmatter), and the wrapper's own `/model` — the same list for chat and discovery
+sessions; a second `session/new` emits its own frame. The zcode source's scan conventions are
+honored where the wire touches them (the four user/workspace root pairs, the lowercase stem
+dedupe, `readFrontmatter`'s name-fallback-to-dir-name); the scan depth stays at the explicit
+glob shapes for determinism. No delete-capability advertisement is required (the client's
+disposable-storage arm suffices; the wrapper answers `session/delete` regardless — SESS-02).

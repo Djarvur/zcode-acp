@@ -423,6 +423,13 @@ func noteBytes(note acpport.SessionNote) int {
 	switch note.Kind {
 	case acpport.NoteMessage, acpport.NoteThought:
 		return len(note.Delta) + perFrameAllowance
+	case acpport.NoteCatalog:
+		size := perFrameAllowance
+		for _, item := range note.Catalog {
+			size += len(item.Name) + len(item.Description) + len(item.Hint)
+		}
+
+		return size
 	case acpport.NoteTool:
 		t := note.Tool
 		if t == nil {

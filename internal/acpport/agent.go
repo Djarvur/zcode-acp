@@ -209,10 +209,22 @@ func (a *agentAdapter) NewSession(ctx context.Context, params acp.NewSessionRequ
 		return acp.NewSessionResponse{}, wireError(err)
 	}
 
+	a.emitCommandCatalog(ctx, sessionID)
+
 	return acp.NewSessionResponse{
 		SessionId:     acp.SessionId(sessionID),
 		ConfigOptions: configOptionSelects(options),
 	}, nil
+}
+
+// CatalogProvider is the Handlers-side opt-in for the slash-command
+// catalog (v0.21.0, CAT-01): the adapter asks for the session's items
+// after session/new and emits ONE available_commands_update through the
+// connection-bound sink. Optional — Handlers impls without it simply
+// never emit a catalog (the client's composer stays empty, the session
+// unaffected).
+type CatalogProvider interface {
+	CommandCatalog(ctx context.Context, sessionID string) []CommandItem
 }
 
 // configOptionSelects assembles the SDK select variants from the neutral
@@ -534,6 +546,27 @@ func (a *agentAdapter) SetSessionMode(
 	params acp.SetSessionModeRequest,
 ) (acp.SetSessionModeResponse, error) {
 	return acp.SetSessionModeResponse{}, unadvertised(acp.AgentMethodSessionSetMode)
+}
+
+// emitCommandCatalog publishes the session's command catalog as ONE
+// available_commands_update (the Orca composer's discovery scan waits ≤9 s
+// from connect). The catalog is a nicety — an emission failure (or a
+// missing binding) logs structurally and NEVER fails session/new.
+func (a *agentAdapter) emitCommandCatalog(ctx context.Context, sessionID string) {
+	provider, ok := a.h.(CatalogProvider)
+	if !ok {
+		return
+	}
+
+	sink := a.sink.Load()
+	if sink == nil {
+		return
+	}
+
+	note := SessionNote{SessionID: sessionID, Kind: NoteCatalog, Catalog: provider.CommandCatalog(ctx, sessionID)}
+	if err := (*sink)(ctx, note); err != nil {
+		slog.Warn("acpport: command catalog emission failed", "session", sessionID, "err", err)
+	}
 }
 
 // bindSink attaches the connection-bound update sink (WR-02: the publish

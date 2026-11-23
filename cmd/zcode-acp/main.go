@@ -587,6 +587,13 @@ func buildFront(
 	machinery *codingPlanMachinery,
 ) *acpfront.Front {
 	opts := []acpfront.Option{acpfront.WithVersion(version)}
+
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		opts = append(opts,
+			acpfront.WithCatalogRoots(acpfront.DefaultCatalogRoots(home)...),
+			acpfront.WithCommandRoots(acpfront.DefaultCommandRoots(home)...),
+		)
+	}
 	if cfg.model != nil {
 		opts = append(opts, acpfront.WithModel(*cfg.model))
 	}
