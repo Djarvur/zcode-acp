@@ -21,3 +21,19 @@
 **Security pass:** no Critical; the omp dispatch, SESS-01 teardown ordering, closingMu discipline, wireError tables, keyring classification, and all doc claims verified clean.
 
 **Summary:** 3 resolved in-phase (WR-01/02/03), 8 open → post-v1 advisories, 0 critical.
+
+## Delta review — commit e30cb97 (2026-11-23, gsd-code-reviewer, 0 critical / 3 warning / 3 info)
+
+> The post-review source delta (the reconcile retry window) needed its own review — the
+> verifier's stale gate routed here. One row per finding; all fixed in-phase (8515654).
+
+| Finding | Severity | Disposition | Rationale / Route |
+|---------|----------|-------------|-------------------|
+| WR-01 the retry loop can emit a PRIOR turn's stored reply as this turn's recovery | warning | **resolved** `8515654` | The session/event turn.started envelope's backend timestamp (capture-verbatim, raw5.out:9123) is recorded on the slot; only projection entries created ≥ stamp−1s qualify; the stamp-less arm keeps the legacy rule only while unambiguous (≤1 assistant entry). Lock: desktop-twoturn-lateprojection (turn two recovered turn ONE's text before the fix — RED verified live). |
+| WR-02 the window can hold ~6s, not the documented 4s | warning | **resolved** `8515654` | Every poll is bounded by the REMAINING window (loop-top guard + min(2s, remaining) ctx); the wall-clock hold never exceeds the window. |
+| WR-03 the message-count guard is check-then-act and untested mid-window | warning | **resolved** `8515654` | pump.enqueueIfNoMessages decides check+enqueue under ONE lock (sentinel errReconcileDuplicate); locked by desktop-nodelta-latedelta (mutation lock) + the pump atomicity unit test. |
+| IN-01 a window breach from a late delta answers success end_turn | info | **resolved** `8515654` | The prompt tail re-checks turnBreach after the reconcile; locked by desktop-nodelta-breach + WithStreamCeiling. |
+| IN-02 projection-less backends burn the full window per no-delta turn | info | **open** → post-v1 | Deliberate documented tradeoff (the real desktop always carries the projection); the cost is named in the const block. |
+| IN-03 slowpoll fixture reindent noise in a bug-fix commit | info | **open** → post-v1 | Cosmetic (git show -w verified the one-line semantic change); regenerate-on-touch noted. |
+
+**Summary:** 4 resolved in-phase, 2 open → post-v1 advisories, 0 critical.
