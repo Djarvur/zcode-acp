@@ -343,6 +343,175 @@ func TestAppImageMountEndToEnd(t *testing.T) {
 	e2eAssertNoExtraction(t, fixture)
 }
 
+// Fast failure fixture variants for the binary tier (MNT-04): each fails
+// before any ACP session exists, so the test can assert exit code, stderr,
+// and the absence of a mount/base without driving a ride.
+const (
+	e2eFailureEarlyExit   = "early-exit"
+	e2eFailureBogusLine   = "bogus-line"
+	e2eFailureMissingTree = "missing-tree"
+	e2eFailureNoFuse      = "no-fuse"
+)
+
+// TestAppImageMountFailures drives the BUILT wrapper through the fast mount
+// failure families: every arm exits 1 (a mount failure is a runtime failure,
+// never a usage error), writes the AppImage path, the failing step, the
+// observed output, and a remediation to stderr, never starts an ACP session,
+// and leaves no mount path or private base behind (MNT-04, D-03). The
+// readiness-timeout arm lives at the supervisor tier, where MountOpts can
+// shorten ReadyTimeout.
+func TestAppImageMountFailures(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+
+	cases := []struct {
+		name    string
+		variant string
+		want    []string
+	}{
+		{
+			name:    "early-exit",
+			variant: e2eFailureEarlyExit,
+			want:    []string{"read the mount line", "exit status 127"},
+		},
+		{
+			name:    "bogus-line",
+			variant: e2eFailureBogusLine,
+			want:    []string{"read the mount line", "is not one .mount_* component"},
+		},
+		{
+			name:    "missing-tree",
+			variant: e2eFailureMissingTree,
+			want:    []string{"validate the mount tree", "zcode"},
+		},
+		{
+			name:    "no-fuse",
+			variant: e2eFailureNoFuse,
+			want: []string{
+				"read the mount line", "dlopen(): error loading libfuse.so.2", "libfuse2t64", "/dev/fuse",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := t.TempDir()
+			tmpRoot := t.TempDir()
+			appImage := e2eWriteFakeAppImageFailure(t, fixture, tc.variant)
+
+			ctx, cancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+			defer cancel()
+
+			wrapper := exec.CommandContext(ctx, agentBin, ompFlagAppServer, appImage)
+			wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			wrapper.Env = append(os.Environ(), "TMPDIR="+tmpRoot)
+
+			stderrBuf := &e2eSyncBuffer{}
+			wrapper.Stderr = stderrBuf
+
+			err := wrapper.Run()
+
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				stderrBuf.dump(t)
+
+				t.Fatalf("wrapper exit = %v, want exit code 1 (a mount failure is a runtime failure)", err)
+			}
+
+			stderr := stderrBuf.String()
+
+			if !strings.Contains(stderr, appImage) {
+				t.Fatalf("stderr %q must name the AppImage %q", stderr, appImage)
+			}
+
+			if !strings.Contains(stderr, "remediation:") {
+				t.Fatalf("stderr %q must carry the remediation", stderr)
+			}
+
+			for _, want := range tc.want {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("stderr %q must carry %q", stderr, want)
+				}
+			}
+
+			if record, readErr := os.ReadFile(filepath.Join(fixture, e2eFakeMountRecord)); readErr == nil {
+				path := strings.TrimSpace(string(record))
+				if path != "" {
+					e2eAssertGonePath(t, path, "the recorded mount")
+				}
+			}
+
+			e2eAssertNoMountBase(t, tmpRoot)
+		})
+	}
+}
+
+// e2eWriteFakeAppImageFailure writes a fast failure variant of the scripted
+// runtime; it records its PID so a leaked helper is visible on failure.
+func e2eWriteFakeAppImageFailure(t *testing.T, fixture, variant string) string {
+	t.Helper()
+
+	body := strings.ReplaceAll(e2eFakeAppImageFailureScript(variant), "@@PID@@",
+		filepath.Join(fixture, e2eFakeHelperPID))
+
+	appImage := filepath.Join(fixture, e2eFakeAppImageName)
+	if err := os.WriteFile(appImage, []byte(body), 0o750); err != nil {
+		t.Fatalf("write the fake AppImage failure runtime: %v", err)
+	}
+
+	return appImage
+}
+
+// e2eFakeAppImageFailureScript returns the fast failure script body.
+func e2eFakeAppImageFailureScript(variant string) string {
+	const preamble = `#!/bin/sh
+set -eu
+if [ "${1:-}" != "--appimage-mount" ]; then
+  echo "fake-appimage: unsupported argv: $*" >&2
+  exit 64
+fi
+echo $$ > "@@PID@@"
+base=${TMPDIR:?TMPDIR must be set by the wrapper}
+`
+
+	switch variant {
+	case e2eFailureBogusLine:
+		return preamble + `echo /tmp/zcode-acp-not-ours
+while :; do sleep 0.05; done
+`
+	case e2eFailureMissingTree:
+		return preamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+mkdir -p "$dir/resources/glm"
+: > "$dir/resources/glm/zcode.cjs"
+printf '%s\n' "$dir"
+while :; do sleep 0.05; done
+`
+	case e2eFailureNoFuse:
+		return preamble + `echo ""
+echo "dlopen(): error loading libfuse.so.2"
+echo "Cannot mount AppImage, please check your FUSE setup."
+exit 127
+`
+	default:
+		return preamble + "exit 127\n"
+	}
+}
+
+// e2eAssertNoMountBase requires no zcode-acp-mount-* base to remain under root.
+func e2eAssertNoMountBase(t *testing.T, root string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read the wrapper temp root %s: %v", root, err)
+	}
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "zcode-acp-mount-") {
+			t.Fatalf("the failure path left the private base %q behind", filepath.Join(root, entry.Name()))
+		}
+	}
+}
+
 // e2eWriteFakeAppImage writes the scripted AppImage runtime: it answers only
 // --appimage-mount, creates a .mount_* directory under the wrapper's private
 // TMPDIR with the invariant spawn surface, records its own PID and the mount

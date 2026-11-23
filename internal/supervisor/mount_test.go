@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -32,12 +33,30 @@ const (
 	fakeAppImageVer  = "4.0.0"
 	fakeMountDirGlob = ".mount_Fake"
 
+	// The fixture helper records its own PID here so the external test
+	// package can prove the reap without dereferencing a Child handle (the
+	// external package cannot see Child.Done, and PrepareMount returns nil on
+	// every failure).
+	fakeHelperPIDFile = "helper.pid"
+	// fakeAppServerPIDFile is the release signal the die-after/vanish
+	// variants wait for: the test writes it after PrepareMount returned a
+	// validated Mount, so the loss happens on an already-installed mount.
+	fakeAppServerPIDFile = "app-server.pid"
+
 	// Fake-runtime variants (separate script bodies, never env-controlled:
 	// the helper env is a closed allowlist, RESEARCH Code Examples).
-	fakeVariantOK        = "ok"
-	fakeVariantBadTree   = "bad-tree"
-	fakeVariantStubborn  = "stubborn"
-	fakeVariantEarlyExit = "early-exit"
+	fakeVariantOK          = "ok"
+	fakeVariantBadTree     = "bad-tree"
+	fakeVariantStubborn    = "stubborn"
+	fakeVariantEarlyExit   = "early-exit"
+	fakeVariantNoLine      = "no-line"
+	fakeVariantBogusLine   = "bogus-line"
+	fakeVariantMissingTree = "missing-tree"
+	fakeVariantNoFuse      = "no-fuse"
+	fakeVariantLateText    = "late-text"
+	fakeVariantLeaky       = "leaky"
+	fakeVariantDieAfter    = "die-after"
+	fakeVariantVanish      = "vanish"
 
 	testAppImageLayout = "appimage"
 
@@ -62,16 +81,40 @@ func testMountOpts() supervisor.MountOpts {
 // writeFakeAppImage writes the scripted runtime next to the fixture (the
 // documented packed filename so version parsing is exercised) and returns its
 // path. The script creates the mount tree under the private TMPDIR the wrapper
-// exports — the same relocation the real runtime performs.
+// exports — the same relocation the real runtime performs — and records its
+// own PID beside the script so the caller can assert the reap.
 func writeFakeAppImage(t *testing.T, dir, variant string) string {
 	t.Helper()
 
 	appImage := filepath.Join(dir, fakeAppImageName)
-	if err := os.WriteFile(appImage, []byte(fakeAppImageScript(variant)), 0o750); err != nil {
+	body := strings.ReplaceAll(fakeAppImageScript(variant), "@@PID@@", filepath.Join(dir, fakeHelperPIDFile))
+	body = strings.ReplaceAll(body, "@@APP_PID@@", filepath.Join(dir, fakeAppServerPIDFile))
+
+	if err := os.WriteFile(appImage, []byte(body), 0o750); err != nil {
 		t.Fatalf("write the fake AppImage runtime: %v", err)
 	}
 
 	return appImage
+}
+
+// fakeMountPreamble is the shared script prefix: argv check plus the PID
+// record (the external test package's reap proof).
+const fakeMountPreamble = `#!/bin/sh
+set -eu
+[ "${1:-}" = "--appimage-mount" ] || { echo "fake-appimage: unsupported argv: $*" >&2; exit 64; }
+echo $$ > "@@PID@@"
+base=${TMPDIR:?TMPDIR must be set by the wrapper}
+`
+
+// fakeTreeBody creates the invariant spawn surface inside a fresh .mount_*
+// directory and leaves the directory path in $dir.
+func fakeTreeBody() string {
+	return `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
+printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
+chmod 755 "$dir/zcode"
+: > "$dir/resources/glm/zcode.cjs"
+`
 }
 
 // fakeAppImageScript returns the variant's script body.
@@ -81,11 +124,7 @@ func fakeAppImageScript(variant string) string {
 		// Prints a valid mount line but leaves resources/glm/zcode.cjs out:
 		// the tree validation must reject it. The stderr marker proves the
 		// tap carries the helper's stderr into the failure diagnostics.
-		return `#!/bin/sh
-set -eu
-[ "${1:-}" = "--appimage-mount" ] || { echo "fake-appimage: unsupported argv: $*" >&2; exit 64; }
-echo "fake-appimage: cannot mount (stderr marker)" >&2
-base=${TMPDIR:?TMPDIR must be set by the wrapper}
+		return fakeMountPreamble + `echo "fake-appimage: cannot mount (stderr marker)" >&2
 dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 trap 'rm -rf "$dir"; exit 143' TERM
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
@@ -95,24 +134,77 @@ printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
 	case fakeVariantEarlyExit:
-		// Writes its diagnostic line and exits immediately: the line must
-		// survive in the failure error (the stdout tap is drained to EOF by
-		// exec's Wait, never discarded by WaitDelay).
-		return `#!/bin/sh
-set -eu
-[ "${1:-}" = "--appimage-mount" ] || { echo "fake-appimage: unsupported argv: $*" >&2; exit 64; }
-echo "fake-appimage: helper exploded before the mount line"
+		// Exits immediately with the legacy runtime's missing-helper status:
+		// the error must name the AppImage, the step, the exit, the observed
+		// output, and a remediation.
+		return fakeMountPreamble + "exit 127\n"
+	case fakeVariantNoLine:
+		// Creates a tree but never prints the mount line: readiness times out
+		// (tests use a millisecond ReadyTimeout) and teardown must still reap
+		// the helper and remove the private base.
+		return fakeMountPreamble + fakeTreeBody() + `while :; do sleep 0.05; done
+`
+	case fakeVariantBogusLine:
+		// An absolute line outside the private base: rejected immediately as
+		// an untrusted path-looking line, naming the observed line.
+		return fakeMountPreamble + `echo /tmp/zcode-acp-not-ours
+while :; do sleep 0.05; done
+`
+	case fakeVariantMissingTree:
+		// A valid mount directory without the invariant zcode entry: tree
+		// validation fails naming the missing path; the helper is reaped.
+		return fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+mkdir -p "$dir/resources/glm"
+: > "$dir/resources/glm/zcode.cjs"
+printf '%s\n' "$dir"
+while :; do sleep 0.05; done
+`
+	case fakeVariantNoFuse:
+		// The legacy runtime's FUSE failure text goes to STDOUT (notify(),
+		// RESEARCH Pattern 2): the blank line must be ignored and the two
+		// classification strings must reach the error with both remediation
+		// families.
+		return fakeMountPreamble + `echo ""
+echo "dlopen(): error loading libfuse.so.2"
+echo "Cannot mount AppImage, please check your FUSE setup."
+exit 127
+`
+	case fakeVariantLateText:
+		// Writes its final diagnostic line and exits immediately: the stdout
+		// tap is drained to EOF, so that exact line is in the failure error.
+		return fakeMountPreamble + `echo "fake-appimage: late failure text before exit"
 exit 1
+`
+	case fakeVariantLeaky:
+		// A valid tree that ignores SIGTERM and installs no cleanup trap: the
+		// tree outlives the helper, so a teardown that cannot prove the mount
+		// gone must fail loud and retain the private base.
+		return fakeMountPreamble + fakeTreeBody() + `trap '' TERM
+printf '%s\n' "$dir"
+while :; do sleep 0.05; done
+`
+	case fakeVariantDieAfter:
+		// Prints the path, waits for the app-server PID file (the test writes
+		// it after PrepareMount returned a validated Mount), then removes the
+		// tree and exits: watcher-driven loss on an already-installed mount.
+		return fakeMountPreamble + fakeTreeBody() + `printf '%s\n' "$dir"
+while [ ! -f "@@APP_PID@@" ]; do sleep 0.02; done
+rm -rf "$dir"
+exit 0
+`
+	case fakeVariantVanish:
+		// Prints the path, waits for the app-server PID file, removes the tree
+		// but stays alive: the poll-driven loss arm (helper alive, tree gone).
+		return fakeMountPreamble + fakeTreeBody() + `printf '%s\n' "$dir"
+while [ ! -f "@@APP_PID@@" ]; do sleep 0.02; done
+rm -rf "$dir"
+while :; do sleep 0.05; done
 `
 	case fakeVariantStubborn:
 		// Ignores SIGTERM and keeps the tree alive; a detached (setsid)
 		// short-lived process removes the tree after the helper is killed —
 		// the fake analogue of the real keepalive-pipe unmount.
-		return `#!/bin/sh
-set -eu
-[ "${1:-}" = "--appimage-mount" ] || { echo "fake-appimage: unsupported argv: $*" >&2; exit 64; }
-base=${TMPDIR:?TMPDIR must be set by the wrapper}
-dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+		return fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
 printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
@@ -125,11 +217,7 @@ while :; do sleep 0.05; done
 	default:
 		// The happy runtime: cleans its tree on TERM/INT and carries the
 		// bundled builtin copy (the QA-02 fresh-machine completion).
-		return `#!/bin/sh
-set -eu
-[ "${1:-}" = "--appimage-mount" ] || { echo "fake-appimage: unsupported argv: $*" >&2; exit 64; }
-base=${TMPDIR:?TMPDIR must be set by the wrapper}
-dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+		return fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 trap 'rm -rf "$dir"; exit 143' TERM
 trap 'rm -rf "$dir"; exit 130' INT
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
@@ -536,7 +624,7 @@ func TestMountEarlyExitOutput(t *testing.T) {
 	t.Setenv("TMPDIR", tmpRoot)
 
 	fixture := t.TempDir()
-	appImage := writeFakeAppImage(t, fixture, fakeVariantEarlyExit)
+	appImage := writeFakeAppImage(t, fixture, fakeVariantLateText)
 
 	_, err := supervisor.PrepareMount(context.Background(),
 		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
@@ -544,13 +632,161 @@ func TestMountEarlyExitOutput(t *testing.T) {
 		t.Fatal("PrepareMount accepted a helper that never printed a mount line")
 	}
 
-	if !strings.Contains(err.Error(), "helper exploded before the mount line") {
+	if !strings.Contains(err.Error(), "late failure text before exit") {
 		t.Fatalf("the early-exit failure %q lost the line the helper wrote immediately before exiting "+
 			"(the stdout tap must be drained to EOF, never discarded by WaitDelay)", err)
 	}
 
-	if !strings.Contains(err.Error(), "exited before the mount line") {
+	if !strings.Contains(err.Error(), "read the mount line") {
 		t.Fatalf("the early-exit failure %q must name the readiness step", err)
+	}
+}
+
+// mountFailureCase is one readiness/validation failure family: the variant,
+// the ReadyTimeout override, and the substrings the actionable error must
+// carry (the AppImage path and the remediation prefix are asserted for every
+// case by TestMountFailures).
+type mountFailureCase struct {
+	name         string
+	variant      string
+	readyTimeout time.Duration
+	want         []string
+}
+
+// TestMountFailures is the failure-classification matrix (MNT-04, D-03): every
+// arm fails loud with the AppImage, the failing step, the capped observed
+// output, and a remediation; the helper is reaped, the private base removed,
+// and no extraction copy appears. The readiness-timeout arm runs at the
+// supervisor tier with a millisecond ReadyTimeout so CI never waits the 15 s
+// production default.
+func TestMountFailures(t *testing.T) {
+	cases := []mountFailureCase{
+		{
+			name:    "early-exit",
+			variant: fakeVariantEarlyExit,
+			want:    []string{"read the mount line", "exit status 127", "observed output", "remediation:"},
+		},
+		{
+			name:         "no-line",
+			variant:      fakeVariantNoLine,
+			readyTimeout: 400 * time.Millisecond,
+			want:         []string{"read the mount line", "no mount line", "observed output", "remediation:"},
+		},
+		{
+			name:    "bogus-line",
+			variant: fakeVariantBogusLine,
+			want: []string{
+				"read the mount line", "is not one .mount_* component", "/tmp/zcode-acp-not-ours",
+				"remediation:",
+			},
+		},
+		{
+			name:    "missing-tree",
+			variant: fakeVariantMissingTree,
+			want:    []string{"validate the mount tree", "zcode", "observed output", "remediation:"},
+		},
+		{
+			name:    "no-fuse",
+			variant: fakeVariantNoFuse,
+			want: []string{
+				"read the mount line", "dlopen(): error loading libfuse.so.2", "libfuse2t64", "/dev/fuse",
+				"remediation:",
+			},
+		},
+		{
+			name:    "late-text",
+			variant: fakeVariantLateText,
+			want: []string{
+				"read the mount line", "late failure text before exit", "observed output", "remediation:",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpRoot := t.TempDir()
+			t.Setenv("TMPDIR", tmpRoot)
+
+			fixture := t.TempDir()
+			appImage := writeFakeAppImage(t, fixture, tc.variant)
+
+			opts := testMountOpts()
+			if tc.readyTimeout > 0 {
+				opts.ReadyTimeout = tc.readyTimeout
+			}
+
+			mount, err := supervisor.PrepareMount(context.Background(),
+				supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, opts)
+
+			if mount != nil {
+				_ = mount.Stop()
+
+				t.Fatalf("PrepareMount returned a mount alongside the error: %+v", mount)
+			}
+
+			if err == nil {
+				t.Fatal("PrepareMount accepted a failing helper")
+			}
+
+			if !strings.Contains(err.Error(), appImage) {
+				t.Fatalf("the failure %q must name the AppImage %q", err, appImage)
+			}
+
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("the failure %q must carry %q", err, want)
+				}
+			}
+
+			assertProcessGone(t, readFixturePID(t, fixture, fakeHelperPIDFile), "the mount helper")
+			assertNoMountBase(t, tmpRoot)
+			assertNoExtractionCopy(t, fixture)
+		})
+	}
+}
+
+// readFixturePID reads a PID the fixture helper recorded.
+func readFixturePID(t *testing.T, fixture, name string) int {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(fixture, name))
+	if err != nil {
+		t.Fatalf("read the %s record: %v", name, err)
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("the %s record %q is not a pid: %v", name, string(data), err)
+	}
+
+	return pid
+}
+
+// assertNoMountBase requires no zcode-acp-mount-* base to remain under root.
+func assertNoMountBase(t *testing.T, root string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read the wrapper temp root %s: %v", root, err)
+	}
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "zcode-acp-mount-") {
+			t.Fatalf("the failure path left the private base %q behind", filepath.Join(root, entry.Name()))
+		}
+	}
+}
+
+// assertNoExtractionCopy requires no squashfs-root/zcode-<ver> copy under dir
+// (MNT-06: the failure paths never fall back to extraction).
+func assertNoExtractionCopy(t *testing.T, dir string) {
+	t.Helper()
+
+	for _, name := range fixtureEntries(t, dir) {
+		if name == "squashfs-root" || strings.HasPrefix(name, "zcode-") {
+			t.Fatalf("a failure path created an extraction copy %q in %s (MNT-06)", name, dir)
+		}
 	}
 }
 
