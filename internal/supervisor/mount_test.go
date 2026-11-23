@@ -34,9 +34,10 @@ const (
 
 	// Fake-runtime variants (separate script bodies, never env-controlled:
 	// the helper env is a closed allowlist, RESEARCH Code Examples).
-	fakeVariantOK       = "ok"
-	fakeVariantBadTree  = "bad-tree"
-	fakeVariantStubborn = "stubborn"
+	fakeVariantOK        = "ok"
+	fakeVariantBadTree   = "bad-tree"
+	fakeVariantStubborn  = "stubborn"
+	fakeVariantEarlyExit = "early-exit"
 
 	testAppImageLayout = "appimage"
 
@@ -92,6 +93,16 @@ printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
+`
+	case fakeVariantEarlyExit:
+		// Writes its diagnostic line and exits immediately: the line must
+		// survive in the failure error (the stdout tap is drained to EOF by
+		// exec's Wait, never discarded by WaitDelay).
+		return `#!/bin/sh
+set -eu
+[ "${1:-}" = "--appimage-mount" ] || { echo "fake-appimage: unsupported argv: $*" >&2; exit 64; }
+echo "fake-appimage: helper exploded before the mount line"
+exit 1
 `
 	case fakeVariantStubborn:
 		// Ignores SIGTERM and keeps the tree alive; a detached (setsid)
@@ -513,6 +524,33 @@ func TestMountStderrTap(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "cannot mount (stderr marker)") {
 		t.Fatalf("the failure %q does not carry the helper's stderr — the tap is not wired", err)
+	}
+}
+
+// TestMountEarlyExitOutput proves the helper's last stdout line survives: a
+// helper that prints its diagnostic and exits immediately still has that line
+// in the failure error, because exec's copier drains the tap to EOF and Wait
+// joins it (WaitDelay is only the close backstop).
+func TestMountEarlyExitOutput(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantEarlyExit)
+
+	_, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err == nil {
+		t.Fatal("PrepareMount accepted a helper that never printed a mount line")
+	}
+
+	if !strings.Contains(err.Error(), "helper exploded before the mount line") {
+		t.Fatalf("the early-exit failure %q lost the line the helper wrote immediately before exiting "+
+			"(the stdout tap must be drained to EOF, never discarded by WaitDelay)", err)
+	}
+
+	if !strings.Contains(err.Error(), "exited before the mount line") {
+		t.Fatalf("the early-exit failure %q must name the readiness step", err)
 	}
 }
 
