@@ -25,11 +25,20 @@ import (
 
 // accountFixtureTable is the fixture builtin table in the desktop's own
 // schema (providerId / providerName / config.group / config.builtinModelIds /
-// config.access{type,mode,accountType} — shape verified against this
-// machine's revision-44 table, V-EXP 2026-11-22). It mixes: two zhipu-account
-// rules (different families — the gate arms need them), one apiKey rule and
-// one other-type rule (the leak guards), a mixed-case model id and a
-// slash-free provider name (the no-transformation locks, AUTH-02 encoding).
+// config.access{type,mode,accountType} / config.visibility — shape verified
+// against this machine's revision-44 table, V-EXP 2026-11-22). It mixes:
+// three zhipu-account rules (two families — the gate arms need them; one
+// hidden — the visibility arms need it), one apiKey rule and one other-type
+// rule (the leak guards), a mixed-case model id and a slash-free provider
+// name (the no-transformation locks, AUTH-02 encoding).
+//
+// The hidden row mirrors the real table's idle/highspeed class: the desktop's
+// revision-44 table carries config.visibility "hidden" on the
+// account:{zai,bigmodel}-offpeak-idle-plan and -highspeed-card rules with
+// builtinModelIds identical to their visible sibling — exactly the
+// duplicate-row symptom. Absent, null, "visible" or any other value
+// materializes, matching the desktop picker's strict `!== "hidden"`
+// discipline.
 const accountFixtureTable = `{
   "schemaVersion": 1,
   "revision": 44,
@@ -52,7 +61,18 @@ const accountFixtureTable = `{
           "config": {
             "group": "bigmodel-family",
             "builtinModelIds": ["GLM-5.2"],
-            "access": {"type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "bigmodel"}
+            "access": {"type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "bigmodel"},
+            "visibility": "visible"
+          }
+        },
+        {
+          "providerId": "account:zai-offpeak-idle-plan",
+          "providerName": "Z.AI Idle plan",
+          "config": {
+            "group": "zai-family",
+            "builtinModelIds": ["GLM-5.3", "GLM-5.3-Flash"],
+            "access": {"type": "zhipu-account", "mode": "off-peak", "accountType": "zai"},
+            "visibility": "hidden"
           }
         },
         {
@@ -76,10 +96,16 @@ const accountFixtureTable = `{
   }
 }`
 
+// hiddenFixtureProvider is the fixture table's only config.visibility
+// "hidden" zhipu-account provider — the duplicate account row the overlay
+// must never materialize.
+const hiddenFixtureProvider = "account:zai-offpeak-idle-plan"
+
 // wantZhipuProviders is the exact providers/states shape the fixture's
-// zhipu-account rules must build (all-entitled gate): model lists are the
-// table's arrays verbatim, entitlement true. (A function keeps the fixture
-// gochecknoglobals-clean — the accountFixtureTable precedent.)
+// VISIBLE zhipu-account rules must build (all-entitled gate): model lists are
+// the table's arrays verbatim, entitlement true. The hidden idle-plan row is
+// deliberately absent — it must never be expected. (A function keeps the
+// fixture gochecknoglobals-clean — the accountFixtureTable precedent.)
 func wantZhipuProviders() map[string][]string {
 	return map[string][]string{
 		"account:zai-individual-coding-plan":      {"GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"},
@@ -218,9 +244,17 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 		t.Fatalf("providers does not decode as a record: %v (%s)", err, got["providers"])
 	}
 
+	if _, ok := providers[hiddenFixtureProvider]; ok {
+		t.Fatalf("providers carries %q, want the rule with config.visibility \"hidden\" omitted "+
+			"(desktop-picker parity: the desktop's own model view filters the same field, and "+
+			"entitling a hidden account provider materializes a duplicate account row)",
+			hiddenFixtureProvider)
+	}
+
 	if len(providers) != len(wantZhipuProviders()) {
-		t.Fatalf("providers keys = %v, want exactly the zhipu-account rules %v "+
-			"(a non-zhipu rule leaked in or a family went missing)",
+		t.Fatalf("providers keys = %v, want exactly the VISIBLE zhipu-account rules %v "+
+			"(a non-zhipu rule leaked in, a family went missing, or a config.visibility "+
+			"\"hidden\" rule was entitled)",
 			keysOfAny(providers), keysOfStr(wantZhipuProviders()))
 	}
 
@@ -260,8 +294,15 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 		t.Fatalf("states does not decode as a record: %v (%s)", err, got["states"])
 	}
 
+	if _, ok := states[hiddenFixtureProvider]; ok {
+		t.Fatalf("states carries %q, want the config.visibility \"hidden\" rule omitted from BOTH "+
+			"maps (desktop-picker parity: a hidden account provider must never be marked "+
+			"entitled/current)", hiddenFixtureProvider)
+	}
+
 	if len(states) != len(wantZhipuProviders()) {
-		t.Fatalf("states keys = %v, want exactly the entitled providers %v",
+		t.Fatalf("states keys = %v, want exactly the entitled providers %v "+
+			"(omission covers providers AND states — a hidden rule must not survive in either)",
 			keysOfAny(states), keysOfStr(wantZhipuProviders()))
 	}
 
@@ -330,6 +371,38 @@ const accountFixtureTableNoZhipu = `{
           "config": {
             "builtinModelIds": ["M-1"],
             "access": {"type": "trial"}
+          }
+        }
+      ]
+    }
+  }
+}`
+
+// accountFixtureTableAllHidden carries ONE zhipu-account rule, and that rule
+// is config.visibility "hidden" (plus the apiKey personal-layer row) — the
+// all-hidden arm: the visibility filter omits every account rule and the
+// existing zero-provider coded error must fire, never an empty overlay.
+const accountFixtureTableAllHidden = `{
+  "revision": 44,
+  "config": {
+    "providerConfigRules": {
+      "providerRules": [
+        {
+          "providerId": "account:zai-offpeak-idle-plan",
+          "providerName": "Z.AI Idle plan",
+          "config": {
+            "group": "zai-family",
+            "builtinModelIds": ["GLM-5.3"],
+            "access": {"type": "zhipu-account", "mode": "off-peak", "accountType": "zai"},
+            "visibility": "hidden"
+          }
+        },
+        {
+          "providerId": "zai-api",
+          "providerName": "Z.AI API Key",
+          "config": {
+            "builtinModelIds": ["GLM-5.3"],
+            "access": {"type": "apiKey"}
           }
         }
       ]
@@ -492,6 +565,30 @@ func TestAccountSnapshotNoRules(t *testing.T) {
 	b := hostsvc.NewSnapshotBuilder(nil)
 
 	snap, err := b.BuildAccount(inst, allEntitled)
+	assertNoPartialSnapshot(t, snap, err)
+
+	if !strings.Contains(err.Error(), "zhipu-account") {
+		t.Fatalf("error %q does not name the zhipu-account check", err)
+	}
+}
+
+// TestAccountSnapshotAllHidden locks the all-hidden arm (T-261123-01): a
+// table whose only zhipu-account rule carries config.visibility "hidden"
+// answers the SAME coded errNoRulesToEntitle class as a table with zero
+// zhipu-account rules — the visibility filter omits the rule and the existing
+// zero-provider arm fires; it never opens an empty-overlay path.
+func TestAccountSnapshotAllHidden(t *testing.T) {
+	inst := writeBuiltinTable(t, accountFixtureTableAllHidden)
+
+	b := hostsvc.NewSnapshotBuilder(nil)
+
+	snap, err := b.BuildAccount(inst, allEntitled)
+	if err == nil {
+		t.Fatalf("BuildAccount answered success (providers %v) for a table whose every "+
+			"zhipu-account rule carries config.visibility \"hidden\" — want the coded error, "+
+			"never an empty overlay", snap.Params["providers"])
+	}
+
 	assertNoPartialSnapshot(t, snap, err)
 
 	if !strings.Contains(err.Error(), "zhipu-account") {
