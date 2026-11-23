@@ -38,6 +38,12 @@ const refreshReason = "account-config-sync"
 // is zhipu-account are the account providers).
 const zhipuAccountAccess = "zhipu-account"
 
+// builtinVisibilityHidden is the desktop's config.visibility hidden marker,
+// compared EXACTLY — no trimming, no case folding: absent, null, "visible" or
+// any other value is visible, matching the desktop picker's strict
+// `!== "hidden"` view filter and candidate gate.
+const builtinVisibilityHidden = "hidden"
+
 // The coded account-build error classes (static sentinels — the variable
 // detail rides fmt.Errorf %w, never a bare dynamic error; the messages keep
 // the capture-verbatim wire-key spellings).
@@ -167,10 +173,14 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 // BuildAccount builds the coding-plan ACCOUNT snapshot (AUTH-02, RESEARCH
 // Pattern 2 — the NON-empty overlay, the exact opposite shape of
 // BuildRevision's intentional empty one): providers carries one entry per
-// builtin-table rule whose config.access.type is zhipu-account, each
+// VISIBLE builtin-table rule whose config.access.type is zhipu-account, each
 // {builtinModelIds: verbatim from the table, access {type, entitled true}};
 // states carries per provider {availability available, entitled true,
-// current true}. The rules come from the desktop's OWN bundled table —
+// current true}. A rule whose config.visibility is "hidden" is omitted from
+// BOTH maps (desktop parity: the desktop's own model-selection view filters
+// the same field, and the registry materializes an account provider only
+// when access.entitled is true — entitling a hidden rule surfaces its
+// duplicate idle/highspeed row in the catalog). The rules come from the desktop's OWN bundled table —
 // read and decoded ONCE by decodeBuiltinTable, so the revision and the
 // rules always describe the SAME table bytes (D-08 IN-01: an auto-update
 // swapping the file mid-build can never pair a fresh revision with stale
@@ -202,6 +212,15 @@ func (b *SnapshotBuilder) BuildAccount(
 	for _, rule := range rules {
 		if rule.AccessType != zhipuAccountAccess {
 			continue // only zhipu-account rules are account providers (apiKey/personal-layer rows stay out)
+		}
+
+		// Desktop parity: the picker's own model view filters the same field,
+		// and the registry materializes an account provider only when
+		// access.entitled is true — entitling a hidden rule surfaces its
+		// duplicate idle/highspeed row in the catalog. A hidden rule is data,
+		// not a malformed table.
+		if rule.Visibility == builtinVisibilityHidden {
+			continue
 		}
 
 		if !entitled(rule.Family) {
@@ -244,12 +263,14 @@ func (b *SnapshotBuilder) BuildAccount(
 // builtinProviderRule is one account-provider rule dug out of the desktop's
 // bundled builtin table (config.providerConfigRules.providerRules[]) —
 // capture-verbatim camelCase wire fields: the wrapper mirrors exactly these,
-// never edits them (T-06-09).
+// never edits them (T-06-09). Visibility carries config.visibility verbatim;
+// it governs the overlay's omission and is never validated as a schema field.
 type builtinProviderRule struct {
 	ProviderID string   // providerId — the providers/states map key
 	ModelIDs   []string // config.builtinModelIds — carried verbatim
 	AccessType string   // config.access.type — the zhipu-account filter
 	Family     string   // config.access.accountType — the entitlement-gate family
+	Visibility string   // config.visibility — the hidden marker, compared exactly
 }
 
 // decodeBuiltinTable reads the zcode-builtin.json at path ONCE and decodes
@@ -261,8 +282,9 @@ type builtinProviderRule struct {
 // camelCase discipline — but UNLIKE the ack dig-outs, undecodable here is a
 // coded error, NOT absent: a malformed table (undecodable JSON, missing
 // providerRules, a rule missing its access block) must fail the build, never
-// push a degraded overlay. The coded classes are unchanged from the absorbed
-// rules reader.
+// push a degraded overlay. Visibility is captured verbatim too, but it is
+// data, not a malformed-table class: it governs the overlay's omission. The
+// coded classes are unchanged from the absorbed rules reader.
 func decodeBuiltinTable(path string) (int, []builtinProviderRule, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -312,6 +334,7 @@ func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRul
 		ProviderID string `json:"providerId"`
 		Config     struct {
 			BuiltinModelIDs []string `json:"builtinModelIds"`
+			Visibility      string   `json:"visibility"`
 			Access          *struct {
 				Type        string `json:"type"`
 				AccountType string `json:"accountType"`
@@ -343,6 +366,7 @@ func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRul
 		ModelIDs:   rule.Config.BuiltinModelIDs,
 		AccessType: rule.Config.Access.Type,
 		Family:     rule.Config.Access.AccountType,
+		Visibility: rule.Config.Visibility,
 	}, nil
 }
 

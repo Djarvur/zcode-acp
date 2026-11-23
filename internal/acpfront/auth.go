@@ -382,7 +382,11 @@ func (f *Front) codingPlanLogin(ctx context.Context) (string, error) {
 // builtinModelIds, sorted for deterministic watcher matching. This is the
 // D-08 verdict-side twin — the want list mirrors what we push, never a
 // hardcoded catalog; a malformed entry degrades to omission (the build
-// already validated the table).
+// already validated the table). A provider whose builtin rule carries
+// config.visibility "hidden" is absent from the snapshot by construction
+// (BuildAccount omits it), so its models can never enter this list — and so
+// can never become the ProbeWantModel target. The verdict-side mirror still
+// describes exactly what was pushed.
 func wantModelsFromSnapshot(snap hostsvc.Snapshot) []string {
 	providers, _ := snap.Params["providers"].(map[string]any)
 
