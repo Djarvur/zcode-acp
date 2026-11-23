@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v0.22.0
 status: completed
 stopped_at: Phase 09 complete — all phases complete
-last_updated: "2026-11-23T19:49:48.371Z"
+last_updated: "2026-11-23T20:26:41.776Z"
 last_activity: 2026-11-23
 last_activity_desc: Milestone v0.22.0 completed and archived
-state_head: 2513949687cb47e2e298f0d7e753b6f050714bd0
+state_head: b65901f438322198ee77ea657db6a22673190e9e
 progress:
   total_phases: 1
   completed_phases: 1
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-23)
 Phase: Milestone v0.22.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-23 - Completed quick task 261123-v3u: Honor visibility:hidden in the builtin provider table (skip hidden zhipu-account rules in BuildAccount and the read-back want list)
+Last activity: 2026-11-23 - Completed quick task 261123-vyl: Push only the selected connection mode per account family (config.access.mode + per-(family, mode) entitlement gate)
 
 ## Performance Metrics
 
@@ -294,6 +294,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 261123-v3u | Honor visibility:hidden in the builtin provider table (skip hidden zhipu-account rules in BuildAccount and the read-back want list) | 2026-11-23 | 2513949 | [261123-v3u-honor-visibility-hidden-in-the-builtin-p](./quick/261123-v3u-honor-visibility-hidden-in-the-builtin-p/) |
+| 261123-vyl | Push only the selected connection mode per account family (config.access.mode + per-(family, mode) entitlement gate) | 2026-11-23 | b65901f | [261123-vyl-option-b-push-only-the-selected-connecti](./quick/261123-vyl-option-b-push-only-the-selected-connecti/) |
 
 ## Deferred Items
 
