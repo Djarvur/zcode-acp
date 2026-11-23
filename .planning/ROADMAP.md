@@ -28,7 +28,7 @@ agents (Phase 7).
 - [x] **Phase 4: ACP Front — Minimal Chat Loop** - initialize, session/new (+ setModel workaround), streamed prompt turns with thoughts and cancel (completed 2026-11-20)
 - [x] **Phase 5: Interactions & Full Chat Cycle (api-key)** - Host-managed interaction responder, tool-call streaming, permission bridging, api-key auth, resume/close (completed 2026-11-22)
 - [x] **Phase 6: OAuth Coding-Plan Path & Model Picker** - Official OAuth chain end-to-end (snapshot, cipher, PAT), both auth methods working, registry-driven configOptions (completed 2026-11-22)
-- [ ] **Phase 7: Hardening, VM & Manual E2E, Documentation** - CI protocol conformance, dialect compatibility no-ops, VM scenario, manual E2E, English docs + preset-agent launch recipe
+- [x] **Phase 7: Hardening, VM & Manual E2E, Documentation** - CI protocol conformance, dialect compatibility no-ops, VM scenario, manual E2E, English docs + preset-agent launch recipe (completed 2026-11-23)
 
 ## Phase Details
 
@@ -240,7 +240,7 @@ Plans:
   3. Every ACP method Orca's client calls at card startup and during a turn (per the Phase 1 dialect document) is implemented or gracefully handled, so a card works end-to-end
   4. A clean Ubuntu GNOME VM scenario — install, configure, run — is scripted in the repo and reproducible, including the no-keyring error path
   5. Manual E2E confirmed and documentation published: a working agent card in a real chat-UI client (Orca) on Ubuntu GNOME on a real account through both auth paths, backed by an English README (what it is, install, configuration, both auth paths, troubleshooting), a launch recipe for ACP hosts that only accept preset agents (binary naming, version floor, env, PATH shim), and `docs/` protocol notes with the provenance statement and known limitations
-**Plans**: 9/9 plans executed
+**Plans**: 9/9 plans complete
 
 Plans:
 **Wave 1** *(07-01, 07-02, 07-04 are file-disjoint — parallel)*
@@ -275,7 +275,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. ACP Front — Minimal Chat Loop | 6/6 | Complete    | 2026-11-20 |
 | 5. Interactions & Full Chat Cycle (api-key) | 15/15 | Complete    | 2026-11-22 |
 | 6. OAuth Coding-Plan Path & Model Picker | 8/8 | Complete    | 2026-11-22 |
-| 7. Hardening, VM & Manual E2E, Documentation | 9/9 | In Progress | - |
+| 7. Hardening, VM & Manual E2E, Documentation | 9/9 | Complete    | 2026-11-23 |
 
 ---
 *Roadmap created: 2026-11-19*
