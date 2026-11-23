@@ -1,5 +1,5 @@
 ---
-status: awaiting-user
+status: passed
 phase: 07-Hardening, VM & Manual E2E, Documentation
 source: [07-09-PLAN.md]
 started: 2026-11-22T14:35:36Z
@@ -145,6 +145,13 @@ expected: |
     - A3: how the picker behaves with configOptions but no `models` field (the
       wrapper advertises no models field; `/model` prompts are implemented
       regardless — belt and braces per D-03)
+
+  RESOLVED OBSERVATIONS (2026-11-23): A3 answered by the user's real run — with
+  configOptions and no models field the picker starts showing the launch-bound
+  model and the account catalog arrives after the read-back (two screenshots
+  recorded by the user). A1 (the exact `--model` id shape Orca passes at launch)
+  not captured from a launch log — post-v1 wish; the mechanism is byte-locked by
+  TestOmpLaunchBinding.
 
   EXPECTED: both paths complete a full turn; close/cancel clean; no crash paths.
   A failed leg records the honest verdict per path; the phase stays open (the
