@@ -152,6 +152,15 @@ const (
 	MethodSessionClose                = "session/close"
 	MethodProviderUpdateAccountConfig = "provider/updateAccountConfig"
 	MethodProviderRefreshRegistry     = "provider/refreshRegistry"
+
+	// MethodWorkspaceGenerateText is the one-shot model call the omp text
+	// surface (--print / --mode text) drives (dialect §2; request
+	// {workspace, selection, prompt, querySource}, result {text, selection,
+	// finishReason, usage?}). MethodWorkspaceCancelGenerateText is the
+	// matching cancellation method — unused in v1: process shutdown aborts
+	// the in-flight call.
+	MethodWorkspaceGenerateText       = "workspace/generateText"
+	MethodWorkspaceCancelGenerateText = "workspace/cancelGenerateText"
 )
 
 // Error-code constants carry the dialect §6 numeric values verbatim.
