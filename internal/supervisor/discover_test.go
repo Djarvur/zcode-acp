@@ -1195,3 +1195,239 @@ func TestDiscoverRuntimeCacheWinsOverBundled(t *testing.T) {
 		t.Errorf("bundled row must not record a hit when the runtime cache resolved: %+v", row)
 	}
 }
+
+// TestOverrideInstall pins the full --app-server mapper (D-04, MNT-02): a
+// directory keeps the explicit-root shape, a packed .AppImage (literal,
+// symlinked target, or dangling) becomes an absolute mount-first install, and
+// any other regular file keeps the app-server-binary shape. The probe rows
+// must name the packed override and reject a volatile /tmp/.mount_* path.
+func TestOverrideInstall(t *testing.T) {
+	t.Run("empty path", testOverrideEmpty)
+	t.Run("valid directory", testOverrideDirectoryValid)
+	t.Run("unvalidated directory", testOverrideDirectoryUnvalidated)
+	t.Run("literal AppImage", testOverrideLiteralAppImage)
+	t.Run("relative literal AppImage", testOverrideRelativeAppImage)
+	t.Run("symlink to AppImage", testOverrideSymlinkAppImage)
+	t.Run("dangling AppImage", testOverrideDanglingAppImage)
+	t.Run("non-AppImage binary", testOverrideBinary)
+	t.Run("directory named like an AppImage", testOverrideAppImageDirectory)
+	t.Run("probe row names the packed override", testOverrideProbePacked)
+	t.Run("probe rejects a volatile AppImage path", testOverrideProbeVolatile)
+}
+
+func testOverrideEmpty(t *testing.T) {
+	t.Helper()
+
+	if inst, ok := supervisor.OverrideInstall(""); ok {
+		t.Fatalf("an empty override must not resolve: %+v", inst)
+	}
+}
+
+func testOverrideDirectoryValid(t *testing.T) {
+	t.Helper()
+
+	root := t.TempDir()
+	writeBundleTree(t, root)
+
+	inst, ok := supervisor.OverrideInstall(root)
+	if !ok {
+		t.Fatal("a valid install root must resolve")
+	}
+
+	want := supervisor.Install{
+		Root:       root,
+		Binary:     filepath.Join(root, "zcode"),
+		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		Layout:     "explicit",
+	}
+	if inst != want {
+		t.Fatalf("directory override = %+v, want %+v", inst, want)
+	}
+}
+
+func testOverrideDirectoryUnvalidated(t *testing.T) {
+	t.Helper()
+
+	root := t.TempDir()
+	inst, ok := supervisor.OverrideInstall(root)
+	if !ok {
+		t.Fatal("an existing directory must keep the unvalidated fallback shape")
+	}
+	if inst.Root != root || inst.Binary != filepath.Join(root, "zcode") ||
+		inst.Entrypoint != "" || inst.Layout != "explicit" || inst.AppImage != "" {
+		t.Fatalf("unvalidated directory override = %+v", inst)
+	}
+}
+
+func testOverrideLiteralAppImage(t *testing.T) {
+	t.Helper()
+
+	packed := filepath.Join(t.TempDir(), "ZCode-4.0.0-linux-x64.AppImage")
+	writePackedAppImage(t, packed)
+
+	inst, ok := supervisor.OverrideInstall(packed)
+	if !ok {
+		t.Fatal("a literal AppImage override must resolve")
+	}
+	assertPackedOverride(t, inst, packed)
+}
+
+func testOverrideRelativeAppImage(t *testing.T) {
+	t.Helper()
+
+	packed := filepath.Join(t.TempDir(), "sub", "ZCode-4.0.0-linux-x64.AppImage")
+	writePackedAppImage(t, packed)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	rel, err := filepath.Rel(wd, packed)
+	if err != nil {
+		t.Fatalf("rel %s: %v", packed, err)
+	}
+
+	inst, ok := supervisor.OverrideInstall(rel)
+	if !ok {
+		t.Fatal("a relative literal AppImage override must resolve")
+	}
+	assertPackedOverride(t, inst, packed)
+}
+
+func testOverrideSymlinkAppImage(t *testing.T) {
+	t.Helper()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ZCode-4.0.0-linux-x64.AppImage")
+	writePackedAppImage(t, target)
+	link := filepath.Join(dir, "zcode-current")
+	writeAppImageSymlink(t, link, target)
+
+	inst, ok := supervisor.OverrideInstall(link)
+	if !ok {
+		t.Fatal("a symlink whose target is a packed AppImage must resolve")
+	}
+	assertPackedOverride(t, inst, target)
+}
+
+func testOverrideDanglingAppImage(t *testing.T) {
+	t.Helper()
+
+	missing := filepath.Join(t.TempDir(), "ZCode-4.0.0-linux-x64.AppImage")
+	inst, ok := supervisor.OverrideInstall(missing)
+	if !ok {
+		t.Fatal("a missing AppImage must still map packed so the mount step fails loud")
+	}
+	assertPackedOverride(t, inst, missing)
+}
+
+func testOverrideBinary(t *testing.T) {
+	t.Helper()
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "zcode-app-server")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o750); err != nil {
+		t.Fatalf("write binary override: %v", err)
+	}
+
+	inst, ok := supervisor.OverrideInstall(bin)
+	if !ok {
+		t.Fatal("a non-AppImage regular file override must resolve")
+	}
+
+	want := supervisor.Install{
+		Root:       dir,
+		Binary:     bin,
+		Entrypoint: filepath.Join(dir, "resources", "glm", "zcode.cjs"),
+		Layout:     "explicit",
+	}
+	if inst != want {
+		t.Fatalf("binary override = %+v, want %+v", inst, want)
+	}
+}
+
+func testOverrideAppImageDirectory(t *testing.T) {
+	t.Helper()
+
+	root := filepath.Join(t.TempDir(), "ZCode-4.0.0-linux-x64.AppImage")
+	writeBundleTree(t, root)
+
+	inst, ok := supervisor.OverrideInstall(root)
+	if !ok {
+		t.Fatalf("a directory override must resolve: %+v", inst)
+	}
+	if inst.Layout == testAppImageLayout || inst.AppImage != "" || inst.Root != root {
+		t.Fatalf("a directory named *.AppImage must stay a tree (directory branch first): %+v", inst)
+	}
+}
+
+func testOverrideProbePacked(t *testing.T) {
+	t.Helper()
+
+	packed := filepath.Join(t.TempDir(), "ZCode-4.0.0-linux-x64.AppImage")
+	writePackedAppImage(t, packed)
+
+	probes := overrideProbes(t, packed)
+	row, ok := probeRow(probes, "override")
+	if !ok {
+		t.Fatal("the override probe row must exist")
+	}
+	for _, want := range []string{"found: packed AppImage", packed, "(version " + fakeAppImageVer + ")"} {
+		if !strings.Contains(row.Result, want) {
+			t.Fatalf("the packed override row must carry %q: %+v", want, row)
+		}
+	}
+}
+
+func testOverrideProbeVolatile(t *testing.T) {
+	t.Helper()
+
+	const volatile = "/tmp/.mount_ZCode-a1b2c3/ZCode-4.0.0-linux-x64.AppImage"
+
+	probes := overrideProbes(t, volatile)
+	row, ok := probeRow(probes, "override")
+	if !ok {
+		t.Fatal("the override probe row must exist")
+	}
+	if !strings.Contains(row.Result, "rejected volatile mount") || !strings.Contains(row.Result, volatile) {
+		t.Fatalf("a volatile AppImage override must be rejected, naming the path: %+v", row)
+	}
+}
+
+// assertPackedOverride fails unless inst is the mount-first packed shape for
+// wantPath and the fixture version, stored absolute (never a bare basename).
+func assertPackedOverride(t *testing.T, inst supervisor.Install, wantPath string) {
+	t.Helper()
+
+	if inst.Layout != testAppImageLayout || inst.AppImage != wantPath || inst.Version != fakeAppImageVer {
+		t.Fatalf("packed override = %+v, want AppImage %s version %s layout %s",
+			inst, wantPath, fakeAppImageVer, testAppImageLayout)
+	}
+	if inst.Root != "" || inst.Binary != "" || inst.Entrypoint != "" {
+		t.Fatalf("a packed override must carry no pre-mount root/binary/entrypoint: %+v", inst)
+	}
+	if !filepath.IsAbs(inst.AppImage) || filepath.Base(inst.AppImage) == inst.AppImage {
+		t.Fatalf("the stored AppImage must be absolute and never a bare basename: %q", inst.AppImage)
+	}
+}
+
+// overrideProbes runs discovery over an empty machine whose only override is
+// path, returning the diagnostics rows (a rejected override still ends in
+// ErrNoInstall; a packed one resolves and wins).
+func overrideProbes(t *testing.T, path string) []supervisor.Probe {
+	t.Helper()
+
+	p := supervisor.Probers{
+		Home:    t.TempDir(),
+		OptDir:  filepath.Join(t.TempDir(), "ZCode"),
+		AppDirs: func() []string { return nil },
+	}
+	for _, seam := range noHitSeams() {
+		seam(&p)
+	}
+	p.Override = func() (supervisor.Install, bool) { return supervisor.OverrideInstall(path) }
+
+	_, probes, _ := p.Discover(context.Background())
+
+	return probes
+}

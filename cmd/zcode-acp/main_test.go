@@ -2553,6 +2553,59 @@ func testWiringClientVersion(t *testing.T) {
 	}
 }
 
+// mountedFixtureVersion is the version the mount-first fixtures carry.
+const mountedFixtureVersion = "4.0.0"
+
+// TestDesktopVersionMounted locks the mount-safe PAT client-version seam
+// (MNT-04, D-04): a mounted root lives under a versionless /tmp .mount_* path,
+// so the version must come from Install.Version or the packed AppImage
+// basename — never the documented 0.0.0 fallback once a version is knowable.
+func TestDesktopVersionMounted(t *testing.T) {
+	t.Run("mounted install reports Install.Version", func(t *testing.T) {
+		mountRoot := filepath.Join("/tmp", "zcode-acp-mount-1700000000", ".mount_ZCode-AbCdEf")
+		inst := supervisor.Install{
+			Root:       mountRoot,
+			Binary:     filepath.Join(mountRoot, "zcode"),
+			Entrypoint: filepath.Join(mountRoot, "resources", "glm", "zcode.cjs"),
+			Layout:     "appimage",
+			Version:    mountedFixtureVersion,
+		}
+
+		if got := desktopVersion(inst); got != mountedFixtureVersion {
+			t.Fatalf("desktopVersion(mounted) = %q, want Install.Version %s (never the 0.0.0 fallback)",
+				got, mountedFixtureVersion)
+		}
+		if got := patClientVersion(inst)(); got != mountedFixtureVersion {
+			t.Fatalf("patClientVersion(mounted) = %q, want %s", got, mountedFixtureVersion)
+		}
+	})
+
+	t.Run("pre-mount packed install reports the basename version", func(t *testing.T) {
+		packed := supervisor.Install{
+			AppImage: "/tmp/apps/ZCode-" + mountedFixtureVersion + "-linux-x64.AppImage",
+			Layout:   "appimage",
+		}
+		if got := desktopVersion(packed); got != mountedFixtureVersion {
+			t.Fatalf("desktopVersion(packed) = %q, want the AppImage basename %s",
+				got, mountedFixtureVersion)
+		}
+		packed.Version = mountedFixtureVersion
+		if got := desktopVersion(packed); got != mountedFixtureVersion {
+			t.Fatalf("desktopVersion(packed with Version) = %q, want %s", got, mountedFixtureVersion)
+		}
+	})
+
+	t.Run("bare install keeps the documented fallback", func(t *testing.T) {
+		bare := supervisor.Install{Root: optDir, Binary: optDir + "/zcode"}
+		if got := desktopVersion(bare); got != "" {
+			t.Fatalf("desktopVersion(bare) = %q, want no version", got)
+		}
+		if got := patClientVersion(bare)(); got != patDesktopVersionFallback {
+			t.Fatalf("patClientVersion(bare) = %q, want the documented %q fallback", got, patDesktopVersionFallback)
+		}
+	})
+}
+
 // testWiringBuildFrontSeams locks buildFront's AuthConfig wiring: the front constructs over the machinery with the
 // mode record still unset.
 func testWiringBuildFrontSeams(t *testing.T) {
