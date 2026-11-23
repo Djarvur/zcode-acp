@@ -509,18 +509,36 @@ const patDesktopVersionFallback = "0.0.0"
 // server validates nothing documented).
 var desktopVersionPattern = regexp.MustCompile(`\d+\.\d+(\.\d+)?`)
 
-// desktopVersion digs the desktop version out of the resolved install
-// paths, deepest segment first — "" when nothing matches.
+// desktopVersion resolves the desktop version the PAT mint reports: the
+// discovery-parsed Install.Version first (a mounted root carries no version
+// segment), then the packed AppImage basename, then the layout path segments
+// deepest-first — "" when nothing matches (the documented fallback applies).
 func desktopVersion(inst supervisor.Install) string {
-	paths := []string{inst.Binary, inst.Root, inst.Entrypoint}
+	if inst.Version != "" {
+		return inst.Version
+	}
 
-	for _, path := range paths {
-		segs := strings.Split(path, string(filepath.Separator))
+	if v := versionFromPath(inst.AppImage); v != "" {
+		return v
+	}
 
-		for i := len(segs) - 1; i >= 0; i-- {
-			if v := desktopVersionPattern.FindString(segs[i]); v != "" {
-				return v
-			}
+	for _, path := range []string{inst.Binary, inst.Root, inst.Entrypoint} {
+		if v := versionFromPath(path); v != "" {
+			return v
+		}
+	}
+
+	return ""
+}
+
+// versionFromPath digs a version-looking segment out of one install path,
+// deepest segment first.
+func versionFromPath(path string) string {
+	segs := strings.Split(path, string(filepath.Separator))
+
+	for i := len(segs) - 1; i >= 0; i-- {
+		if v := desktopVersionPattern.FindString(segs[i]); v != "" {
+			return v
 		}
 	}
 

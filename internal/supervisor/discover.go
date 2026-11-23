@@ -233,6 +233,20 @@ func mountDecoy(path string) bool {
 	return strings.HasPrefix(filepath.Clean(path), "/tmp/.mount_")
 }
 
+// volatileInstallPath names the first install path matching the volatile
+// running-mount decoy pattern (install-discovery.md row 5) — the root of a
+// tree install or the AppImage of a packed one; "" when neither is volatile.
+// The override probe rejects the whole override rather than resolving it.
+func volatileInstallPath(inst Install) string {
+	for _, path := range []string{inst.Root, inst.AppImage} {
+		if mountDecoy(path) {
+			return path
+		}
+	}
+
+	return ""
+}
+
 // bundleInstall validates the layout-invariant spawn surface at root and
 // returns the Install for it (binary <root>/zcode, entrypoint
 // <root>/resources/glm/zcode.cjs — install-discovery.md :38).
@@ -340,8 +354,8 @@ func (p Probers) probeOverride() (Probe, Install, bool) {
 
 		return row, Install{}, false
 	}
-	if mountDecoy(inst.Root) {
-		row.Result = "rejected volatile mount root " + inst.Root
+	if decoy := volatileInstallPath(inst); decoy != "" {
+		row.Result = "rejected volatile mount " + decoy
 
 		return row, Install{}, false
 	}
