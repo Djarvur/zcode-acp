@@ -658,40 +658,20 @@ func run(cfg config) error {
 	}
 
 	// Mount-first acquisition (MNT-01/MNT-02): a packed AppImage is mounted
-	// before anything spawns and the mounted install replaces it. The deferred
-	// stop is the early-return backstop; the normal path stops the mount
-	// explicitly after the supervisor's staged shutdown (order is
-	// load-bearing: app-server first, helper second).
-	var (
-		mount        *supervisor.Mount
-		mountStopped bool
-	)
-
-	inst, mount, err = acquireMount(ctx, inst)
+	// before anything spawns. The deferred stop is the early-return backstop;
+	// the normal path stops the mount explicitly after the supervisor's staged
+	// shutdown (order is load-bearing: app-server first, helper second).
+	inst, mount, err := acquireMount(ctx, inst)
 	if err != nil {
 		return err
 	}
 
-	if mount != nil {
-		defer func() {
-			if mountStopped {
-				return
-			}
+	defer stopMountBackstop(mount)
 
-			if stopErr := stopMount(mount); stopErr != nil {
-				slog.Warn("zcode-acp: mount teardown backstop", "err", stopErr)
-			}
-		}()
-	}
-
-	// Two lifecycles, deliberately: the supervision ctx drives the
-	// supervisor's Start (and its staged teardown), while the spawn ctx is
-	// the exec-level kill backstop cancelled only AFTER the staged teardown
-	// completed. Cancelling both together would race: SpawnChild wires
-	// cmd.Cancel to the group SIGKILL on its ctx, so a shared cancellation
-	// would SIGKILL the child the instant the teardown began — the graceful
-	// stdin-EOF drain (dialect §1, the child's ~100 ms clean exit) would
-	// never run, and the child would always die mid-flight.
+	// Two lifecycles, deliberately: the supervision ctx drives the supervisor's
+	// staged teardown, while the spawn ctx is the exec-level kill backstop
+	// cancelled only AFTER that teardown completed (a shared cancellation would
+	// SIGKILL the child before its graceful stdin-EOF drain).
 	supCtx, supCancel := context.WithCancel(ctx)
 	spawnCtx, spawnCancel := context.WithCancel(ctx)
 	defer spawnCancel()
@@ -701,48 +681,29 @@ func run(cfg config) error {
 		return err
 	}
 
-	// The Conn and the Front (whose delta tap registers on the conn's
-	// ordered fan-out BEFORE any machine exists) are constructed before any
-	// frame flows — the Conn hook contract.
-	conn := zcode.NewConn(childDuplex{reader: child.Stdout, writer: child.Stdin})
-	defer func() { _ = conn.Close() }()
+	childLost := serveACP(child, cfg, inst)
 
-	// One key, one source (AUTH-01): the resolved config binding feeds the
-	// authenticate machinery, the runtime-headers answer, and the snapshot
-	// builder alike — in-memory only, never logged, never committed (D-05);
-	// an empty key answers authenticate's honest coded error naming
-	// ZCODE_ACP_API_KEY (OQ4). The coding-plan machinery composes beside it
-	// (plan 06-07, D-12: the desktop login IS that path's credential — no
-	// new user configuration), lazily executing only when authenticate or
-	// asks arrive (D-13).
-	keys := hostsvc.NewStaticKey(cfg.apiKey, "")
-
-	machinery := buildCodingPlanMachinery(inst)
-
-	front := buildFront(conn, cfg, inst, keys, machinery)
-
-	// The ACP agent connection owns os.Stdin/os.Stdout from here: the SDK
-	// reads requests and writes every response frame — nothing else touches
-	// stdout.
-	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), os.Stdout, os.Stdin)
-
-	wireResponder(conn, front, keys, machinery, acpport.NewUserInputAsker(agentConn.CreateElicitation))
-
-	slog.Info("zcode-acp: serving ACP v1 over stdio", "version", version)
-
-	childLost := false
-
-	select {
-	case <-agentConn.Done():
-		slog.Info("zcode-acp: ACP client disconnected")
-	case <-child.Done:
-		childLost = true
+	if finishErr := finishRun(startDone, supCancel, spawnCancel, mount); finishErr != nil {
+		return finishErr
 	}
 
-	// Staged shutdown always: the supervision cancel drives the supervisor's
-	// staged teardown (stdin end → grace → unconditional group SIGKILL →
-	// bounded reap — stdin-EOF is never trusted, PITFALL 6); the conn's
-	// deferred Close joins the read loop after.
+	if childLost {
+		return errChildLost
+	}
+
+	slog.Info("zcode-acp: shutdown complete")
+
+	return nil
+}
+
+// finishRun drives the staged shutdown: the supervision cancel ends the
+// supervisor's teardown (stdin end -> grace -> unconditional group SIGKILL ->
+// bounded reap; stdin-EOF is never trusted, PITFALL 6), then the mount is
+// stopped only after the app-server is reaped and its group is gone (D-02's
+// ordered teardown), and the spawn cancel is the post-teardown kill backstop.
+func finishRun(
+	startDone <-chan error, supCancel, spawnCancel context.CancelFunc, mount *supervisor.Mount,
+) error {
 	supCancel()
 
 	select {
@@ -756,22 +717,55 @@ func run(cfg config) error {
 
 	spawnCancel() // the teardown backstop: the group is long gone; ESRCH-quiet
 
-	// The app-server is reaped and its group is gone; only now may the helper
-	// unmount the tree it served from (D-02's ordered teardown).
-	stopErr := stopMount(mount)
-	mountStopped = true
+	return stopMount(mount)
+}
 
-	if stopErr != nil {
-		return stopErr
+// stopMountBackstop is the deferred early-return backstop: Stop is idempotent,
+// so after the normal-path stop it is a no-op, and it is also invoked on every
+// return that happens before the shutdown tail.
+func stopMountBackstop(mount *supervisor.Mount) {
+	if err := stopMount(mount); err != nil {
+		slog.Warn("zcode-acp: mount teardown backstop", "err", err)
+	}
+}
+
+// serveACP wires the back-leg Conn, the Front (whose delta tap registers on the
+// conn's ordered fan-out BEFORE any machine exists — the Conn hook contract),
+// the D-01 responder, and the ACP agent connection over the child's pipes, then
+// waits for the client to disconnect or the child to exit. It reports whether
+// the app-server was lost before the client disconnected.
+//
+// One key, one source (AUTH-01): the resolved config binding feeds the
+// authenticate machinery, the runtime-headers answer, and the snapshot builder
+// alike — in-memory only, never logged, never committed (D-05); an empty key
+// answers authenticate's honest coded error naming ZCODE_ACP_API_KEY (OQ4). The
+// coding-plan machinery composes beside it (plan 06-07, D-12: the desktop login
+// IS that path's credential — no new user configuration), lazily executing only
+// when authenticate or asks arrive (D-13).
+func serveACP(child *supervisor.Child, cfg config, inst supervisor.Install) bool {
+	conn := zcode.NewConn(childDuplex{reader: child.Stdout, writer: child.Stdin})
+	defer func() { _ = conn.Close() }()
+
+	keys := hostsvc.NewStaticKey(cfg.apiKey, "")
+	machinery := buildCodingPlanMachinery(inst)
+	front := buildFront(conn, cfg, inst, keys, machinery)
+
+	// The ACP agent connection owns os.Stdin/os.Stdout from here: the SDK reads
+	// requests and writes every response frame — nothing else touches stdout.
+	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), os.Stdout, os.Stdin)
+
+	wireResponder(conn, front, keys, machinery, acpport.NewUserInputAsker(agentConn.CreateElicitation))
+
+	slog.Info("zcode-acp: serving ACP v1 over stdio", "version", version)
+
+	select {
+	case <-agentConn.Done():
+		slog.Info("zcode-acp: ACP client disconnected")
+	case <-child.Done:
+		return true
 	}
 
-	if childLost {
-		return errChildLost
-	}
-
-	slog.Info("zcode-acp: shutdown complete")
-
-	return nil
+	return false
 }
 
 // acquireMount performs the mount-first acquisition: a packed AppImage install
@@ -793,7 +787,9 @@ func acquireMount(ctx context.Context, inst supervisor.Install) (supervisor.Inst
 	slog.Info("zcode-acp: appimage backend mounted",
 		"appimage", mount.AppImage(), "version", inst.Version, "mount", mount.Root(), "pid", mount.HelperPID())
 
-	return mount.Install(), mount, nil
+	installed := mount.Install()
+
+	return installed, mount, nil
 }
 
 // stopMount stops a mount-backed acquisition (nil-safe) and reports a

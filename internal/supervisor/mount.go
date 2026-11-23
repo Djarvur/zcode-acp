@@ -59,6 +59,9 @@ const (
 	// mountOutputCap bounds each captured helper stream (T-10-05: the 64 KiB
 	// stderr precedent).
 	mountOutputCap = 64 << 10
+	// helperEnvVars is the size of the helper env allowlist (PATH, HOME,
+	// TMPDIR).
+	helperEnvVars = 3
 	// mountLineCap bounds the partial-line buffer when a broken helper writes
 	// without a newline.
 	mountLineCap = 4096
@@ -157,6 +160,7 @@ type Mount struct {
 	opts      MountOpts
 	child     *Child
 	cancel    context.CancelFunc
+	tap       *mountTap
 	stderr    cappedBuffer
 	lost      chan struct{}
 	lostOnce  sync.Once
@@ -179,6 +183,26 @@ func PrepareMount(ctx context.Context, inst Install, opts MountOpts) (*Mount, er
 		return nil, fmt.Errorf("%w: root %q", errMountInstall, inst.Root)
 	}
 
+	m, err := newMountBase(inst, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if startErr := m.start(ctx); startErr != nil {
+		_ = m.Stop()
+
+		return nil, fmt.Errorf("zcode: mount %s: %w", inst.AppImage, startErr)
+	}
+
+	slog.Info("supervisor: appimage mounted",
+		"appimage", m.appImage, "version", m.version, "mount", m.root, "pid", m.helperPID)
+
+	return m, nil
+}
+
+// newMountBase creates the private 0700 base and the Mount shell; a base that
+// contains NUL, CR, or LF is rejected and removed before any spawn (T-10-03).
+func newMountBase(inst Install, opts MountOpts) (*Mount, error) {
 	base, err := os.MkdirTemp("", mountBasePattern)
 	if err != nil {
 		return nil, fmt.Errorf("%w: create the private TMPDIR for %s: %w", errMountBase, inst.AppImage, err)
@@ -191,87 +215,40 @@ func PrepareMount(ctx context.Context, inst Install, opts MountOpts) (*Mount, er
 			errMountBase, mountTmpdirVar, base, problem)
 	}
 
-	m := &Mount{
+	return &Mount{
 		appImage: inst.AppImage,
 		version:  inst.Version,
 		base:     base,
 		builtin:  inst.BuiltinFile,
 		opts:     opts,
 		lost:     make(chan struct{}),
-	}
-
-	helperCtx, helperCancel := context.WithCancel(context.WithoutCancel(ctx))
-	m.cancel = helperCancel
-
-	tap := newMountTap(base)
-
-	child, spawnErr := SpawnChild(helperCtx,
-		[]string{inst.AppImage, mountHelperFlag},
-		helperEnv(base),
-		SpawnOpts{StdoutTap: tap, StderrTap: &m.stderr, WaitDelay: waitDelayDefault})
-	if spawnErr != nil {
-		helperCancel()
-		_ = os.RemoveAll(base)
-
-		return nil, fmt.Errorf("%w: spawn the %s helper for %s: %w",
-			errMountSpawn, mountHelperFlag, inst.AppImage, spawnErr)
-	}
-
-	m.child = child
-	m.helperPID = child.PgID
-
-	root, readyErr := m.awaitMountLine(ctx, tap)
-	if readyErr != nil {
-		_ = m.Stop()
-
-		return nil, fmt.Errorf("zcode: mount %s: %w (observed output %q)",
-			inst.AppImage, readyErr, m.observedOutput(tap))
-	}
-
-	if treeErr := validateMountTree(root); treeErr != nil {
-		_ = m.Stop()
-
-		return nil, fmt.Errorf("zcode: mount %s: %w (observed output %q)",
-			inst.AppImage, treeErr, m.observedOutput(tap))
-	}
-
-	m.root = root
-
-	if m.builtin == "" {
-		m.builtin = bundledBuiltinPath(root)
-	}
-
-	go m.watch(helperCtx)
-
-	slog.Info("supervisor: appimage mounted",
-		"appimage", m.appImage, "version", m.version, "mount", m.root, "pid", m.helperPID)
-
-	return m, nil
+	}, nil
 }
 
 // awaitMountLine waits for the helper to settle the readiness state (an
 // accepted path, a rejected path, an exit, the timeout, or caller
 // cancellation). The tap is fed by exec's stdout copier, which Wait joins, so
 // the observed text is complete whenever the helper's Done fires.
-func (m *Mount) awaitMountLine(ctx context.Context, tap *mountTap) (string, error) {
+func awaitMountLine(ctx context.Context, m *Mount) (string, error) {
 	timer := time.NewTimer(m.opts.ReadyTimeout)
 	defer timer.Stop()
 
 	select {
-	case <-tap.settled:
-		root, reject := tap.accepted()
+	case <-m.tap.settled:
+		root, reject := m.tap.accepted()
 		if reject != nil {
-			return "", fmt.Errorf("%w: %w", errMountReady, reject)
+			return "", fmt.Errorf("%w: %w (observed output %q)", errMountReady, reject, observedOutput(m))
 		}
 
 		return root, nil
 	case <-m.child.Done:
-		return "", fmt.Errorf("%w: the helper exited before the mount line (exit %s)",
-			errMountReady, exitDescription(m.child))
+		return "", fmt.Errorf("%w: the helper exited before the mount line (exit %s) (observed output %q)",
+			errMountReady, exitDescription(m.child), observedOutput(m))
 	case <-timer.C:
-		return "", fmt.Errorf("%w: no mount line within %v", errMountReady, m.opts.ReadyTimeout)
+		return "", fmt.Errorf("%w: no mount line within %v (observed output %q)",
+			errMountReady, m.opts.ReadyTimeout, observedOutput(m))
 	case <-ctx.Done():
-		return "", fmt.Errorf("%w: %w", errMountReady, ctx.Err())
+		return "", fmt.Errorf("%w: %w (observed output %q)", errMountReady, ctx.Err(), observedOutput(m))
 	}
 }
 
@@ -292,8 +269,8 @@ func exitDescription(child *Child) string {
 // observedOutput joins the capped stdout and stderr captures for a failure
 // error; the caller renders it with %q so a hostile helper cannot forge log
 // lines (T-10-05).
-func (m *Mount) observedOutput(tap *mountTap) string {
-	return tap.observedText() + m.stderr.String()
+func observedOutput(m *Mount) string {
+	return m.tap.observedText() + m.stderr.String()
 }
 
 // Install returns the mounted install: the mount root replaces the packed
@@ -375,6 +352,48 @@ func (m *Mount) Stop() error {
 	m.stopOnce.Do(func() { m.stopErr = m.stop() })
 
 	return m.stopErr
+}
+
+// start spawns the helper under a cancellation-detached context, reads the
+// mount line, validates the mounted tree, fills the bundled builtin, and arms
+// the Lost watcher. The caller owns the failure teardown (Stop).
+func (m *Mount) start(ctx context.Context) error {
+	helperCtx, helperCancel := context.WithCancel(context.WithoutCancel(ctx))
+	m.cancel = helperCancel
+	m.tap = newMountTap(m.base)
+
+	child, spawnErr := SpawnChild(helperCtx,
+		[]string{m.appImage, mountHelperFlag},
+		helperEnv(m.base),
+		SpawnOpts{StdoutTap: m.tap, StderrTap: &m.stderr, WaitDelay: waitDelayDefault})
+	if spawnErr != nil {
+		helperCancel()
+		_ = os.RemoveAll(m.base)
+
+		return fmt.Errorf("%w: spawn the %s helper: %w", errMountSpawn, mountHelperFlag, spawnErr)
+	}
+
+	m.child = child
+	m.helperPID = child.PgID
+
+	root, readyErr := awaitMountLine(ctx, m)
+	if readyErr != nil {
+		return readyErr
+	}
+
+	if treeErr := validateMountTree(root); treeErr != nil {
+		return fmt.Errorf("%w (observed output %q)", treeErr, observedOutput(m))
+	}
+
+	m.root = root
+
+	if m.builtin == "" {
+		m.builtin = bundledBuiltinPath(root)
+	}
+
+	go m.watch(helperCtx)
+
+	return nil
 }
 
 // stop runs the staged teardown once (guarded by Stop's sync.Once).
@@ -527,7 +546,7 @@ func basePathProblem(base string) string {
 // RESEARCH Pattern 1, Pitfall 5). TMPDIR is the private base, which makes the
 // mount point attributable to this wrapper run.
 func helperEnv(base string) []string {
-	env := make([]string, 0, 3)
+	env := make([]string, 0, helperEnvVars)
 
 	path := os.Getenv(allowlistPathVar)
 	if path == "" {

@@ -5,6 +5,7 @@
 // APPIMAGE_EXTRACT_AND_RUN, TARGET_APPIMAGE, APPDIR, APPIMAGE, NO_CLEANUP,
 // VERBOSE, LD_PRELOAD, and LD_LIBRARY_PATH still yields only PATH/HOME/TMPDIR
 // (T-10-01, RESEARCH Pitfall 5).
+
 package supervisor
 
 import (

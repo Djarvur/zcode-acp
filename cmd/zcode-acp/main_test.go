@@ -195,7 +195,7 @@ func e2eRunTwoLoopRide(t *testing.T, agentBin, fakeBin string) {
 	stderrBuf := &e2eSyncBuffer{}
 	wrapper.Stderr = stderrBuf
 
-	e2eRideTwoLoops(t, rideCtx, wrapper, stderrBuf, nil)
+	e2eRideTwoLoops(rideCtx, t, wrapper, stderrBuf, nil)
 	e2eAssertFakeTranscript(t, transcriptPath)
 }
 
@@ -205,7 +205,7 @@ func e2eRunTwoLoopRide(t *testing.T, agentBin, fakeBin string) {
 // shutdown and requires exit 0. onStarted, when set, runs after Start and
 // before the first frame — the mount e2e's window to observe the acquisition.
 func e2eRideTwoLoops(
-	t *testing.T, ctx context.Context, wrapper *exec.Cmd, stderrBuf *e2eSyncBuffer, onStarted func(),
+	ctx context.Context, t *testing.T, wrapper *exec.Cmd, stderrBuf *e2eSyncBuffer, onStarted func(),
 ) {
 	t.Helper()
 
@@ -320,7 +320,7 @@ func TestAppImageMountEndToEnd(t *testing.T) {
 	mountPath := ""
 	onStarted := func() { mountPath = e2eWaitMountRecord(t, fixture, stderrBuf) }
 
-	e2eRideTwoLoops(t, rideCtx, wrapper, stderrBuf, onStarted)
+	e2eRideTwoLoops(rideCtx, t, wrapper, stderrBuf, onStarted)
 	e2eAssertFakeTranscript(t, transcriptPath)
 
 	// Ordered teardown: the helper's TERM trap records whether the app-server
@@ -429,8 +429,8 @@ func e2eWaitMountRecord(t *testing.T, fixture string, stderrBuf *e2eSyncBuffer) 
 			stderrBuf.dump(t)
 
 			t.Fatalf("the fake AppImage was never mounted (no record at %s within %v): "+
-				"the --app-server .AppImage value reached the spawn seam as the app-server binary instead of the mount path",
-				path, e2eMountRecordWait)
+				"the --app-server .AppImage value reached the spawn seam as the app-server "+
+				"binary instead of the mount path", path, e2eMountRecordWait)
 		case <-time.After(e2eFixturePoll):
 		}
 	}

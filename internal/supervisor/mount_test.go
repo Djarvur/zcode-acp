@@ -5,6 +5,7 @@
 // the mount path, and stays alive — the same line/wait protocol the real
 // runtime implements (RESEARCH Pattern 2), so the exec, readiness, validation,
 // and teardown code under test is the production code, not a test double.
+
 package supervisor_test
 
 import (
@@ -36,6 +37,8 @@ const (
 	fakeVariantOK       = "ok"
 	fakeVariantBadTree  = "bad-tree"
 	fakeVariantStubborn = "stubborn"
+
+	testAppImageLayout = "appimage"
 
 	testMountReadyTimeout = 5 * time.Second
 	testMountStopGrace    = 150 * time.Millisecond
@@ -148,7 +151,7 @@ func testMountHappyPath(t *testing.T) {
 	fixture := t.TempDir()
 	appImage := writeFakeAppImage(t, fixture, fakeVariantOK)
 
-	inst := supervisor.Install{AppImage: appImage, Version: fakeAppImageVer, Layout: "appimage"}
+	inst := supervisor.Install{AppImage: appImage, Version: fakeAppImageVer, Layout: testAppImageLayout}
 
 	mount, err := supervisor.PrepareMount(context.Background(), inst, testMountOpts())
 	if err != nil {
@@ -157,37 +160,9 @@ func testMountHappyPath(t *testing.T) {
 
 	t.Cleanup(func() { _ = mount.Stop() })
 
-	root := mount.Root()
-	base := filepath.Dir(root)
-
-	if !strings.HasPrefix(base, filepath.Join(tmpRoot, "zcode-acp-mount-")) {
-		t.Fatalf("the private base %q is not under the wrapper temp root %q", base, tmpRoot)
-	}
-
-	if filepath.Base(root) == "" || !strings.HasPrefix(filepath.Base(root), fakeMountDirGlob) {
-		t.Fatalf("the mount root %q is not a %s* directory", root, fakeMountDirGlob)
-	}
-
-	for _, rel := range []string{"zcode", filepath.Join("resources", "glm", "zcode.cjs")} {
-		if _, statErr := os.Stat(filepath.Join(root, rel)); statErr != nil {
-			t.Fatalf("the validated mounted tree misses %s: %v", rel, statErr)
-		}
-	}
-
-	installed := mount.Install()
-	want := supervisor.Install{
-		Root:        root,
-		Binary:      filepath.Join(root, "zcode"),
-		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
-		BuiltinFile: filepath.Join(root, "resources", "config", "provider", "zcode-builtin.json"),
-		Layout:      "appimage",
-		AppImage:    appImage,
-		Version:     fakeAppImageVer,
-	}
-
-	if installed != want {
-		t.Fatalf("mount.Install() mismatch:\n got %+v\nwant %+v", installed, want)
-	}
+	assertMountBaseLocation(t, mount.Root(), tmpRoot)
+	assertMountTreeValidated(t, mount.Root())
+	assertMountedInstall(t, mount, appImage)
 
 	pid := mount.HelperPID()
 	if pid == 0 {
@@ -203,12 +178,61 @@ func testMountHappyPath(t *testing.T) {
 	}
 
 	if got := mount.HelperPID(); got != pid {
-		t.Fatalf("HelperPID() = %d after Stop, want the recorded %d (never cleared: ESRCH is asserted, never group 0)", got, pid)
+		t.Fatalf("HelperPID() = %d after Stop, want the recorded %d "+
+			"(never cleared: ESRCH is asserted, never group 0)", got, pid)
 	}
 
-	assertMountPathGone(t, root, "the mount root")
-	assertMountPathGone(t, base, "the private base")
+	assertMountPathGone(t, mount.Root(), "the mount root")
+	assertMountPathGone(t, filepath.Dir(mount.Root()), "the private base")
 	assertProcessGone(t, pid, "the mount helper")
+}
+
+// assertMountBaseLocation requires the mount root to live one component under
+// a private base created in the wrapper temp root.
+func assertMountBaseLocation(t *testing.T, root, tmpRoot string) {
+	t.Helper()
+
+	base := filepath.Dir(root)
+	if !strings.HasPrefix(base, filepath.Join(tmpRoot, "zcode-acp-mount-")) {
+		t.Fatalf("the private base %q is not under the wrapper temp root %q", base, tmpRoot)
+	}
+
+	if !strings.HasPrefix(filepath.Base(root), fakeMountDirGlob) {
+		t.Fatalf("the mount root %q is not a %s* directory", root, fakeMountDirGlob)
+	}
+}
+
+// assertMountTreeValidated requires the invariant spawn surface to be present
+// in the accepted mount.
+func assertMountTreeValidated(t *testing.T, root string) {
+	t.Helper()
+
+	for _, rel := range []string{"zcode", filepath.Join("resources", "glm", "zcode.cjs")} {
+		if _, statErr := os.Stat(filepath.Join(root, rel)); statErr != nil {
+			t.Fatalf("the validated mounted tree misses %s: %v", rel, statErr)
+		}
+	}
+}
+
+// assertMountedInstall requires Install() to carry the mounted root with the
+// packed AppImage and its version preserved.
+func assertMountedInstall(t *testing.T, mount *supervisor.Mount, appImage string) {
+	t.Helper()
+
+	root := mount.Root()
+	want := supervisor.Install{
+		Root:        root,
+		Binary:      filepath.Join(root, "zcode"),
+		Entrypoint:  filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		BuiltinFile: filepath.Join(root, "resources", "config", "provider", "zcode-builtin.json"),
+		Layout:      testAppImageLayout,
+		AppImage:    appImage,
+		Version:     fakeAppImageVer,
+	}
+
+	if installed := mount.Install(); installed != want {
+		t.Fatalf("mount.Install() mismatch:\n got %+v\nwant %+v", installed, want)
+	}
 }
 
 // testMountBadTree proves the mounted tree is validated: a mount line that
@@ -389,7 +413,7 @@ func TestMountSpacedTmpdir(t *testing.T) {
 // and the just-created base was removed.
 func TestMountRejectBadTmpdir(t *testing.T) {
 	root := t.TempDir()
-	bad := filepath.Join(root, "bad\ntmpdir")
+	bad := root + "/bad\ntmpdir"
 
 	if err := os.MkdirAll(bad, 0o700); err != nil {
 		t.Fatalf("create the newline-bearing TMPDIR: %v", err)
