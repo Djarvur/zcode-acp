@@ -94,6 +94,14 @@ This binary prints `18.1.9+zacp.0`; check with `zcode-acp omp --version`.
 can produce an intermittent close toast on Stop. The client tolerates it and
 the session is still torn down — no action needed.
 
+**Empty chat or branch names from the omp card** — the client's own text
+generators (chat name, branch name, commit message) launch the override as
+`omp --print --mode text @file` and read the generated text from stdout. A
+build that predates that contract answers exit 0 with empty stdout, which the
+client reports as `returned an empty chat name`. Check `zcode-acp omp
+--version` (≥ 18.1.9) and see [Non-interactive text
+tasks](#8-non-interactive-text-tasks).
+
 **Start Plan does not work headless** — Start Plan providers authenticate
 with a browser/captcha step only the desktop app can provide (the GLM Coding
 Plan works headless). See
@@ -221,6 +229,16 @@ The client sets `PI_NO_PTY=1` for the omp card; this wrapper ignores it —
 ACP is a pipe protocol, no PTY is ever allocated. The card's agent-home
 variable (`PI_CODING_AGENT_DIR`) is client bookkeeping and does not affect
 the wrapper.
+
+### 8. Non-interactive text tasks
+
+The client's own generators — chat name, branch name, commit message —
+launch the override as `omp --print --no-session --no-tools
+--no-extensions --no-skills --no-rules --mode text [--model p/m]
+[--thinking level] @file`. This build answers those invocations with one
+one-shot model call and prints only the generated text on stdout: exit 0
+when text was produced, 1 on a runtime or authentication failure, 2 on a
+usage error. Stderr carries diagnostics; stdout carries only the text.
 
 ## CI
 
