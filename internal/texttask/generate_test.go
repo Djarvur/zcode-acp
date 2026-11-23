@@ -16,6 +16,20 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
 
+// Test-fixture literals shared across this package's test files (the
+// goconst discipline): the personal provider pair the request fixtures use,
+// the builtin z.ai pair the rebind/selection fixtures use, and the
+// assertion surfaces.
+const (
+	testProviderPersonal = "OpenCodeGo"
+	testModelPersonal    = "deepseek-v4.1-flash"
+	testProviderZaiAPI   = "zai-api"
+	testModelFlash       = "GLM-5.3-Flash"
+	testLevelHigh        = "high"
+	testWorkspacePath    = "/repo"
+	testLiteralPrompt    = "hello"
+)
+
 // generateReply is the scripted success reply (the desktop's result shape).
 const generateReply = `{"text":"Answer: done","selection":` +
 	`{"providerId":"OpenCodeGo","modelId":"deepseek-v4.1-flash"},"finishReason":"stop"}`
@@ -59,13 +73,14 @@ type generateParams struct {
 // returns the recorded transcript plus Run's error. The host stream closes
 // after Run returns, which is what ends the fake's scan loop.
 func rideGenerate(
-	t *testing.T, ctx context.Context, sc *fake.Scenario, req texttask.Request,
+	ctx context.Context, t *testing.T, sc *fake.Scenario, req texttask.Request,
 ) (fake.Transcript, error) {
 	t.Helper()
 
 	hostEnd, fakeEnd := net.Pipe()
 	t.Cleanup(func() { _ = fakeEnd.Close() })
 
+	//nolint:contextcheck // NewConn owns its base context (ctx only bounds the call below)
 	conn := zcode.NewConn(hostEnd)
 
 	done := make(chan fake.Transcript, 1)
@@ -117,23 +132,24 @@ func singleGenerateFrame(t *testing.T, tr fake.Transcript) generateFrame {
 	}
 
 	if len(frames) != 1 {
-		t.Fatalf("transcript carries %d %s frames, want exactly 1", len(frames), zcode.MethodWorkspaceGenerateText)
+		t.Fatalf("transcript carries %d %s frames, want exactly 1",
+			len(frames), zcode.MethodWorkspaceGenerateText)
 	}
 
 	return frames[0]
 }
 
-// decodeGenerateParams decodes the frame's params and returns both the typed
-// view and the raw key set (the tools/messages absence assertion).
-func decodeGenerateParams(t *testing.T, frame generateFrame) (generateParams, map[string]json.RawMessage) {
+// decodeGenerateParams decodes the frame's params into the typed view and
+// the raw key set (the tools/messages absence assertion).
+func decodeGenerateParams(
+	t *testing.T, frame generateFrame,
+) (params generateParams, raw map[string]json.RawMessage) {
 	t.Helper()
 
-	var params generateParams
 	if err := json.Unmarshal(frame.Params, &params); err != nil {
 		t.Fatalf("decode generateText params: %v", err)
 	}
 
-	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(frame.Params, &raw); err != nil {
 		t.Fatalf("decode generateText params key set: %v", err)
 	}
@@ -144,29 +160,44 @@ func decodeGenerateParams(t *testing.T, frame generateFrame) (generateParams, ma
 // defaultRequest is the canonical happy-path request.
 func defaultRequest(level string) texttask.Request {
 	return texttask.Request{
-		Selection:     acpfront.ModelSelection{ProviderID: "OpenCodeGo", ModelID: "deepseek-v4.1-flash", ReasoningLevel: level},
+		Selection: acpfront.ModelSelection{
+			ProviderID: testProviderPersonal, ModelID: testModelPersonal, ReasoningLevel: level,
+		},
 		Prompt:        "Name this chat.",
-		WorkspacePath: "/repo",
-		WorkspaceKey:  "/repo",
+		WorkspacePath: testWorkspacePath,
+		WorkspaceKey:  testWorkspacePath,
 	}
+}
+
+// frameRaw re-marshals the raw params for failure messages (order-stable by
+// encoding/json's sorted map keys).
+func frameRaw(raw map[string]json.RawMessage) string {
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return "<undecodable>"
+	}
+
+	return string(out)
 }
 
 // TestRunGenerateRequest locks the request assembly and the reply decode
 // over a real zcode.Conn: the method, every params field, the wrapper
 // querySource, and the absence of tools/messages/maxOutputTokens.
 func TestRunGenerateRequest(t *testing.T) {
-	tr, runErr := rideGenerate(t, context.Background(), generateScenario(generateReply), defaultRequest("high"))
+	tr, runErr := rideGenerate(
+		context.Background(), t, generateScenario(generateReply), defaultRequest(testLevelHigh))
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
 
 	params, raw := decodeGenerateParams(t, singleGenerateFrame(t, tr))
 
-	if params.Workspace.WorkspacePath != "/repo" || params.Workspace.WorkspaceKey != "/repo" {
+	if params.Workspace.WorkspacePath != testWorkspacePath ||
+		params.Workspace.WorkspaceKey != testWorkspacePath {
 		t.Fatalf("workspace params = %+v, want the request's path/key verbatim", params.Workspace)
 	}
 
-	if params.Selection.ProviderID != "OpenCodeGo" || params.Selection.ModelID != "deepseek-v4.1-flash" {
+	if params.Selection.ProviderID != testProviderPersonal || params.Selection.ModelID != testModelPersonal {
 		t.Fatalf("selection params = %+v, want the request's ids", params.Selection)
 	}
 
@@ -184,26 +215,15 @@ func TestRunGenerateRequest(t *testing.T) {
 		}
 	}
 
-	if params.Selection.Options == nil || params.Selection.Options.ReasoningLevel != "high" {
-		t.Fatalf("selection.options = %+v, want reasoningLevel high", params.Selection.Options)
+	if params.Selection.Options == nil || params.Selection.Options.ReasoningLevel != testLevelHigh {
+		t.Fatalf("selection.options = %+v, want the configured level", params.Selection.Options)
 	}
-}
-
-// frameRaw re-marshals the raw params for failure messages (order-stable by
-// encoding/json's sorted map keys).
-func frameRaw(raw map[string]json.RawMessage) string {
-	out, err := json.Marshal(raw)
-	if err != nil {
-		return "<undecodable>"
-	}
-
-	return string(out)
 }
 
 // TestRunGenerateOptionsOmitted locks the omit-shape: an empty level emits
 // no options object at all.
 func TestRunGenerateOptionsOmitted(t *testing.T) {
-	tr, runErr := rideGenerate(t, context.Background(), generateScenario(generateReply), defaultRequest(""))
+	tr, runErr := rideGenerate(context.Background(), t, generateScenario(generateReply), defaultRequest(""))
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
@@ -230,10 +250,10 @@ func TestRunGenerateOptionsOmitted(t *testing.T) {
 func TestRunGenerateCodingPlanRebindWire(t *testing.T) {
 	req := defaultRequest("")
 	req.Selection = texttask.ApplyCodingPlanRebind(
-		acpfront.ModelSelection{ProviderID: "zai-api", ModelID: "GLM-5.3-Flash"},
+		acpfront.ModelSelection{ProviderID: testProviderZaiAPI, ModelID: testModelFlash},
 		acpfront.AuthModeCodingPlan)
 
-	tr, runErr := rideGenerate(t, context.Background(), generateScenario(generateReply), req)
+	tr, runErr := rideGenerate(context.Background(), t, generateScenario(generateReply), req)
 	if runErr != nil {
 		t.Fatalf("Run: %v", runErr)
 	}
@@ -245,41 +265,15 @@ func TestRunGenerateCodingPlanRebindWire(t *testing.T) {
 	}
 }
 
-// TestRunGenerateReplyDecode locks the result decode and the empty-text
-// sentinel.
-func TestRunGenerateReplyDecode(t *testing.T) {
-	t.Run("text and finishReason decode", func(t *testing.T) {
-		tr, runErr := rideGenerate(t, context.Background(), generateScenario(generateReply), defaultRequest(""))
-		if runErr != nil {
-			t.Fatalf("Run: %v", runErr)
-		}
+// TestRunGenerateEmptyText locks the empty-text sentinel: whitespace-only
+// generated text is an honest exit-1-class failure, never an empty success.
+func TestRunGenerateEmptyText(t *testing.T) {
+	reply := `{"text":"  \n\t","selection":{"providerId":"p","modelId":"m"},"finishReason":"stop"}`
 
-		_ = tr
-
-		// Run's own result is the decode surface (the transcript only proves
-		// the request); re-run through the typed fields in the success test
-		// below.
-	})
-
-	t.Run("the result carries text and finishReason", func(t *testing.T) {
-		tr, runErr := rideGenerate(t, context.Background(), generateScenario(generateReply), defaultRequest(""))
-		if runErr != nil {
-			t.Fatalf("Run: %v", runErr)
-		}
-
-		if len(tr.Lines) == 0 {
-			t.Fatal("transcript is empty")
-		}
-	})
-
-	t.Run("whitespace-only text is ErrEmptyText", func(t *testing.T) {
-		reply := `{"text":"  \n\t","selection":{"providerId":"p","modelId":"m"},"finishReason":"stop"}`
-
-		_, runErr := rideGenerate(t, context.Background(), generateScenario(reply), defaultRequest(""))
-		if !errors.Is(runErr, texttask.ErrEmptyText) {
-			t.Fatalf("Run(whitespace) error = %v, want ErrEmptyText", runErr)
-		}
-	})
+	_, runErr := rideGenerate(context.Background(), t, generateScenario(reply), defaultRequest(""))
+	if !errors.Is(runErr, texttask.ErrEmptyText) {
+		t.Fatalf("Run(whitespace) error = %v, want ErrEmptyText", runErr)
+	}
 }
 
 // TestRunGenerateWireError locks the coded wire-error surface: the numeric
@@ -293,7 +287,7 @@ func TestRunGenerateWireError(t *testing.T) {
 		}},
 	}
 
-	_, runErr := rideGenerate(t, context.Background(), sc, defaultRequest(""))
+	_, runErr := rideGenerate(context.Background(), t, sc, defaultRequest(""))
 	if runErr == nil {
 		t.Fatal("Run(wire error) succeeded, want the coded error")
 	}
@@ -310,7 +304,7 @@ func TestRunGenerateCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, runErr := rideGenerate(t, ctx, generateScenario(generateReply), defaultRequest(""))
+	_, runErr := rideGenerate(ctx, t, generateScenario(generateReply), defaultRequest(""))
 	if !errors.Is(runErr, context.Canceled) {
 		t.Fatalf("Run(cancelled) error = %v, want a wrapped context.Canceled", runErr)
 	}

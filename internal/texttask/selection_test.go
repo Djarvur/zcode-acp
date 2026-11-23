@@ -24,11 +24,11 @@ func writeProviderConfig(t *testing.T, body string) string {
 	return path
 }
 
-// TestResolveSelection covers the selection resolver: configured
-// passthrough, the provider_config default reader, and the sentinel classes.
-func TestResolveSelection(t *testing.T) {
+// TestResolveSelectionSources covers the resolver's two sources: the
+// configured passthrough and the provider_config default reader.
+func TestResolveSelectionSources(t *testing.T) {
 	t.Run("a configured selection passes through unchanged", func(t *testing.T) {
-		configured := &acpfront.ModelSelection{ProviderID: "OpenCodeGo", ModelID: "deepseek-v4.1-flash"}
+		configured := &acpfront.ModelSelection{ProviderID: testProviderPersonal, ModelID: testModelPersonal}
 
 		got, err := texttask.ResolveSelection(configured, filepath.Join(t.TempDir(), "absent.json"))
 		if err != nil {
@@ -46,7 +46,8 @@ func TestResolveSelection(t *testing.T) {
 
 	t.Run("the provider_config default supplies ids and the reasoning level", func(t *testing.T) {
 		path := writeProviderConfig(t, `{"config":{"defaultModelSelection":`+
-			`{"providerId":"zai-api","modelId":"GLM-5.3-Flash","options":{"reasoningLevel":"high"}}},`+
+			`{"providerId":"`+testProviderZaiAPI+`","modelId":"`+testModelFlash+`",`+
+			`"options":{"reasoningLevel":"`+testLevelHigh+`"}}},`+
 			`"schemaVersion":1}`)
 
 		got, err := texttask.ResolveSelection(nil, path)
@@ -54,12 +55,18 @@ func TestResolveSelection(t *testing.T) {
 			t.Fatalf("ResolveSelection(default): %v", err)
 		}
 
-		want := acpfront.ModelSelection{ProviderID: "zai-api", ModelID: "GLM-5.3-Flash", ReasoningLevel: "high"}
+		want := acpfront.ModelSelection{
+			ProviderID: testProviderZaiAPI, ModelID: testModelFlash, ReasoningLevel: testLevelHigh,
+		}
 		if got != want {
 			t.Fatalf("ResolveSelection = %+v, want %+v", got, want)
 		}
 	})
+}
 
+// TestResolveSelectionErrors covers the resolver's sentinel classes and the
+// never-echo-credentials rule.
+func TestResolveSelectionErrors(t *testing.T) {
 	t.Run("a missing file is ErrNoSelection naming the path and the fix", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "absent.json")
 
@@ -84,7 +91,8 @@ func TestResolveSelection(t *testing.T) {
 
 	t.Run("an empty provider or model id is ErrInvalidDefaultSelection", func(t *testing.T) {
 		path := writeProviderConfig(t, `{"config":{"defaultModelSelection":`+
-			`{"providerId":"zai-api","modelId":""}},"providers":{"apiKey":"SECRET-MARKER"}}`)
+			`{"providerId":"`+testProviderZaiAPI+`","modelId":""}},`+
+			`"providers":{"apiKey":"SECRET-MARKER"}}`)
 
 		_, err := texttask.ResolveSelection(nil, path)
 		if !errors.Is(err, texttask.ErrInvalidDefaultSelection) {

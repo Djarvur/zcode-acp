@@ -234,27 +234,28 @@ const ompCardToken = "acp"
 var errUnsupportedMode = errors.New("omp: unsupported --mode (only \"text\" is supported)")
 
 // textMode reports whether the argv selects the non-interactive text-task
-// arm (stub: RED skeleton).
-func (o ompOptions) textMode() bool {
-	_ = o
-
-	return false
+// arm: --print alone and --mode text alone both activate it (Orca passes
+// both), so either flag is sufficient and their absence keeps the ACP path.
+func (o *ompOptions) textMode() bool {
+	return o.printMode || o.mode == ompModeText
 }
 
-// validateMode rejects a --mode value the wrapper cannot serve (stub: RED
-// skeleton).
-func (o ompOptions) validateMode() error {
-	_ = o
+// validateMode rejects a --mode value the wrapper cannot serve: an empty
+// mode is the ACP arm, "text" is the one supported non-interactive mode, and
+// anything else is a usage error (never a silent ACP fall-through).
+func (o *ompOptions) validateMode() error {
+	if o.mode == "" || o.mode == ompModeText {
+		return nil
+	}
 
-	return nil
+	return fmt.Errorf("%w, got %q", errUnsupportedMode, o.mode)
 }
 
-// textLevel returns the effective reasoning level for the text-task arm
-// (stub: RED skeleton).
+// textLevel returns the effective reasoning level for the text-task arm: the
+// client's --thinking value first, the wrapper's own --reasoning-level
+// fallback otherwise (both empty means the omit-shape).
 func textLevel(o ompOptions) string {
-	_ = o
-
-	return ""
+	return firstNonEmpty(o.thinking, o.reasoningLevel)
 }
 
 // ompFlagValues holds the omp FlagSet's parsed value pointers so ompParse's
@@ -267,6 +268,15 @@ type ompFlagValues struct {
 	apiKey         *string
 	pluginDir      *string
 	sessionDir     *string
+
+	printMode    *bool
+	mode         *string
+	thinking     *string
+	noSession    *bool
+	noTools      *bool
+	noExtensions *bool
+	noSkills     *bool
+	noRules      *bool
 }
 
 // ompFlagSet is the omp arm's flag set over the card argv surface: the
@@ -288,6 +298,15 @@ func ompFlagSet() (*flag.FlagSet, *ompFlagValues) {
 		pluginDir:      fs.String("plugin-dir", "", "accepted and ignored (the omp card visuals contract)"),
 		sessionDir: fs.String("session-dir", "",
 			"accepted and ignored (the client's disposable discovery launches)"),
+		printMode: fs.Bool("print", false,
+			"non-interactive text mode: one model call, plain text on stdout"),
+		mode:         fs.String("mode", "", "text-task mode (only \"text\" is supported)"),
+		thinking:     fs.String("thinking", "", "reasoning level for the text task"),
+		noSession:    fs.Bool("no-session", false, "accepted (no session is created in text mode)"),
+		noTools:      fs.Bool("no-tools", false, "accepted (text mode sends no tools)"),
+		noExtensions: fs.Bool("no-extensions", false, "accepted and ignored (no agent loop in text mode)"),
+		noSkills:     fs.Bool("no-skills", false, "accepted and ignored (no agent loop in text mode)"),
+		noRules:      fs.Bool("no-rules", false, "accepted and ignored (no agent loop in text mode)"),
 	}
 }
 
@@ -309,28 +328,7 @@ func ompParse(args []string) (ompOptions, error) {
 
 		parseErr := fs.Parse(rest)
 
-		if *v.version {
-			opts.version = true
-		}
-
-		if *v.appServer != "" {
-			opts.appServer = *v.appServer
-		}
-
-		if *v.model != "" {
-			opts.model = *v.model
-		}
-
-		if *v.reasoningLevel != "" {
-			opts.reasoningLevel = *v.reasoningLevel
-		}
-
-		if *v.apiKey != "" {
-			opts.apiKey = *v.apiKey
-		}
-
-		opts.pluginDirSet = opts.pluginDirSet || *v.pluginDir != ""
-		opts.sessionDirSet = opts.sessionDirSet || *v.sessionDir != ""
+		opts.absorb(v)
 
 		rest = fs.Args()
 
@@ -350,12 +348,51 @@ func ompParse(args []string) (ompOptions, error) {
 			continue
 		}
 
-		if len(rest) > 0 { // the first positional — the card's `acp` marker; ignored
-			rest = rest[1:]
-		}
+		rest = opts.absorbPositional(rest)
 	}
 
 	return opts, nil
+}
+
+// absorb copies one parsed flag chunk into opts: strings keep the last
+// non-empty value arrived at across chunks, booleans accumulate with OR so a
+// later chunk can never reset an earlier one.
+func (o *ompOptions) absorb(v *ompFlagValues) {
+	if *v.version {
+		o.version = true
+	}
+
+	o.appServer = firstNonEmpty(*v.appServer, o.appServer)
+	o.model = firstNonEmpty(*v.model, o.model)
+	o.reasoningLevel = firstNonEmpty(*v.reasoningLevel, o.reasoningLevel)
+	o.apiKey = firstNonEmpty(*v.apiKey, o.apiKey)
+	o.mode = firstNonEmpty(*v.mode, o.mode)
+	o.thinking = firstNonEmpty(*v.thinking, o.thinking)
+
+	o.pluginDirSet = o.pluginDirSet || *v.pluginDir != ""
+	o.sessionDirSet = o.sessionDirSet || *v.sessionDir != ""
+	o.printMode = o.printMode || *v.printMode
+	o.noSession = o.noSession || *v.noSession
+	o.noTools = o.noTools || *v.noTools
+	o.noExtensions = o.noExtensions || *v.noExtensions
+	o.noSkills = o.noSkills || *v.noSkills
+	o.noRules = o.noRules || *v.noRules
+}
+
+// absorbPositional consumes ONE positional token of the current chunk: the
+// arm token / card marker is the marker (ignored), every other positional is
+// a prompt token collected in argv order.
+func (o *ompOptions) absorbPositional(rest []string) []string {
+	if len(rest) == 0 {
+		return rest
+	}
+
+	token := rest[0]
+	if token != ompSubcommand && token != ompCardToken {
+		o.prompts = append(o.prompts, token)
+	}
+
+	return rest[1:]
 }
 
 // isUnknownFlagError reports whether a FlagSet error is the undefined-flag
