@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,12 +16,13 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/supervisor"
 )
 
-// Contract tests for the seamed install discovery (BRIDGE-03 part 1). Source
-// of truth: docs/protocol/install-discovery.md — §Layout matrix (:15-35), the
+// Contract tests for the seamed install discovery (BRIDGE-03 part 1, phase 10
+// plan 03's version-ranked AppImage stage). Source of truth:
+// docs/protocol/install-discovery.md — §Layout matrix (:15-35), the
 // entrypoint invariant (:38), the desktop-entry procedure (:65-69), the
-// revision formula (:82), §Recommended discovery order (:89-97). Every
-// fixture is a t.TempDir() tree and every OS contact is a stubbed seam — no
-// test reads the real machine layout.
+// version formats (:33), the revision formula (:82), §Recommended discovery
+// order (:89-97). Every fixture is a t.TempDir() tree and every OS contact is
+// a stubbed seam — no test reads the real machine layout.
 
 // fixtureEndpointDir mirrors the documented runtime-provider fact that every
 // version dir shares ONE endpoint dir name (install-discovery.md :77).
@@ -29,9 +32,11 @@ const fixtureEndpointDir = "endpoint-78d7c3bef4024722642626fe3669a799"
 // (install-discovery.md :93-97) extended with the runtime-provider-tree row
 // the spawn line needs and its install-side bundled fallback (the QA-02
 // fresh-machine completion, EXP-VM-QA02); diagnostics preserve this order.
+// The appimage-candidate rows are variable and live between appimage-rank and
+// dpkg, so they are excluded here.
 func documentedProbeNames() []string {
 	return []string{
-		"override", "xdg-entry", "appimage-glob", "unpacked-glob",
+		"override", "xdg-entry", "appimage-rank",
 		"dpkg", "opt-path", "rpm", "builtin-runtime", "builtin-bundled",
 	}
 }
@@ -49,6 +54,28 @@ func writeBundleTree(t *testing.T, root string) {
 		if err := os.WriteFile(filepath.Join(root, rel), []byte("#!zcode-bundle-marker\n"), 0o600); err != nil {
 			t.Fatalf("write %s: %v", rel, err)
 		}
+	}
+}
+
+// writePackedAppImage plants an executable regular packed AppImage at path —
+// the file-level checks D-12 requires before a candidate can win.
+func writePackedAppImage(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir packed AppImage dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("appimage-payload"), 0o755); err != nil {
+		t.Fatalf("write packed AppImage %s: %v", path, err)
+	}
+}
+
+// writeAppImageSymlink plants a symlink at link pointing at target (a
+// relative target mirrors the user-facing ZCode.AppImage entry,
+// install-discovery.md row 2).
+func writeAppImageSymlink(t *testing.T, link, target string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink %s -> %s: %v", link, target, err)
 	}
 }
 
@@ -107,30 +134,111 @@ func writeBundledBuiltin(t *testing.T, root string, rev int) string {
 	return path
 }
 
-// probeRow finds the diagnostics row for one probe name.
-func probeRow(probes []supervisor.Probe, name string) (supervisor.Probe, bool) {
+// probeRows returns every diagnostics row carrying name.
+func probeRows(probes []supervisor.Probe, name string) []supervisor.Probe {
+	rows := make([]supervisor.Probe, 0, 1)
 	for _, row := range probes {
 		if row.Name == name {
-			return row, true
+			rows = append(rows, row)
 		}
 	}
 
-	return supervisor.Probe{}, false
+	return rows
 }
 
-// assertProbeOrder fails unless the diagnostics rows carry exactly the
-// documented probe set, in the documented order.
+// probeRow finds the first diagnostics row for one probe name.
+func probeRow(probes []supervisor.Probe, name string) (supervisor.Probe, bool) {
+	rows := probeRows(probes, name)
+	if len(rows) == 0 {
+		return supervisor.Probe{}, false
+	}
+
+	return rows[0], true
+}
+
+// assertProbeOrder fails unless the diagnostics rows carry exactly the fixed
+// probe set in the documented order. The appimage-candidate block is variable
+// but must remain contiguous between appimage-rank and dpkg (D-09).
 func assertProbeOrder(t *testing.T, probes []supervisor.Probe) {
 	t.Helper()
+
 	names := documentedProbeNames()
-	if len(probes) != len(names) {
-		t.Fatalf("want %d probe rows, got %d: %+v", len(names), len(probes), probes)
-	}
-	for i, name := range names {
-		if probes[i].Name != name {
-			t.Fatalf("diagnostics row %d = %q, want %q (documented order is stable)", i, probes[i].Name, name)
+	fixed := make([]string, 0, len(names))
+	rankIndex, dpkgIndex := -1, -1
+	candidates := make([]int, 0, len(probes))
+
+	for i, row := range probes {
+		switch row.Name {
+		case "appimage-candidate":
+			candidates = append(candidates, i)
+		case "appimage-rank":
+			rankIndex = i
+			fixed = append(fixed, row.Name)
+		case "dpkg":
+			dpkgIndex = i
+			fixed = append(fixed, row.Name)
+		default:
+			fixed = append(fixed, row.Name)
 		}
 	}
+
+	if len(fixed) != len(names) {
+		t.Fatalf("want %d fixed probe rows, got %d: %+v", len(names), len(fixed), probes)
+	}
+
+	for i, name := range names {
+		if fixed[i] != name {
+			t.Fatalf("diagnostics row %d = %q, want %q (documented order is stable)", i, fixed[i], name)
+		}
+	}
+
+	for _, index := range candidates {
+		if index <= rankIndex || index >= dpkgIndex {
+			t.Fatalf("appimage-candidate row %d must sit between appimage-rank (%d) and dpkg (%d)",
+				index, rankIndex, dpkgIndex)
+		}
+	}
+}
+
+// assertCandidateMiss fails unless a candidate row names display as a miss
+// whose failing step contains step.
+func assertCandidateMiss(t *testing.T, probes []supervisor.Probe, display, step string) {
+	t.Helper()
+
+	for _, row := range probeRows(probes, "appimage-candidate") {
+		if strings.Contains(row.Result, display) && strings.Contains(row.Result, "miss:") &&
+			strings.Contains(row.Result, step) {
+			return
+		}
+	}
+
+	t.Fatalf("a candidate miss row must name %q and the failing step %q: %+v", display, step, probes)
+}
+
+// snapshotTree records every path under root with its mode and size — the
+// pure-read assertion's before/after comparison.
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+
+	snapshot := make(map[string]string)
+
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		snapshot[path] = fmt.Sprintf("%v|%d", info.Mode(), info.Size())
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", root, err)
+	}
+
+	return snapshot
 }
 
 // noHitSeams returns mutators stubbing every OS-query seam to an empty
@@ -147,90 +255,98 @@ func noHitSeams() []func(*supervisor.Probers) {
 	}
 }
 
-// discoverUnpackedFixture seeds the unpacked-AppImage layout (matrix row 1:
-// ~/Applications/zcode-*/squashfs-root) and asserts it resolves.
-func discoverUnpackedFixture(t *testing.T) {
+// discoverApps runs discovery over an empty machine seeded with the given
+// application-dir candidates under a fresh home.
+func discoverApps(t *testing.T, apps []string) (supervisor.Install, []supervisor.Probe, error) {
 	t.Helper()
-	home := t.TempDir()
-	root := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
-	writeBundleTree(t, root)
+
+	return discoverAppsHome(t, t.TempDir(), apps)
+}
+
+// discoverAppsHome is discoverApps with an explicit home (the runtime-tree
+// fixture).
+func discoverAppsHome(t *testing.T, home string, apps []string) (supervisor.Install, []supervisor.Probe, error) {
+	t.Helper()
 
 	p := supervisor.Probers{
 		Home:    home,
-		AppDirs: func() []string { return []string{root} },
+		OptDir:  filepath.Join(t.TempDir(), "ZCode"), // absent opt tree
+		AppDirs: func() []string { return apps },
 	}
-	install, probes, err := p.Discover(context.Background())
+	for _, seam := range noHitSeams() {
+		seam(&p)
+	}
+
+	return p.Discover(context.Background())
+}
+
+// discoverUnpackedFixture seeds the unpacked-AppImage layout (matrix row 1:
+// ~/Applications/zcode-*/squashfs-root) and asserts it resolves with the
+// version parsed from the zcode-<ver> parent.
+func discoverUnpackedFixture(t *testing.T) {
+	t.Helper()
+
+	root := filepath.Join(t.TempDir(), "Applications", "zcode-3.18.2", "squashfs-root")
+	writeBundleTree(t, root)
+
+	install, probes, err := discoverApps(t, []string{root})
 	if err != nil {
 		t.Fatalf("unpacked squashfs-root tree must resolve: %v", err)
 	}
+
 	want := supervisor.Install{
 		Root:       root,
 		Binary:     filepath.Join(root, "zcode"),
 		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
 		Layout:     "unpacked-appimage",
+		Version:    "3.18.2",
 	}
 	if install != want {
 		t.Fatalf("install mismatch:\n got %+v\nwant %+v", install, want)
 	}
-	row, ok := probeRow(probes, "unpacked-glob")
-	if !ok || !strings.Contains(row.Result, root) {
-		t.Errorf("unpacked-glob row must name the resolved root: %+v", row)
+
+	row, ok := probeRow(probes, "appimage-rank")
+	if !ok || !strings.Contains(row.Result, root) || !strings.Contains(row.Result, "3.18.2") {
+		t.Errorf("appimage-rank row must name the resolved root and version: %+v", row)
 	}
 }
 
 // discoverAppImageFixture seeds the packed-AppImage layout (matrix row 2:
-// versioned file + unversioned symlink, extraction stubbed) and asserts it
-// resolves through EvalSymlinks.
+// versioned file + unversioned symlink) and asserts the resolved packed
+// install wins without extraction.
 func discoverAppImageFixture(t *testing.T) {
 	t.Helper()
+
 	apps := filepath.Join(t.TempDir(), "Applications")
 	versioned := filepath.Join(apps, "ZCode-3.18.2-linux-x64.AppImage")
-	if err := os.MkdirAll(apps, 0o750); err != nil {
-		t.Fatalf("mkdir applications dir: %v", err)
-	}
-	if err := os.WriteFile(versioned, []byte("appimage-payload"), 0o600); err != nil {
-		t.Fatalf("write AppImage file: %v", err)
-	}
-	// Relative target, per matrix row 2: the unversioned symlink is the
-	// user-facing entry resolving to the versioned file.
+	writePackedAppImage(t, versioned)
+
 	symlink := filepath.Join(apps, "ZCode.AppImage")
-	if err := os.Symlink(filepath.Base(versioned), symlink); err != nil {
-		t.Fatalf("symlink AppImage: %v", err)
-	}
-	extractRoot := filepath.Join(t.TempDir(), "squashfs-root")
-	writeBundleTree(t, extractRoot)
+	writeAppImageSymlink(t, symlink, filepath.Base(versioned))
 
-	var gotAppImagePath string
-	p := supervisor.Probers{
-		Home:    filepath.Dir(apps),
-		AppDirs: func() []string { return []string{versioned, symlink} },
-		ExtractAppImage: func(_ context.Context, appImagePath, _ string) (string, error) {
-			gotAppImagePath = appImagePath
+	install, probes, err := discoverApps(t, []string{versioned, symlink})
+	if err != nil {
+		t.Fatalf("packed AppImage must resolve as a mount-first install: %v", err)
+	}
 
-			return extractRoot, nil
-		},
+	want := supervisor.Install{
+		AppImage: versioned,
+		Version:  "3.18.2",
+		Layout:   "appimage",
 	}
-	install, _, err := p.Discover(context.Background())
-	if err != nil {
-		t.Fatalf("packed AppImage + extraction seam must resolve: %v", err)
+	if install != want {
+		t.Fatalf("packed install mismatch:\n got %+v\nwant %+v", install, want)
 	}
-	if install.Root != extractRoot || install.Layout != "appimage" {
-		t.Fatalf("extraction root must win with layout appimage: got %+v, want Root %q",
-			install, extractRoot)
+	if install.Root != "" || install.Binary != "" || install.Entrypoint != "" {
+		t.Errorf("a packed install must carry empty Root/Binary/Entrypoint: %+v", install)
 	}
-	resolved, err := filepath.EvalSymlinks(symlink)
-	if err != nil {
-		t.Fatalf("eval symlink: %v", err)
+	if !install.RequiresMount() {
+		t.Error("a packed install must require the managed mount")
 	}
-	if gotAppImagePath != resolved {
-		t.Fatalf("extraction must receive the EvalSymlinks-resolved AppImage path: got %q, want %q",
-			gotAppImagePath, resolved)
-	}
-	if install.Binary != filepath.Join(extractRoot, "zcode") {
-		t.Errorf("extracted tree binary: got %q", install.Binary)
-	}
-	if install.Entrypoint != filepath.Join(extractRoot, "resources", "glm", "zcode.cjs") {
-		t.Errorf("extracted tree entrypoint: got %q", install.Entrypoint)
+
+	row, ok := probeRow(probes, "appimage-rank")
+	if !ok || !strings.Contains(row.Result, "selected: appimage version 3.18.2") {
+		t.Errorf("appimage-rank row must name layout and version: %+v", row)
 	}
 }
 
@@ -238,6 +354,7 @@ func discoverAppImageFixture(t *testing.T) {
 // naming the opt tree) and asserts it resolves with the invariant entrypoint.
 func discoverDebFixture(t *testing.T) {
 	t.Helper()
+
 	optDir := filepath.Join(t.TempDir(), "ZCode")
 	writeBundleTree(t, optDir)
 	fileList := strings.Join([]string{
@@ -255,6 +372,7 @@ func discoverDebFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deb-style opt tree must resolve: %v", err)
 	}
+
 	want := supervisor.Install{
 		Root:       optDir,
 		Binary:     filepath.Join(optDir, "zcode"),
@@ -264,6 +382,7 @@ func discoverDebFixture(t *testing.T) {
 	if install != want {
 		t.Fatalf("install mismatch:\n got %+v\nwant %+v", install, want)
 	}
+
 	row, ok := probeRow(probes, "dpkg")
 	if !ok || !strings.Contains(row.Result, optDir) {
 		t.Errorf("dpkg row must name the opt tree: %+v", row)
@@ -276,6 +395,253 @@ func TestDiscoverFixtureTree(t *testing.T) {
 	t.Run("deb", discoverDebFixture)
 }
 
+// TestDiscoverRankPackedOverStaleUnpacked pins DISC-01/D-06: the version, not
+// the layout order, decides — a current packed 4.0.0 beats a stale unpacked
+// 3.18.2 tree sitting beside it.
+func TestDiscoverRankPackedOverStaleUnpacked(t *testing.T) {
+	apps := filepath.Join(t.TempDir(), "Applications")
+	packed := filepath.Join(apps, "ZCode-4.0.0-linux-x64.AppImage")
+	staleRoot := filepath.Join(apps, "zcode-3.18.2", "squashfs-root")
+	writePackedAppImage(t, packed)
+	writeBundleTree(t, staleRoot)
+
+	install, probes, err := discoverApps(t, []string{staleRoot, packed})
+	if err != nil {
+		t.Fatalf("both AppImage-layout candidates must resolve: %v", err)
+	}
+
+	want := supervisor.Install{AppImage: packed, Version: "4.0.0", Layout: "appimage"}
+	if install != want {
+		t.Fatalf("the newer packed candidate must win:\n got %+v\nwant %+v", install, want)
+	}
+	if !install.RequiresMount() {
+		t.Error("the packed winner must require the managed mount")
+	}
+
+	row, ok := probeRow(probes, "appimage-rank")
+	if !ok || !strings.Contains(row.Result, "selected: appimage version 4.0.0") ||
+		!strings.Contains(row.Result, packed) {
+		t.Fatalf("appimage-rank must name the selected layout, version, and resolved path: %+v", row)
+	}
+}
+
+// TestDiscoverPerCandidateMisses pins DISC-02/D-07: every candidate is
+// evaluated; a dangling symlink or invalid tree is a miss row and the scan
+// continues.
+func TestDiscoverPerCandidateMisses(t *testing.T) {
+	t.Run("dangling symlink", func(t *testing.T) {
+		apps := filepath.Join(t.TempDir(), "Applications")
+		packed := filepath.Join(apps, "ZCode-4.0.0-linux-x64.AppImage")
+		writePackedAppImage(t, packed)
+		dangling := filepath.Join(apps, "ZCode.AppImage")
+		writeAppImageSymlink(t, dangling, filepath.Join(apps, "ZCode-3.18.2-linux-x64.AppImage"))
+
+		install, probes, err := discoverApps(t, []string{dangling, packed})
+		if err != nil {
+			t.Fatalf("a dangling candidate must not abort discovery: %v", err)
+		}
+		if install.AppImage != packed || install.Version != "4.0.0" {
+			t.Fatalf("the versioned 4.0.0 file must win: %+v", install)
+		}
+		assertCandidateMiss(t, probes, dangling, "unresolvable")
+	})
+
+	t.Run("invalid tree", func(t *testing.T) {
+		apps := filepath.Join(t.TempDir(), "Applications")
+		packed := filepath.Join(apps, "ZCode-4.0.0-linux-x64.AppImage")
+		writePackedAppImage(t, packed)
+		invalidRoot := filepath.Join(apps, "zcode-3.18.2", "squashfs-root")
+		if err := os.MkdirAll(invalidRoot, 0o750); err != nil {
+			t.Fatalf("mkdir invalid tree: %v", err)
+		}
+
+		install, probes, err := discoverApps(t, []string{invalidRoot, packed})
+		if err != nil {
+			t.Fatalf("an invalid tree must not abort discovery: %v", err)
+		}
+		if install.AppImage != packed || install.Version != "4.0.0" {
+			t.Fatalf("the packed 4.0.0 file must win: %+v", install)
+		}
+		assertCandidateMiss(t, probes, invalidRoot, "spawnable tree")
+	})
+}
+
+// TestDiscoverUnpackedOnly pins the unpacked-only path: it resolves through
+// bundleInstall with the version from the zcode-<ver> parent dir.
+func TestDiscoverUnpackedOnly(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Applications", "zcode-4.0.0", "squashfs-root")
+	writeBundleTree(t, root)
+
+	install, _, err := discoverApps(t, []string{root})
+	if err != nil {
+		t.Fatalf("an unpacked-only fixture must resolve: %v", err)
+	}
+
+	want := supervisor.Install{
+		Root:       root,
+		Binary:     filepath.Join(root, "zcode"),
+		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		Layout:     "unpacked-appimage",
+		Version:    "4.0.0",
+	}
+	if install != want {
+		t.Fatalf("unpacked install mismatch:\n got %+v\nwant %+v", install, want)
+	}
+	if install.RequiresMount() {
+		t.Error("an unpacked install must not require a mount")
+	}
+}
+
+// TestDiscoverTieBreak pins all four D-08/DISC-04 rules at equal versions:
+// unpacked beats packed, a packed symlink beats a packed regular file, two
+// regular files break lexicographically, and a symlink plus its target are
+// one candidate keyed by the resolved path.
+func TestDiscoverTieBreak(t *testing.T) {
+	t.Run("unpacked beats packed", func(t *testing.T) {
+		apps := filepath.Join(t.TempDir(), "Applications")
+		packed := filepath.Join(apps, "ZCode-3.18.2-linux-x64.AppImage")
+		unpacked := filepath.Join(apps, "zcode-3.18.2", "squashfs-root")
+		writePackedAppImage(t, packed)
+		writeBundleTree(t, unpacked)
+
+		install, _, err := discoverApps(t, []string{packed, unpacked})
+		if err != nil {
+			t.Fatalf("equal-version candidates must resolve: %v", err)
+		}
+		if install.Root != unpacked || install.Layout != "unpacked-appimage" {
+			t.Fatalf("the unpacked tree must win at equal versions: %+v", install)
+		}
+	})
+
+	t.Run("symlink beats regular file", func(t *testing.T) {
+		apps := filepath.Join(t.TempDir(), "Applications")
+		x64 := filepath.Join(apps, "ZCode-3.18.2-linux-x64.AppImage")
+		arm64 := filepath.Join(apps, "ZCode-3.18.2-linux-arm64.AppImage")
+		link := filepath.Join(apps, "ZCode.AppImage")
+		writePackedAppImage(t, x64)
+		writePackedAppImage(t, arm64)
+		writeAppImageSymlink(t, link, filepath.Base(x64))
+
+		install, probes, err := discoverApps(t, []string{arm64, x64, link})
+		if err != nil {
+			t.Fatalf("equal-version packed candidates must resolve: %v", err)
+		}
+		if install.AppImage != x64 {
+			t.Fatalf("the symlink's resolved target must win over the regular arm64 file: %+v", install)
+		}
+
+		rows := probeRows(probes, "appimage-candidate")
+		if len(rows) != 2 {
+			t.Fatalf("a symlink and its target must collapse into one candidate, plus arm64: got %d rows: %+v",
+				len(rows), rows)
+		}
+		if !strings.Contains(rows[0].Result, link) || !strings.Contains(rows[0].Result, "hit:") {
+			t.Fatalf("the winning candidate must be represented by the symlink display: %+v", rows[0])
+		}
+	})
+
+	t.Run("regular files break lexicographically", func(t *testing.T) {
+		apps := filepath.Join(t.TempDir(), "Applications")
+		arm64 := filepath.Join(apps, "ZCode-3.18.2-linux-arm64.AppImage")
+		x64 := filepath.Join(apps, "ZCode-3.18.2-linux-x64.AppImage")
+		writePackedAppImage(t, arm64)
+		writePackedAppImage(t, x64)
+
+		install, _, err := discoverApps(t, []string{x64, arm64})
+		if err != nil {
+			t.Fatalf("equal-version regular files must resolve: %v", err)
+		}
+		if install.AppImage != arm64 {
+			t.Fatalf("the lexicographically smaller display must win: got %q, want %q",
+				install.AppImage, arm64)
+		}
+	})
+
+	t.Run("symlink and target are one candidate", func(t *testing.T) {
+		apps := filepath.Join(t.TempDir(), "Applications")
+		target := filepath.Join(apps, "ZCode-3.18.2-linux-x64.AppImage")
+		link := filepath.Join(apps, "ZCode.AppImage")
+		writePackedAppImage(t, target)
+		writeAppImageSymlink(t, link, filepath.Base(target))
+
+		install, probes, err := discoverApps(t, []string{link, target})
+		if err != nil {
+			t.Fatalf("a symlink plus its target must resolve: %v", err)
+		}
+		if install.AppImage != target {
+			t.Fatalf("the symlink and target are one backend: %+v", install)
+		}
+		if rows := probeRows(probes, "appimage-candidate"); len(rows) != 1 {
+			t.Fatalf("the symlink and target must be one candidate row: %+v", rows)
+		}
+	})
+}
+
+// TestDiscoverVersionUnknown pins D-12's parseable-version requirement: an
+// unversioned packed file and an unpacked tree under a non-zcode-<ver> parent
+// are misses, never a last-resort winner.
+func TestDiscoverVersionUnknown(t *testing.T) {
+	t.Run("renamed packed file", func(t *testing.T) {
+		renamed := filepath.Join(t.TempDir(), "Applications", "Renamed.AppImage")
+		writePackedAppImage(t, renamed)
+
+		_, probes, err := discoverApps(t, []string{renamed})
+		if !errors.Is(err, supervisor.ErrNoInstall) {
+			t.Fatalf("an unversioned packed file must not win: err %v", err)
+		}
+		if !strings.Contains(err.Error(), "version unknown") || !strings.Contains(err.Error(), renamed) {
+			t.Fatalf("the diagnostics must name the version-unknown miss: %v", err)
+		}
+		assertCandidateMiss(t, probes, renamed, "version unknown")
+	})
+
+	t.Run("unpacked tree outside the zcode-<ver> shape", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "Applications", "mystery", "squashfs-root")
+		writeBundleTree(t, root)
+
+		_, probes, err := discoverApps(t, []string{root})
+		if !errors.Is(err, supervisor.ErrNoInstall) {
+			t.Fatalf("an unpacked tree without a zcode-<ver> parent must not win: err %v", err)
+		}
+		if !strings.Contains(err.Error(), "version unknown") {
+			t.Fatalf("the diagnostics must record the version-unknown miss: %v", err)
+		}
+		assertCandidateMiss(t, probes, root, "version unknown")
+	})
+}
+
+// TestDiscoverPureRead pins D-12: discovery mounts nothing and creates no
+// directory — the scanned tree is byte-identical before and after, and no
+// .mount_* entry appears.
+func TestDiscoverPureRead(t *testing.T) {
+	apps := filepath.Join(t.TempDir(), "Applications")
+	packed := filepath.Join(apps, "ZCode-4.0.0-linux-x64.AppImage")
+	staleRoot := filepath.Join(apps, "zcode-3.18.2", "squashfs-root")
+	writePackedAppImage(t, packed)
+	writeBundleTree(t, staleRoot)
+
+	before := snapshotTree(t, apps)
+
+	install, _, err := discoverApps(t, []string{packed, staleRoot})
+	if err != nil {
+		t.Fatalf("the pure-read fixture must resolve: %v", err)
+	}
+	if install.AppImage != packed {
+		t.Fatalf("the packed 4.0.0 winner must resolve: %+v", install)
+	}
+
+	after := snapshotTree(t, apps)
+	if !maps.Equal(before, after) {
+		t.Fatalf("discovery must not mutate the scanned tree:\n before %v\n after  %v", before, after)
+	}
+
+	for path := range after {
+		if strings.HasPrefix(filepath.Base(path), ".mount_") {
+			t.Fatalf("discovery must not create a mount entry: %s", path)
+		}
+	}
+}
+
 func TestDiscoverNoInstallListsEveryProbe(t *testing.T) {
 	p := supervisor.Probers{
 		Home:    t.TempDir(),
@@ -285,11 +651,14 @@ func TestDiscoverNoInstallListsEveryProbe(t *testing.T) {
 	for _, seam := range noHitSeams() {
 		seam(&p)
 	}
+
 	_, probes, err := p.Discover(context.Background())
 	if err == nil {
 		t.Fatal("empty machine is a first-class outcome: Discover must error with diagnostics")
 	}
+
 	assertProbeOrder(t, probes)
+
 	for _, name := range documentedProbeNames() {
 		if !strings.Contains(err.Error(), name) {
 			t.Errorf("error diagnostics must name probe %q: %v", name, err)
@@ -342,6 +711,7 @@ func TestDiscoverRejectsVolatileMounts(t *testing.T) {
 	// volatile, exists only while the app runs. Synthetic decoy name; the
 	// guard is prefix-based and no such mount is read.
 	const mountDecoy = "/tmp/.mount_ZCode-e1f2a3b4"
+
 	p := supervisor.Probers{
 		Home:    t.TempDir(),
 		OptDir:  filepath.Join(t.TempDir(), "ZCode"),
@@ -350,14 +720,28 @@ func TestDiscoverRejectsVolatileMounts(t *testing.T) {
 	for _, seam := range noHitSeams() {
 		seam(&p)
 	}
+
 	install, probes, err := p.Discover(context.Background())
 	if !errors.Is(err, supervisor.ErrNoInstall) || install.Root != "" {
 		t.Fatalf("a volatile mount must never resolve as the install: install %+v, err %v", install, err)
 	}
+
 	assertProbeOrder(t, probes)
-	row, ok := probeRow(probes, "appimage-glob")
-	if !ok || !strings.Contains(row.Result, mountDecoy) || !strings.Contains(row.Result, "reject") {
-		t.Fatalf("appimage-glob row must record the mount as rejected: %+v", row)
+
+	row, ok := probeRow(probes, "appimage-rank")
+	if !ok || !strings.Contains(row.Result, "no AppImage-layout candidate") {
+		t.Fatalf("appimage-rank must record that no usable candidate exists: %+v", row)
+	}
+
+	found := false
+
+	for _, cand := range probeRows(probes, "appimage-candidate") {
+		if strings.Contains(cand.Result, mountDecoy) && strings.Contains(cand.Result, "reject") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the volatile mount must be a rejection candidate row: %+v", probes)
 	}
 }
 
@@ -427,14 +811,11 @@ func TestDiscoverFindsNewestBuiltin(t *testing.T) {
 	writeBundleTree(t, root)
 	writeRuntimeTree(t, home, []string{"0.0.0-dev", "3.17.1", "3.18.2"}, []int{1, 43, 44})
 
-	p := supervisor.Probers{
-		Home:    home,
-		AppDirs: func() []string { return []string{root} },
-	}
-	install, probes, err := p.Discover(context.Background())
+	install, probes, err := discoverAppsHome(t, home, []string{root})
 	if err != nil {
 		t.Fatalf("root install plus runtime tree must resolve: %v", err)
 	}
+
 	wantBuiltin := filepath.Join(home, ".zcode", "v2", "runtime", "provider",
 		"linux-x86_64", "3.18.2", fixtureEndpointDir, "zcode-builtin.json")
 	if install.BuiltinFile != wantBuiltin {
@@ -444,6 +825,7 @@ func TestDiscoverFindsNewestBuiltin(t *testing.T) {
 	if install.Root != root || install.Layout != "unpacked-appimage" {
 		t.Fatalf("root install must still resolve alongside the runtime tree: %+v", install)
 	}
+
 	row, ok := probeRow(probes, "builtin-runtime")
 	if !ok || !strings.Contains(row.Result, "3.18.2") {
 		t.Fatalf("builtin-runtime row must name the picked version: %+v", row)
@@ -464,11 +846,7 @@ func TestDiscoverBundledBuiltinFallback(t *testing.T) {
 	writeBundleTree(t, root)
 	bundled := writeBundledBuiltin(t, root, 44)
 
-	p := supervisor.Probers{
-		Home:    home,
-		AppDirs: func() []string { return []string{root} },
-	}
-	install, probes, err := p.Discover(context.Background())
+	install, probes, err := discoverAppsHome(t, home, []string{root})
 	if err != nil {
 		t.Fatalf("unpacked tree with bundled builtin must resolve: %v", err)
 	}
@@ -476,6 +854,7 @@ func TestDiscoverBundledBuiltinFallback(t *testing.T) {
 		t.Fatalf("fresh machine (no runtime cache) must fall back to the bundled builtin:\n got %q\nwant %q",
 			install.BuiltinFile, bundled)
 	}
+
 	row, ok := probeRow(probes, "builtin-bundled")
 	if !ok || !strings.Contains(row.Result, "found") || !strings.Contains(row.Result, bundled) {
 		t.Errorf("builtin-bundled row must record the bundled hit naming the path: %+v", row)
@@ -491,11 +870,7 @@ func TestDiscoverBuiltinStaysEmptyWithoutAnySource(t *testing.T) {
 	root := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
 	writeBundleTree(t, root)
 
-	p := supervisor.Probers{
-		Home:    home,
-		AppDirs: func() []string { return []string{root} },
-	}
-	install, probes, err := p.Discover(context.Background())
+	install, probes, err := discoverAppsHome(t, home, []string{root})
 	if err != nil {
 		t.Fatalf("the install itself must still resolve: %v", err)
 	}
@@ -503,6 +878,7 @@ func TestDiscoverBuiltinStaysEmptyWithoutAnySource(t *testing.T) {
 		t.Fatalf("no runtime cache and no bundled copy: BuiltinFile must stay empty, got %q",
 			install.BuiltinFile)
 	}
+
 	row, ok := probeRow(probes, "builtin-bundled")
 	if !ok || strings.Contains(row.Result, "found") {
 		t.Errorf("builtin-bundled row must record the honest miss: %+v", row)
@@ -520,20 +896,18 @@ func TestDiscoverRuntimeCacheWinsOverBundled(t *testing.T) {
 	writeBundledBuiltin(t, root, 44)
 	writeRuntimeTree(t, home, []string{"3.18.2"}, []int{44})
 
-	p := supervisor.Probers{
-		Home:    home,
-		AppDirs: func() []string { return []string{root} },
-	}
-	install, probes, err := p.Discover(context.Background())
+	install, probes, err := discoverAppsHome(t, home, []string{root})
 	if err != nil {
 		t.Fatalf("root install plus runtime tree must resolve: %v", err)
 	}
+
 	wantBuiltin := filepath.Join(home, ".zcode", "v2", "runtime", "provider",
 		"linux-x86_64", "3.18.2", fixtureEndpointDir, "zcode-builtin.json")
 	if install.BuiltinFile != wantBuiltin {
 		t.Fatalf("the runtime-cache copy must win over the bundled copy:\n got %q\nwant %q",
 			install.BuiltinFile, wantBuiltin)
 	}
+
 	row, ok := probeRow(probes, "builtin-bundled")
 	if !ok || strings.Contains(row.Result, "found") {
 		t.Errorf("bundled row must not record a hit when the runtime cache resolved: %+v", row)
