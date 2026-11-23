@@ -21,10 +21,10 @@ selects the newest usable backend across layouts.
 
 ### Discovery (DISC)
 
-- [ ] **DISC-01**: Discovery selects the newest usable backend by version across layouts; a stale unpacked `squashfs-root` never beats a newer packed `.AppImage`
-- [ ] **DISC-02**: AppImage candidates are tried one by one: a dangling symlink, unresolvable path, volatile mount, or invalid tree is recorded as a miss and the probe continues with the next candidate
-- [ ] **DISC-03**: Discovery diagnostics report the selected backend's layout, version, and resolved path; version comes from the AppImage filename or the unpacked dir name
-- [ ] **DISC-04**: Selection is deterministic for a given filesystem state, with documented version ordering and tie-break (symlink before versioned file, then lexicographic)
+- [x] **DISC-01**: Discovery selects the newest usable backend by version across layouts; a stale unpacked `squashfs-root` never beats a newer packed `.AppImage`
+- [x] **DISC-02**: AppImage candidates are tried one by one: a dangling symlink, unresolvable path, volatile mount, or invalid tree is recorded as a miss and the probe continues with the next candidate
+- [x] **DISC-03**: Discovery diagnostics report the selected backend's layout, version, and resolved path; version comes from the AppImage filename or the unpacked dir name
+- [x] **DISC-04**: Selection is deterministic for a given filesystem state, with documented version ordering and tie-break (symlink before versioned file, then lexicographic)
 
 ### Verification & docs (VER)
 
@@ -64,10 +64,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MNT-04 | Phase 10 | Complete |
 | MNT-05 | Phase 10 | Complete |
 | MNT-06 | Phase 10 | Complete |
-| DISC-01 | Phase 10 | Pending |
-| DISC-02 | Phase 10 | Pending |
-| DISC-03 | Phase 10 | Pending |
-| DISC-04 | Phase 10 | Pending |
+| DISC-01 | Phase 10 | Complete |
+| DISC-02 | Phase 10 | Complete |
+| DISC-03 | Phase 10 | Complete |
+| DISC-04 | Phase 10 | Complete |
 | VER-01 | Phase 10 | Complete |
 | VER-02 | Phase 10 | Pending |
 | VER-03 | Phase 10 | Pending |
