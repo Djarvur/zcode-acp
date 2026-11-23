@@ -1,48 +1,12 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v0.20.0",
-  "phases": [
-    {
-      "number": "1",
-      "name": "Research & Protocol Documentation",
-      "status": "complete"
-    },
-    {
-      "number": "2",
-      "name": "Scaffold & CI Bootstrap",
-      "status": "complete"
-    },
-    {
-      "number": "3",
-      "name": "ZCode Back Leg — Codec, Fake App-Server, Supervisor",
-      "status": "complete"
-    },
-    {
-      "number": "4",
-      "name": "ACP Front — Minimal Chat Loop",
-      "status": "complete"
-    },
-    {
-      "number": "5",
-      "name": "Interactions & Full Chat Cycle (api-key)",
-      "status": "complete"
-    },
-    {
-      "number": "6",
-      "name": "OAuth Coding-Plan Path & Model Picker",
-      "status": "complete"
-    },
-    {
-      "number": "7",
-      "name": "Hardening, VM & Manual E2E, Documentation",
-      "status": "complete"
-    }
-  ],
+  "milestone": "v0.21.0",
+  "phases": [],
   "next": {
-    "command": "/gsd-new-milestone",
-    "label": "Start a new milestone",
-    "reason": "All phases complete — start a new milestone"
+    "command": "/gsd-discuss-phase",
+    "label": "Discuss the first phase",
+    "reason": "Project initialized — plan your first phase"
   },
-  "updated_at": "2026-11-23T09:43:27.597Z"
+  "updated_at": "2026-11-23T09:59:21.480Z"
 }
