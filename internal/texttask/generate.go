@@ -46,37 +46,50 @@ var (
 // the app-server side).
 const textTaskQuerySource = "zcode-acp-text-task"
 
+// textMaxOutputTokens is the explicit generation cap the request carries.
+// The desktop's strict model-option validator requires a maxOutputTokens
+// value for any custom querySource: the git_commit_message profile is the
+// only path that binds a model profile supplying the missing options, and a
+// wrapper querySource gets no such profile. 1024 is the smallest cap the
+// builtin registry allows (the glm-4v-flash rule; every other builtin rule
+// is >= 4096) and is ample for Orca's text tasks (chat/branch names and
+// commit messages capped at 1000 characters).
+const textMaxOutputTokens = 1024
+
 // camelCase wire-key constants (capture-verbatim dialect spelling — the
 // request is assembled as a map, never a tagged struct, so the production
 // decode structs stay tagliatelle snake-safe where they exist).
 const (
-	wireKeyWorkspace     = "workspace"
-	wireKeyWorkspacePath = "workspacePath"
-	wireKeyWorkspaceKey  = "workspaceKey"
-	wireKeySelection     = "selection"
-	wireKeyProviderID    = "providerId"
-	wireKeyModelID       = "modelId"
-	wireKeyOptions       = "options"
-	wireKeyReasoning     = "reasoningLevel"
-	wireKeyPrompt        = "prompt"
-	wireKeyQuerySource   = "querySource"
+	wireKeyWorkspace       = "workspace"
+	wireKeyWorkspacePath   = "workspacePath"
+	wireKeyWorkspaceKey    = "workspaceKey"
+	wireKeySelection       = "selection"
+	wireKeyProviderID      = "providerId"
+	wireKeyModelID         = "modelId"
+	wireKeyOptions         = "options"
+	wireKeyReasoning       = "reasoningLevel"
+	wireKeyPrompt          = "prompt"
+	wireKeyQuerySource     = "querySource"
+	wireKeyMaxOutputTokens = "maxOutputTokens"
 )
 
 // Run performs one workspace/generateText call and decodes the reply text.
-// No tools, messages, or maxOutputTokens ride the request (--no-tools is
-// satisfied by omission); the selection options object appears only when a
-// level is set. A wire error surfaces as *zcode.CallError; a cancelled
-// context surfaces as a wrapped context error; whitespace-only text is
-// ErrEmptyText.
+// No tools or messages ride the request (--no-tools is satisfied by
+// omission), while maxOutputTokens MUST ride it: the strict model-option
+// validator rejects an undefined value for a non-git_commit_message
+// querySource. The selection options object appears only when a level is
+// set. A wire error surfaces as *zcode.CallError; a cancelled context
+// surfaces as a wrapped context error; whitespace-only text is ErrEmptyText.
 func Run(ctx context.Context, conn *zcode.Conn, req Request) (Result, error) {
 	params := map[string]any{
 		wireKeyWorkspace: map[string]any{
 			wireKeyWorkspacePath: req.WorkspacePath,
 			wireKeyWorkspaceKey:  req.WorkspaceKey,
 		},
-		wireKeySelection:   selectionParams(req.Selection),
-		wireKeyPrompt:      req.Prompt,
-		wireKeyQuerySource: textTaskQuerySource,
+		wireKeySelection:       selectionParams(req.Selection),
+		wireKeyPrompt:          req.Prompt,
+		wireKeyQuerySource:     textTaskQuerySource,
+		wireKeyMaxOutputTokens: textMaxOutputTokens,
 	}
 
 	res, err := conn.Call(ctx, zcode.MethodWorkspaceGenerateText, params)
