@@ -49,7 +49,7 @@ func TestSilentAuthFillsCatalogOnNewSession(t *testing.T) {
 			len(sn.ConfigOptions), len(h.ACPLines()))
 	}
 
-	if selectVariant.CurrentValue != "zai-api/GLM-5.3-Flash" {
+	if selectVariant.CurrentValue != corpusModelFlashID {
 		t.Fatalf("currentValue = %q, want the builtin binding (the silent auth carries no model rebind)",
 			selectVariant.CurrentValue)
 	}
@@ -80,7 +80,8 @@ func TestSilentAuthKeyringFailureStillOpens(t *testing.T) {
 	chatCreate := fake.RequestRule{
 		Method: zcode.MethodSessionCreate,
 		Reply: &fake.Reply{Result: json.RawMessage(`{"session":{"sessionId":"` + cpChatSessionID + `"},` +
-			`"settings":{"model":{"current":` + current + `,"lastUsed":` + lastUsed + `,"available":` + available + `}}}`)},
+			`"settings":{"model":{"current":` + current + `,"lastUsed":` + lastUsed +
+			`,"available":` + available + `}}}`)},
 		SideEffects: []fake.SideEffect{
 			cpProbeLifecycleEmit("starting", 1),
 			cpProbeLifecycleEmit("ready", 2),
@@ -95,7 +96,7 @@ func TestSilentAuthKeyringFailureStillOpens(t *testing.T) {
 
 	h, _, _ := newCodingPlanProbeFront(t, []fake.RequestRule{
 		chatCreate,
-		fake.RequestRule{
+		{
 			Method: zcode.MethodSessionSubscribe,
 			Reply: &fake.Reply{Result: json.RawMessage(
 				`{"sessionId":"` + cpChatSessionID + `","eventSeq":0,"events":[]}`)},

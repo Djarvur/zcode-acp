@@ -59,7 +59,7 @@ func TestSetConfigOptionKeepsFullCatalog(t *testing.T) {
 
 	sid := openSetCfgSession(ctx, t, h)
 
-	ask := setCfgAsk(sid, optionIDModel, "zai-api/GLM-5.3-Flash")
+	ask := setCfgAsk(sid, optionIDModel, corpusModelFlashID)
 
 	resp, err := h.client.SetSessionConfigOption(ctx, ask)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestSetConfigOptionKeepsFullCatalog(t *testing.T) {
 		t.Fatal("the switch reply carries no model select option")
 	}
 
-	if selectVariant.CurrentValue != "zai-api/GLM-5.3-Flash" {
+	if selectVariant.CurrentValue != corpusModelFlashID {
 		t.Fatalf("currentValue = %q, want the confirmed switch target", selectVariant.CurrentValue)
 	}
 
@@ -86,13 +86,13 @@ func TestSetConfigOptionKeepsFullCatalog(t *testing.T) {
 		t.Fatal("the model option carries no ungrouped options")
 	}
 
-	var values []string
+	values := make([]string, 0, len(*selectVariant.Options.Ungrouped))
 
 	for _, o := range *selectVariant.Options.Ungrouped {
 		values = append(values, string(o.Value))
 	}
 
-	if len(values) != 2 || values[0] != "zai-api/GLM-5.3" || values[1] != "zai-api/GLM-5.3-Flash" {
+	if len(values) != 2 || values[0] != corpusModelPlainID || values[1] != corpusModelFlashID {
 		t.Fatalf("model entries = %v, want the FULL catalog under the confirmed current "+
 			"(the narrow reply must not shrink the picker)", values)
 	}

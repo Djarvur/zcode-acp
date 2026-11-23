@@ -59,7 +59,7 @@ func TestSessionNewKeepsFullCatalog(t *testing.T) {
 			"must not shrink the picker's menu)", values)
 	}
 
-	if values[0] != "zai-api/GLM-5.3" || values[1] != corpusModelSelection().ProviderID+"/"+corpusModelID {
+	if values[0] != corpusModelPlainID || values[1] != corpusModelSelection().ProviderID+"/"+corpusModelID {
 		t.Fatalf("model entries = %v, want the create snapshot's catalog verbatim", values)
 	}
 }

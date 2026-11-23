@@ -558,91 +558,90 @@ func TestSetConfigOptionThoughtSwitch(t *testing.T) {
 	}
 }
 
-// TestSetConfigOptionReEmit — the Task-2 RED target (D-10/T-06-19): the
-// response re-emits the FULL option list rebuilt FROM THE MUTATION REPLY's
-// settings snapshot — never the pre-ask one — and the confirmed store
-// updates from the reply before the rebuild (a follow-up ask validates
-// against the reply-confirmed set).
-func TestSetConfigOptionReEmit(t *testing.T) {
-	t.Run("the response reflects the reply, not the pre-ask snapshot", func(t *testing.T) {
-		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, fake.RequestRule{
+// TestSetConfigOptionReEmitReplyWins — the Task-2 RED target (D-10/T-06-19):
+// the response re-emits the FULL option list rebuilt FROM THE MUTATION
+// REPLY's settings snapshot — never the pre-ask one.
+func TestSetConfigOptionReEmitReplyWins(t *testing.T) {
+	h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult, fake.RequestRule{
+		Method: zcode.MethodSessionSetModel,
+		Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+	}))
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	sid := openSetCfgSession(ctx, t, h)
+
+	resp, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID))
+	if err != nil {
+		t.Fatalf("model switch: %v", err)
+	}
+
+	// The merged expectation (the 2026-11-23 catalog-preservation
+	// contract): the CONFIRMED current and thought level ride the
+	// reply; the AVAILABLE catalog rides the previous (create)
+	// snapshot — the reply's provider-scoped view must not shrink the
+	// picker's entries. Fixtures differ on both sides on purpose: a
+	// pre-ask rebuild fails on the current, a raw-reply rebuild fails
+	// on the catalog.
+	replySettings, parsed := acpfront.ParseSettings(json.RawMessage(cfgSetModelReply))
+	if !parsed {
+		t.Fatal("the fixture reply must parse")
+	}
+
+	createSettings, createParsed := acpfront.ParseSettings(json.RawMessage(cfgCreateResult))
+	if !createParsed {
+		t.Fatal("the create fixture must parse")
+	}
+
+	createSettings.Model.Current = replySettings.Model.Current
+	createSettings.Model.LastUsed = replySettings.Model.LastUsed
+	createSettings.ThoughtLevel = replySettings.ThoughtLevel
+
+	want := acpfront.BuildConfigOptions(createSettings)
+
+	assertConfigOptionsMatch(t, resp.ConfigOptions, want)
+}
+
+// TestSetConfigOptionReEmitStoreUpdated — the confirmed store updates from
+// the reply before the rebuild (a follow-up ask validates against the
+// reply-confirmed set).
+func TestSetConfigOptionReEmitStoreUpdated(t *testing.T) {
+	h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult,
+		fake.RequestRule{
+			Method: zcode.MethodSessionSetModel, Times: 1,
+			Reply: &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+		},
+		fake.RequestRule{
 			Method: zcode.MethodSessionSetModel,
-			Reply:  &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
+			Reply:  &fake.Reply{Result: json.RawMessage(cfgThoughtReply)},
 		}))
 
-		ctx, cancel := h.ExchangeCtx()
-		defer cancel()
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
 
-		sid := openSetCfgSession(ctx, t, h)
+	sid := openSetCfgSession(ctx, t, h)
 
-		resp, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, corpusModelFlashID))
-		if err != nil {
-			t.Fatalf("model switch: %v", err)
-		}
+	ask := setCfgAsk(sid, optionIDModel, corpusModelFlashID)
+	if _, err := h.client.SetSessionConfigOption(ctx, ask); err != nil {
+		t.Fatalf("model switch: %v", err)
+	}
 
-		// The merged expectation (the 2026-11-23 catalog-preservation
-		// contract): the CONFIRMED current and thought level ride the
-		// reply; the AVAILABLE catalog rides the previous (create)
-		// snapshot — the reply's provider-scoped view must not shrink the
-		// picker's entries. Fixtures differ on both sides on purpose: a
-		// pre-ask rebuild fails on the current, a raw-reply rebuild fails
-		// on the catalog.
-		replySettings, parsed := acpfront.ParseSettings(json.RawMessage(cfgSetModelReply))
-		if !parsed {
-			t.Fatal("the fixture reply must parse")
-		}
+	// "high" is listed ONLY in the reply-confirmed set (the pre-ask
+	// fixture's thought list is [off, low] — the plain bound model has
+	// no reasoning block): the ask succeeding proves the store updated
+	// from the reply BEFORE this validation ran.
+	resp, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDThoughtLevel, corpusReasoningLevel))
+	if err != nil {
+		t.Fatalf("the follow-up must validate against the REPLY-confirmed set: %v", err)
+	}
 
-		createSettings, createParsed := acpfront.ParseSettings(json.RawMessage(cfgCreateResult))
-		if !createParsed {
-			t.Fatal("the create fixture must parse")
-		}
+	replySettings, parsed := acpfront.ParseSettings(json.RawMessage(cfgThoughtReply))
+	if !parsed {
+		t.Fatal("the fixture reply must parse")
+	}
 
-		createSettings.Model.Current = replySettings.Model.Current
-		createSettings.Model.LastUsed = replySettings.Model.LastUsed
-		createSettings.ThoughtLevel = replySettings.ThoughtLevel
-
-		want := acpfront.BuildConfigOptions(createSettings)
-
-		assertConfigOptionsMatch(t, resp.ConfigOptions, want)
-	})
-
-	t.Run("the store updated from the reply before the rebuild (follow-up validates against it)", func(t *testing.T) {
-		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult,
-			fake.RequestRule{
-				Method: zcode.MethodSessionSetModel, Times: 1,
-				Reply: &fake.Reply{Result: json.RawMessage(cfgSetModelReply)},
-			},
-			fake.RequestRule{
-				Method: zcode.MethodSessionSetModel,
-				Reply:  &fake.Reply{Result: json.RawMessage(cfgThoughtReply)},
-			}))
-
-		ctx, cancel := h.ExchangeCtx()
-		defer cancel()
-
-		sid := openSetCfgSession(ctx, t, h)
-
-		ask := setCfgAsk(sid, optionIDModel, corpusModelFlashID)
-		if _, err := h.client.SetSessionConfigOption(ctx, ask); err != nil {
-			t.Fatalf("model switch: %v", err)
-		}
-
-		// "high" is listed ONLY in the reply-confirmed set (the pre-ask
-		// fixture's thought list is [off, low] — the plain bound model has
-		// no reasoning block): the ask succeeding proves the store updated
-		// from the reply BEFORE this validation ran.
-		resp, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDThoughtLevel, corpusReasoningLevel))
-		if err != nil {
-			t.Fatalf("the follow-up must validate against the REPLY-confirmed set: %v", err)
-		}
-
-		replySettings, parsed := acpfront.ParseSettings(json.RawMessage(cfgThoughtReply))
-		if !parsed {
-			t.Fatal("the fixture reply must parse")
-		}
-
-		assertConfigOptionsMatch(t, resp.ConfigOptions, acpfront.BuildConfigOptions(replySettings))
-	})
+	assertConfigOptionsMatch(t, resp.ConfigOptions, acpfront.BuildConfigOptions(replySettings))
 }
 
 // assertConfigOptionsMatch deep-compares the client response's option list

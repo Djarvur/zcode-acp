@@ -71,8 +71,8 @@ func TestProbeWantModel(t *testing.T) {
 
 	familyA := cpFixAccountProvider + "/" + cpFixAccountModelA     // GLM-5.3
 	familyFlash := cpFixAccountProvider + "/" + cpFixAccountModelB // GLM-5.3-Flash
-	apiFlash := "zai-api/GLM-5.3-Flash"
-	apiPlain := "zai-api/GLM-5.3"
+	apiFlash := corpusModelFlashID
+	apiPlain := corpusModelPlainID
 
 	tests := []struct {
 		name string
