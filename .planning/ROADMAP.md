@@ -7,12 +7,17 @@ Desktop app-server, so any ACP client can run full turns — streamed text and t
 tool calls, permission decisions, cancellation — on a real z.ai account via api-key or
 the official OAuth coding-plan path. Verified wire truth from source and experiments
 comes first; everything is CI-testable without the desktop bundle through a scriptable
-fake app-server; the done-v1 bar (CI conformance, a clean-VM scenario, manual E2E in a
-real chat-UI client, English docs with a preset-agent launch recipe) is met.
+fake app-server.
+
+v0.20.0 shipped the v1 bar (CI conformance, a clean-VM scenario, manual E2E in Orca,
+English docs). v0.21.0 adds the card's slash-command autocomplete: the wrapper serves
+the `available_commands_update` catalog (ZCode skills + `/model`) the Orca composer
+expects.
 
 ## Milestones
 
 - ✅ **v0.20.0 — v1: Honest ACP Server for ZCode Desktop** — Phases 1-7 (shipped 2026-11-23)
+- 🚧 **v0.21.0 — Card Command & Skill Autocomplete** — Phase 8 (in progress)
 
 ## Phases
 
@@ -33,8 +38,13 @@ and `.planning/milestones/v0.20.0-REQUIREMENTS.md`.
 
 </details>
 
+- [ ] **Phase 8: Slash Catalog — available_commands_update** — the wrapper emits the
+      `available_commands_update` catalog on `session/new` (ZCode skills from
+      SKILL.md frontmatter + the `/model` entry), within the client's 9 s discovery
+      scan budget, chat and discovery sessions alike; verified in the Orca composer
+
 ## Post-v1 Advisories (carried, non-blocking)
 
 - 07-REVIEW-DISPOSITION.md: IN-a..IN-h (vm-e2e nuances, doc polish, exit-code edges) + the delta-review IN-02/IN-03
 - STATE.md Deferred Items: the two acknowledged phase-6 lint-debt entries (funlen/goconst/err113/tagliatelle with wire-shape reasons)
-- Orca card wish: a slash-command catalog in the card's autocomplete (the `/model` intercept works regardless; the catalog surface is outside the v1 dialect)
+- Orca card wish: a slash-command catalog in the card's autocomplete → **BEING DELIVERED by v0.21.0 Phase 8**
