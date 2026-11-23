@@ -33,10 +33,10 @@ progress:[██████████] 100%
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-19)
+See: .planning/PROJECT.md (updated 2026-11-23)
 
-**Core value:** An ACP client can run a full turn end-to-end with ZCode — from `initialize` to streamed reply with tool-calls and permission requests — on a real z.ai account (api-key or OAuth coding plan).
-**Current focus:** Phase 7 — Hardening, VM & Manual E2E, Documentation
+**Core value:** An ACP client can run a full turn end-to-end with ZCode — from `initialize` to streamed reply with tool-calls and permission requests — on a real z.ai account (api-key or OAuth coding plan), including client-rendered choice dialogs.
+**Current focus:** Planning next milestone
 
 ## Current Position
 

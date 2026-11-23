@@ -114,3 +114,60 @@
 - Orca's discovery scan matches the catalog frame by SESSION ID — per-session
   emission is required, and the 9 s budget starts at connect (emit at session/new,
   never lazily).
+
+## Milestone: v0.22.0 — Ask-the-User Bridge
+
+**Shipped:** 2026-11-23
+**Phases:** 1 | **Plans:** 1
+
+### What Was Built
+- The ask-the-user bridge: `interaction/requestUserInput` → ONE ACP form elicitation
+  (message/question/option labels+descriptions/Skip); the accept maps to
+  `{action, content.answers}` by question text, multi joined ", "; legacy/error
+  declines stay honest and never fail the turn.
+- Field-verified in a VM GUI and on the user's real Orca — the "окно в третий раз
+  отклонено" symptom closed.
+- The `/model` catalog root-cause fixes: the probe poke carries the model's reasoning
+  level, `session/new` preserves the create snapshot's full unscoped catalog, provider
+  labels distinguish same-model entries, and the switch path merges — 19 entries live,
+  stable across switches and turns.
+
+### What Worked
+- Reusing the existing elicitation surface: the omp card already declared
+  `clientCapabilities.elicitation.form`, so the bridge needed no new client capability.
+- The field-driven fix loop: the user's report → live probe → root causes → commits with
+  live verification (19-entry catalog, provider labels, switch-path merge).
+- The manager's stale-verification route: `verification status` refused a report whose
+  covered test changed, forcing a real re-verification instead of a checkbox flip.
+
+### What Was Inefficient
+- The milestone's ROADMAP was hand-written with only a checklist line — no
+  `### Phase 9` details. `init.manager` scans headings, so the manager reported 0
+  phases and could not dispatch; the repair came only at close-out. Phase-detail
+  headings are load-bearing for the manager, not decoration.
+- Phase 9 work landed on the phase-06 branch (the configured `gsd/phase-09-…` branch
+  never existed), so phase commits sit on an unrelated branch; branch hygiene needs a
+  check at phase start.
+- nyquist/security/review capability steps never ran for phases 8–9; the close carried
+  two advisory warnings. The advisory-vs-gate split means this can silently recur.
+
+### Patterns Established
+- Bridge-phrase contract: the elicitation carries the ask's own labels/descriptions;
+  the answer is keyed by QUESTION TEXT (the dialect's merge contract), never by index.
+- A bridged human dialog runs with no policy deadline.
+- Catalog preservation across rebinds: the create snapshot owns `available`, the rebind
+  owns the confirmed current.
+
+### Key Lessons
+- Verification staleness is real: a goconst hoist in a covered test file invalidated
+  the digest and correctly blocked phase completion until the verifier re-ran.
+- Manager visibility depends on ROADMAP phase headings; a checklist-only roadmap is
+  invisible to `init.manager` (0 phases) even when the phase directory is complete.
+- Final acceptance belongs to the user: the VM GUI pass caught the render path, and the
+  real-machine pass confirmed the workflow actually feeds.
+
+### Cost Observations
+- No real-account spend recorded for the bridge itself; the model-catalog probes ran
+  on the live account (19 entries) during the fix cycle.
+- Sessions: one orchestrator session for the manager close-out; the phase execution
+  itself predates this milestone-close session.
