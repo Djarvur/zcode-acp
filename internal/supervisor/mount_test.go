@@ -582,6 +582,9 @@ func TestMountNoExtraction(t *testing.T) {
 	}
 
 	afterEntries := fixtureEntries(t, fixture)
+	// The harness's own PID record is not part of the mount cycle's output.
+	afterEntries = slices.DeleteFunc(afterEntries, func(name string) bool { return name == fakeHelperPIDFile })
+
 	if !slices.Equal(beforeEntries, afterEntries) {
 		t.Fatalf("the mount cycle changed the fixture dir: before %v, after %v", beforeEntries, afterEntries)
 	}
@@ -743,6 +746,87 @@ func TestMountFailures(t *testing.T) {
 			assertNoExtractionCopy(t, fixture)
 		})
 	}
+}
+
+// testFuseSuperblockMagic is the Linux FUSE superblock type the teardown
+// presence predicate compares against (0x65735546).
+const testFuseSuperblockMagic = 0x65735546
+
+// TestMountTeardownFailure proves a live mount is never traversed by
+// RemoveAll: with the Statfs seam reporting the FUSE magic while the tree's
+// zcode entry is absent, the mount never disappears, Stop fails at the
+// deadline naming the mount and the manual-unmount remediation, the private
+// base is retained with its .mount_* child, and the helper is still reaped.
+func TestMountTeardownFailure(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantLeaky)
+
+	opts := testMountOpts()
+	opts.ReapDeadline = 300 * time.Millisecond
+	opts.Statfs = func(path string) (int64, error) {
+		if _, err := os.Stat(path); err != nil {
+			return 0, err
+		}
+
+		return testFuseSuperblockMagic, nil
+	}
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, opts)
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	root := mount.Root()
+	base := filepath.Dir(root)
+
+	t.Cleanup(func() {
+		_ = os.RemoveAll(base) // the retained FUSE-magic base, removed after asserts
+	})
+
+	// The tree that failed validation has no zcode; the FUSE predicate is the
+	// fallback that must keep Stop from traversing the live mount.
+	if err := os.Remove(filepath.Join(root, "zcode")); err != nil {
+		t.Fatalf("remove the fixture zcode: %v", err)
+	}
+
+	stopErr := mount.Stop()
+	if stopErr == nil {
+		t.Fatal("Stop accepted a still-present FUSE mount")
+	}
+
+	for _, want := range []string{"still present", root, "fusermount -u", base} {
+		if !strings.Contains(stopErr.Error(), want) {
+			t.Fatalf("the teardown error %q must carry %q", stopErr, want)
+		}
+	}
+
+	entries, readErr := os.ReadDir(base)
+	if readErr != nil {
+		t.Fatalf("the private base %s must be retained: %v", base, readErr)
+	}
+
+	foundMount := false
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), fakeMountDirGlob) {
+			foundMount = true
+
+			child := filepath.Join(base, entry.Name())
+			if _, statErr := os.Stat(filepath.Join(child, "resources", "glm", "zcode.cjs")); statErr != nil {
+				t.Fatalf("RemoveAll traversed the retained mount %s: %v", child, statErr)
+			}
+		}
+	}
+
+	if !foundMount {
+		t.Fatalf("the retained private base %s lost its %s* child", base, fakeMountDirGlob)
+	}
+
+	assertProcessGone(t, readFixturePID(t, fixture, fakeHelperPIDFile), "the leaky mount helper")
 }
 
 // readFixturePID reads a PID the fixture helper recorded.
