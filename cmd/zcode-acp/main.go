@@ -626,9 +626,13 @@ func buildFront(
 // login keyring — every injected seam EXECUTES only when its ask actually
 // arrives (CI never runs this binary against a keyring; keyring-locked
 // machines degrade to the honest coded declines).
-func wireResponder(conn *zcode.Conn, front *acpfront.Front, keys hostsvc.KeySource, machinery *codingPlanMachinery) {
+func wireResponder(
+	conn *zcode.Conn, front *acpfront.Front, keys hostsvc.KeySource, machinery *codingPlanMachinery,
+	userInputAsk acpport.UserInputAsker,
+) {
 	responder := interact.NewResponder(
 		interact.WithPermissionForwarder(interact.NewPermissionBridge(front.PermissionForward()).Forward),
+		interact.WithUserInputAsker(userInputAsk),
 		interact.WithRuntimeHeadersKeySource(hostsvc.PatHeadersSource(hostsvc.PatHeadersSourceDeps{
 			Minter:         machinery.minter,
 			Mode:           front.AuthMode,
@@ -689,12 +693,12 @@ func run(cfg config) error {
 
 	front := buildFront(conn, cfg, inst, keys, machinery)
 
-	wireResponder(conn, front, keys, machinery)
-
 	// The ACP agent connection owns os.Stdin/os.Stdout from here: the SDK
 	// reads requests and writes every response frame — nothing else touches
 	// stdout.
 	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), os.Stdout, os.Stdin)
+
+	wireResponder(conn, front, keys, machinery, acpport.NewUserInputAsker(agentConn.CreateElicitation))
 
 	slog.Info("zcode-acp: serving ACP v1 over stdio", "version", version)
 

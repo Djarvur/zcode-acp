@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
@@ -117,8 +118,17 @@ func WithMethodDeadline(method string, d time.Duration) Option {
 	}
 }
 
-// WithPermissionForwarder injects the PermissionForwarder seam (plan 05-02
-// implements the bridge; the nil default answers a coded not-wired error).
+// WithUserInputAsker wires the ask-the-user bridge seam (v0.22.0): the
+// requestUserInput policy row renders the decoded ask on this surface and
+// maps the outcome into the answers merge content. Unset — the legacy
+// honest decline stays (UIB-04).
+func WithUserInputAsker(ask acpport.UserInputAsker) Option {
+	return func(r *Responder) { r.userInputAsk = ask }
+}
+
+// WithPermissionForwarder wires the permission bridge seam (the TOOL-01
+// translation: the backend's interaction/requestPermission forwards to the
+// client's session/request_permission round-trip).
 func WithPermissionForwarder(f PermissionForwarder) Option {
 	return func(r *Responder) {
 		r.permission = f
@@ -168,7 +178,12 @@ type Responder struct {
 	permission PermissionForwarder
 	keySource  RuntimeHeadersKeySource
 	cipher     *CredentialDecrypt
-	onEvent    func(zcode.RouterEvent)
+
+	// userInputAsk is the ask-the-user bridge seam (v0.22.0, UIB-01):
+	// nil — the legacy honest decline; wired — the ask renders on the
+	// client surface and the outcome maps into the answers merge content.
+	userInputAsk acpport.UserInputAsker
+	onEvent      func(zcode.RouterEvent)
 }
 
 // NewResponder builds a Responder with the default D-01 policy table and
@@ -296,8 +311,12 @@ func (r *Responder) defaultPolicyTable() map[string]MethodPolicy {
 			Handler:  r.handleRuntimeHeaders,
 		},
 		MethodRequestUserInput: {
-			Deadline: DefaultUserInputDeadline,
-			Handler:  answerUserInput,
+			// No policy deadline when the bridge is wired: a human answering
+			// a dialog takes minutes (UIB-01); the legacy 15 s bound would
+			// decline mid-thought. The nil-asker arm declines immediately
+			// anyway, so the legacy posture loses nothing.
+			Deadline: 0,
+			Handler:  r.handleUserInput,
 		},
 		MethodRequestOfficialMcpAuthHeaders: {
 			Handler: answerOfficialMcpAuthHeaders,
@@ -523,19 +542,87 @@ func answerRuntimePreferences(_ context.Context, _ Request) (Answer, error) {
 	}}, nil
 }
 
-// answerUserInput declines the ask-the-user channel (dialect §3 response
-// {action:"accept"|"decline"|"cancel"}): the wrapper has no UI channel for
-// elicitation in v1 — the schema-valid decline keeps the turn alive
-// (elicitation deferred to Phase 7, locked decision). Structural log:
-// id keys only, never params (T-5-03).
-func answerUserInput(_ context.Context, req Request) (Answer, error) {
-	slog.Info("interact: requestUserInput declined (no UI channel; elicitation deferred to Phase 7)",
-		"method", req.Method,
-		"requestId", req.ReqID,
-		"id", idKey(req),
+// The dialect's response literals (the ask-the-user reply's members).
+const (
+	wireActionOutcome = "action"
+	wireActionDecline = "decline"
+)
+
+// handleUserInput is the ask-the-user policy row (v0.22.0, UIB-01..04):
+// with the bridge wired, the decoded ask renders on the client surface
+// (ONE form elicitation) and the outcome maps into the dialect's answers
+// merge content; without it — the legacy honest decline (the schema-valid
+// decline keeps the turn alive). Structural logs: id keys only, never
+// params (T-5-03).
+func (r *Responder) handleUserInput(ctx context.Context, req Request) (Answer, error) {
+	if r.userInputAsk == nil {
+		slog.Info("interact: requestUserInput declined (no UI channel; the ask bridge is not wired)",
+			"method", req.Method,
+			"requestId", req.ReqID,
+			"id", idKey(req),
+		)
+
+		return Answer{Result: map[string]any{wireActionOutcome: wireActionDecline}}, nil
+	}
+
+	ask, decodeErr := acpport.DecodeUserInputAsk(req.Params)
+	if decodeErr != nil {
+		slog.Warn("interact: requestUserInput params undecodable; declining",
+			"method", req.Method,
+			"requestId", req.ReqID,
+			"id", idKey(req),
+			"err", decodeErr,
+		)
+
+		return Answer{Result: map[string]any{wireActionOutcome: wireActionDecline}}, nil
+	}
+
+	outcome, askErr := r.userInputAsk(ctx, ask)
+	if askErr != nil {
+		slog.Warn("interact: requestUserInput surface failed; declining",
+			"method", req.Method, "requestId", req.ReqID, "id", idKey(req), "err", askErr,
+		)
+
+		return declineAnswer("the ask surface failed: " + askErr.Error()), nil
+	}
+
+	if outcome.Action != "accept" {
+		slog.Info("interact: requestUserInput resolved by the user",
+			"method", req.Method, "requestId", req.ReqID, "id", idKey(req), "action", outcome.Action,
+		)
+
+		return Answer{Result: map[string]any{wireActionOutcome: outcome.Action}}, nil
+	}
+
+	slog.Info("interact: requestUserInput answered",
+		"method", req.Method, "requestId", req.ReqID, "id", idKey(req),
 	)
 
-	return Answer{Result: map[string]any{"action": "decline"}}, nil
+	return acceptAnswer(outcome.Answers), nil
+}
+
+// declineAnswer is the schema-valid decline with an optional reason.
+func declineAnswer(reason string) Answer {
+	result := map[string]any{wireActionOutcome: wireActionDecline}
+	if reason != "" {
+		result["reason"] = reason
+	}
+
+	return Answer{Result: result}
+}
+
+// acceptAnswer wraps the question-keyed answers into the dialect's
+// content.answers merge shape.
+func acceptAnswer(answers map[string]string) Answer {
+	content := map[string]any{}
+	for k, v := range answers {
+		content[k] = v
+	}
+
+	return Answer{Result: map[string]any{
+		"action":  "accept",
+		"content": map[string]any{"answers": content},
+	}}
 }
 
 // answerOfficialMcpAuthHeaders declines the official-plugin MCP auth ask

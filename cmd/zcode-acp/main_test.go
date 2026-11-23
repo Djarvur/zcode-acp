@@ -295,6 +295,17 @@ func e2eRunResponderLeg(t *testing.T, agentBin, fakeBin string) {
 
 	e2eWaitExit(t, wrapper)
 	e2eAssertResponderTranscript(t, transcriptPath)
+
+	// The ask-the-user bridge (v0.22.0): the scripted requestUserInput
+	// reverse must have crossed as a FORM elicitation on this client —
+	// the collector records it before the decline rides back.
+	updates.mu.Lock()
+	elicitations := len(updates.elicitations)
+	updates.mu.Unlock()
+
+	if elicitations == 0 {
+		t.Fatal("the bridge built no elicitation — the scripted ask never rendered on the client surface")
+	}
 }
 
 // e2eAssertResponderTranscript asserts the responder leg's transcript: the
@@ -732,6 +743,8 @@ func (b *e2eSyncBuffer) dump(t *testing.T) {
 type e2eCollector struct {
 	mu      sync.Mutex
 	updates []e2eUpdate
+	// elicitations records the ask-the-user bridge requests in arrival order.
+	elicitations []acp.CreateElicitationRequest
 }
 
 // e2eUpdate is one collected update.
@@ -771,14 +784,21 @@ func (c *e2eCollector) CompleteElicitation(ctx context.Context, params acp.Compl
 	return nil
 }
 
-// CreateElicitation is a no-op (elicitation is Phase 5+).
+// CreateElicitation answers the v0.22.0 ask-the-user bridge: the request
+// is recorded (the form mapping assert) and DECLINED — the scripted fake
+// expects the schema-valid decline reply, which now crosses the bridge
+// instead of the legacy stub.
 func (c *e2eCollector) CreateElicitation(
 	ctx context.Context,
 	params acp.CreateElicitationRequest,
 ) (acp.CreateElicitationResponse, error) {
-	_, _ = ctx, params
+	_ = ctx
 
-	return acp.CreateElicitationResponse{}, nil
+	c.mu.Lock()
+	c.elicitations = append(c.elicitations, params)
+	c.mu.Unlock()
+
+	return acp.CreateElicitationResponse{Decline: &acp.CreateElicitationDecline{Action: "decline"}}, nil
 }
 
 // ReadTextFile is a no-op (fs surfaces are never advertised).
@@ -1648,7 +1668,7 @@ func testWiringModeAwareServing(t *testing.T) {
 	keys := hostsvc.NewStaticKey("", "")
 
 	front := buildFront(conn, config{}, wiringFixtureInstall(), keys, machinery)
-	wireResponder(conn, front, keys, machinery)
+	wireResponder(conn, front, keys, machinery, nil)
 
 	if conn.OnRequest == nil {
 		t.Fatal("wireResponder left conn.OnRequest unwired")
