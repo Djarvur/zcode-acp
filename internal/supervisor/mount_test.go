@@ -9,9 +9,12 @@ package supervisor_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -296,4 +299,204 @@ func assertProcessGone(t *testing.T, pid int, what string) {
 		case <-time.After(testMountPollInterval):
 		}
 	}
+}
+
+// TestMountStop proves the staged stop against a helper that ignores SIGTERM:
+// the escalation to a group SIGKILL happens only after StopGrace, the helper is
+// reaped, the tree disappears (the detached cleaner is the fake analogue of
+// the keepalive-pipe unmount), the base is removed, and Stop is idempotent.
+func TestMountStop(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantStubborn)
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	pid := mount.HelperPID()
+	if pid == 0 {
+		t.Fatal("HelperPID() = 0 after a successful PrepareMount")
+	}
+
+	if killErr := syscall.Kill(pid, 0); killErr != nil {
+		t.Fatalf("the stubborn helper %d must be alive before Stop: %v", pid, killErr)
+	}
+
+	start := time.Now()
+	stopErr := mount.Stop()
+	elapsed := time.Since(start)
+
+	if stopErr != nil {
+		t.Fatalf("Stop: %v (the stubborn helper must be escalated to the group SIGKILL and reaped)", stopErr)
+	}
+
+	if elapsed < testMountStopGrace {
+		t.Fatalf("Stop returned after %v, want at least the %v grace: a TERM-ignoring helper "+
+			"must reach the group SIGKILL escalation", elapsed, testMountStopGrace)
+	}
+
+	assertProcessGone(t, pid, "the stubborn mount helper")
+	assertMountPathGone(t, mount.Root(), "the mount root")
+	assertMountPathGone(t, filepath.Dir(mount.Root()), "the private base")
+
+	if err := mount.Stop(); err != nil {
+		t.Fatalf("second Stop = %v, want nil (idempotent)", err)
+	}
+}
+
+// TestMountSpacedTmpdir proves the whole mount line is the path: a TMPDIR that
+// contains a space produces a mount path with a space, and a fields-splitting
+// parser would truncate it at the first space.
+func TestMountSpacedTmpdir(t *testing.T) {
+	root := t.TempDir()
+	spaced := filepath.Join(root, "tmp dir with spaces")
+
+	if err := os.MkdirAll(spaced, 0o700); err != nil {
+		t.Fatalf("create the spaced TMPDIR: %v", err)
+	}
+
+	t.Setenv("TMPDIR", spaced)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantOK)
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount with a spaced TMPDIR: %v", err)
+	}
+
+	t.Cleanup(func() { _ = mount.Stop() })
+
+	if !strings.Contains(mount.Root(), "tmp dir with spaces") {
+		t.Fatalf("mount root %q does not carry the spaced TMPDIR — the line was field-split", mount.Root())
+	}
+
+	if err := mount.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// TestMountRejectBadTmpdir proves a newline-bearing private base is rejected
+// before any spawn: the error names TMPDIR and the base, nothing was spawned,
+// and the just-created base was removed.
+func TestMountRejectBadTmpdir(t *testing.T) {
+	root := t.TempDir()
+	bad := filepath.Join(root, "bad\ntmpdir")
+
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatalf("create the newline-bearing TMPDIR: %v", err)
+	}
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantOK)
+
+	t.Setenv("TMPDIR", bad)
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+
+	if mount != nil {
+		t.Fatalf("PrepareMount returned a mount for a newline-bearing TMPDIR: %+v", mount)
+	}
+
+	if err == nil {
+		t.Fatal("PrepareMount accepted a newline-bearing TMPDIR")
+	}
+
+	if !strings.Contains(err.Error(), "TMPDIR") {
+		t.Fatalf("the rejection %q must name TMPDIR", err)
+	}
+
+	// The base is rendered with %q (a raw newline would forge log lines), so
+	// the offending segment appears escaped.
+	if !strings.Contains(err.Error(), "bad\\ntmpdir") {
+		t.Fatalf("the rejection %q must name the offending base path %q (quoted)", err, bad)
+	}
+
+	entries, readErr := os.ReadDir(bad)
+	if readErr != nil {
+		t.Fatalf("read the rejected TMPDIR: %v", readErr)
+	}
+
+	if len(entries) != 0 {
+		t.Fatalf("the rejected base was not removed (nothing may be spawned): %v", entries)
+	}
+}
+
+// TestMountNoExtraction proves a full PrepareMount/Stop cycle writes no
+// squashfs-root/zcode-{ver} copy and leaves the AppImage bytes untouched
+// (MNT-06).
+func TestMountNoExtraction(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantOK)
+
+	beforeSHA := fileSHA256(t, appImage)
+	beforeEntries := fixtureEntries(t, fixture)
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	if err := mount.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := fileSHA256(t, appImage); got != beforeSHA {
+		t.Fatalf("the AppImage changed during the mount cycle: sha256 %s, want %s", got, beforeSHA)
+	}
+
+	afterEntries := fixtureEntries(t, fixture)
+	if !slices.Equal(beforeEntries, afterEntries) {
+		t.Fatalf("the mount cycle changed the fixture dir: before %v, after %v", beforeEntries, afterEntries)
+	}
+
+	for _, name := range afterEntries {
+		if name == "squashfs-root" || strings.HasPrefix(name, "zcode-") {
+			t.Fatalf("the mount cycle created an extraction copy %q (MNT-06)", name)
+		}
+	}
+}
+
+// fileSHA256 is the AppImage-unchanged proof's hash helper.
+func fileSHA256(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s for hashing: %v", path, err)
+	}
+
+	sum := sha256.Sum256(data)
+
+	return hex.EncodeToString(sum[:])
+}
+
+// fixtureEntries lists and sorts a directory's entry names.
+func fixtureEntries(t *testing.T, dir string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+
+	slices.Sort(names)
+
+	return names
 }
