@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -165,7 +166,7 @@ func defaultStatfs(path string) (int64, error) {
 	var st syscall.Statfs_t
 
 	if err := syscall.Statfs(path, &st); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("zcode: statfs %s: %w", path, err)
 	}
 
 	return st.Type, nil
@@ -216,6 +217,7 @@ type Mount struct {
 	stderr    cappedBuffer
 	lost      chan struct{}
 	lostOnce  sync.Once
+	stopping  atomic.Bool
 	stopOnce  sync.Once
 	stopErr   error
 }
@@ -339,17 +341,6 @@ func observedOutput(m *Mount) string {
 	return out
 }
 
-// failure builds the four-part mount error (D-03/MNT-04): the AppImage path,
-// the failing step, the capped observed output rendered with %q, and a
-// classification-derived remediation. Every readiness, validation, spawn, and
-// teardown error on the mount path is built here.
-func (m *Mount) failure(step string, cause error) error {
-	observed := observedOutput(m)
-
-	return fmt.Errorf("zcode: mount %s: %s: %w (observed output %q); remediation: %s",
-		m.appImage, step, cause, observed, classifyMountFailure(observed))
-}
-
 // classifyMountFailure maps the helper's observed output to the remediation
 // family. The legacy runtime prints its failure text to STDOUT, so the
 // strings are matched against the captured stdout+stderr (RESEARCH Pattern 2,
@@ -470,6 +461,17 @@ func (m *Mount) Stop() error {
 	return m.stopErr
 }
 
+// failure builds the four-part mount error (D-03/MNT-04): the AppImage path,
+// the failing step, the capped observed output rendered with %q, and a
+// classification-derived remediation. Every readiness, validation, spawn, and
+// teardown error on the mount path is built here.
+func (m *Mount) failure(step string, cause error) error {
+	observed := observedOutput(m)
+
+	return fmt.Errorf("zcode: mount %s: %s: %w (observed output %q); remediation: %s",
+		m.appImage, step, cause, observed, classifyMountFailure(observed))
+}
+
 // start spawns the helper under a cancellation-detached context, reads the
 // mount line, validates the mounted tree, fills the bundled builtin, and arms
 // the Lost watcher. The caller owns the failure teardown (Stop).
@@ -512,8 +514,12 @@ func (m *Mount) start(ctx context.Context) error {
 	return nil
 }
 
-// stop runs the staged teardown once (guarded by Stop's sync.Once).
+// stop runs the staged teardown once (guarded by Stop's sync.Once). The
+// stopping flag is set BEFORE the helper is signalled: an intentional
+// teardown must never close Lost and masquerade as a mid-session loss (D-05).
 func (m *Mount) stop() error {
+	m.stopping.Store(true)
+
 	var errs []error
 
 	if helperErr := m.stopHelper(); helperErr != nil {
@@ -707,7 +713,9 @@ func (m *Mount) unmountRemediation(root string) string {
 		"and remove the retained private base %s", root, m.base)
 }
 
-// watch closes Lost once on helper death or tree loss.
+// watch closes Lost once on helper death or tree loss. The stopping flag is
+// checked before every loss verdict: Stop's own SIGTERM kills the helper and
+// may remove the tree, and that intentional teardown is not a loss.
 func (m *Mount) watch(ctx context.Context) {
 	ticker := time.NewTicker(m.opts.LossPoll)
 	defer ticker.Stop()
@@ -717,12 +725,18 @@ func (m *Mount) watch(ctx context.Context) {
 		case <-m.lost:
 			return
 		case <-m.child.Done:
-			m.markLost()
+			if !m.stopping.Load() {
+				m.markLost()
+			}
 
 			return
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if m.stopping.Load() {
+				return
+			}
+
 			if !m.Accessible() {
 				m.markLost()
 

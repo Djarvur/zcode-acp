@@ -17,9 +17,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/acpfront"
@@ -645,15 +647,37 @@ func wireResponder(
 	conn.OnRequest = responder.Serve
 }
 
+// runOutcome is the first terminal observation of a ride; exit cause
+// precedence is decided from it in finishRun.
+type runOutcome struct {
+	clientGone bool
+	childLost  bool
+	mountLost  bool
+	signalled  bool
+}
+
 // run composes the minimal chat loop over the production lifecycle: discover,
 // mount a packed AppImage when the install requires it, supervise, connect the
 // back leg, serve ACP over os.Stdin/os.Stdout, and stage-shut-down when the
-// client disconnects or the child exits.
+// client disconnects, the child exits, the mount is lost, or SIGINT/SIGTERM/
+// SIGHUP arrives.
 func run(cfg config) error {
-	ctx := context.Background()
+	// signalCtx drives discovery, mount acquisition, and the supervisor's
+	// shutdown. The spawn context below is deliberately NOT derived from it:
+	// a signal must never SIGKILL the app-server before its staged stdin-EOF
+	// drain (MNT-03, T-10-09).
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stopSignals()
 
-	inst, err := discoverInstall(ctx, cfg.appServer)
+	inst, err := discoverInstall(signalCtx, cfg.appServer)
 	if err != nil {
+		if signalCtx.Err() != nil {
+			slog.Info("zcode-acp: signal received during discovery; shutting down")
+
+			return nil
+		}
+
 		return err
 	}
 
@@ -661,8 +685,14 @@ func run(cfg config) error {
 	// before anything spawns. The deferred stop is the early-return backstop;
 	// the normal path stops the mount explicitly after the supervisor's staged
 	// shutdown (order is load-bearing: app-server first, helper second).
-	inst, mount, err := acquireMount(ctx, inst)
+	inst, mount, err := acquireMount(signalCtx, inst)
 	if err != nil {
+		if signalCtx.Err() != nil {
+			slog.Info("zcode-acp: signal received during mount acquisition; shutting down")
+
+			return nil
+		}
+
 		return err
 	}
 
@@ -671,53 +701,110 @@ func run(cfg config) error {
 	// Two lifecycles, deliberately: the supervision ctx drives the supervisor's
 	// staged teardown, while the spawn ctx is the exec-level kill backstop
 	// cancelled only AFTER that teardown completed (a shared cancellation would
-	// SIGKILL the child before its graceful stdin-EOF drain).
-	supCtx, supCancel := context.WithCancel(ctx)
-	spawnCtx, spawnCancel := context.WithCancel(ctx)
+	// SIGKILL the child before its graceful stdin-EOF drain). spawnCtx derives
+	// from a non-signal context for the same reason.
+	supCtx, supCancel := context.WithCancel(signalCtx)
+	spawnCtx, spawnCancel := context.WithCancel(context.WithoutCancel(signalCtx))
 	defer spawnCancel()
 
-	child, startDone, err := startSupervised(supCtx, spawnCtx, supCancel, inst)
+	child, startDone, err := startSupervised(supCtx, spawnCtx, supCancel, inst, mount)
 	if err != nil {
 		return err
 	}
 
-	childLost := serveACP(child, cfg, inst)
+	outcome := serveACP(child, cfg, inst, mount, signalCtx.Done())
 
-	if finishErr := finishRun(startDone, supCancel, spawnCancel, mount); finishErr != nil {
-		return finishErr
+	return finishRun(outcome, startDone, supCancel, spawnCancel, mount)
+}
+
+// finishRun drives the staged shutdown and the exit-cause precedence. Order:
+// the supervision cancel ends the supervisor's teardown (stdin end -> grace ->
+// unconditional group SIGKILL -> bounded reap; stdin-EOF is never trusted,
+// PITFALL 6); the mount is stopped only after the app-server is reaped and its
+// group is gone (D-02's ordered teardown); the spawn cancel is the post-
+// teardown kill backstop. A teardown error ALWAYS wins (exit 1) — a signal or
+// client disconnect never masks a stale mount; only when the mount was proven
+// gone does a signal/client disconnect count as a clean exit 0.
+func finishRun(
+	outcome runOutcome, startDone <-chan error, supCancel, spawnCancel context.CancelFunc, mount *supervisor.Mount,
+) error {
+	lostErr := mountLostCause(outcome.mountLost, mount)
+
+	supCancel()
+
+	startErr := awaitSupervisorShutdown(startDone)
+	spawnCancel() // the teardown backstop: the group is long gone; ESRCH-quiet
+
+	stopErr := stopMount(mount)
+
+	return classifyRunExit(outcome, startErr, stopErr, lostErr)
+}
+
+// awaitSupervisorShutdown waits for the supervisor's staged teardown to
+// return, bounded by the watchdog.
+func awaitSupervisorShutdown(startDone <-chan error) error {
+	select {
+	case err := <-startDone:
+		return err
+	case <-time.After(shutdownWatchdog):
+		return errShutdownWatchdog
+	}
+}
+
+// mountLostCause captures the mount cause before Stop tears the mount down.
+func mountLostCause(mountLost bool, mount *supervisor.Mount) error {
+	if !mountLost || mount == nil {
+		return nil
 	}
 
-	if childLost {
+	if guardErr := mount.Guard(); guardErr != nil {
+		return fmt.Errorf("appimage mount is not usable: %w", guardErr)
+	}
+
+	return fmt.Errorf("%w: %s (mount %s)", supervisor.ErrMountLost, mount.AppImage(), mount.Root())
+}
+
+// classifyRunExit applies the exit-cause precedence: (1) a teardown error
+// always wins; (2) a supervisor failure (other than the mount guard) fails
+// loud; (3) only a proven-gone mount lets a signal or client disconnect exit
+// cleanly; (4) a lost mount reports the mount cause; (5) a healthy-mount child
+// loss reports errChildLost.
+func classifyRunExit(outcome runOutcome, startErr, stopErr, lostErr error) error {
+	if stopErr != nil {
+		if startErr != nil && !errors.Is(startErr, supervisor.ErrMountLost) {
+			return errors.Join(stopErr, fmt.Errorf("supervisor shutdown: %w", startErr))
+		}
+
+		return stopErr
+	}
+
+	if startErr != nil {
+		if !errors.Is(startErr, supervisor.ErrMountLost) {
+			return fmt.Errorf("supervisor shutdown: %w", startErr)
+		}
+
+		if lostErr == nil {
+			lostErr = fmt.Errorf("supervisor shutdown: %w", startErr)
+		}
+	}
+
+	if outcome.signalled || outcome.clientGone {
+		slog.Info("zcode-acp: shutdown complete")
+
+		return nil
+	}
+
+	if lostErr != nil {
+		return lostErr
+	}
+
+	if outcome.childLost {
 		return errChildLost
 	}
 
 	slog.Info("zcode-acp: shutdown complete")
 
 	return nil
-}
-
-// finishRun drives the staged shutdown: the supervision cancel ends the
-// supervisor's teardown (stdin end -> grace -> unconditional group SIGKILL ->
-// bounded reap; stdin-EOF is never trusted, PITFALL 6), then the mount is
-// stopped only after the app-server is reaped and its group is gone (D-02's
-// ordered teardown), and the spawn cancel is the post-teardown kill backstop.
-func finishRun(
-	startDone <-chan error, supCancel, spawnCancel context.CancelFunc, mount *supervisor.Mount,
-) error {
-	supCancel()
-
-	select {
-	case err := <-startDone:
-		if err != nil {
-			return fmt.Errorf("supervisor shutdown: %w", err)
-		}
-	case <-time.After(shutdownWatchdog):
-		return errShutdownWatchdog
-	}
-
-	spawnCancel() // the teardown backstop: the group is long gone; ESRCH-quiet
-
-	return stopMount(mount)
 }
 
 // stopMountBackstop is the deferred early-return backstop: Stop is idempotent,
@@ -742,7 +829,10 @@ func stopMountBackstop(mount *supervisor.Mount) {
 // coding-plan machinery composes beside it (plan 06-07, D-12: the desktop login
 // IS that path's credential — no new user configuration), lazily executing only
 // when authenticate or asks arrive (D-13).
-func serveACP(child *supervisor.Child, cfg config, inst supervisor.Install) bool {
+func serveACP(
+	child *supervisor.Child, cfg config, inst supervisor.Install,
+	mount *supervisor.Mount, signals <-chan struct{},
+) runOutcome {
 	conn := zcode.NewConn(childDuplex{reader: child.Stdout, writer: child.Stdin})
 	defer func() { _ = conn.Close() }()
 
@@ -758,14 +848,37 @@ func serveACP(child *supervisor.Child, cfg config, inst supervisor.Install) bool
 
 	slog.Info("zcode-acp: serving ACP v1 over stdio", "version", version)
 
+	outcome := runOutcome{}
+
+	var mountLost <-chan struct{}
+	if mount != nil {
+		mountLost = mount.Lost()
+	}
+
 	select {
 	case <-agentConn.Done():
 		slog.Info("zcode-acp: ACP client disconnected")
+		outcome.clientGone = true
 	case <-child.Done:
-		return true
+		outcome.childLost = true
+	case <-mountLost:
+		outcome.mountLost = true
+
+		slog.Warn("zcode-acp: appimage mount lost",
+			"appimage", mount.AppImage(), "mount", mount.Root())
+	case <-signals:
+		outcome.signalled = true
+
+		slog.Info("zcode-acp: signal received; shutting down")
 	}
 
-	return false
+	// A child loss with an inaccessible mount reports the mount cause: the
+	// vanished root explains the child exit (RESEARCH Pattern 5).
+	if outcome.childLost && mount != nil && !mount.Accessible() {
+		outcome.mountLost = true
+	}
+
+	return outcome
 }
 
 // acquireMount performs the mount-first acquisition: a packed AppImage install
@@ -853,12 +966,20 @@ func discoverInstall(ctx context.Context, appServer string) (supervisor.Install,
 // the proxy vars scrubbed by construction), under the SEPARATE spawn ctx
 // whose cancellation is the post-teardown kill backstop (see run).
 func startSupervised(
-	supCtx context.Context, spawnCtx context.Context, supCancel context.CancelFunc, inst supervisor.Install,
+	supCtx context.Context, spawnCtx context.Context, supCancel context.CancelFunc,
+	inst supervisor.Install, mount *supervisor.Mount,
 ) (*supervisor.Child, <-chan error, error) {
 	spawnCh := make(chan *supervisor.Child, 1)
 	startDone := make(chan error, 1)
 
 	sup := supervisor.NewSupervisor(func(_ context.Context) (*supervisor.Child, error) {
+		// The mount guard runs before EVERY spawn (the first one included): a
+		// vanished root must fail loud, never respawn against it (MNT-05,
+		// T-10-08). A nil mount is healthy.
+		if guardErr := mount.Guard(); guardErr != nil {
+			return nil, fmt.Errorf("appimage mount is not usable: %w", guardErr)
+		}
+
 		child, spawnErr := supervisor.SpawnChild(spawnCtx,
 			supervisor.SpawnArgv(inst),
 			supervisor.ChildEnv(inst, os.Environ()),
