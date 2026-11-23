@@ -9,33 +9,45 @@ Go-обёртка (один статический бинарь), которая
 честный ACP-сервер, пригодный для любого клиента. README документирует, среди
 прочего, рецепт подключения обёртки к Orca в режиме chat UI.
 
+**v0.20.0 (v1) — shipped и field-proven (2026-11-23):** полный цикл подтверждён на
+трёх уровнях — CI (мок app-server, golden-корпус), чистая VM (vm-e2e.sh, 16 проверок),
+реальная E2E в Orca на живом аккаунте (coding-plan путь — прогон пользователя;
+api-key — гарантированный тестовый уровень + security-аудиты обеих фаз).
+
 ## Core Value
 
 ACP-клиент может провести с ZCode полный ход end-to-end — от `initialize` до
 стриминга ответа с tool-calls и permission-запросами — на реальном аккаунте z.ai
-пользователя (api-key или OAuth coding plan).
+пользователя (api-key или OAuth coding plan). **Подтверждено живьём:** карточка Orca
+рендерит мысли, текст ответа, tool-calls и vision-чтение файлов; модели аккаунта
+переключаются через `/model` и picker.
 
 ## Requirements
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Полный чат-цикл ACP v1: initialize, session/new, prompt со стримингом
+  (agent_message_chunk + agent_thought_chunk), tool_call события,
+  session/request_permission, session/cancel — v0.20.0 (Phases 4–5, field-proven)
+- ✓ Оба пути авторизации end-to-end: api-key (zai-api; REAL RUN Phases 5) и OAuth
+  individual coding plan (REAL RUN Phase 6 + Orca-прогон пользователя Phase 7)
+- ✓ Обнаружение и запуск desktop app-server ZCode из установленного desktop-приложения
+  (Phase 3; clean-VM field run Phase 7)
+- ✓ Скаффолд проекта по образцу Djarvur/goswitch (строгий линтер, GitHub Actions,
+  protected branch) — Phase 2
+- ✓ Документация на английском: README, рецепты запуска (включая рецепт Orca),
+  протокольные доки — Phase 7 (DOCS-01..03)
+- ✓ v1 поддерживает Ubuntu GNOME; код без ограничений ОС — Phase 7 (QA-02/QA-03)
+- ✓ ACP Front (Phase 4): минимальный чат-цикл end-to-end — CORE-01..05 complete
+- ✓ Back leg (Phase 3): JSONL-кодек диалекта, scriptable fake + golden-корпус,
+  discovery-матрица + супервизор, машина ходов (exactly-once, cancel, -32010)
+- ✓ OAuth Coding-Plan Path & Model Picker (Phase 6): keyring→entitlement→snapshot→
+  read-back→PAT-минт, account-модели в picker, `/model` slash-слой
 
 ### Active
 
-✓ ACP Front (Phase 4): минимальный чат-цикл end-to-end на реальной ACP границе (SDK acp-go-sdk v0.20.0 за швом acpport — первая одобренная зависимость; honesty-локи initialize/setModel/cancel; потоковые дельты live; flush-before-stopReason; CORE-01..05 complete) — 6/6 планов, верификация 10/11+backstop разряжен
-✓ Back leg (Phase 3): JSONL-кодек диалекта, scriptable fake + golden-корпус (10 сценариев в CI), discovery-матрица + супервизор (Setpgid/group-kill/3-60s), машина ходов (exactly-once, cancel, -32010) — internal/{zcode,zcode/fake,supervisor,turn}, ноль зависимостей
-- [ ] Полный чат-цикл ACP v1: initialize, session/new, prompt со стримингом
-      (agent_message_chunk + agent_thought_chunk), tool_call события,
-      session/request_permission, session/cancel
-- [ ] Оба пути авторизации end-to-end: api-key (zai-api) и OAuth individual
-      coding plan (снапшот реестра, минт PAT, ответы на interaction/*)
-- [ ] Обнаружение и запуск desktop app-server ZCode (zcode.cjs через
-      ELECTRON_RUN_AS_NODE) из установленного desktop-приложения
-- ✓ Скаффолд проекта по образцу Djarvur/goswitch (строгий линтер, GitHub Actions, protected branch) — Phase 2
-- [ ] Документация на английском: README, рецепты запуска (включая рецепт Orca),
-      протокольные доки
-- [ ] v1 поддерживает Ubuntu GNOME; код без ограничений ОС
+(None — v1 shipped; пост-v1 пожелания живут в 07-REVIEW-DISPOSITION.md (IN-a..h,
+IN-02/03), deferred-реестре STATE.md и как «commands catalog в автодополнении Orca».)
 
 ### Out of Scope
 
@@ -70,30 +82,20 @@ ACP-клиент может провести с ZCode полный ход end-to
   `resources/app.asar.unpacked/out/main/chunks/`; ACP-агенты захардкожены:
   `omp` (`omp acp`, min 17.0.5, env `PI_NO_PTY=1`), `opencode` (min 2.0.0),
   `opencode2` (min 2.0.14); детект по имени в PATH + версия.
-- Исходники ZCode: локальный клон публичного дерева (github.com/zai-org/ZCode), 3.17.x.
+- Исходники ZCode: локальный клон публичного дерева (github.com/zai-org/ZCode), 3.17.x;
+  wire-truth первоисточник — установленный бандл 3.18.2 (grep по app.asar).
 
 **Референсная имплементация:** github.com/william0wang/zcode-acp (TypeScript,
-Apache-2.0 → портирование на Go допустимо с атрибуцией) — в ней уже реализованы
-и покрыты тестами самые тяжёлые куски: расшифровка keyring (`enc:v2:os:`),
-`requestCredentialCipher`, снапшот с точной ревизией, PAT-флоу. Детали и файлы
-для портирования: `.planning/research/REFERENCE-ADAPTERS.md`. Ограничение из их
-TROUBLESHOOTING: Start Plan headless не работает (нужен браузер) — документируем.
+Apache-2.0 → портирование на Go допустимо с атрибуцией) — `docs/research/reference-adapters.md`.
 Конкурирующие адаптеры (Rust/Python) coding-plan цепочку не делают.
 
-**Открытые вопросы для фазы исследования:** ✅ RESOLVED Phase 1 (2026-11-19) —
-все пять DISC-deliverables доставлены и верифицированы (`docs/protocol/*`,
-`docs/research/reference-adapters.md`, эксперименты в `experiments/`):
-- Рецепт запуска Orca: omp-карточка, контракт подтверждён дважды (чанки
-  установленной сборки + исходники репо @v1.4.262); `--session-dir` пишется
-  Go-агентом (E5: slug-файлы Claude-style JSONL) — v1 без loadSession не
-  резюмится (клиент -32601), nicety для Фазы 7
-- Load-bearing набор вызовов при старте карточки: задокументирован
-  (acp-client-dialect.md, 19 методов, +session/close и elicitation/complete)
-- Обнаружение установки: матрица AppImage/deb/unpacked + формула revision
-  `zcode-builtin:<rev>:<sha256(path.resolve(activeFilePath))>` (install-discovery.md)
-- Маппинг выбора модели: `session/setModel` + reasoningLevel обязателен после
-  `session/create` (create теряет reasoningLevel — V-EXP); modelDiscovery
-  через `models` в ответе session/new (поправка из source cross-verification)
+**Текущее состояние (v0.20.0):** 7 фаз выполнены (50 планов), 9 пакетов под
+`-race` зелёные, whole-tree lint strict 0 issues, три уровня проверки (CI / clean-VM /
+реальная Orca-E2E) пройдены. Полевые гэпы QA-03 закрыты тремя fix-циклами
+(стриминг-перевод model.streaming, терминальные сигналы desktop-диалекта,
+гонка «терминал раньше текста» + retry-окно reconcile с корреляцией по ходу).
+Известный долг: lint-подавления с wire-обоснованиями (nolint), 2 признанных
+deferred-пункта фазы 6, 8+2 пос-v1 advisories в 07-REVIEW-DISPOSITION.md.
 
 ## Constraints
 
@@ -116,21 +118,16 @@ TROUBLESHOOTING: Start Plan headless не работает (нужен брау�
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Честный ACP-сервер как публичная архитектура; подключение к клиентам, требующим предустановленный агент, — рецепт в README, не архитектурное ограничение | Универсальность (годится для любого ACP-клиента) и честная публичная история | — Pending |
-| Единый бинарь `zcode-acp` (cobra) с сабкомандами; `omp`-сабкоманда реализует контракт карточки; в Orca — `agentCmdOverrides: {omp: "zcode-acp omp"}` | Префикс-аргументы в override разрешены — зеркало-имя бинаря не нужно; pflag-allowlist даёт либеральный разбор неизвестных флагов | — Pending |
-| Оба пути авторизации в v1 (api-key + OAuth coding plan) | OAuth — реальный сценарий пользователя; api-key — простой fallback; shim v2 доказал оба пути | — Pending |
-| Полный чат-цикл в v1 (стриминг, tool_call, permission, cancel) | Карточка в chat UI без инструментов не имеет смысла | — Pending |
-| Первая фаза — исследование и документирование, код после | Всё про ZCode/Orca изучается по исходникам до экспериментов | — Pending |
-| Бэкенд — только desktop app-server | Явное решение; CLI не поддерживаем в v1 | — Pending |
-| done v1 = CI-тесты протокола (мок app-server) + тесты на виртуалке + ручная E2E в Orca | Три уровня проверки: протокол, среда, реальный сценарий | — Pending |
-| Документация на английском | Шире аудитория для PR | — Pending |
-| Ground-truth hierarchy (Phase 1): installed 3.18.2 bundle = V-SRC первоисточник; GitHub-дерево 3.17.x — подтверждающие цитаты с версией; каждая нагрузочная претензия помечена V-SRC/V-EXP/V-RPT; 3.17↔3.18.2 drift-базлайн — первоклассный раздел | Документы Фаз 3–7 строятся на проверенной правде провода, а не на интерпретациях | ✓ Done (Phase 1) |
-| Клиент-программа дважды проверяема (Phase 1, correction): stablyai/orca ПУБЛИЧНЫЙ (MIT) — ранний «404» был временным сетевым сбоем; якоря на чанки установленной сборки остаются истиной для shipped-версии, исходники репо (@v1.4.262) — второй путь | Читатель может сверить по репо; minified-интерпретации заменены чтением исходников | ✓ Done (Phase 1) |
-| Три семантические поправки для Фаз 4–6 (Phase 1 source cross-verification): chat-запуск БЕЗ `--session-dir` (он у discovery-процессов — wrapper accept-and-ignore + терпит второй процесс); fullAccess=false только у discovery-сессий; modelDiscovery — модели доступны до сессии через probe-сессию (`models` в ответе session/new, расширение клиента) | Влияют на CLI-контракт (Фаза 2), честность capabilities (Фаза 4), выбор моделей (Фаза 6) | ✓ Done (Phase 1) |
-| Защита master + PR-флоу (Phase 2): branch protection ЖИВАЯ (require PR, 3 required checks, enforce_admins, linear history — GET-верифицировано; GH006-тест), branching_strategy none→phase — Фазы 3+ работают через gsd/phase-* PR; CI (pr-sanity: lint/test/build + govulncheck + secret-scan) наблюде́н зелёным на push и PR | Все коммиты проходят строгие ворота с первого кода; прямые push в master невозможны (проверено эмпирически) | ✓ Done (Phase 2) |
-| Скраббер CR-01 (Phase 2 code review): USER_INFO_RX lastIndex утекал второй user_info в строке — воспроизведено, исправлено TDD (регрессии multi-object + fixed-point), реестр T-2-01 пере-закрыт | Секрет-конвейер честен; регрессионные тесты защищают контракт навсегда | ✓ Done (Phase 2) |
-| Zero-dependency back leg (Phase 3): stdlib-only внутренние пакеты (zcode codec, fake, supervisor, turn); TDD RED→GREEN на всех behaviors; E2E-цепочка supervisor+fake+Conn+machine на реальных exec-пайпах; реальный desktop spawn верифицирован (realdesktop guarded, ноль сирот, ESRCH) | Фазы 4–6 тестируются полностью в CI без desktop-бандла | ✓ Done (Phase 3) |
-| Экспериментальный конвейер (Phase 1): scrub-first (сырые записи вне репо, scrub-capture.mjs — единственный путь в experiments/captures/), scan-secrets.sh гейтит каждый коммит, check-docs.sh — структурно-provenance гейт; эксперименты никогда не идут из CI | Секреты не попадают в публичный репо; конвейер переиспользуется Фазой 2 для CI | ✓ Done (Phase 1) |
+| Честный ACP-сервер как публичная архитектура; подключение к клиентам, требующим предустановленный агент, — рецепт в README, не архитектурное ограничение | Универсальность (годится для любого ACP-клиента) и честная публичная история | ✓ Good — Orca подключается по рецепту, архитектура не менялась |
+| Единый бинарь `zcode-acp` (cobra) с сабкомандами; `omp`-сабкоманда реализует контракт карточки; в Orca — `agentCmdOverrides: {omp: "zcode-acp omp"}` | Префикс-аргументы в override разрешены — зеркало-имя бинаря не нужно | ✓ Good — field-proven в Orca (card → `omp` shim → `zcode-acp omp`) |
+| Оба пути авторизации в v1 (api-key + OAuth coding plan) | OAuth — реальный сценарий пользователя; api-key — простой fallback | ✓ Good — оба доведены до реальных прогонов (путь 1 — тестовый уровень + решение пользователя) |
+| Полный чат-цикл в v1 (стриминг, tool_call, permission, cancel) | Карточка в chat UI без инструментов не имеет смысла | ✓ Good — tool-calls, permission-запросы и vision отрендерились в живой Orca |
+| Первая фаза — исследование и документирование, код после | Всё про ZCode/Orca изучается по исходникам до экспериментов | ✓ Good — wire-truth документов фаз 3–7 строилась на provenance-правде |
+| Бэкенд — только desktop app-server | Явное решение; CLI не поддерживаем в v1 | ✓ Good — без изменений |
+| done v1 = CI-тесты протокола (мок app-server) + тесты на виртуалке + ручная E2E в Orca | Три уровня проверки: протокол, среда, реальный сценарий | ✓ Good — все три уровня пройдены (QA-01/02/03 verified) |
+| Документация на английском | Шире аудитория для PR | ✓ Good — README + docs/provenance.md + recipes shipped (DOCS-01..03) |
+| Ground-truth hierarchy (Phase 1): installed 3.18.2 bundle = V-SRC первоисточник; 3.17↔3.18.2 drift-базлайн — первоклассный раздел | Документы Фаз 3–7 строятся на проверенной правде провода | ✓ Good — оправдался многократно (credentialCipher, turn-сигналы, MCP-auth decline) |
+| Перезапуск верификации при фазовых границах — только по необходимости (решение пользователя 2026-11-22); при закрытии v0.20.0 стейлы фаз 1–6 приняты override-решением пользователя | Перезапуск 6 верификаторов не добавляет truth: исходники эволюционировали по проекту, не испортились | ✓ Done (2026-11-23, known override в MILESTONES.md) |
 
 ## Evolution
 
@@ -150,4 +147,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-20 after Phase 4*
+*Last updated: 2026-11-23 after v0.20.0 milestone*
