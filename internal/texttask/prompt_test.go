@@ -26,31 +26,31 @@ func writePromptFile(t *testing.T, name, content string) string {
 	return path
 }
 
-// TestReadPromptArg covers the prompt-delivery contract: literal tokens,
-// @file chunks with one BOM stripped per file, argv-order concatenation,
-// and the sentinel classes for every usage error.
-func TestReadPromptArg(t *testing.T) {
+// TestReadPromptArgChunks covers the happy prompt-delivery contract:
+// literal tokens, @file chunks with one BOM stripped per file, and
+// argv-order concatenation with no separator.
+func TestReadPromptArgChunks(t *testing.T) {
 	t.Run("a single literal token is the prompt", func(t *testing.T) {
-		got, err := texttask.ReadPromptArg([]string{"hello"})
+		got, err := texttask.ReadPromptArg([]string{testLiteralPrompt})
 		if err != nil {
 			t.Fatalf("ReadPromptArg: %v", err)
 		}
 
-		if got != "hello" {
-			t.Fatalf("ReadPromptArg = %q, want %q", got, "hello")
+		if got != testLiteralPrompt {
+			t.Fatalf("ReadPromptArg = %q, want %q", got, testLiteralPrompt)
 		}
 	})
 
 	t.Run("a single @file strips exactly one leading BOM", func(t *testing.T) {
-		path := writePromptFile(t, "prompt-0.txt", bom+"hello")
+		path := writePromptFile(t, "prompt-0.txt", bom+testLiteralPrompt)
 
 		got, err := texttask.ReadPromptArg([]string{"@" + path})
 		if err != nil {
 			t.Fatalf("ReadPromptArg: %v", err)
 		}
 
-		if got != "hello" {
-			t.Fatalf("ReadPromptArg = %q, want the BOM-free %q", got, "hello")
+		if got != testLiteralPrompt {
+			t.Fatalf("ReadPromptArg = %q, want the BOM-free %q", got, testLiteralPrompt)
 		}
 	})
 
@@ -67,7 +67,11 @@ func TestReadPromptArg(t *testing.T) {
 			t.Fatalf("ReadPromptArg = %q, want the argv-order concatenation %q", got, "Answer: done")
 		}
 	})
+}
 
+// TestReadPromptArgErrors covers the prompt-delivery sentinel classes and
+// the no-prompt-bytes-in-errors rule.
+func TestReadPromptArgErrors(t *testing.T) {
 	t.Run("a missing file is ErrPromptUnreadable naming the path", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "absent.txt")
 
@@ -120,7 +124,10 @@ func TestReadPromptArg(t *testing.T) {
 			t.Fatalf("error %q must not carry prompt bytes", err)
 		}
 	})
+}
 
+// TestReadPromptArgEmpty covers the empty/missing prompt classes.
+func TestReadPromptArgEmpty(t *testing.T) {
 	t.Run("a whitespace-only result is ErrPromptEmpty", func(t *testing.T) {
 		_, err := texttask.ReadPromptArg([]string{"  \n\t"})
 		if !errors.Is(err, texttask.ErrPromptEmpty) {
