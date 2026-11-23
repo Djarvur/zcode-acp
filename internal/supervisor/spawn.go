@@ -128,6 +128,11 @@ type SpawnOpts struct {
 	// exit is in the tap when a failure error is built; WaitDelay is only
 	// the close backstop, never the drain.
 	StdoutTap io.Writer
+	// StderrTap, when set, additionally receives the child's stderr while
+	// the capped forward to the wrapper's stderr keeps its default behavior.
+	// The tap owns its own cap (the mount owner passes a cappedBuffer), so a
+	// chatty helper can never grow the wrapper's memory (T-10-05).
+	StderrTap io.Writer
 }
 
 // SpawnArgv returns the canonical spawn argv for an Install — exactly
@@ -215,7 +220,7 @@ func SpawnChild(ctx context.Context, argv, env []string, opts SpawnOpts) (*Child
 		StderrDone: stderrDone,
 	}
 
-	go drainChildStderr(pipes.stderr, opts.StderrCap, stderrDone)
+	go drainChildStderr(pipes.stderr, opts.StderrCap, opts.StderrTap, stderrDone)
 	go monitorChild(cmd, stderrDone, exited, done)
 
 	slog.Debug("supervisor: child spawned", "pid", child.PgID, "binary", argv[0])
@@ -307,8 +312,10 @@ func monitorChild(cmd *exec.Cmd, stderrDone <-chan struct{}, exited chan<- ExitI
 
 // drainChildStderr forwards the child's stderr to the wrapper's stderr,
 // capped (PITFALL 2): beyond the cap the pump keeps draining silently so the
-// 64 KB pipe buffer never stalls the child mid-turn.
-func drainChildStderr(rc io.Reader, capBytes int, done chan<- struct{}) {
+// 64 KB pipe buffer never stalls the child mid-turn. A non-nil tap (the mount
+// owner's cappedBuffer) mirrors the forwarded bytes for the caller's
+// diagnostics; a nil tap preserves the app-server path byte-for-byte.
+func drainChildStderr(rc io.Reader, capBytes int, tap io.Writer, done chan<- struct{}) {
 	defer close(done)
 
 	buf := make([]byte, stderrChunkSize)
@@ -327,6 +334,10 @@ func drainChildStderr(rc io.Reader, capBytes int, done chan<- struct{}) {
 
 			_, _ = os.Stderr.Write(out)
 			forwarded += len(out)
+
+			if tap != nil {
+				_, _ = tap.Write(out)
+			}
 		}
 
 		if readErr != nil {

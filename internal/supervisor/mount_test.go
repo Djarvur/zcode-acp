@@ -75,10 +75,12 @@ func fakeAppImageScript(variant string) string {
 	switch variant {
 	case fakeVariantBadTree:
 		// Prints a valid mount line but leaves resources/glm/zcode.cjs out:
-		// the tree validation must reject it.
+		// the tree validation must reject it. The stderr marker proves the
+		// tap carries the helper's stderr into the failure diagnostics.
 		return `#!/bin/sh
 set -eu
 [ "${1:-}" = "--appimage-mount" ] || { echo "fake-appimage: unsupported argv: $*" >&2; exit 64; }
+echo "fake-appimage: cannot mount (stderr marker)" >&2
 base=${TMPDIR:?TMPDIR must be set by the wrapper}
 dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 trap 'rm -rf "$dir"; exit 143' TERM
@@ -465,6 +467,28 @@ func TestMountNoExtraction(t *testing.T) {
 		if name == "squashfs-root" || strings.HasPrefix(name, "zcode-") {
 			t.Fatalf("the mount cycle created an extraction copy %q (MNT-06)", name)
 		}
+	}
+}
+
+// TestMountStderrTap proves SpawnOpts.StderrTap mirrors the helper's stderr
+// into the caller's diagnostics (and the capped forward keeps its default
+// behavior): the fake writes its marker to stderr before the mount line, and
+// the tree-validation failure must carry it.
+func TestMountStderrTap(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantBadTree)
+
+	_, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err == nil {
+		t.Fatal("PrepareMount accepted the bad tree")
+	}
+
+	if !strings.Contains(err.Error(), "cannot mount (stderr marker)") {
+		t.Fatalf("the failure %q does not carry the helper's stderr — the tap is not wired", err)
 	}
 }
 

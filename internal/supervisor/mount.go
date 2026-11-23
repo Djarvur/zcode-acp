@@ -52,6 +52,10 @@ const (
 	mountHelperFlag = "--appimage-mount"
 	// mountTmpdirVar is the helper's only output-routing variable.
 	mountTmpdirVar = "TMPDIR"
+	// mountPathFallback is the PATH the helper receives when the parent
+	// carries none: the standard system binary dirs (a helper without a
+	// usable PATH cannot resolve libfuse's fusermount).
+	mountPathFallback = "/usr/local/bin:/usr/bin:/bin"
 	// mountOutputCap bounds each captured helper stream (T-10-05: the 64 KiB
 	// stderr precedent).
 	mountOutputCap = 64 << 10
@@ -153,6 +157,7 @@ type Mount struct {
 	opts      MountOpts
 	child     *Child
 	cancel    context.CancelFunc
+	stderr    cappedBuffer
 	lost      chan struct{}
 	lostOnce  sync.Once
 	stopOnce  sync.Once
@@ -203,7 +208,7 @@ func PrepareMount(ctx context.Context, inst Install, opts MountOpts) (*Mount, er
 	child, spawnErr := SpawnChild(helperCtx,
 		[]string{inst.AppImage, mountHelperFlag},
 		helperEnv(base),
-		SpawnOpts{StdoutTap: tap, WaitDelay: waitDelayDefault})
+		SpawnOpts{StdoutTap: tap, StderrTap: &m.stderr, WaitDelay: waitDelayDefault})
 	if spawnErr != nil {
 		helperCancel()
 		_ = os.RemoveAll(base)
@@ -219,13 +224,15 @@ func PrepareMount(ctx context.Context, inst Install, opts MountOpts) (*Mount, er
 	if readyErr != nil {
 		_ = m.Stop()
 
-		return nil, fmt.Errorf("zcode: mount %s: %w (observed output %q)", inst.AppImage, readyErr, tap.observedText())
+		return nil, fmt.Errorf("zcode: mount %s: %w (observed output %q)",
+			inst.AppImage, readyErr, m.observedOutput(tap))
 	}
 
 	if treeErr := validateMountTree(root); treeErr != nil {
 		_ = m.Stop()
 
-		return nil, fmt.Errorf("zcode: mount %s: %w (observed output %q)", inst.AppImage, treeErr, tap.observedText())
+		return nil, fmt.Errorf("zcode: mount %s: %w (observed output %q)",
+			inst.AppImage, treeErr, m.observedOutput(tap))
 	}
 
 	m.root = root
@@ -280,6 +287,13 @@ func exitDescription(child *Child) string {
 	default:
 		return "unknown"
 	}
+}
+
+// observedOutput joins the capped stdout and stderr captures for a failure
+// error; the caller renders it with %q so a hostile helper cannot forge log
+// lines (T-10-05).
+func (m *Mount) observedOutput(tap *mountTap) string {
+	return tap.observedText() + m.stderr.String()
 }
 
 // Install returns the mounted install: the mount root replaces the packed
@@ -515,9 +529,12 @@ func basePathProblem(base string) string {
 func helperEnv(base string) []string {
 	env := make([]string, 0, 3)
 
-	if path := os.Getenv(allowlistPathVar); path != "" {
-		env = append(env, allowlistPathVar+"="+path)
+	path := os.Getenv(allowlistPathVar)
+	if path == "" {
+		path = mountPathFallback
 	}
+
+	env = append(env, allowlistPathVar+"="+path)
 
 	if home := os.Getenv(allowlistHomeVar); home != "" {
 		env = append(env, allowlistHomeVar+"="+home)
