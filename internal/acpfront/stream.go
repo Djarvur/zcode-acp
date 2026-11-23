@@ -59,6 +59,7 @@ import (
 const (
 	kindPartDelta      = "part.delta"
 	kindModelStreaming = "model.streaming" // the real desktop's delta carrier (QA-03)
+	kindTurnStarted    = "turn.started"    // the session/event start carrier (the stamp source, WR-01)
 
 	deltaFieldText      = "text"      // → agent_message_chunk (acpport.NoteMessage)
 	deltaFieldReasoning = "reasoning" // → agent_thought_chunk (acpport.NoteThought, CORE-04)
@@ -116,10 +117,11 @@ func (f *Front) observeEnvelope(env zcode.Envelope) {
 	// keys in the struct; the camelCase turnId and the payload dig through
 	// raw maps below).
 	var params struct {
-		Type    string          `json:"type"`
-		Field   string          `json:"field"`
-		Delta   string          `json:"delta"`
-		Payload json.RawMessage `json:"payload"`
+		Type      string          `json:"type"`
+		Field     string          `json:"field"`
+		Delta     string          `json:"delta"`
+		Payload   json.RawMessage `json:"payload"`
+		Timestamp int64           `json:"timestamp"`
 	}
 
 	if err := json.Unmarshal(env.Params, &params); err != nil {
@@ -133,8 +135,29 @@ func (f *Front) observeEnvelope(env zcode.Envelope) {
 		f.observePartDelta(params.Field, params.Delta, turnID)
 	case kindModelStreaming:
 		f.observeModelStreaming(params.Payload, turnID)
+	case kindTurnStarted:
+		f.observeTurnStarted(params.Timestamp)
 	case "tool.updated":
 		f.observeToolUpdated(params.Payload, turnID)
+	}
+}
+
+// observeTurnStarted records the active turn's backend-clock start stamp —
+// the session/event turn.started envelope's timestamp (ms epoch; the
+// capture-verbatim carrier, raw5.out:9123). The reconcile correlates its
+// projection entries against this stamp (delta-review WR-01): a stored
+// reply from a PRIOR turn must never ride as this turn's recovery, so the
+// polled assistant entry must be no older than this turn's start.
+func (f *Front) observeTurnStarted(stamp int64) {
+	if stamp <= 0 {
+		return
+	}
+
+	f.turnMu.Lock()
+	defer f.turnMu.Unlock()
+
+	if f.turnActive {
+		f.turnStamp = stamp
 	}
 }
 

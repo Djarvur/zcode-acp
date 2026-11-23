@@ -3,6 +3,7 @@ package acpfront
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -59,10 +60,24 @@ const reconcilePollBound = 2 * time.Second
 // assistant text"). The reconcile therefore polls on a fixed interval until
 // the stored reply appears or the total window closes. The window is
 // generous against the observed catch-up latency (the raw captures' text
-// lands within ~0.3–1s of the terminal) and bounded against a hang.
+// lands within ~0.3–1s of the terminal) and bounded against a hang. The
+// bound is the wall-clock hold on the stopReason AND the front-wide turn
+// slot (delta-review WR-02: every poll is bounded by the REMAINING window,
+// so the total never exceeds the window regardless of poll timing); the
+// cost side of the tradeoff: a turn against a backend that will never
+// serve the projection holds the slot for the whole window — deliberate,
+// the real desktop always carries it.
 const (
 	reconcileWindow       = 4 * time.Second
 	reconcilePollInterval = 400 * time.Millisecond
+
+	// reconcileTimeSkew is the correlation margin between the turn's
+	// backend-clock start stamp and a projection entry's creation time
+	// (delta-review WR-01): capture-verbatim rows show this turn's
+	// assistant entry created ~100ms BEFORE the turn.started timestamp,
+	// so a prior turn's entry is anything older than start−1s. Both
+	// clocks are the same local desktop — skew is negligible.
+	reconcileTimeSkew = time.Second
 )
 
 // The messages projection's wire literals (the capture-verbatim shapes —
@@ -77,39 +92,39 @@ const (
 // StopCompleted case, BEFORE release's flush): a completed turn whose pump
 // accepted zero message chunks reconciles the stored reply text through the
 // same turn-scoped emit the delta tap uses — polling the session/messages
-// projection on a fixed interval until the text appears or the total window
-// closes (the terminal-before-text delivery race, QA-03 2026-11-23). The
-// caller-initiated emit scopes by the slot state alone (turnActive /
-// turnEmit — turnScope with an empty turnId skips the record-on-first-sight
-// id check, since no envelope turnId exists to match); the slot is held
-// until Prompt's deferred release, so a scoped read here is THIS turn's
-// emitter by construction — and the held slot keeps the pump open, so a
-// late text delta landing mid-window rides release's flush too (the
-// message-count guard below keeps the two paths from duplicating it). Any
-// failure arm logs structurally and returns — the stopReason always leaves.
-func (f *Front) reconcileNoDeltaReply(ctx context.Context, sessionID string, pump *turnPump) {
+// projection on a fixed interval until THIS TURN's reply appears or the
+// total window closes (the terminal-before-text delivery race, QA-03
+// 2026-11-23). minCreated is the turn's backend-clock start stamp (ms
+// epoch; 0 when the carrier carried none) — the projection correlation
+// anchor that keeps a PRIOR turn's stored reply from riding as this
+// turn's recovery (delta-review WR-01). The caller-initiated emit scopes
+// by the slot state alone (turnActive / turnEmit — turnScope with an empty
+// turnId skips the record-on-first-sight id check, since no envelope
+// turnId exists to match); the slot is held until Prompt's deferred
+// release, so a scoped read here is THIS turn's emitter by construction —
+// and the held slot keeps the pump open, so a late text delta landing
+// mid-window rides release's flush too (the message-count guard below
+// keeps the two paths from duplicating it — atomically, delta-review
+// WR-03). Any failure arm logs structurally and returns — the stopReason
+// always leaves.
+func (f *Front) reconcileNoDeltaReply(ctx context.Context, sessionID string, pump *turnPump, minCreated int64) {
 	if pump.messageCount() != 0 {
 		return // deltas streamed — the client has the text; reconcile would duplicate it
 	}
 
-	emit, scoped := f.turnScope("")
-	if !scoped {
+	if _, scoped := f.turnScope(""); !scoped {
 		return // the slot already cleared — never emit scopeless
+	}
+
+	if minCreated > 0 {
+		minCreated -= int64(reconcileTimeSkew / time.Millisecond)
 	}
 
 	deadline := time.Now().Add(reconcileWindow)
 	for {
-		text := f.reconcilePollText(ctx, sessionID)
-		if text != "" {
-			f.reconcileEmitStoredReply(pump, emit, text)
-
-			return
-		}
-
-		if pump.messageCount() != 0 {
-			return // late deltas are streaming — the client gets the text live
-		}
-
+		// WR-02: the remaining window bounds every poll, so the loop's
+		// wall-clock hold never exceeds the window regardless of when a
+		// poll started.
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			slog.Warn("acpfront: no-delta reconcile window closed without the stored text; replying empty",
@@ -118,18 +133,35 @@ func (f *Front) reconcileNoDeltaReply(ctx context.Context, sessionID string, pum
 			return
 		}
 
-		if !reconcileWait(ctx, remaining) {
+		bound := reconcilePollBound
+		if bound > remaining {
+			bound = remaining
+		}
+
+		text := f.reconcilePollText(ctx, sessionID, bound, minCreated)
+		if text != "" {
+			f.reconcileEmitStoredReply(pump, text)
+
+			return
+		}
+
+		if pump.messageCount() != 0 {
+			return // late deltas are streaming — the client gets the text live
+		}
+
+		if !reconcileWait(ctx, time.Until(deadline)) {
 			return // the turn's teardown owns this ctx — stop polling
 		}
 	}
 }
 
-// reconcilePollText performs ONE bounded session/messages read and returns
-// the stored reply text — "" on a read failure or a projection without an
-// assistant reply (the retry loop decides whether another attempt fits the
-// window; each failure logs structurally, never aborts the loop).
-func (f *Front) reconcilePollText(ctx context.Context, sessionID string) string {
-	pollCtx, cancel := context.WithTimeout(ctx, reconcilePollBound)
+// reconcilePollText performs ONE session/messages read bounded by bound and
+// returns THIS turn's stored reply text — "" on a read failure or a
+// projection without a qualifying assistant reply (the retry loop decides
+// whether another attempt fits the window; each failure logs structurally,
+// never aborts the loop).
+func (f *Front) reconcilePollText(ctx context.Context, sessionID string, bound time.Duration, minCreated int64) string {
+	pollCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 
 	res, err := f.conn.Call(pollCtx, zcode.MethodSessionMessages, map[string]any{
@@ -141,23 +173,26 @@ func (f *Front) reconcilePollText(ctx context.Context, sessionID string) string 
 		return ""
 	}
 
-	return lastAssistantReplyText(res)
+	return turnAssistantReplyText(res, minCreated)
 }
 
 // reconcileEmitStoredReply emits the ONE reconcile chunk with the FULL
-// stored text — unless a late delta landed mid-window (the message-count
-// guard: the client already has the text, a chunk here would duplicate it).
-// The chunk enqueues onto the same pump the delta tap uses, so release's
-// flush delivers it before the stopReason (flush-before-stopReason, the
-// QA-03 discipline).
-func (f *Front) reconcileEmitStoredReply(pump *turnPump, emit func(note acpport.SessionNote) error, text string) {
-	if pump.messageCount() != 0 {
-		return
-	}
-
+// stored text — atomically with the message-count guard (delta-review
+// WR-03: check-then-act across two lock acquisitions could admit a late
+// delta between them and duplicate the reply; one acquisition decides
+// both). The chunk enqueues onto the same pump the delta tap uses, so
+// release's flush delivers it before the stopReason
+// (flush-before-stopReason, the QA-03 discipline).
+func (f *Front) reconcileEmitStoredReply(pump *turnPump, text string) {
 	note := acpport.SessionNote{Kind: acpport.NoteMessage, Delta: text}
-	if err := emit(note); err != nil {
-		slog.Warn("acpfront: session update write failed", "err", err)
+	if err := pump.enqueueIfNoMessages(note); err != nil {
+		if errors.Is(err, errReconcileDuplicate) {
+			slog.Debug("acpfront: reconcile emit skipped — a late delta already delivered the text")
+
+			return
+		}
+
+		slog.Warn("acpfront: reconcile emit refused", "err", err)
 	}
 }
 
@@ -185,10 +220,15 @@ type messagesProjection struct {
 }
 
 // projectedMessage is one messages[] entry: the info header (the role
-// discriminator) plus the content parts.
+// discriminator, the creation time the turn correlation reads) plus the
+// content parts.
 type projectedMessage struct {
 	Info struct {
 		Role string `json:"role"`
+
+		Time struct {
+			Created int64 `json:"created"`
+		} `json:"time"`
 	} `json:"info"`
 	Parts []projectedPart `json:"parts"`
 }
@@ -198,6 +238,73 @@ type projectedMessage struct {
 type projectedPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+// turnAssistantReplyText extracts THIS turn's reply text from one decoded
+// session/messages result (delta-review WR-01): the LAST assistant entry
+// whose projection creation time qualifies against this turn's backend
+// start stamp — a PRIOR turn's stored reply, exactly what a lagging
+// projection serves while this turn's entry has not landed, must never ride
+// as this turn's recovery. Correlation arms:
+//
+//	minCreated > 0: only entries with a parseable creation time no older
+//	than the stamp minus the skew margin qualify; older or undated entries
+//	are skipped (keep polling — the honest empty at window close beats a
+//	wrong-turn text).
+//
+//	minCreated <= 0 (the carrier carried no timestamp): the legacy
+//	whole-projection rule applies ONLY while unambiguous — at most one
+//	assistant entry in the projection (the capture-verbatim single-turn
+//	shape). Several assistant entries without a correlation anchor is
+//	ambiguous by construction: "" — never a guess.
+//
+// An undecodable result answers "" — the unrecoverable arm, never a
+// fabricated chunk.
+func turnAssistantReplyText(res json.RawMessage, minCreated int64) string {
+	var proj messagesProjection
+	if err := json.Unmarshal(res, &proj); err != nil {
+		return ""
+	}
+
+	if minCreated <= 0 {
+		assistantCount := 0
+
+		for i := range proj.Messages {
+			if proj.Messages[i].Info.Role == assistantRole {
+				assistantCount++
+			}
+		}
+
+		if assistantCount > 1 {
+			return "" // ambiguous without an anchor — never a guess
+		}
+
+		return lastAssistantReplyText(res)
+	}
+
+	text := ""
+
+	for i := range proj.Messages {
+		if proj.Messages[i].Info.Role != assistantRole {
+			continue
+		}
+
+		if created := proj.Messages[i].Info.Time.Created; created <= 0 || created < minCreated {
+			continue // a prior turn's entry — or undated; never qualifies
+		}
+
+		var reply strings.Builder
+
+		for _, part := range proj.Messages[i].Parts {
+			if part.Type == textPartType {
+				reply.WriteString(part.Text)
+			}
+		}
+
+		text = reply.String()
+	}
+
+	return text
 }
 
 // lastAssistantReplyText extracts the LAST assistant message's text from a

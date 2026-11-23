@@ -2,6 +2,7 @@ package acpfront
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -301,6 +302,59 @@ func (p *turnPump) enqueue(note acpport.SessionNote) error {
 	return nil
 }
 
+// errReconcileDuplicate is enqueueIfNoMessages' refusal sentinel: the pump
+// already accepted a message chunk, so the stored text would duplicate it
+// on the client (delta-review WR-03).
+var errReconcileDuplicate = errors.New("acpfront: reconcile emit skipped — a message chunk is already queued")
+
+// enqueueIfNoMessages enqueues the stored-reply note ATOMICALLY with the
+// message-count check (delta-review WR-03): a check-then-act across two
+// lock acquisitions could admit a late delta BETWEEN the check and the
+// enqueue, duplicating the reply. One acquisition decides both — zero
+// accepted messages enqueues (the counter bumps in appendLocked); any
+// answers the refusal sentinel with nothing queued. The breach/ceiling
+// discipline is enqueue's, verbatim.
+func (p *turnPump) enqueueIfNoMessages(note acpport.SessionNote) error {
+	size := noteBytes(note)
+
+	p.mu.Lock()
+
+	if p.breach != nil {
+		err := p.breach
+		p.mu.Unlock()
+
+		return err
+	}
+
+	if p.messages != 0 {
+		p.mu.Unlock()
+
+		return errReconcileDuplicate
+	}
+
+	if p.bytes+size > p.ceiling {
+		if p.breach == nil {
+			p.breach = acpport.NewInternal(
+				"acpfront: per-turn stream ceiling exceeded (%d > %d bytes) — "+
+					"failing the turn loud rather than dropping streamed output",
+				p.bytes+size, p.ceiling)
+		}
+
+		err := p.breach
+		p.mu.Unlock()
+
+		p.cancel() // fail loud: unwind the turn; Prompt surfaces the breach
+
+		return err
+	}
+
+	p.appendLocked(note, size)
+	p.mu.Unlock()
+	p.signal()
+
+	return nil
+}
+
 // appendLocked queues one note and adds its weight; the caller holds mu.
 // Message chunks bump the reconcile counter here — the single acceptance
 // choke point every enqueued note passes (coalescing never drops or merges
@@ -449,6 +503,7 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (context.
 	// cwd anchors the absolute diff/location paths (Pitfall 5), and the
 	// diff registry starts fresh per turn.
 	f.turnID = ""
+	f.turnStamp = 0
 	f.turnCwd = f.sessionCwdLocked(sessionID)
 	f.turnDiffs = make(map[string]acpport.ToolDiff)
 
@@ -460,6 +515,7 @@ func (f *Front) acquireTurn(sessionID string, sink acpport.UpdateSink) (context.
 		f.turnDone = nil
 		f.turnEmit = nil
 		f.turnID = ""
+		f.turnStamp = 0
 		f.turnCwd = ""
 		f.turnDiffs = nil
 		pump := f.turnPump

@@ -267,6 +267,9 @@ func goldenDrivers() map[string]driverFunc {
 		"desktop-delta-streaming":        driveDesktopDeltaStreaming,
 		"desktop-nodelta-messages":       driveDesktopNodeltaMessages,
 		"desktop-nodelta-lateprojection": driveDesktopNodeltaLateProjection,
+		"desktop-twoturn-lateprojection": driveDesktopTwoTurnLateProjection,
+		"desktop-nodelta-latedelta":      driveDesktopNodeltaLateDelta,
+		"desktop-nodelta-breach":         driveDesktopNodeltaBreach,
 		"desktop-delta-messages":         driveDesktopDeltaMessages,
 		"desktop-nodelta-pollerror":      driveDesktopNodeltaPollError,
 		"desktop-nodelta-slowpoll":       driveDesktopNodeltaSlowPoll,
@@ -778,6 +781,46 @@ func driveDesktopNodeltaLateProjection(ctx context.Context, d *exchangeDriver) {
 		if _, err := d.call(ctx, zcode.MethodSessionMessages, params); err != nil {
 			d.t.Fatalf("session/messages poll %d: %v", i, err)
 		}
+	}
+}
+
+// driveDesktopTwoTurnLateProjection: the WR-01 stale-guard row — two sends
+// on one session (turn one streams its reply, turn two completes
+// zero-delta), then the messages read: the replay locks the two-rule
+// sequencing (lagging projection, then the caught-up one).
+func driveDesktopTwoTurnLateProjection(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+
+	params := map[string]any{wireKeySessionID: fixSessionID}
+	for i := 1; i <= 2; i++ {
+		if _, err := d.call(ctx, zcode.MethodSessionMessages, params); err != nil {
+			d.t.Fatalf("session/messages turn-two poll %d: %v", i, err)
+		}
+	}
+}
+
+// driveDesktopNodeltaLateDelta: the WR-03 mid-window arm row — the zero-
+// delta turn whose messages rule fires a late text delta at poll arrival
+// and answers 1.5s later; the replay locks the delayed-rule mechanics.
+func driveDesktopNodeltaLateDelta(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+
+	params := map[string]any{wireKeySessionID: fixSessionID}
+	if _, err := d.call(ctx, zcode.MethodSessionMessages, params); err != nil {
+		d.t.Fatalf("session/messages: %v", err)
+	}
+}
+
+// driveDesktopNodeltaBreach: the IN-01 window-breach row — the zero-delta
+// turn whose messages rule fires a 4 KiB delta at poll arrival (a tiny
+// front ceiling breaches on it); the replay locks the breach-shaped delta
+// serving.
+func driveDesktopNodeltaBreach(ctx context.Context, d *exchangeDriver) {
+	driveDesktopReconcileTurn(ctx, d)
+
+	params := map[string]any{wireKeySessionID: fixSessionID}
+	if _, err := d.call(ctx, zcode.MethodSessionMessages, params); err != nil {
+		d.t.Fatalf("session/messages: %v", err)
 	}
 }
 

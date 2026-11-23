@@ -88,9 +88,15 @@ type Front struct {
 	turnDone    chan struct{}
 	turnEmit    func(note acpport.SessionNote) error
 	turnID      string
-	turnCwd     string
-	turnDiffs   map[string]acpport.ToolDiff
-	turnPump    *turnPump
+
+	// turnStamp is the active turn's backend-clock start stamp (ms epoch,
+	// from the session/event turn.started envelope's timestamp — delta-
+	// review WR-01): the reconcile's projection correlation anchor. Zero
+	// when the carrier carried none (the degraded-correlation arm).
+	turnStamp int64
+	turnCwd   string
+	turnDiffs map[string]acpport.ToolDiff
+	turnPump  *turnPump
 
 	// closingMu guards the closing set (SESS-01, lifecycle.go): the session
 	// ids mid-teardown. The gate makes the close-vs-prompt race
@@ -426,7 +432,16 @@ func (f *Front) Prompt(
 		//nolint:contextcheck // the turn ctx is front-owned BY CONTRACT (the
 		// Run call above): the reconcile poll derives from it so the bounded
 		// read dies with the turn's own teardown, never with the SDK request.
-		f.reconcileNoDeltaReply(turnCtx, params.SessionID, pump)
+		f.reconcileNoDeltaReply(turnCtx, params.SessionID, pump, f.turnStartStamp())
+
+		// Delta-review IN-01: a stream-ceiling breach caused by a late
+		// delta DURING the reconcile window cancels the turn ctx and
+		// unwinds the reconcile silently — the pre-reconcile breach check
+		// above never saw it. Re-check before answering: a turn whose
+		// output was dropped fails loud whatever the machine resolved.
+		if breach := f.turnBreach(); breach != nil {
+			return "", breach
+		}
 
 		return acpport.StopEndTurn, nil
 	case turn.StopCancelled:
@@ -1150,6 +1165,15 @@ func (f *Front) closeOrphan(ctx context.Context, sessionID, stage string, cause 
 
 	slog.Warn("acpfront: closed the error-path backend session",
 		"session", sessionID, "stage", stage, "cause", cause)
+}
+
+// turnStartStamp snapshots the active turn's backend-clock start stamp
+// (0 when none was recorded — the reconcile's degraded-correlation arm).
+func (f *Front) turnStartStamp() int64 {
+	f.turnMu.Lock()
+	defer f.turnMu.Unlock()
+
+	return f.turnStamp
 }
 
 // turnScope copies the active turn's emitter out under the slot lock and
