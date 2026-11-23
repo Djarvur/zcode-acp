@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v0.22.0
-milestone_name: Ask-the-User Bridge
 status: completed
 stopped_at: Phase 09 complete — all phases complete
-last_updated: "2026-11-23T19:06:17.174Z"
+last_updated: "2026-11-23T19:49:48.371Z"
 last_activity: 2026-11-23
 last_activity_desc: Milestone v0.22.0 completed and archived
-state_head: 0e779c60f78410cc13a1ab532ca788c95faf5346
+state_head: 2513949687cb47e2e298f0d7e753b6f050714bd0
 progress:
   total_phases: 1
   completed_phases: 1
   total_plans: 1
   completed_plans: 1
+milestone_name: Ask-the-User Bridge
 current_phase: 09
 ---
 
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-23)
 Phase: Milestone v0.22.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-23 — Milestone v0.22.0 completed and archived
+Last activity: 2026-11-23 - Completed quick task 261123-v3u: Honor visibility:hidden in the builtin provider table (skip hidden zhipu-account rules in BuildAccount and the read-back want list)
 
 ## Performance Metrics
 
@@ -288,6 +288,12 @@ None yet.
 - ⚠️ [Phase 7 live] real settings store for `agentCmdOverrides` still unknown (not in `~/.config/orca/*.json` — Electron storage/orcad); hermes card (9th) appears in client builds v1.4.263+ — build-drift watch; live `--version` probe half unverified
 - ~~REAL RUN EXP-APIKEY-CYCLE-01 attempt 1 failed at authenticate read-back~~ RESOLVED by 05-11 + attempt 2 (2026-11-21): the read-back surface is the session/create reply (branch c), the corrected chain is FIELD-PROVEN on the live desktop (EXP-APIKEY-CYCLE-02, apicycle_test.go:205 "authenticate ok — the registry read-back verdict proved the key landed")
 - ~~[Phase 5, NEW from attempt 2] REAL RUN full cycle still unproven: the file-read tool turn was refused by the desktop's one-turn-at-a-time latch~~ RESOLVED by 05-13 + attempt 3 (2026-11-21): the latch drain (ask-tap settle + bounded invalid-request retry) worked — the second send was accepted first-try with no -32010 and the FULL cycle PASSED (49.43s, human-run per the 05-14 checkpoint; EXP-APIKEY-CYCLE-03 + the ledger row flipped to actuals). Residual evidence (not a blocker): our quiet-floor end_turn resolves ~16.4 s before the desktop's true completion surfaces — the §5 addendum's open question carries the attempt-3 data for the verifier. AUTH-01 restore rides the orchestrator's post-verification act.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 261123-v3u | Honor visibility:hidden in the builtin provider table (skip hidden zhipu-account rules in BuildAccount and the read-back want list) | 2026-11-23 | 2513949 | [261123-v3u-honor-visibility-hidden-in-the-builtin-p](./quick/261123-v3u-honor-visibility-hidden-in-the-builtin-p/) |
 
 ## Deferred Items
 
