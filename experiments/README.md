@@ -186,6 +186,19 @@ config at run time; write the raw capture outside the repo; scrub into
 
 ## Quota ledger
 
+- **Quick task 261124-154 guarded text-task probe (TestTextTaskLive) — PENDING
+  (planned 2026-11-24): one tiny model call** — planned spend: ONE
+  `workspace/generateText` call through the wrapper (a one-word reply), driven
+  by Orca's exact `omp --print --no-session --no-tools --no-extensions
+  --no-skills --no-rules --mode text [--model p/m] @file` argv against the
+  discovered real desktop. Tier: the guarded
+  `test/realdesktop/texttask_test.go` (`TestTextTaskLive`) — canonical command
+  in its file header; NEVER from CI: the realdesktop build tag +
+  `ZCODE_ACP_REAL_E2E=1` double guard is the contract, and the default suite
+  never builds the file. No capture file: a quick task runs no scrubbed
+  capture. The orchestrator flips this row to PASSED/FAILED with the date and
+  the measured elapsed time after the guarded run, recording the outcome in
+  `.planning/quick/261124-154-omp-print-mode-make-zcode-acp-omp-serve-/261124-154-SUMMARY.md`.
 - **real turns spent: 3 tiny sends issued, 0 completed** (plan 01-02, E2, 2026-11-19)
   — three `session/send` calls with the fixed one-line prompt; none produced a
   completed model response (see the EXP-TURN-01 run notes for the failure reason:
