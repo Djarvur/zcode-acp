@@ -48,6 +48,11 @@ const (
 	// unset exercises the provider_config default path.
 	envTextModel = "ZCODE_ACP_REAL_MODEL"
 
+	// envTextThinking optionally supplies the reasoning level for the
+	// overridden model (Orca passes --thinking for a dynamic model with a
+	// configured level; the app-server refuses an override without one).
+	envTextThinking = "ZCODE_ACP_REAL_THINKING"
+
 	// textProbeKill is the client's own kill budget (Orca SIGKILLs the card
 	// at 60 s).
 	textProbeKill = 60 * time.Second
@@ -99,9 +104,9 @@ func TestTextTaskLive(t *testing.T) {
 	assertTextProbeOutcome(ctx, t, runErr, elapsed, stdout.String(), stderr.String())
 }
 
-// textProbeArgv is Orca's exact text-task argv: the mode flags, --model only
-// when ZCODE_ACP_REAL_MODEL is set (otherwise the provider_config default is
-// exercised), then the one @file prompt token.
+// textProbeArgv is Orca's exact text-task argv: the mode flags, --model and
+// --thinking only when their env knobs are set (otherwise the provider_config
+// default is exercised), then the one @file prompt token.
 func textProbeArgv(promptPath string) []string {
 	argv := []string{
 		"omp",
@@ -116,6 +121,10 @@ func textProbeArgv(promptPath string) []string {
 
 	if model := os.Getenv(envTextModel); model != "" {
 		argv = append(argv, "--model", model)
+	}
+
+	if thinking := os.Getenv(envTextThinking); thinking != "" {
+		argv = append(argv, "--thinking", thinking)
 	}
 
 	return append(argv, "@"+promptPath)
