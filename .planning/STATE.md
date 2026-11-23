@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v0.22.0
 status: completed
 stopped_at: Phase 09 complete — all phases complete
-last_updated: "2026-11-23T20:26:41.776Z"
+last_updated: "2026-11-23T22:04:35.796Z"
 last_activity: 2026-11-23
 last_activity_desc: Milestone v0.22.0 completed and archived
-state_head: b65901f438322198ee77ea657db6a22673190e9e
+state_head: b6ab5bff952949609d09a1d4c4407ace292eed76
 progress:
   total_phases: 1
   completed_phases: 1
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-23)
 Phase: Milestone v0.22.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-23 - Completed quick task 261123-vyl: Push only the selected connection mode per account family (config.access.mode + per-(family, mode) entitlement gate)
+Last activity: 2026-11-24 - Completed quick task 261124-13n: Clear the 10 pre-existing acpfront golangci-lint findings so mise run lint / CI pr-sanity is green
 
 ## Performance Metrics
 
@@ -295,6 +295,7 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 261123-v3u | Honor visibility:hidden in the builtin provider table (skip hidden zhipu-account rules in BuildAccount and the read-back want list) | 2026-11-23 | 2513949 | [261123-v3u-honor-visibility-hidden-in-the-builtin-p](./quick/261123-v3u-honor-visibility-hidden-in-the-builtin-p/) |
 | 261123-vyl | Push only the selected connection mode per account family (config.access.mode + per-(family, mode) entitlement gate) | 2026-11-23 | b65901f | [261123-vyl-option-b-push-only-the-selected-connecti](./quick/261123-vyl-option-b-push-only-the-selected-connecti/) |
+| 261124-13n | Clear the 10 pre-existing acpfront golangci-lint findings so mise run lint / CI pr-sanity is green | 2026-11-24 | b6ab5bf | [261124-13n-fix-the-10-pre-existing-golangci-lint-fi](./quick/261124-13n-fix-the-10-pre-existing-golangci-lint-fi/) |
 
 ## Deferred Items
 
