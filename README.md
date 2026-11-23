@@ -207,7 +207,15 @@ configure); workspace-level command/skill dirs (`<cwd>/.zcode[/agents]`)
 join per session when present. Picking an entry sends its `/name` as the
 prompt text — exactly the form the runtime already executes.
 
-### 6. Client-set environment
+### 6. Ask-the-user dialogs
+
+Workflow questions (an AskUserQuestion-style ask) render as a form dialog in the
+chat: the question, the labeled options with their descriptions, and Skip. Your
+answer feeds the workflow (`content.answers` keyed by the question text); declining
+or skipping resolves the ask as declined. No configuration — the bridge is always on
+when the client declares form elicitation support.
+
+### 7. Client-set environment
 
 The client sets `PI_NO_PTY=1` for the omp card; this wrapper ignores it —
 ACP is a pipe protocol, no PTY is ever allocated. The card's agent-home

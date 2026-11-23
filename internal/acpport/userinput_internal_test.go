@@ -1,6 +1,7 @@
 package acpport
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
@@ -166,5 +167,41 @@ func TestMapElicitationOutcome(t *testing.T) {
 	cancel := acp.CreateElicitationResponse{Cancel: &acp.CreateElicitationCancel{Action: "cancel"}}
 	if out := MapElicitationOutcome(cancel, ask); out.Action != "cancel" {
 		t.Fatalf("cancel mapped to %q", out.Action)
+	}
+}
+
+// TestDecodeUserInputAsk locks the neutral ask decode (UIB-01): the full
+// AskUserQuestion shape (header/labels/descriptions/multiSelect), the
+// no-questions free-text arm, and the broken-body loud error.
+func TestDecodeUserInputAsk(t *testing.T) {
+	full := json.RawMessage(`{
+		"requestId": "req-1", "sessionId": "sess-1", "toolName": "AskUserQuestion",
+		"prompt": "Pick one",
+		"questions": [{"question": "Which phase?", "header": "Phase",
+			"options": [{"value": "Verify 1", "label": "Verify 1", "description": "verify phase one"}],
+			"multiSelect": false}]
+	}`)
+
+	ask, err := DecodeUserInputAsk(full)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if ask.Prompt != "Pick one" || len(ask.Questions) != 1 {
+		t.Fatalf("ask = %+v, want the prompt and one question", ask)
+	}
+
+	if q := ask.Questions[0]; q.Question != "Which phase?" || q.Header != "Phase" ||
+		len(q.Options) != 1 || q.Options[0].Label != "Verify 1" || q.Options[0].Description != "verify phase one" {
+		t.Fatalf("question = %+v, want the option labels and descriptions", q)
+	}
+
+	free, err := DecodeUserInputAsk(json.RawMessage(`{"requestId": "r", "prompt": "type"}`))
+	if err != nil || len(free.Questions) != 0 || free.Prompt != "type" {
+		t.Fatalf("the free-text arm = %+v (err %v), want no questions and the prompt", free, err)
+	}
+
+	if _, err := DecodeUserInputAsk(json.RawMessage(`{broken`)); err == nil {
+		t.Fatal("a broken body decoded without an error — must fail loud")
 	}
 }
