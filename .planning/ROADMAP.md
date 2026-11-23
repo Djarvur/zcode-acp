@@ -41,6 +41,10 @@ Full details: `.planning/milestones/v0.21.0-phases/`, `v0.21.0-ROADMAP.md`, `v0.
 
 </details>
 
+- [ ] **Phase 9: Ask-the-User Bridge** — `interaction/requestUserInput` bridges to a
+  client-rendered form elicitation (the AskUserQuestion dialogs the card never showed);
+  the answer maps back into the dialect's `answers` merge contract
+
 ## Post-v1 Advisories (carried, non-blocking)
 
 - 07-REVIEW-DISPOSITION.md: IN-a..IN-h + the delta-review IN-02/IN-03
