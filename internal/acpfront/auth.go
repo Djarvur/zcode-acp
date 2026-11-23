@@ -708,3 +708,46 @@ func (f *Front) probePokeSetModel(ctx context.Context, sid string, res json.RawM
 			"(coded evidence recorded; the verdict still awaits its surfaces)", "model", model, "err", err)
 	}
 }
+
+// autoAuthBudget bounds the silent authenticate at session/new: the
+// client's discovery scans wait ~9 s, so the all-local chain (the keyring
+// probe, the PAT mint, the read-back) must fit well inside; a slower
+// surface answers the honest builtin scope instead.
+const autoAuthBudget = 7 * time.Second
+
+// ensureSilentAuth runs the authenticate chain silently when NOTHING has
+// authenticated yet and the machinery is wired (v0.22.0, the discovery
+// sessions' catalog fix): the client's command/model catalog probes spawn
+// fresh wrapper processes that never receive the card's explicit
+// authenticate — without this, every probe session's model option carries
+// only the builtin scope and shrinks the picker on each probe. The api-key
+// binding goes first (no mint, purely local); the coding-plan chain
+// (the keyring + the entitlement gate + the PAT mint + the read-back)
+// follows. Best-effort by contract: an error logs and leaves the session
+// unauthenticated — the honest builtin scope rides.
+func (f *Front) ensureSilentAuth(ctx context.Context) {
+	if f.auth == nil || f.AuthMode() != AuthModeNone {
+		return
+	}
+
+	authCtx, cancel := context.WithTimeout(ctx, autoAuthBudget)
+	defer cancel()
+
+	// The api-key arm only when the Keys seam is wired (the coding-plan
+	// machinery configures Creds instead — a nil Keys there is normal).
+	if f.auth.Keys != nil {
+		if key, _, ok := f.auth.Keys.APIKey(authCtx); ok && key != "" {
+			if err := f.authenticateAPIKey(authCtx); err != nil {
+				slog.Warn("acpfront: silent api-key authenticate failed (proceeding unauthenticated)",
+					"err", err)
+			}
+
+			return
+		}
+	}
+
+	if err := f.authenticateCodingPlan(authCtx); err != nil {
+		slog.Warn("acpfront: silent coding-plan authenticate failed (proceeding unauthenticated)",
+			"err", err)
+	}
+}

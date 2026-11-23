@@ -27,8 +27,10 @@ func cpAccountEntry(modelID string) string {
 }
 
 func cpChatCreateRule() fake.RequestRule {
+	current := `{"providerId":"zai-api","modelId":"` + cpFixAccountModelB + `","options":{"reasoningLevel":"low"}}`
+	lastUsed := `{"providerId":"zai-api","modelId":"` + cpFixAccountModelB + `"}`
 	reply := `{"session":{"sessionId":"` + cpChatSessionID + `"},` +
-		`"settings":{"model":{"available":[` +
+		`"settings":{"model":{"current":` + current + `,"lastUsed":` + lastUsed + `,"available":[` +
 		cpAccountEntry(cpFixAccountModelA) + `,` + cpAccountEntry(cpFixAccountModelB) + `]}}}`
 
 	return fake.RequestRule{

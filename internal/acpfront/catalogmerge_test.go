@@ -33,7 +33,7 @@ func TestSessionNewKeepsFullCatalog(t *testing.T) {
 	var selectVariant *acp.SessionConfigOptionSelect
 
 	for i := range sn.ConfigOptions {
-		if sn.ConfigOptions[i].Select != nil && sn.ConfigOptions[i].Select.Id == "model" {
+		if sn.ConfigOptions[i].Select != nil && sn.ConfigOptions[i].Select.Id == optionIDModel {
 			selectVariant = sn.ConfigOptions[i].Select
 		}
 	}

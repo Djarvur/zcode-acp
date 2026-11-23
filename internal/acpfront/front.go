@@ -284,6 +284,18 @@ func (f *Front) NewSession(
 			"session/new: cwd must be absolute (spec session-setup MUST), got %q", params.Cwd)
 	}
 
+	// The silent catalog auth (v0.22.0, the 2026-11-23 field report): the
+	// client's discovery sessions (the command/model catalog probes) run in
+	// FRESH wrapper processes that never see the card's explicit
+	// authenticate — their model option would carry only the builtin scope,
+	// shrinking the picker on every probe. When nothing has authenticated
+	// yet and the machinery is wired, run the chain silently (all-local:
+	// the keyring + the entitlement gate + the PAT mint + the read-back; no
+	// UI), bounded so a slow surface can't hold session/open hostage.
+	// Best-effort: a failure proceeds unauthenticated (the honest builtin
+	// scope) — never a session/open failure.
+	f.ensureSilentAuth(ctx)
+
 	res, err := f.conn.Call(ctx, zcode.MethodSessionCreate, map[string]any{
 		wireKeyWorkspace: map[string]any{wireKeyWorkspacePath: params.Cwd, wireKeyWorkspaceKey: params.Cwd},
 	})
