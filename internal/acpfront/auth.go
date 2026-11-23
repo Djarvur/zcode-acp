@@ -154,9 +154,9 @@ type AuthConfig struct {
 	Probe interact.KeyringProber
 
 	// Entitle is the production entitlement gate (familysel.go wired as a
-	// seam): the family decision the account overlay builder receives —
-	// the gate may only omit families, never edit entries.
-	Entitle func(ctx context.Context, family string) bool
+	// seam): the per-rule (family, mode) decision the account overlay
+	// builder receives — the gate may only omit rules, never edit entries.
+	Entitle func(ctx context.Context, family, mode string) bool
 }
 
 // WithAuth injects the authenticate machinery (the plan 05-07 option on
@@ -277,9 +277,9 @@ func (f *Front) authenticateCodingPlan(ctx context.Context) error {
 
 	// 5. The account overlay (Pattern 2) — the production entitlement gate
 	// wired as the caller-supplied decision (06-03's BuildAccount
-	// contract); a rejected family is omitted, never edited.
+	// contract); a rejected (family, mode) rule is omitted, never edited.
 	snap, err := hostsvc.NewSnapshotBuilder(nil).BuildAccount(f.auth.Install,
-		func(family string) bool { return f.auth.Entitle(ctx, family) })
+		func(family, mode string) bool { return f.auth.Entitle(ctx, family, mode) })
 	if err != nil {
 		return acpport.NewInternal("authenticate: build snapshot: %v", err)
 	}
@@ -382,11 +382,12 @@ func (f *Front) codingPlanLogin(ctx context.Context) (string, error) {
 // builtinModelIds, sorted for deterministic watcher matching. This is the
 // D-08 verdict-side twin — the want list mirrors what we push, never a
 // hardcoded catalog; a malformed entry degrades to omission (the build
-// already validated the table). A provider whose builtin rule carries
-// config.visibility "hidden" is absent from the snapshot by construction
-// (BuildAccount omits it), so its models can never enter this list — and so
-// can never become the ProbeWantModel target. The verdict-side mirror still
-// describes exactly what was pushed.
+// already validated the table). A provider is absent from the snapshot for
+// TWO reasons, both omissions by construction in BuildAccount: its rule is
+// hidden by config.visibility "hidden", OR its access.mode is not the
+// family's selected connection. Either way its models can never enter this
+// list — and so can never become the ProbeWantModel target. The
+// verdict-side mirror still describes exactly what was pushed.
 func wantModelsFromSnapshot(snap hostsvc.Snapshot) []string {
 	providers, _ := snap.Params["providers"].(map[string]any)
 

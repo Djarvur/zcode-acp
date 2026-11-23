@@ -10,12 +10,16 @@ import (
 
 // The production entitlement gate (AUTH-02, plan 06-05 — 06-RESEARCH.md
 // Pattern 2's entitlement paragraph, the wrapper half of the account
-// snapshot): a provider family is entitled for the coding-plan path when
-// the desktop's OWN state says so, read READ-ONLY:
+// snapshot; keyed per (family, mode) since quick task 261123-vyl): a
+// builtin rule is entitled for the coding-plan path when the desktop's OWN
+// state says the user SELECTED that rule's connection, read READ-ONLY:
 //
 //   - ~/.zcode/v2/setting.json has
-//     providerFamilyConnectionSelections[family].kind ==
-//     "individual-coding-plan", AND
+//     providerFamilyConnectionSelections[family].kind == mode — the
+//     desktop's selected connection kind IS this rule's mode
+//     (individual-coding-plan, team-coding-plan and start-plan are the
+//     selectable kinds; off-peak/highspeed never appear as kinds and
+//     therefore never match), AND
 //   - modelProviderFamilyModes[family] != "apiKey" (absent entry passes —
 //     the verified rule's strict-inequality semantics), AND
 //   - the credential store holds oauth:<family>:access_token (the 06-01
@@ -31,12 +35,10 @@ import (
 // Family is the literal "zai" at the production call site; the gate stays
 // family-generic per the reference's multi-family shape.
 
-// The capture-verbatim literals the rule compares against (ref
-// account-provider.ts oauthSelectedCodingPlanFamilies).
-const (
-	codingPlanSelectionKind = "individual-coding-plan"
-	apiKeyFamilyMode        = "apiKey"
-)
+// The capture-verbatim literal the rule compares against (ref
+// account-provider.ts oauthSelectedCodingPlanFamilies — the apiKey mode
+// veto; the selectable connection kinds are the rule's own modes).
+const apiKeyFamilyMode = "apiKey"
 
 // The gate's structural-log codes (short coded tokens — never messages with
 // values, never file dumps).
@@ -48,9 +50,9 @@ const (
 
 // EntitlementGate is the production entitlement decision the account
 // snapshot builder receives (hostsvc.BuildAccount's entitled func — the
-// gate may only omit families, never edit entries). Constructed once via
-// NewEntitlementGate; Entitled is safe for concurrent use (the 06-01
-// reader's posture).
+// gate may only omit (family, mode) pairs, never edit entries).
+// Constructed once via NewEntitlementGate; Entitled is safe for concurrent
+// use (the 06-01 reader's posture).
 type EntitlementGate struct {
 	settingPath string
 	store       *CredentialStore
@@ -62,24 +64,26 @@ func NewEntitlementGate(settingPath string, store *CredentialStore) *Entitlement
 	return &EntitlementGate{settingPath: settingPath, store: store}
 }
 
-// Entitled answers whether the family carries the coding-plan entitlement
-// per the desktop's own read-only state. Boolean only: every degradation
-// arm answers false through the same posture, with the structural log
-// carrying the class.
-func (g *EntitlementGate) Entitled(ctx context.Context, family string) bool {
+// Entitled answers whether the desktop's own read-only state entitles this
+// RULE — the (family, mode) pair, where mode is the builtin rule's
+// config.access.mode. Boolean only: every degradation arm answers false
+// through the same posture, with the structural log carrying the class.
+// kind_ok means the selected connection kind equals the rule's mode
+// exactly; no kind or mode VALUE is ever logged.
+func (g *EntitlementGate) Entitled(ctx context.Context, family, mode string) bool {
 	doc, ok := g.readSetting()
 	if !ok {
 		return false
 	}
 
 	kind, kindOK := selectionKind(doc.ProviderFamilyConnectionSelections[family])
-	kindOK = kindOK && kind == codingPlanSelectionKind
+	kindOK = kindOK && kind == mode
 
 	// The verified rule is a strict inequality against the explicit apiKey
 	// value — an ABSENT modes entry passes (JS `!== "apiKey"` semantics,
 	// ref account-provider.ts oauthSelectedCodingPlanFamilies).
-	mode, hasMode := doc.ModelProviderFamilyModes[family]
-	modeOK := !hasMode || mode != apiKeyFamilyMode
+	familyMode, hasMode := doc.ModelProviderFamilyModes[family]
+	modeOK := !hasMode || familyMode != apiKeyFamilyMode
 
 	tokenPresent, ok := g.store.LoginToken(ctx, family)
 	_ = tokenPresent // presence only — the value is never surfaced (T-06-15)
@@ -129,8 +133,8 @@ func (g *EntitlementGate) readSetting() (settingDoc, bool) {
 
 // selectionKind digs one family's selection kind from its raw selection
 // value (the capture-verbatim `kind` field). A missing family, an
-// unstructured value, or an empty kind answers not-ok — the kind gate only
-// passes the exact individual-coding-plan literal.
+// unstructured value, or an empty kind answers not-ok — an empty kind can
+// never equal a rule's mode.
 func selectionKind(raw json.RawMessage) (string, bool) {
 	var sel struct {
 		Kind string `json:"kind"`

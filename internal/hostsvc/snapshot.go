@@ -180,14 +180,19 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 // BOTH maps (desktop parity: the desktop's own model-selection view filters
 // the same field, and the registry materializes an account provider only
 // when access.entitled is true — entitling a hidden rule surfaces its
-// duplicate idle/highspeed row in the catalog). The rules come from the desktop's OWN bundled table —
+// duplicate idle/highspeed row in the catalog). The overlay carries one
+// entry per VISIBLE zhipu-account rule whose access.mode is the family's
+// selected connection (the desktop's registry decision is per (family,
+// mode), so the gate receives the selection and decides rule by rule). The
+// rules come from the desktop's OWN bundled table —
 // read and decoded ONCE by decodeBuiltinTable, so the revision and the
 // rules always describe the SAME table bytes (D-08 IN-01: an auto-update
 // swapping the file mid-build can never pair a fresh revision with stale
 // rules; D-08's snapshot-side twin: verbatim mirror, no renaming/reordering/
 // model-list editing; T-06-09). Entitlement is a decision the builder RECEIVES: entitled is the
 // caller's gate (production: setting.json selections/modes + store oauth
-// token, authored in 06-05) and a rejected family is omitted from providers
+// token, authored in 06-05; keyed by (family, mode) since quick task
+// 261123-vyl) and a rejected pair is omitted from providers
 // AND states entirely — the gate may only omit, never edit. A malformed
 // table answers a coded error — never an empty overlay silently pushed as
 // if it were the account config.
@@ -196,7 +201,7 @@ func (b *SnapshotBuilder) BuildRevision(install supervisor.Install, rev int) Sna
 // formula over the same resolved install path (T-06-08 / the Phase-5 lock).
 func (b *SnapshotBuilder) BuildAccount(
 	install supervisor.Install,
-	entitled func(family string) bool,
+	entitled func(family, mode string) bool,
 ) (Snapshot, error) {
 	// ONE read + ONE decode feed both derived values (D-08 IN-01) — the
 	// revision stamped into basedOnZCodeBuiltinRevision and the rules
@@ -223,8 +228,8 @@ func (b *SnapshotBuilder) BuildAccount(
 			continue
 		}
 
-		if !entitled(rule.Family) {
-			continue // the gate may only omit families — never edit entries (T-06-09)
+		if !entitled(rule.Family, rule.Mode) {
+			continue // the gate may only omit (family, mode) pairs — never edit entries (T-06-09)
 		}
 
 		providers[rule.ProviderID] = map[string]any{
@@ -265,11 +270,16 @@ func (b *SnapshotBuilder) BuildAccount(
 // capture-verbatim camelCase wire fields: the wrapper mirrors exactly these,
 // never edits them (T-06-09). Visibility carries config.visibility verbatim;
 // it governs the overlay's omission and is never validated as a schema field.
+// Mode carries config.access.mode verbatim — the connection mode the
+// desktop's selected connection kind must equal for the rule to be
+// entitled; it is data, never validated, and an absent mode decodes as
+// empty and therefore never matches a selected kind.
 type builtinProviderRule struct {
 	ProviderID string   // providerId — the providers/states map key
 	ModelIDs   []string // config.builtinModelIds — carried verbatim
 	AccessType string   // config.access.type — the zhipu-account filter
 	Family     string   // config.access.accountType — the entitlement-gate family
+	Mode       string   // config.access.mode — the selected-connection comparison value
 	Visibility string   // config.visibility — the hidden marker, compared exactly
 }
 
@@ -282,8 +292,10 @@ type builtinProviderRule struct {
 // camelCase discipline — but UNLIKE the ack dig-outs, undecodable here is a
 // coded error, NOT absent: a malformed table (undecodable JSON, missing
 // providerRules, a rule missing its access block) must fail the build, never
-// push a degraded overlay. Visibility is captured verbatim too, but it is
-// data, not a malformed-table class: it governs the overlay's omission. The
+// push a degraded overlay. Visibility and access.mode are captured verbatim
+// too, but they are data, not a malformed-table class: visibility governs the
+// overlay's omission and mode is the value the desktop's selected connection
+// is compared against. The
 // coded classes are unchanged from the absorbed rules reader.
 func decodeBuiltinTable(path string) (int, []builtinProviderRule, error) {
 	data, err := os.ReadFile(path)
@@ -337,6 +349,7 @@ func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRul
 			Visibility      string   `json:"visibility"`
 			Access          *struct {
 				Type        string `json:"type"`
+				Mode        string `json:"mode"`
 				AccountType string `json:"accountType"`
 			} `json:"access"`
 		} `json:"config"`
@@ -366,6 +379,7 @@ func digBuiltinRule(path string, i int, raw json.RawMessage) (builtinProviderRul
 		ModelIDs:   rule.Config.BuiltinModelIDs,
 		AccessType: rule.Config.Access.Type,
 		Family:     rule.Config.Access.AccountType,
+		Mode:       rule.Config.Access.Mode,
 		Visibility: rule.Config.Visibility,
 	}, nil
 }
