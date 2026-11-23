@@ -72,6 +72,14 @@ func probeFixtureCredentials(t *testing.T) string {
 	return path
 }
 
+// probeLookPathAvailable is the fixture success seam for every arm that
+// exercises the exec path: the host's real secret-tool presence must never
+// decide a test arm (the CI runner does not install libsecret-tools). Only
+// arm (a) scripts LookPath absent.
+func probeLookPathAvailable(string) (string, error) {
+	return "/usr/bin/secret-tool", nil
+}
+
 // recordedProbeExec records every exec-seam invocation (argv/env/deadline
 // facts) — the injection discipline the arms use to prove ordering and
 // non-execution. Verdict scripting rides the per-arm WithKeyringProbeExec
@@ -147,6 +155,7 @@ func testKeyringProbeMissingBinary(t *testing.T) {
 // reaches the error (coarse-signal classification only).
 func testKeyringProbeNoDesktopSession(t *testing.T) {
 	probe := interact.NewKeyringProber("secret-tool", probeFixtureCredentials(t), probeEnv(),
+		interact.WithKeyringProbeLookPath(probeLookPathAvailable),
 		interact.WithKeyringProbeExec(func(
 			_ context.Context, _ []string, _ []string,
 		) ([]byte, []byte, error) {
@@ -176,6 +185,7 @@ func testKeyringProbeNoDesktopSession(t *testing.T) {
 // output) — the coded log-in-via-desktop hint.
 func testKeyringProbeNoEntry(t *testing.T) {
 	probe := interact.NewKeyringProber("secret-tool", probeFixtureCredentials(t), probeEnv(),
+		interact.WithKeyringProbeLookPath(probeLookPathAvailable),
 		interact.WithKeyringProbeExec(func(
 			_ context.Context, _ []string, _ []string,
 		) ([]byte, []byte, error) {
@@ -212,6 +222,7 @@ func testKeyringProbeArgvContract(t *testing.T) {
 	exec := &recordedProbeExec{}
 
 	probe := interact.NewKeyringProber("secret-tool", credPath, env,
+		interact.WithKeyringProbeLookPath(probeLookPathAvailable),
 		interact.WithKeyringProbeExec(exec.exec),
 	)
 
@@ -252,6 +263,7 @@ func testKeyringProbeUnresolvablePath(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing", "credentials.json")
 
 	probe := interact.NewKeyringProber("secret-tool", missing, probeEnv(),
+		interact.WithKeyringProbeLookPath(probeLookPathAvailable),
 		interact.WithKeyringProbeExec(exec.exec),
 	)
 
@@ -276,6 +288,7 @@ func testKeyringProbeUnresolvablePath(t *testing.T) {
 // the coded timeout WELL inside the test's own watchdog bound.
 func testKeyringProbeHungExec(t *testing.T) {
 	probe := interact.NewKeyringProber("secret-tool", probeFixtureCredentials(t), probeEnv(),
+		interact.WithKeyringProbeLookPath(probeLookPathAvailable),
 		interact.WithKeyringProbeTimeout(80*time.Millisecond),
 		interact.WithKeyringProbeExec(func(
 			ctx context.Context, _ []string, _ []string,
