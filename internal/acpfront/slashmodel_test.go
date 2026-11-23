@@ -216,8 +216,9 @@ func assertRefusalCarriage(t *testing.T, frame teeErrorFrame, wantDetails string
 }
 
 // assertPromptErrorCode asserts one coded frame with the given code and a
-// NULL data payload — the generic seam boundary (the detail seam widens
-// ONLY detail-carrying errors, never a blanket data injection).
+// NULL data payload — the generic seam boundary (the payload seam widens
+// ONLY payload-carrying errors — details or reason — never a blanket data
+// injection).
 func assertPromptErrorCode(t *testing.T, frame teeErrorFrame, wantCode int) {
 	t.Helper()
 
@@ -227,7 +228,7 @@ func assertPromptErrorCode(t *testing.T, frame teeErrorFrame, wantCode int) {
 
 	if len(frame.Error.Data) != 0 {
 		t.Fatalf("generic error frame must keep data null (the seam widens only "+
-			"detail-carrying errors), got %s", frame.Error.Data)
+			"payload-carrying errors: details or reason), got %s", frame.Error.Data)
 	}
 }
 
@@ -324,7 +325,7 @@ func TestModelSlashNoModelRefusal(t *testing.T) {
 		askRefusal(t, cfgOptionScenario(slashNoModelCreateResult), "/model "+corpusModelFlashID)
 	})
 
-	t.Run("generic errors keep data null (the seam widens only detail-carrying errors)", func(t *testing.T) {
+	t.Run("generic errors keep data null (the seam widens only payload-carrying errors)", func(t *testing.T) {
 		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult))
 
 		ctx, cancel := h.ExchangeCtx()
@@ -548,9 +549,10 @@ func slashStopRule() fake.RequestRule {
 
 // TestModelSlashMidTurnRejectedWhenTurnActive — the WR-02 lock (07-REVIEW):
 // a /model switch issued while the SAME session's turn is active takes the
-// CORE-05 rejection — the ONE stable turn-active surface (cancel_test.go's
-// pinned text), exactly what any literal prompt would get — and never a
-// mid-turn backend setModel mutation. The intercept deliberately runs
+// -32003 session-busy refusal — the ONE stable turn-active surface plus
+// data.reason session_busy (cancel_test.go's shared assertRejectedSessionBusy),
+// exactly what any literal prompt would get — and never a mid-turn backend
+// setModel mutation. The intercept deliberately runs
 // before acquireTurn so refusals never HOLD the slot; the session-scoped
 // slot check keeps that placement from becoming a bypass: at HEAD the
 // mid-turn switch rides straight into the mutation, and a refused one
@@ -575,21 +577,15 @@ func TestModelSlashMidTurnRejectedWhenTurnActive(t *testing.T) {
 	// running and the slot held).
 	promptDone := startActiveTurn(ctx, t, h, sid)
 
-	// The mid-turn switch: rejected like any literal prompt (CORE-05).
+	// The mid-turn switch: rejected like any literal prompt (CORE-05) —
+	// the -32003 session-busy shape at both the SDK and raw-wire layers.
 	_, err := h.client.Prompt(ctx, slashPrompt(sid, "/model "+corpusModelFlashID))
 	if err == nil {
 		t.Fatal("a /model switch while the session's turn is active must be rejected " +
 			"(the CORE-05 single-active-turn surface), got success")
 	}
 
-	var rerr *acp.RequestError
-	if !errors.As(err, &rerr) || rerr.Code != acpport.CodeInvalidRequest {
-		t.Fatalf("the mid-turn switch must ride the invalid-request class, got %v", err)
-	}
-
-	if rerr.Message != turnActiveMessage {
-		t.Fatalf("rejection message = %q, want the ONE stable surface %q", rerr.Message, turnActiveMessage)
-	}
+	assertRejectedSessionBusy(t, h.ACPLines(), err)
 
 	// The running turn was untouched by the rejected switch: the explicit
 	// cancel still resolves it cancelled.

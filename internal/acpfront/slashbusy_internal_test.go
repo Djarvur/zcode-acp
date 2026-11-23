@@ -12,10 +12,11 @@ package acpfront
 // discipline), so another session's turn on the front-wide slot never
 // blocks this session's switch.
 //
-//	TestPromptModelSlashBusyScope — same-session busy: the CORE-05
-//	  rejection rides the ONE stable turnActiveMessage surface and no
-//	  setModel reaches the backend; cross-session busy: the switch
-//	  proceeds (exactly one setModel, the end_turn resolution).
+//	TestPromptModelSlashBusyScope — same-session busy: the refusal is the
+//	  -32003 session-busy error (CodeSessionBusy/ReasonSessionBusy) riding
+//	  the ONE stable turnActiveMessage surface, and no setModel reaches the
+//	  backend; cross-session busy: the switch proceeds (exactly one
+//	  setModel, the end_turn resolution).
 
 import (
 	"context"
@@ -132,12 +133,13 @@ func runBusyScopeArm(t *testing.T, holderSID string) (acpport.StopReason, fake.T
 
 // TestPromptModelSlashBusyScope is the WR-02 scoping lock (07-REVIEW): the
 // /model intercept's busy gate is session-scoped — a switch issued while
-// THIS session's turn is active takes the CORE-05 turnActiveMessage
-// rejection before any backend call, while a switch on a slot-free session
+// THIS session's turn is active takes the -32003 session-busy rejection
+// (turnActiveMessage plus data.reason session_busy) before any backend
+// call, while a switch on a slot-free session
 // proceeds even when ANOTHER session holds the front-wide slot (the
 // mutation is a conn.Call, not a turn — the Cancel WR-07 scoping parity).
 func TestPromptModelSlashBusyScope(t *testing.T) {
-	t.Run("same-session busy rejects on the ONE stable surface with no mutation", func(t *testing.T) {
+	t.Run("same-session busy rejects as -32003 session_busy with no mutation", func(t *testing.T) {
 		_, tr, err := runBusyScopeArm(t, busySID)
 
 		if err == nil {
@@ -145,9 +147,11 @@ func TestPromptModelSlashBusyScope(t *testing.T) {
 		}
 
 		var seamErr *acpport.Error
-		if !errors.As(err, &seamErr) || seamErr.Code != acpport.CodeInvalidRequest ||
+		if !errors.As(err, &seamErr) || seamErr.Code != acpport.CodeSessionBusy ||
+			seamErr.Reason != acpport.ReasonSessionBusy ||
 			seamErr.Message != turnActiveMessage {
-			t.Fatalf("busy rejection = %v, want the coded invalid-request carrying %q", err, turnActiveMessage)
+			t.Fatalf("busy rejection = %v, want the coded -32003 session_busy error carrying %q",
+				err, turnActiveMessage)
 		}
 
 		if setModels := countSetModels(tr); setModels != 0 {
