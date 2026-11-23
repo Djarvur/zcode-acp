@@ -191,7 +191,25 @@ result: awaiting (seeded 2026-11-22 — the user's Orca run has not happened yet
   Remaining user-side items (tied to the real desktop login on the user's
   machine): the account-model picker rendering and the /model switch on the real
   account — or the user's acceptance of the piecewise verification above as the
-  QA-03 verdict.)
+  QA-03 verdict.
+
+  PATH 2 (coding-plan) — **PASSED by the user's real run (2026-11-23 11:00–11:10
+  local, screenshots on their machine)**: the fixed wrapper served the card —
+  the prompt reply TEXT rendered (the field symptom closed: "Привет! … вижу, что
+  мы на ветке gsd/phase-06-…", Worked for 13s); a second turn ran 1m49s and the
+  model READ the committed capture PNG through its tools and described it
+  correctly (tool_call rendering + vision, both live); the account catalog
+  rendered in the picker (GLM-5.4 / GLM-5.3 / GLM-5.3-Flash / deepseek-v4.1-flash
+  + Effort Low/High/Max); /model switch took the chat to GLM-5.4 Max; the
+  resume toast after the binary swap was the honest new-session arm (no hang, no
+  crash — the resume path survived field contact). /gsd-manager verified working
+  by the agent's probe (runtime loads the workflow, tool calls render, permission
+  asks fire) — typed as text; the commands catalog in the autocomplete menu is
+  not advertised (outside the v1 dialect; post-v1 wish).
+  PATH 1 (api-key) — not run: the card env mechanism for a real api key is
+  user setup and the user has not opted to configure it; verdict pending the
+  user's call (run it, or accept the path-2 + piecewise evidence as the QA-03
+  verdict for v1).
 
 ## Summary
 
