@@ -22,7 +22,15 @@ answer EXACTLY (`{action: accept, content: {answers: {"Which phase?": "Verify 1"
 
 ## Test 2 — the real-machine acceptance (the user's /gsd-manager)
 
-awaiting — the user restarts their Orca chat session (the binary with the bridge is
-installed) and re-runs /gsd-manager: the workflow's choice dialogs must now RENDER
-in the card, and answering one feeds the workflow (the field symptom "окно в третий
-раз отклонено" must be gone).
+**PASSED (2026-11-23 evening)** — the user confirmed in live Orca use: "вроде бы все
+работает". The field trail the user exercised end-to-end on their machine:
+- the choice dialogs render and feed the workflow (the "окно в третий раз отклонено"
+  symptom closed);
+- the model catalog: 19 entries right after start, provider labels on every entry,
+  and the list STAYS FULL across model switches (deepseek) and turns — the
+  switch-path merge (91e86f3) closed the last shrink.
+
+The fixes that landed between the field report and the acceptance (all live-verified):
+the probe poke's reasoning level, the session/new catalog preservation, the
+coding-plan catalog binding, the silent auth for discovery sessions, the provider
+labels, and the switch-path merge. Commits 817f83e / ed9b157 / d3dac1b / 91e86f3.
