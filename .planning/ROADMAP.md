@@ -38,7 +38,7 @@ and `.planning/milestones/v0.20.0-REQUIREMENTS.md`.
 
 </details>
 
-- [ ] **Phase 8: Slash Catalog — available_commands_update** — the wrapper emits the
+- [x] **Phase 8: Slash Catalog — available_commands_update** — the wrapper emits the (completed 2026-11-23)
       `available_commands_update` catalog on `session/new` (ZCode skills from
       SKILL.md frontmatter + the `/model` entry), within the client's 9 s discovery
       scan budget, chat and discovery sessions alike; verified in the Orca composer
