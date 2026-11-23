@@ -120,6 +120,14 @@ type SpawnOpts struct {
 	// StderrCap caps the child stderr bytes forwarded to the wrapper's
 	// stderr (0 takes the 64 KiB probe cap of PITFALL 2).
 	StderrCap int
+	// StdoutTap, when set, receives the child's stdout instead of a
+	// caller-read pipe: SpawnChild installs it as cmd.Stdout and leaves
+	// Child.Stdout nil (helper-only — the mount owner never reads
+	// Child.Stdout). exec's own copy goroutine drains the tap to EOF and
+	// Wait joins that goroutine, so every line written immediately before
+	// exit is in the tap when a failure error is built; WaitDelay is only
+	// the close backstop, never the drain.
+	StdoutTap io.Writer
 }
 
 // SpawnArgv returns the canonical spawn argv for an Install — exactly
@@ -176,7 +184,7 @@ func ChildEnv(inst Install, parentEnv []string) []string {
 // Context cancellation and WaitDelay kill the whole process group, never
 // just the direct child (PITFALL 6).
 func SpawnChild(ctx context.Context, argv, env []string, opts SpawnOpts) (*Child, error) {
-	if len(argv) == 0 {
+	if len(argv) == 0 || argv[0] == "" {
 		return nil, errEmptyArgv
 	}
 
@@ -224,17 +232,21 @@ type spawnPipes struct {
 }
 
 // closeAll closes every parent-side pipe end (a failed Start would otherwise
-// leak file descriptors).
+// leak file descriptors). Stdout is nil when SpawnOpts.StdoutTap owns the
+// stream.
 func (p spawnPipes) closeAll() {
 	_ = p.stdin.Close()
-	_ = p.stdout.Close()
+	if p.stdout != nil {
+		_ = p.stdout.Close()
+	}
 	_ = p.stderr.Close()
 }
 
 // newSpawnCommand builds the exec.Cmd: env, the process-group start, the
 // three stdio pipes, the group-kill Cancel, and the WaitDelay backstop.
 func newSpawnCommand(ctx context.Context, argv, env []string, opts SpawnOpts) (*exec.Cmd, spawnPipes, error) {
-	//nolint:gosec // argv is the supervisor's own SpawnArgv contract, never user input
+	//nolint:gosec // argv is the supervisor's own spawn contract (the canonical
+	// app-server line or the mount helper), never shell-interpreted user input
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = env
 	// The process-group start: the child leads its own group so the staged
@@ -246,9 +258,18 @@ func newSpawnCommand(ctx context.Context, argv, env []string, opts SpawnOpts) (*
 		return nil, spawnPipes{}, fmt.Errorf("zcode: spawn stdin pipe: %w", err)
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, spawnPipes{}, fmt.Errorf("zcode: spawn stdout pipe: %w", err)
+	var stdout io.ReadCloser
+
+	if opts.StdoutTap != nil {
+		// exec's copier drains the tap to EOF and Wait joins it: a caller-owned
+		// StdoutPipe must never be relied on for that drain (WaitDelay closes it
+		// and can discard buffered text).
+		cmd.Stdout = opts.StdoutTap
+	} else {
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return nil, spawnPipes{}, fmt.Errorf("zcode: spawn stdout pipe: %w", err)
+		}
 	}
 
 	stderr, err := cmd.StderrPipe()
@@ -297,7 +318,7 @@ func drainChildStderr(rc io.Reader, capBytes int, done chan<- struct{}) {
 		n, readErr := rc.Read(buf)
 		if n > 0 && forwarded < capBytes {
 			room := capBytes - forwarded
-			out := buf
+			out := buf[:n]
 
 			if n > room {
 				out = buf[:room]

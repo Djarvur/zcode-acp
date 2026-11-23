@@ -72,6 +72,23 @@ type Install struct {
 	Entrypoint  string // <root>/resources/glm/zcode.cjs (invariant relative path)
 	BuiltinFile string // ZCODE_BUILTIN_PROVIDER_CONFIG_FILE value
 	Layout      string // "unpacked-appimage" | "appimage" | "deb" | "rpm" | "explicit"
+	// AppImage is the resolved packed AppImage path; non-empty means this
+	// backend is mount-first (D-01/D-04): discovery is a pure read, so the
+	// mount happens only after selection, and PrepareMount replaces the
+	// empty Root/Binary/Entrypoint with the mounted tree.
+	AppImage string
+	// Version is the <ver> parsed from the AppImage filename or the unpacked
+	// dir name (install-discovery.md :33) — the version the spawn line no
+	// longer carries once the root lives under a volatile mount path.
+	Version string
+}
+
+// RequiresMount reports whether the install is a packed AppImage that must be
+// mounted before any spawn: AppImage set and Root not yet resolved to the
+// mount (D-01/D-02). The mounted install (Root set) reports false, so the
+// spawn seam only ever sees a mounted install.
+func (i Install) RequiresMount() bool {
+	return i.AppImage != "" && i.Root == ""
 }
 
 // Probe is one diagnostics row: the locate command a probe ran and what it
@@ -231,6 +248,65 @@ func ExplicitRootInstall(root string) (Install, bool) {
 	return bundleInstall(root, "explicit")
 }
 
+// OverrideInstall maps an --app-server / ZCODE_ACP_APP_SERVER value into the
+// discovery Install shape (D-04, precedence unchanged): a directory keeps the
+// existing explicit-root behavior (validated when the invariant tree is
+// present, the same unvalidated shape otherwise); a path whose literal
+// basename or EvalSymlinks target ends in .AppImage is a packed install that
+// goes through the managed mount; any other regular file keeps the existing
+// app-server-binary shape. An empty path reports false so the override row
+// stays an honest "no override configured".
+//
+// The stored AppImage is always absolute: exec.CommandContext would otherwise
+// PATH-resolve a bare basename (a relative literal is absolutized with
+// filepath.Abs, never a PATH lookup), and a dangling relative override is
+// still stored absolute so the mount step fails loud naming the real path
+// instead of silently falling through to discovery.
+func OverrideInstall(path string) (Install, bool) {
+	if path == "" {
+		return Install{}, false
+	}
+
+	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		if inst, ok := ExplicitRootInstall(path); ok {
+			return inst, true
+		}
+
+		return Install{
+			Root:   path,
+			Binary: filepath.Join(path, binaryName),
+			Layout: "explicit",
+		}, true
+	}
+
+	literal := path
+	if abs, absErr := filepath.Abs(path); absErr == nil {
+		literal = abs
+	}
+
+	resolved := literal
+	if target, evalErr := filepath.EvalSymlinks(literal); evalErr == nil {
+		resolved = target
+	}
+
+	if strings.HasSuffix(literal, appImageSuffix) || strings.HasSuffix(resolved, appImageSuffix) {
+		return Install{
+			AppImage: resolved,
+			Version:  appImageVersion(resolved),
+			Layout:   layoutAppImage,
+		}, true
+	}
+
+	root := filepath.Dir(path)
+
+	return Install{
+		Root:       root,
+		Binary:     path,
+		Entrypoint: filepath.Join(root, filepath.FromSlash(entrypointRel)),
+		Layout:     "explicit",
+	}, true
+}
+
 // probeOverride is order step 1: the explicit override wins over any on-disk
 // discovery (install-discovery.md :93).
 func (p Probers) probeOverride() (Probe, Install, bool) {
@@ -250,6 +326,11 @@ func (p Probers) probeOverride() (Probe, Install, bool) {
 		row.Result = "rejected volatile mount root " + inst.Root
 
 		return row, Install{}, false
+	}
+	if inst.RequiresMount() {
+		row.Result = "found: packed AppImage " + inst.AppImage + describeVersion(inst.Version)
+
+		return row, inst, true
 	}
 	row.Result = "found: explicit root " + inst.Root
 
@@ -643,6 +724,13 @@ func (p Probers) probeBuiltinBundled(winner Install, found bool) (row Probe, bun
 
 		return row, ""
 	}
+	if winner.RequiresMount() {
+		// A packed install is not readable before the mount: the bundled copy
+		// is validated inside the mounted tree by PrepareMount (Pitfall 15).
+		row.Result = "deferred until the packed AppImage is mounted"
+
+		return row, ""
+	}
 	bundled := filepath.Join(winner.Root, filepath.FromSlash(bundledProviderRel), builtinFileName)
 	if _, err := os.Stat(bundled); err != nil {
 		row.Result = "no bundled " + builtinFileName + " under " + winner.Root +
@@ -758,6 +846,34 @@ func dirVersion(path string) string {
 	ver, _ := strings.CutPrefix(name, "zcode-")
 
 	return ver
+}
+
+// appImageVersion extracts the <ver> of a packed AppImage filename in the
+// documented shape ZCode-<ver>-linux-<arch>.AppImage (install-discovery.md
+// :33); "" when the name does not match. The symlink form (ZCode.AppImage)
+// carries no version — callers pass the EvalSymlinks-resolved target.
+func appImageVersion(path string) string {
+	name, ok := strings.CutPrefix(filepath.Base(path), "ZCode-")
+	if !ok {
+		return ""
+	}
+
+	ver, _, ok := strings.Cut(name, "-linux-")
+	if !ok {
+		return ""
+	}
+
+	return ver
+}
+
+// describeVersion renders a parsed <ver> for a diagnostics row ("" when the
+// filename carried none).
+func describeVersion(version string) string {
+	if version == "" {
+		return ""
+	}
+
+	return " (version " + version + ")"
 }
 
 // compareVersions orders dotted version strings by numeric component

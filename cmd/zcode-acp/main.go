@@ -646,14 +646,42 @@ func wireResponder(
 }
 
 // run composes the minimal chat loop over the production lifecycle: discover,
-// supervise, connect the back leg, serve ACP over os.Stdin/os.Stdout, and
-// stage-shut-down when the client disconnects or the child exits.
+// mount a packed AppImage when the install requires it, supervise, connect the
+// back leg, serve ACP over os.Stdin/os.Stdout, and stage-shut-down when the
+// client disconnects or the child exits.
 func run(cfg config) error {
 	ctx := context.Background()
 
 	inst, err := discoverInstall(ctx, cfg.appServer)
 	if err != nil {
 		return err
+	}
+
+	// Mount-first acquisition (MNT-01/MNT-02): a packed AppImage is mounted
+	// before anything spawns and the mounted install replaces it. The deferred
+	// stop is the early-return backstop; the normal path stops the mount
+	// explicitly after the supervisor's staged shutdown (order is
+	// load-bearing: app-server first, helper second).
+	var (
+		mount        *supervisor.Mount
+		mountStopped bool
+	)
+
+	inst, mount, err = acquireMount(ctx, inst)
+	if err != nil {
+		return err
+	}
+
+	if mount != nil {
+		defer func() {
+			if mountStopped {
+				return
+			}
+
+			if stopErr := stopMount(mount); stopErr != nil {
+				slog.Warn("zcode-acp: mount teardown backstop", "err", stopErr)
+			}
+		}()
 	}
 
 	// Two lifecycles, deliberately: the supervision ctx drives the
@@ -728,6 +756,15 @@ func run(cfg config) error {
 
 	spawnCancel() // the teardown backstop: the group is long gone; ESRCH-quiet
 
+	// The app-server is reaped and its group is gone; only now may the helper
+	// unmount the tree it served from (D-02's ordered teardown).
+	stopErr := stopMount(mount)
+	mountStopped = true
+
+	if stopErr != nil {
+		return stopErr
+	}
+
 	if childLost {
 		return errChildLost
 	}
@@ -737,10 +774,52 @@ func run(cfg config) error {
 	return nil
 }
 
+// acquireMount performs the mount-first acquisition: a packed AppImage install
+// (AppImage set, Root empty) is mounted by a supervised --appimage-mount
+// helper and the mounted Install replaces it; every other install is handed
+// through unchanged (a nil Mount means there is nothing to stop). The mount is
+// stopped on every exit path — here on failure, by the caller's deferred
+// backstop, and explicitly after the app-server's staged shutdown.
+func acquireMount(ctx context.Context, inst supervisor.Install) (supervisor.Install, *supervisor.Mount, error) {
+	if !inst.RequiresMount() {
+		return inst, nil, nil
+	}
+
+	mount, err := supervisor.PrepareMount(ctx, inst, supervisor.DefaultMountOpts())
+	if err != nil {
+		return supervisor.Install{}, nil, fmt.Errorf("mount the app-server AppImage: %w", err)
+	}
+
+	slog.Info("zcode-acp: appimage backend mounted",
+		"appimage", mount.AppImage(), "version", inst.Version, "mount", mount.Root(), "pid", mount.HelperPID())
+
+	return mount.Install(), mount, nil
+}
+
+// stopMount stops a mount-backed acquisition (nil-safe) and reports a
+// teardown failure as a runtime failure: a mount left behind is never a
+// warning-only outcome (A5).
+func stopMount(mount *supervisor.Mount) error {
+	if mount == nil {
+		return nil
+	}
+
+	if err := mount.Stop(); err != nil {
+		return fmt.Errorf("stop the app-server AppImage mount: %w", err)
+	}
+
+	slog.Info("zcode-acp: appimage mount stopped", "appimage", mount.AppImage(), "mount", mount.Root())
+
+	return nil
+}
+
 // discoverInstall resolves the app-server install: the --app-server override
-// (documented order step 1) when set, production discovery otherwise. A
-// discovery failure returns the Phase-3 actionable diagnostics — one probe
-// row per attempted probe, never a guess (install-discovery.md :34).
+// (documented order step 1) when set, production discovery otherwise. The
+// override accepts an install root, an app-server binary, or a packed
+// .AppImage (D-04) — the mapping lives in supervisor.OverrideInstall so the
+// manual real tier shares one implementation. A discovery failure returns the
+// Phase-3 actionable diagnostics — one probe row per attempted probe, never a
+// guess (install-discovery.md :34).
 func discoverInstall(ctx context.Context, appServer string) (supervisor.Install, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -750,7 +829,7 @@ func discoverInstall(ctx context.Context, appServer string) (supervisor.Install,
 	probers := supervisor.DefaultProbers(home, optDir)
 	if appServer != "" {
 		probers.Override = func() (supervisor.Install, bool) {
-			return overrideInstall(appServer), true
+			return supervisor.OverrideInstall(appServer)
 		}
 	}
 
@@ -765,39 +844,10 @@ func discoverInstall(ctx context.Context, appServer string) (supervisor.Install,
 		slog.Debug("zcode-acp: discovery probe", "probe", row.Name, "result", row.Result)
 	}
 
-	slog.Info("zcode-acp: app-server resolved", "binary", inst.Binary, "layout", inst.Layout)
+	slog.Info("zcode-acp: app-server resolved",
+		"layout", inst.Layout, "binary", inst.Binary, "appimage", inst.AppImage, "version", inst.Version)
 
 	return inst, nil
-}
-
-// overrideInstall maps the --app-server path into the discovery Install
-// shape: a directory is an install root validated against the invariant
-// spawn surface (ExplicitRootInstall — <root>/zcode +
-// <root>/resources/glm/zcode.cjs, install-discovery.md :38); a regular file
-// is the app-server binary itself, its entrypoint still the invariant path
-// beside it. The shape is handed through as named — a wrong shape fails loud
-// at spawn with exec's actionable error, never a silent guess.
-func overrideInstall(path string) supervisor.Install {
-	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-		if inst, ok := supervisor.ExplicitRootInstall(path); ok {
-			return inst
-		}
-
-		return supervisor.Install{
-			Root:   path,
-			Binary: filepath.Join(path, "zcode"),
-			Layout: "explicit",
-		}
-	}
-
-	root := filepath.Dir(path)
-
-	return supervisor.Install{
-		Root:       root,
-		Binary:     path,
-		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
-		Layout:     "explicit",
-	}
 }
 
 // startSupervised starts the supervisor over the SpawnFunc seam and waits
