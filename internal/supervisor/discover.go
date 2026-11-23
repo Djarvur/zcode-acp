@@ -48,14 +48,29 @@ const (
 	// squashfs-root, EXP-VM-QA02).
 	bundledProviderRel = "resources/config/provider"
 
-	// probeCount is the documented probe set (install-discovery.md :93-97
-	// plus the runtime-provider-tree row and its install-side bundled
-	// fallback row).
-	probeCount = 9
+	// probeCount is the documented fixed probe set (install-discovery.md
+	// :93-97) with the two extraction-era AppImage probes replaced by the
+	// single ranked AppImage stage, plus the runtime-provider-tree row and
+	// its install-side bundled fallback row. The variable
+	// appimage-candidate rows add one row per evaluated candidate.
+	probeCount = 8
 
 	// dirPerm is the permission for directories discovery creates (the
 	// AppImage extraction working dir).
 	dirPerm = 0o750
+
+	// appExecMask is the executable-bit mask a packed candidate must carry
+	// before discovery adopts it (D-12's file-level usability checks).
+	appExecMask = 0o111
+)
+
+// AppImage candidate ranks: the D-08 tie-break at equal versions, in
+// preference order — a spawnable unpacked tree needs no mount, then the
+// user-facing symlink, then a versioned packed regular file.
+const (
+	rankUnpackedTree = iota
+	rankPackedSymlink
+	rankPackedFile
 )
 
 // ErrNoInstall is the empty-result outcome: no documented layout matched.
@@ -150,8 +165,15 @@ func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 
 	add(p.probeOverride())
 	add(p.probeXDGEntry(ctx))
-	add(p.probeAppImageGlob(ctx, found))
-	add(p.probeUnpackedGlob())
+
+	// Order step 3 is one version-ranked stage: it appends the rank row and
+	// one candidate row per evaluated candidate, then the winner.
+	stageRows, stageInstall, stageOK := p.probeAppImageStage(nil, found)
+	probes = append(probes, stageRows...)
+	if stageOK && !found {
+		winner, found = stageInstall, true
+	}
+
 	add(p.probeDpkg(ctx))
 	add(p.probeOptPath())
 	add(p.probeRpm(ctx))
@@ -406,10 +428,10 @@ func resolveExecTarget(execBinary string) (inst Install, ok bool, missReason str
 		return Install{}, false, "rejected volatile mount Exec target " + resolved
 	}
 	if strings.HasSuffix(resolved, appImageSuffix) {
-		// The packed AppImage route belongs to the appimage-glob probe
-		// (extraction), not to the entry resolution (:41).
+		// The packed AppImage route belongs to the version-ranked AppImage
+		// stage, not to the entry resolution (:41).
 		return Install{}, false, "default handler points at packed AppImage " +
-			resolved + " (the appimage-glob probe resolves it)"
+			resolved + " (the AppImage ranking resolves it)"
 	}
 	root := filepath.Dir(resolved)
 	layout := layoutDeb
@@ -465,112 +487,305 @@ func desktopEntryExec(path string) (string, bool) {
 	return "", false
 }
 
-// probeAppImageGlob is order step 3a: packed ZCode*.AppImage file + symlink,
-// resolved via EvalSymlinks; the user-facing symlink is preferred (matrix row
-// 2). Extraction runs only when a packed AppImage is all that exists (:95).
-func (p Probers) probeAppImageGlob(ctx context.Context, resolvedAlready bool) (Probe, Install, bool) {
-	row := Probe{Name: "appimage-glob", Query: "~/Applications/ZCode*.AppImage" +
-		" (file + symlink, resolved via EvalSymlinks)"}
-	if p.AppDirs == nil {
-		row.Result = "applications scan seam not configured"
-
-		return row, Install{}, false
-	}
-	packed, unpacked, rejected := classifyAppDirs(p.AppDirs())
-	notes := rejectionNotes(rejected)
-	if len(packed) == 0 {
-		row.Result = joinNotes(notes, "no ZCode*.AppImage under the applications scan")
-
-		return row, Install{}, false
-	}
-	if len(unpacked) > 0 {
-		row.Result = joinNotes(notes, "packed AppImage present but an unpacked "+unpackedDirName+
-			" exists — extraction skipped (matrix step 3: extract only when a packed AppImage is all that exists)")
-
-		return row, Install{}, false
-	}
-	if resolvedAlready {
-		row.Result = joinNotes(notes, "packed AppImage present; extraction skipped — "+
-			"an earlier probe resolved the install")
-
-		return row, Install{}, false
-	}
-	sortAppImageCandidates(packed)
-	resolved, err := filepath.EvalSymlinks(packed[0])
-	if err != nil {
-		row.Result = joinNotes(notes, fmt.Sprintf("AppImage %s unresolvable: %v", packed[0], err))
-
-		return row, Install{}, false
-	}
-	if mountDecoy(resolved) {
-		row.Result = joinNotes(notes, "rejected volatile mount AppImage "+resolved)
-
-		return row, Install{}, false
-	}
-	if p.ExtractAppImage == nil {
-		row.Result = joinNotes(notes, "extraction seam not configured for packed AppImage "+resolved)
-
-		return row, Install{}, false
-	}
-	root, err := p.ExtractAppImage(ctx, resolved, "")
-	if err != nil {
-		row.Result = joinNotes(notes, fmt.Sprintf("extraction of %s failed: %v", resolved, err))
-
-		return row, Install{}, false
-	}
-	inst, ok := bundleInstall(root, layoutAppImage)
-	if !ok {
-		row.Result = joinNotes(notes, "extracted tree at "+root+" is not spawnable ("+
-			binaryName+" or "+entrypointRel+" missing)")
-
-		return row, Install{}, false
-	}
-	row.Result = joinNotes(notes, "found: extracted "+resolved+" -> "+root)
-
-	return row, inst, true
+// appCandidate is one AppImage-layout backend evaluated by the ranked stage:
+// the path as scanned (the symlink display is kept for diagnostics), the
+// EvalSymlinks-resolved path, its layout and parsed version, the D-08 rank,
+// the Install a hit yields, and the miss reason ("" for a hit).
+type appCandidate struct {
+	display  string
+	resolved string
+	layout   string
+	version  string
+	rank     int
+	install  Install
+	miss     string
 }
 
-// classifyAppDirs sorts application-scan candidates into packed AppImage
-// paths, unpacked squashfs-root dirs, and volatile-mount rejections.
-func classifyAppDirs(candidates []string) (packed, unpacked, rejected []string) {
+// probeAppImageStage is order step 3 (D-06..D-09): collect packed AppImage
+// files, unpacked squashfs-root trees, and the XDG AppImage-family seeds;
+// evaluate every candidate individually (a bad one is a miss, never an
+// abort); rank by version, then the D-08 tie-break; and return the newest
+// usable candidate as at most one Install. found is the earlier-probe state:
+// the documented first-match order keeps an earlier winner, so the stage
+// records that it was not consulted and evaluates nothing. Discovery is a
+// pure read — no mount and no directory creation happens here (D-12).
+func (p Probers) probeAppImageStage(seeds []string, found bool) ([]Probe, Install, bool) {
+	row := Probe{Name: "appimage-rank", Query: "~/Applications/ZCode*.AppImage + ~/Applications/zcode-*/" +
+		unpackedDirName + " + the desktop entry target, version-ranked"}
+	if found {
+		row.Result = "not consulted; an earlier probe resolved the install"
+
+		return []Probe{row}, Install{}, false
+	}
+
+	candidates := dedupeAppCandidates(p.collectAppCandidates(seeds))
+	sortAppCandidates(candidates)
+
+	winner, ok := appImageWinner(candidates)
+	if ok {
+		row.Result = winner.selection()
+	} else {
+		row.Result = "no AppImage-layout candidate"
+	}
+
+	rows := make([]Probe, 0, len(candidates)+1)
+	rows = append(rows, row)
+
 	for _, cand := range candidates {
-		switch {
-		case mountDecoy(cand):
-			rejected = append(rejected, cand)
-		case strings.HasSuffix(cand, appImageSuffix):
-			packed = append(packed, cand)
-		case filepath.Base(cand) == unpackedDirName:
-			unpacked = append(unpacked, cand)
-		}
+		rows = append(rows, Probe{Name: "appimage-candidate", Query: cand.display, Result: cand.result()})
 	}
 
-	return packed, unpacked, rejected
+	if ok {
+		return rows, winner.install, true
+	}
+
+	return rows, Install{}, false
 }
 
-// probeUnpackedGlob is order step 3b: unpacked squashfs-root copies under the
-// applications dirs, newest version first (matrix row 1).
-func (p Probers) probeUnpackedGlob() (Probe, Install, bool) {
-	row := Probe{Name: "unpacked-glob", Query: "~/Applications/zcode-*/" + unpackedDirName + "/" + binaryName}
-	if p.AppDirs == nil {
-		row.Result = "applications scan seam not configured"
-
-		return row, Install{}, false
+// collectAppCandidates gathers the AppDirs scan plus the XDG seeds and
+// evaluates each path independently.
+func (p Probers) collectAppCandidates(seeds []string) []appCandidate {
+	paths := make([]string, 0, len(seeds))
+	if p.AppDirs != nil {
+		paths = append(paths, p.AppDirs()...)
 	}
-	_, trees, rejected := classifyAppDirs(p.AppDirs())
-	notes := rejectionNotes(rejected)
-	slices.SortFunc(trees, func(a, b string) int { return compareVersions(dirVersion(b), dirVersion(a)) })
-	for _, tree := range trees {
-		inst, ok := bundleInstall(tree, layoutUnpackedAppImage)
-		if ok {
-			row.Result = joinNotes(notes, "found: "+tree)
+	paths = append(paths, seeds...)
 
-			return row, inst, true
+	candidates := make([]appCandidate, 0, len(paths))
+	for _, path := range paths {
+		candidates = append(candidates, evaluateAppCandidate(path))
+	}
+
+	return candidates
+}
+
+// evaluateAppCandidate classifies one scanned path and evaluates it in
+// isolation: an unknown shape, a decoy, an unresolvable link, a non-regular
+// or non-executable file, a missing tree, and an unparseable version are all
+// miss reasons (D-07/D-12), never an abort.
+func evaluateAppCandidate(path string) appCandidate {
+	switch {
+	case mountDecoy(path):
+		return appCandidate{display: path, layout: layoutAppImage, miss: "rejected volatile mount " + path}
+	case strings.HasSuffix(path, appImageSuffix):
+		return evaluatePackedCandidate(path)
+	case filepath.Base(path) == unpackedDirName:
+		return evaluateUnpackedCandidate(path)
+	default:
+		return appCandidate{display: path, miss: "not an AppImage or " + unpackedDirName + " candidate"}
+	}
+}
+
+// evaluatePackedCandidate applies D-12's file-level checks to one packed
+// AppImage: resolvable, regular, executable, non-volatile, and with a
+// parseable <ver>.
+func evaluatePackedCandidate(display string) appCandidate {
+	cand := appCandidate{display: display, layout: layoutAppImage, rank: rankPackedFile}
+
+	info, err := os.Lstat(display)
+	if err != nil {
+		cand.miss = "unresolvable path: " + err.Error()
+
+		return cand
+	}
+
+	if info.Mode()&os.ModeSymlink != 0 {
+		cand.rank = rankPackedSymlink
+	}
+
+	resolved, err := filepath.EvalSymlinks(display)
+	if err != nil {
+		cand.miss = "unresolvable symlink: " + err.Error()
+
+		return cand
+	}
+
+	cand.resolved = resolved
+
+	if mountDecoy(resolved) {
+		cand.miss = "rejected volatile mount " + resolved
+
+		return cand
+	}
+
+	stat, err := os.Stat(resolved)
+	if err != nil {
+		cand.miss = "cannot stat the resolved path: " + err.Error()
+
+		return cand
+	}
+
+	if !stat.Mode().IsRegular() {
+		cand.miss = "not a regular file"
+
+		return cand
+	}
+
+	if stat.Mode().Perm()&appExecMask == 0 {
+		cand.miss = "not executable; remediation: chmod +x " + resolved
+
+		return cand
+	}
+
+	version := appImageVersion(resolved)
+	if version == "" {
+		cand.miss = "version unknown: the resolved name is not ZCode-<ver>-linux-<arch>" + appImageSuffix
+
+		return cand
+	}
+
+	cand.version = version
+	cand.install = Install{AppImage: resolved, Version: version, Layout: layoutAppImage}
+
+	return cand
+}
+
+// evaluateUnpackedCandidate resolves one squashfs-root tree and applies the
+// same file-level bar: the documented zcode-<ver> parent and the invariant
+// bundle tree.
+func evaluateUnpackedCandidate(display string) appCandidate {
+	cand := appCandidate{display: display, layout: layoutUnpackedAppImage, rank: rankUnpackedTree}
+
+	resolved, err := filepath.EvalSymlinks(display)
+	if err != nil {
+		cand.miss = "unresolvable tree: " + err.Error()
+
+		return cand
+	}
+
+	cand.resolved = resolved
+
+	if mountDecoy(resolved) {
+		cand.miss = "rejected volatile mount " + resolved
+
+		return cand
+	}
+
+	version := dirVersion(resolved)
+	if version == "" {
+		cand.miss = "version unknown: the parent dir is not zcode-<ver>"
+
+		return cand
+	}
+
+	inst, ok := bundleInstall(resolved, layoutUnpackedAppImage)
+	if !ok {
+		cand.miss = "missing the spawnable tree (" + binaryName + " + " + entrypointRel + ")"
+
+		return cand
+	}
+
+	inst.Version = version
+	cand.version = version
+	cand.install = inst
+
+	return cand
+}
+
+// dedupeAppCandidates keeps one candidate per resolved path: a symlink and
+// its target are one backend (A14), a hit beats a miss, the D-08 symlink rank
+// beats a regular file, and the lexicographically smaller display breaks the
+// remaining tie. Unresolved misses are keyed by display so distinct broken
+// paths stay distinct rows.
+func dedupeAppCandidates(candidates []appCandidate) []appCandidate {
+	index := make(map[string]int, len(candidates))
+	deduped := make([]appCandidate, 0, len(candidates))
+
+	for _, cand := range candidates {
+		key := cand.resolved
+		if key == "" {
+			key = "display:" + cand.display
+		}
+
+		existing, seen := index[key]
+		if !seen {
+			index[key] = len(deduped)
+			deduped = append(deduped, cand)
+
+			continue
+		}
+
+		if preferAppCandidate(cand, deduped[existing]) {
+			deduped[existing] = cand
 		}
 	}
-	row.Result = joinNotes(notes, "no "+unpackedDirName+" tree carrying "+
-		binaryName+" + "+entrypointRel+" under the applications scan")
 
-	return row, Install{}, false
+	return deduped
+}
+
+// preferAppCandidate reports whether cand represents the same backend better
+// than the incumbent.
+func preferAppCandidate(cand, incumbent appCandidate) bool {
+	if (cand.miss == "") != (incumbent.miss == "") {
+		return cand.miss == ""
+	}
+
+	if cand.rank != incumbent.rank {
+		return cand.rank < incumbent.rank
+	}
+
+	return strings.Compare(cand.display, incumbent.display) < 0
+}
+
+// sortAppCandidates orders candidates newest version first (an empty version
+// sorts last), then by the D-08 rank, then by display path — the
+// deterministic selection DISC-04 requires.
+func sortAppCandidates(candidates []appCandidate) {
+	slices.SortFunc(candidates, func(a, b appCandidate) int {
+		if order := compareVersions(a.version, b.version); order != 0 {
+			return -order
+		}
+
+		if a.rank != b.rank {
+			return a.rank - b.rank
+		}
+
+		return strings.Compare(a.display, b.display)
+	})
+}
+
+// appImageWinner returns the first non-miss candidate — the newest usable
+// backend after ranking (D-06/D-12).
+func appImageWinner(candidates []appCandidate) (appCandidate, bool) {
+	for _, cand := range candidates {
+		if cand.miss == "" {
+			return cand, true
+		}
+	}
+
+	return appCandidate{}, false
+}
+
+// selection renders the rank row for a winning candidate: layout, version,
+// and resolved path, plus the symlink display when it differs (D-09).
+func (c appCandidate) selection() string {
+	path := "resolved " + c.resolved
+	if c.display != c.resolved {
+		path += " (display " + c.display + ")"
+	}
+
+	return "selected: " + c.layout + " version " + c.version + " " + path
+}
+
+// result renders one candidate's diagnostics row: a hit names the layout,
+// version, and resolved path; a miss names the display, the known version,
+// and the failing step (D-09).
+func (c appCandidate) result() string {
+	version := c.version
+	if version == "" {
+		version = "unknown"
+	}
+
+	if c.miss != "" {
+		return "miss: " + c.display + " (version " + version + "): " + c.miss
+	}
+
+	path := "resolved " + c.resolved
+	if c.display != c.resolved {
+		path += " (display " + c.display + ")"
+	}
+
+	return "hit: " + c.layout + " version " + version + " " + path
 }
 
 // probeDpkg is order step 4a: the dpkg database (matrix row 3). An rc-state
@@ -799,51 +1014,17 @@ func describeRevision(path string) string {
 	return fmt.Sprintf(" (revision %d)", doc.Revision)
 }
 
-// rejectionNotes renders mount-decoy rejections for a probe row.
-func rejectionNotes(rejected []string) []string {
-	notes := make([]string, 0, len(rejected))
-	for _, mount := range rejected {
-		notes = append(notes, "rejected volatile mount "+mount)
-	}
-
-	return notes
-}
-
-// joinNotes combines a row's rejection notes with its main result.
-func joinNotes(notes []string, result string) string {
-	if len(notes) == 0 {
-		return result
-	}
-
-	return strings.Join(notes, "; ") + "; " + result
-}
-
-// sortAppImageCandidates orders packed candidates symlinks-first (the
-// unversioned symlink is the user-facing entry, matrix row 2), names within
-// each group.
-func sortAppImageCandidates(paths []string) {
-	symlinkRank := func(path string) int {
-		info, err := os.Lstat(path)
-		if err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return 0
-		}
-
-		return 1
-	}
-	slices.SortFunc(paths, func(a, b string) int {
-		if ra, rb := symlinkRank(a), symlinkRank(b); ra != rb {
-			return ra - rb
-		}
-
-		return strings.Compare(a, b)
-	})
-}
-
 // dirVersion extracts the <ver> of a zcode-<ver>-named parent dir (the
-// unpacked-copy glob shape); "" when the name does not match.
+// unpacked-copy glob shape); "" when the name does not match the documented
+// shape. D-12 lists a parseable version among the file-level usability
+// checks, so an arbitrary parent name is a version-unknown miss, never a
+// bogus version string.
 func dirVersion(path string) string {
 	name := filepath.Base(filepath.Dir(path))
-	ver, _ := strings.CutPrefix(name, "zcode-")
+	ver, ok := strings.CutPrefix(name, "zcode-")
+	if !ok || ver == "" {
+		return ""
+	}
 
 	return ver
 }
@@ -853,13 +1034,18 @@ func dirVersion(path string) string {
 // :33); "" when the name does not match. The symlink form (ZCode.AppImage)
 // carries no version — callers pass the EvalSymlinks-resolved target.
 func appImageVersion(path string) string {
-	name, ok := strings.CutPrefix(filepath.Base(path), "ZCode-")
+	name, ok := strings.CutSuffix(filepath.Base(path), appImageSuffix)
 	if !ok {
 		return ""
 	}
 
-	ver, _, ok := strings.Cut(name, "-linux-")
+	rest, ok := strings.CutPrefix(name, "ZCode-")
 	if !ok {
+		return ""
+	}
+
+	ver, arch, ok := strings.Cut(rest, "-linux-")
+	if !ok || ver == "" || arch == "" {
 		return ""
 	}
 
