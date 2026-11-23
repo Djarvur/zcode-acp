@@ -67,7 +67,12 @@ ACP-клиент может провести с ZCode полный ход end-to
 
 ### Active
 
-(None — v0.22.0 shipped; пост-v1 пожелания живут в 07-REVIEW-DISPOSITION.md
+- [ ] Mount-first AppImage backend (v0.23.0): запуск app-server напрямую из packed
+  `.AppImage` через управляемый `--appimage-mount` helper — без распаковки и
+  дубликата на диске; discovery выбирает новейший backend по версии, чтобы старый
+  unpacked-слепок не пинил предыдущую версию (MNT-01..06, DISC-01..04, VER-01..03)
+
+(Вне milestone: пост-v1 пожелания живут в 07-REVIEW-DISPOSITION.md
 (IN-a..h, IN-02/03) и deferred-реестре STATE.md. Фазы 8–9 не имеют
 VALIDATION.md/SECURITY.md — это advisory-долг, отмеченный при закрытии фаз.)
 
