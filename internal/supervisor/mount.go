@@ -75,6 +75,34 @@ const (
 	defaultMountReapDeadline = 10 * time.Second
 	defaultMountPollInterval = 50 * time.Millisecond
 	defaultMountLossPoll     = 1 * time.Second
+
+	// fuseSuperblockMagic is the Linux FUSE superblock type
+	// (FUSE_SUPER_MAGIC, 0x65735546). It is the fallback presence predicate
+	// for a mount whose <root>/zcode entry is absent: a tree that failed
+	// validation still has an active FUSE mount (D-03 teardown safety).
+	fuseSuperblockMagic = 0x65735546
+
+	// Remediation families (MNT-04): every failure error carries one. The
+	// FUSE family names BOTH the setup checks and the package because newer
+	// static type-2 runtimes do not need libfuse2 (T-10-08 / RESEARCH
+	// Pitfall 16).
+	remediationFUSE = "install FUSE support (/dev/fuse present and unprivileged " +
+		"mounts allowed) and libfuse2: 'sudo apt install libfuse2t64' on Ubuntu 24.04 " +
+		"or 'sudo apt install libfuse2' on older releases; newer static AppImage " +
+		"runtimes do not need libfuse2"
+	remediationImage = "verify the AppImage is a valid, readable, executable type-2 " +
+		"AppImage ('chmod +x <appimage>') and that it is not truncated"
+	remediationTmpdir  = "verify TMPDIR is writable and the helper can execute the AppImage"
+	remediationGeneric = "verify the AppImage is executable, the helper can run it, and " +
+		"that FUSE/libfuse2 is available"
+)
+
+// Mount failure steps, named verbatim in every classification error (D-03).
+const (
+	stepSpawnHelper   = "spawn the helper"
+	stepReadMountLine = "read the mount line"
+	stepValidateTree  = "validate the mount tree"
+	stepTeardown      = "teardown"
 )
 
 // Mount sentinels — wrapped with the dynamic context at the failure site,
@@ -110,6 +138,11 @@ type MountOpts struct {
 	PollInterval time.Duration
 	// LossPoll is the accessibility sample interval of the Lost watcher.
 	LossPoll time.Duration
+	// Statfs reports path's filesystem type; nil takes syscall.Statfs. The
+	// seam exists because a tree that failed validation has no zcode entry,
+	// so an active FUSE mount is the fallback presence predicate — and only
+	// a test can fake the FUSE superblock without FUSE (RESEARCH Pattern 4).
+	Statfs func(path string) (fsType int64, err error)
 }
 
 // DefaultMountOpts is the production MountOpts.
@@ -120,7 +153,22 @@ func DefaultMountOpts() MountOpts {
 		ReapDeadline: defaultMountReapDeadline,
 		PollInterval: defaultMountPollInterval,
 		LossPoll:     defaultMountLossPoll,
+		Statfs:       defaultStatfs,
 	}
+}
+
+// defaultStatfs is the production filesystem-type predicate. The supervisor
+// package already depends on Linux/Unix process primitives (syscall.Kill,
+// Setpgid in spawn.go) and D-10 scopes the phase to Linux, so no portable
+// build-tagged variant is added.
+func defaultStatfs(path string) (int64, error) {
+	var st syscall.Statfs_t
+
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+
+	return st.Type, nil
 }
 
 // withDefaults resolves zero fields to the production defaults.
@@ -143,6 +191,10 @@ func (o MountOpts) withDefaults() MountOpts {
 
 	if o.LossPoll <= 0 {
 		o.LossPoll = defaultMountLossPoll
+	}
+
+	if o.Statfs == nil {
+		o.Statfs = defaultStatfs
 	}
 
 	return o
@@ -180,7 +232,8 @@ func PrepareMount(ctx context.Context, inst Install, opts MountOpts) (*Mount, er
 	opts = opts.withDefaults()
 
 	if inst.AppImage == "" {
-		return nil, fmt.Errorf("%w: root %q", errMountInstall, inst.Root)
+		return nil, fmt.Errorf("%w: root %q; remediation: pass a packed .AppImage via --app-server",
+			errMountInstall, inst.Root)
 	}
 
 	m, err := newMountBase(inst, opts)
@@ -189,9 +242,14 @@ func PrepareMount(ctx context.Context, inst Install, opts MountOpts) (*Mount, er
 	}
 
 	if startErr := m.start(ctx); startErr != nil {
-		_ = m.Stop()
+		stopErr := m.Stop()
+		if stopErr != nil {
+			// The teardown detail rides alongside the readiness cause: a live
+			// mount is never swallowed by the acquisition error.
+			return nil, errors.Join(startErr, stopErr)
+		}
 
-		return nil, fmt.Errorf("zcode: mount %s: %w", inst.AppImage, startErr)
+		return nil, startErr
 	}
 
 	slog.Info("supervisor: appimage mounted",
@@ -205,14 +263,15 @@ func PrepareMount(ctx context.Context, inst Install, opts MountOpts) (*Mount, er
 func newMountBase(inst Install, opts MountOpts) (*Mount, error) {
 	base, err := os.MkdirTemp("", mountBasePattern)
 	if err != nil {
-		return nil, fmt.Errorf("%w: create the private TMPDIR for %s: %w", errMountBase, inst.AppImage, err)
+		return nil, fmt.Errorf("%w: create the private TMPDIR for %s: %w; remediation: %s",
+			errMountBase, inst.AppImage, err, remediationTmpdir)
 	}
 
 	if problem := basePathProblem(base); problem != "" {
 		_ = os.RemoveAll(base)
 
-		return nil, fmt.Errorf("%w: %s produced %q, which %s (TMPDIR may not contain NUL, CR, or LF)",
-			errMountBase, mountTmpdirVar, base, problem)
+		return nil, fmt.Errorf("%w: %s produced %q, which %s (TMPDIR may not contain NUL, CR, or LF); "+
+			"remediation: %s", errMountBase, mountTmpdirVar, base, problem, remediationTmpdir)
 	}
 
 	return &Mount{
@@ -237,18 +296,19 @@ func awaitMountLine(ctx context.Context, m *Mount) (string, error) {
 	case <-m.tap.settled:
 		root, reject := m.tap.accepted()
 		if reject != nil {
-			return "", fmt.Errorf("%w: %w (observed output %q)", errMountReady, reject, observedOutput(m))
+			return "", m.failure(stepReadMountLine, reject)
 		}
 
 		return root, nil
 	case <-m.child.Done:
-		return "", fmt.Errorf("%w: the helper exited before the mount line (exit %s) (observed output %q)",
-			errMountReady, exitDescription(m.child), observedOutput(m))
+		return "", m.failure(stepReadMountLine,
+			fmt.Errorf("%w: the helper exited before the mount line (%s)",
+				errMountReady, exitDescription(m.child)))
 	case <-timer.C:
-		return "", fmt.Errorf("%w: no mount line within %v (observed output %q)",
-			errMountReady, m.opts.ReadyTimeout, observedOutput(m))
+		return "", m.failure(stepReadMountLine,
+			fmt.Errorf("%w: no mount line within %v", errMountReady, m.opts.ReadyTimeout))
 	case <-ctx.Done():
-		return "", fmt.Errorf("%w: %w (observed output %q)", errMountReady, ctx.Err(), observedOutput(m))
+		return "", m.failure(stepReadMountLine, fmt.Errorf("%w: %w", errMountReady, ctx.Err()))
 	}
 }
 
@@ -268,9 +328,65 @@ func exitDescription(child *Child) string {
 
 // observedOutput joins the capped stdout and stderr captures for a failure
 // error; the caller renders it with %q so a hostile helper cannot forge log
-// lines (T-10-05).
+// lines (T-10-05). The joined text is capped again so the two per-stream caps
+// cannot sum into an unbounded diagnostic.
 func observedOutput(m *Mount) string {
-	return m.tap.observedText() + m.stderr.String()
+	out := m.tap.observedText() + m.stderr.String()
+	if len(out) > mountOutputCap {
+		out = out[:mountOutputCap]
+	}
+
+	return out
+}
+
+// failure builds the four-part mount error (D-03/MNT-04): the AppImage path,
+// the failing step, the capped observed output rendered with %q, and a
+// classification-derived remediation. Every readiness, validation, spawn, and
+// teardown error on the mount path is built here.
+func (m *Mount) failure(step string, cause error) error {
+	observed := observedOutput(m)
+
+	return fmt.Errorf("zcode: mount %s: %s: %w (observed output %q); remediation: %s",
+		m.appImage, step, cause, observed, classifyMountFailure(observed))
+}
+
+// classifyMountFailure maps the helper's observed output to the remediation
+// family. The legacy runtime prints its failure text to STDOUT, so the
+// strings are matched against the captured stdout+stderr (RESEARCH Pattern 2,
+// Pitfall 16). The known strings are classified; the raw observed text always
+// rides the error regardless, and a newer static runtime's unknown text
+// degrades to the generic remediation rather than a wrong libfuse2 diagnosis.
+func classifyMountFailure(observed string) string {
+	switch {
+	case containsAny(observed,
+		"dlopen(): error loading libfuse.so.2",
+		"Cannot mount AppImage, please check your FUSE setup.",
+		"AppImages require FUSE to run."):
+		return "FUSE/libfuse2 is unavailable: " + remediationFUSE
+	case containsAny(observed,
+		"Failed to get fs offset",
+		"This doesn't look like a squashfs image",
+		"Failed to open AppImage file"):
+		return "the AppImage is not a readable type-2 squashfs image: " + remediationImage
+	case containsAny(observed,
+		"create mount dir error",
+		"open dir error",
+		"permission denied"):
+		return "the mount directory or file permissions are unusable: " + remediationTmpdir
+	default:
+		return remediationGeneric
+	}
+}
+
+// containsAny reports whether s contains any of the needles.
+func containsAny(s string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Install returns the mounted install: the mount root replaces the packed
@@ -370,7 +486,7 @@ func (m *Mount) start(ctx context.Context) error {
 		helperCancel()
 		_ = os.RemoveAll(m.base)
 
-		return fmt.Errorf("%w: spawn the %s helper: %w", errMountSpawn, mountHelperFlag, spawnErr)
+		return m.failure(stepSpawnHelper, fmt.Errorf("%w: %w", errMountSpawn, spawnErr))
 	}
 
 	m.child = child
@@ -382,7 +498,7 @@ func (m *Mount) start(ctx context.Context) error {
 	}
 
 	if treeErr := validateMountTree(root); treeErr != nil {
-		return fmt.Errorf("%w (observed output %q)", treeErr, observedOutput(m))
+		return m.failure(stepValidateTree, treeErr)
 	}
 
 	m.root = root
@@ -404,18 +520,23 @@ func (m *Mount) stop() error {
 		errs = append(errs, helperErr)
 	}
 
-	if m.root != "" {
-		if goneErr := m.waitMountGone(); goneErr != nil {
-			errs = append(errs, goneErr)
-		}
+	goneErr := m.waitMountGone()
+	if goneErr != nil {
+		errs = append(errs, goneErr)
 	}
 
 	if m.cancel != nil {
 		m.cancel()
 	}
 
-	if removeErr := os.RemoveAll(m.base); removeErr != nil {
-		errs = append(errs, fmt.Errorf("%w: remove the private base %s: %w", errMountTeardown, m.base, removeErr))
+	// RemoveAll is only safe once every mount is proven gone: traversing a
+	// live FUSE mount would walk the AppImage's read-only tree (or block). A
+	// failed proof retains the 0700 base for a manual unmount (D-03).
+	if goneErr == nil {
+		if removeErr := os.RemoveAll(m.base); removeErr != nil {
+			errs = append(errs, fmt.Errorf("%w: remove the private base %s: %w",
+				errMountTeardown, m.base, removeErr))
+		}
 	}
 
 	return errors.Join(errs...)
@@ -469,27 +590,121 @@ func (m *Mount) stopHelper() error {
 	}
 }
 
-// waitMountGone polls the mount root's zcode entry until it disappears
-// (ENOENT/ENOTDIR) or the deadline passes. The mountpoint directory can
-// outlive the unmount by tens of milliseconds, so the mount is verified, never
-// the directory (RESEARCH Pitfall 4).
+// waitMountGone proves the mount is gone (D-02's zero-stale-mounts rule). A
+// validated mount is probed through <root>/zcode with the FUSE superblock as
+// the fallback for a tree that failed validation; a mount whose line never
+// arrived is probed by scanning the private base's .mount_* children for an
+// active FUSE mount. The mountpoint directory can outlive the unmount by tens
+// of milliseconds, so the mount is verified, never the directory (RESEARCH
+// Pitfall 4).
 func (m *Mount) waitMountGone() error {
-	probe := filepath.Join(m.root, binaryName)
+	if m.root == "" {
+		return m.waitBaseMountsGone()
+	}
+
 	deadline := time.Now().Add(m.opts.ReapDeadline)
 
 	for {
-		_, err := os.Stat(probe)
-		if err != nil && (errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)) {
+		if !m.mountPresent(m.root) {
 			return nil
 		}
 
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%w: the mount %s is still present; unmount it manually once the "+
-				"helper is reaped (fusermount -u %s)", errMountTeardown, m.root, m.root)
+			return fmt.Errorf("%w: the mount %s is still present; remediation: %s",
+				errMountTeardown, m.root, m.unmountRemediation(m.root))
 		}
 
 		time.Sleep(m.opts.PollInterval)
 	}
+}
+
+// waitBaseMountsGone polls the private base for active FUSE mounts whose line
+// never arrived. A plain directory (the fake runtime, or a tree that unmounted
+// cleanly) is gone; only the FUSE superblock keeps the base retained.
+func (m *Mount) waitBaseMountsGone() error {
+	deadline := time.Now().Add(m.opts.ReapDeadline)
+
+	for {
+		live, err := m.liveBaseMounts()
+		if err != nil {
+			return fmt.Errorf("%w: scan the private base %s: %w", errMountTeardown, m.base, err)
+		}
+
+		if len(live) == 0 {
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: the mount %s is still present; remediation: %s",
+				errMountTeardown, strings.Join(live, ", "), m.unmountRemediation(live[0]))
+		}
+
+		time.Sleep(m.opts.PollInterval)
+	}
+}
+
+// liveBaseMounts lists the private base's .mount_* children that are still
+// active FUSE mounts.
+func (m *Mount) liveBaseMounts() ([]string, error) {
+	entries, err := os.ReadDir(m.base)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+
+		return nil, err //nolint:wrapcheck // wrapped by waitBaseMountsGone with the base path
+	}
+
+	live := make([]string, 0, len(entries))
+
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), mountDirPrefix) {
+			continue
+		}
+
+		path := filepath.Join(m.base, entry.Name())
+		if m.fuseMounted(path) {
+			live = append(live, path)
+		}
+	}
+
+	return live, nil
+}
+
+// mountPresent reports whether root is still a usable or active mount: the
+// zcode entry present, a stale/unusable mount error, or the FUSE superblock
+// (a tree that failed validation has no zcode but is still mounted).
+func (m *Mount) mountPresent(root string) bool {
+	_, err := os.Stat(filepath.Join(root, binaryName))
+
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, syscall.ENOTCONN), errors.Is(err, syscall.ENOTDIR):
+		return true
+	case !errors.Is(err, os.ErrNotExist):
+		return true
+	}
+
+	return m.fuseMounted(root)
+}
+
+// fuseMounted reports whether path carries the Linux FUSE superblock type.
+func (m *Mount) fuseMounted(path string) bool {
+	fsType, err := m.opts.Statfs(path)
+	if err != nil {
+		return false
+	}
+
+	return fsType == fuseSuperblockMagic
+}
+
+// unmountRemediation names the manual recovery once the helper is reaped: the
+// runtime holds the mount's fd while it lives, so no external unmount can
+// succeed before that (RESEARCH Pattern 4, Pitfall 18).
+func (m *Mount) unmountRemediation(root string) string {
+	return fmt.Sprintf("the helper is reaped; unmount the mount manually (fusermount -u %s) "+
+		"and remove the retained private base %s", root, m.base)
 }
 
 // watch closes Lost once on helper death or tree loss.
