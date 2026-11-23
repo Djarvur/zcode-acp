@@ -1,0 +1,48 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": "v0.20.0",
+  "phases": [
+    {
+      "number": "1",
+      "name": "Research & Protocol Documentation",
+      "status": "complete"
+    },
+    {
+      "number": "2",
+      "name": "Scaffold & CI Bootstrap",
+      "status": "complete"
+    },
+    {
+      "number": "3",
+      "name": "ZCode Back Leg — Codec, Fake App-Server, Supervisor",
+      "status": "complete"
+    },
+    {
+      "number": "4",
+      "name": "ACP Front — Minimal Chat Loop",
+      "status": "complete"
+    },
+    {
+      "number": "5",
+      "name": "Interactions & Full Chat Cycle (api-key)",
+      "status": "complete"
+    },
+    {
+      "number": "6",
+      "name": "OAuth Coding-Plan Path & Model Picker",
+      "status": "complete"
+    },
+    {
+      "number": "7",
+      "name": "Hardening, VM & Manual E2E, Documentation",
+      "status": "in_progress"
+    }
+  ],
+  "next": {
+    "command": "/gsd-progress --next",
+    "label": "Advance to the next step (verify)",
+    "reason": "Phase 7 of 7 · ready to verify"
+  },
+  "updated_at": "2026-11-22T14:47:51.502Z"
+}
