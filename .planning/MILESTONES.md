@@ -1,5 +1,23 @@
 # Milestones
 
+## v0.21.0 Card Command & Skill Autocomplete (Shipped: 2026-11-23)
+
+**Phases completed:** 0 phases, 0 plans, 0 tasks
+
+**Key accomplishments:**
+- (none recorded)
+
+---
+
+## v0.21.0 Card Command & Skill Autocomplete (Shipped: 2026-11-23)
+
+**Phases completed:** 1 phases, 1 plans, 0 tasks
+
+**Key accomplishments:**
+- (none recorded)
+
+---
+
 ## v0.20.0 v1 — Honest ACP Server for ZCode Desktop (Shipped: 2026-11-23)
 
 **Phases completed:** 7 phases, 58 plans, 145 tasks

@@ -1,12 +1,18 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v0.21.0",
-  "phases": [],
+  "milestone": "v0.21.0 — Card Command & Skill Autocomplete",
+  "phases": [
+    {
+      "number": "8",
+      "name": "Slash Catalog — available_commands_update",
+      "status": "complete"
+    }
+  ],
   "next": {
-    "command": "/gsd-discuss-phase",
-    "label": "Discuss the first phase",
-    "reason": "Project initialized — plan your first phase"
+    "command": "/gsd-new-milestone",
+    "label": "Start a new milestone",
+    "reason": "All phases complete — start a new milestone"
   },
-  "updated_at": "2026-11-23T09:59:21.480Z"
+  "updated_at": "2026-11-23T11:19:38.445Z"
 }
