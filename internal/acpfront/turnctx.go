@@ -458,8 +458,7 @@ func noteBytes(note acpport.SessionNote) int {
 // and the slot release func; release is nil when the slot is already held
 // — a second prompt while a turn is active, refused by the caller as the
 // -32003 session-busy error (acpport.NewSessionBusy). A non-nil error means
-// the
-// session is mid-teardown (SESS-01 closing gate): the caller surfaces the
+// the session is mid-teardown (SESS-01 closing gate): the caller surfaces the
 // pre-validated ErrNoSession-class rejection — a prompt never acquires the
 // slot while close tears its session down (T-5-12). The tap-facing emitter
 // is the WR-03 pump's enqueue; the pump publishes under the same lock, so
