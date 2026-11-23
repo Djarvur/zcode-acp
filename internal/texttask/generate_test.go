@@ -65,8 +65,9 @@ type generateParams struct {
 			ReasoningLevel string `json:"reasoningLevel"`
 		} `json:"options"`
 	} `json:"selection"`
-	Prompt      string `json:"prompt"`
-	QuerySource string `json:"querySource"`
+	Prompt          string `json:"prompt"`
+	QuerySource     string `json:"querySource"`
+	MaxOutputTokens int    `json:"maxOutputTokens"`
 }
 
 // rideGenerate runs one Run call against a scripted fake over net.Pipe and
@@ -181,8 +182,9 @@ func frameRaw(raw map[string]json.RawMessage) string {
 }
 
 // TestRunGenerateRequest locks the request assembly and the reply decode
-// over a real zcode.Conn: the method, every params field, the wrapper
-// querySource, and the absence of tools/messages/maxOutputTokens.
+// over a real zcode.Conn: the method, every params field including the
+// explicit maxOutputTokens cap, the wrapper querySource, and the absence of
+// tools/messages.
 func TestRunGenerateRequest(t *testing.T) {
 	tr, runErr := rideGenerate(
 		context.Background(), t, generateScenario(generateReply), defaultRequest(testLevelHigh))
@@ -209,7 +211,12 @@ func TestRunGenerateRequest(t *testing.T) {
 		t.Fatalf("querySource = %q, want the wrapper literal", params.QuerySource)
 	}
 
-	for _, forbidden := range []string{"tools", "messages", "maxOutputTokens"} {
+	if params.MaxOutputTokens != 1024 {
+		t.Fatalf("maxOutputTokens = %d, want 1024 (the strict option validator rejects an undefined value)",
+			params.MaxOutputTokens)
+	}
+
+	for _, forbidden := range []string{"tools", "messages"} {
 		if _, ok := raw[forbidden]; ok {
 			t.Fatalf("params carry a %q key; --no-tools must omit it (params %s)", forbidden, frameRaw(raw))
 		}

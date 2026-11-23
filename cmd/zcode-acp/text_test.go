@@ -29,13 +29,14 @@ const (
 	ompPromptOne   = "@/tmp/a.txt"
 	ompPromptTwo   = "@/tmp/b.txt"
 
-	ompTextModelPersonal  = "OpenCodeGo/deepseek-v4.1-flash"
-	ompTextPromptBody     = "Name this chat."
-	ompTextReply          = "Answer: done"
-	ompTextQuerySource    = "zcode-acp-text-task"
-	ompTextAPIKeyFixture  = "fixture-key-not-a-credential"
-	ompTextScenario       = "testdata/omp-text-e2e.json"
-	ompTextAPIKeyScenario = "testdata/omp-text-apikey-e2e.json"
+	ompTextModelPersonal   = "OpenCodeGo/deepseek-v4.1-flash"
+	ompTextPromptBody      = "Name this chat."
+	ompTextReply           = "Answer: done"
+	ompTextQuerySource     = "zcode-acp-text-task"
+	ompTextMaxOutputTokens = 1024
+	ompTextAPIKeyFixture   = "fixture-key-not-a-credential"
+	ompTextScenario        = "testdata/omp-text-e2e.json"
+	ompTextAPIKeyScenario  = "testdata/omp-text-apikey-e2e.json"
 
 	// The one-letter prompt chunks the multi-chunk arm concatenates.
 	ompTextPromptHead = "Name this "
@@ -474,8 +475,9 @@ type ompTextParams struct {
 			ReasoningLevel string `json:"reasoningLevel"`
 		} `json:"options"`
 	} `json:"selection"`
-	Prompt      string `json:"prompt"`
-	QuerySource string `json:"querySource"`
+	Prompt          string `json:"prompt"`
+	QuerySource     string `json:"querySource"`
+	MaxOutputTokens int    `json:"maxOutputTokens"`
 }
 
 // ompTextOnlyGenerateFrame asserts exactly one inbound generateText frame
@@ -608,7 +610,12 @@ func testOmpTextExactRide(t *testing.T, agentBin, fakeBin string) {
 		t.Fatalf("querySource = %q, want %q", params.QuerySource, ompTextQuerySource)
 	}
 
-	for _, forbidden := range []string{"tools", "messages", "maxOutputTokens"} {
+	if params.MaxOutputTokens != ompTextMaxOutputTokens {
+		t.Fatalf("maxOutputTokens = %d, want %d (the strict option validator rejects an undefined value)",
+			params.MaxOutputTokens, ompTextMaxOutputTokens)
+	}
+
+	for _, forbidden := range []string{"tools", "messages"} {
 		if _, ok := raw[forbidden]; ok {
 			t.Fatalf("params carry a %q key; --no-tools must omit it", forbidden)
 		}
