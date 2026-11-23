@@ -1,0 +1,17 @@
+{
+  "name": "omp-text-e2e",
+  "on_request": [
+    {
+      "method": "workspace/generateText",
+      "reply": {
+        "result": {
+          "text": "Answer: done",
+          "selection": {"providerId": "OpenCodeGo", "modelId": "deepseek-v4.1-flash"},
+          "finishReason": "stop"
+        }
+      }
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}
