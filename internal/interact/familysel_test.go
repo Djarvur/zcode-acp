@@ -14,15 +14,20 @@ import (
 )
 
 // TestFamilySelections locks the production entitlement gate (AUTH-02,
-// plan 06-05) arm by arm — 06-RESEARCH.md Pattern 2's entitlement rule over
-// READ-ONLY desktop state:
+// plan 06-05; per-(family, mode) since quick task 261123-vyl) arm by arm —
+// 06-RESEARCH.md Pattern 2's entitlement rule over READ-ONLY desktop state:
 //
-//	(a) the entitled arm — selections[family].kind == individual-coding-plan,
+// A family is entitled for a RULE when the desktop's own selected connection
+// kind IS that rule's mode. individual-coding-plan, team-coding-plan and
+// start-plan are selectable kinds; off-peak/highspeed never appear as a
+// selection kind and therefore never match. Concretely:
+//
+//	(a) the entitled arm — selections[family].kind == the rule's mode,
 //	    modes[family] != apiKey, the store carries oauth:<family>:
 //	    access_token → TRUE;
 //	(b) mode == apiKey vetoes;
-//	(c) a different selection kind (the start-plan family of the live
-//	    probe) vetoes;
+//	(c) the per-kind arm — bigmodel selected as start-plan is entitled for
+//	    its own start-plan mode and NOT for the individual mode;
 //	(d) a missing store token vetoes;
 //	(e) a missing setting.json answers false with a structural log (a fresh
 //	    machine is simply not logged in);
@@ -30,27 +35,40 @@ import (
 //	    bool+log posture — never a panic;
 //	(g) an ABSENT mode entry does not veto (the verified rule's !== apiKey
 //	    strict-inequality semantics — the mode gate only rejects the
-//	    explicit apiKey value).
+//	    explicit apiKey value);
+//	(h) team-kind and start-kind selections entitle exactly their own mode;
+//	(i) an empty rule mode never matches a selected kind;
+//	(j) a family with no selection entry is entitled for no mode.
 //
 // The gate composes the 06-01 store reader (no parallel read path) and
 // every log line carries booleans/codes only — no value material.
 func TestFamilySelections(t *testing.T) {
 	t.Run("entitled arm answers true", testFamselEntitled)
 	t.Run("apiKey mode vetoes entitlement", testFamselAPIKeyMode)
-	t.Run("a different selection kind vetoes entitlement", testFamselOtherKind)
+	t.Run("selection is keyed per family and mode", testFamselPerKindSelection)
 	t.Run("missing store token vetoes entitlement", testFamselNoToken)
 	t.Run("missing setting.json answers false with a structural log", testFamselMissingSetting)
 	t.Run("undecodable setting.json answers false honestly", testFamselUndecodableSetting)
 	t.Run("absent mode entry does not veto", testFamselAbsentMode)
+	t.Run("team-kind selection entitles only the team mode", testFamselTeamKind)
+	t.Run("start-kind selection entitles only the start mode", testFamselStartKind)
+	t.Run("an empty rule mode never matches a selected kind", testFamselEmptyMode)
+	t.Run("a family with no selection entry is entitled for no mode", testFamselUnselectedFamily)
 }
 
 // The fixture constants (goconst): the fixture families, the oauth mode
-// value, and the synthetic login token marker shared by the arms.
+// value, the selectable connection kinds, and the synthetic login token
+// marker shared by the arms.
 const (
-	famselFixFamily      = "zai"
-	famselFixOtherFamily = "bigmodel"
-	famselFixOAuthMode   = "oauth"
-	famselFixLoginToken  = "fixture-synthetic-not-a-real-login-token"
+	famselFixFamily        = "zai"
+	famselFixOtherFamily   = "bigmodel"
+	famselFixAbsentFamily  = "absent-family"
+	famselFixOAuthMode     = "oauth"
+	famselFixLoginToken    = "fixture-synthetic-not-a-real-login-token"
+	famselKindIndividual   = "individual-coding-plan"
+	famselKindTeam         = "team-coding-plan"
+	famselKindStart        = "start-plan"
+	famselSelectionKindKey = "kind"
 )
 
 // famselSetting is the live-probed setting.json shape (06-RESEARCH.md
@@ -117,11 +135,12 @@ func famselCaptureLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// famselZaiEntitledSelections is the fixture's entitled-arm selections map.
+// famselZaiEntitledSelections is the fixture's entitled-arm selections map —
+// the live-probed shape: zai on the individual plan, bigmodel on start-plan.
 func famselZaiEntitledSelections() map[string]any {
 	return map[string]any{
-		famselFixFamily:      map[string]any{"kind": "individual-coding-plan"},
-		famselFixOtherFamily: map[string]any{"kind": "start-plan"},
+		famselFixFamily:      map[string]any{famselSelectionKindKey: famselKindIndividual},
+		famselFixOtherFamily: map[string]any{famselSelectionKindKey: famselKindStart},
 	}
 }
 
@@ -141,9 +160,9 @@ func testFamselEntitled(t *testing.T) {
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if !gate.Entitled(context.Background(), famselFixFamily) {
+	if !gate.Entitled(context.Background(), famselFixFamily, famselKindIndividual) {
 		t.Fatal("gate answered false for the fully-entitled arm — " +
-			"want true (kind + non-apiKey mode + store token)")
+			"want true (kind == mode + non-apiKey mode + store token)")
 	}
 }
 
@@ -158,15 +177,16 @@ func testFamselAPIKeyMode(t *testing.T) {
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if gate.Entitled(context.Background(), famselFixFamily) {
+	if gate.Entitled(context.Background(), famselFixFamily, famselKindIndividual) {
 		t.Fatal("gate answered true with mode == apiKey — the explicit apiKey mode must veto")
 	}
 }
 
-// testFamselOtherKind is arm (c): a selection kind other than
-// individual-coding-plan (the start-plan family of the live probe) vetoes
-// even with the store carrying a token.
-func testFamselOtherKind(t *testing.T) {
+// testFamselPerKindSelection is arm (c): the decision is keyed per
+// (family, mode) — under the fixture selections (zai=individual,
+// bigmodel=start) the bigmodel family is entitled for its OWN selected
+// start-plan kind and NOT for the individual kind.
+func testFamselPerKindSelection(t *testing.T) {
 	setting := famselFixtureSetting(t, famselSetting(famselZaiEntitledSelections(), famselOAuthModes()))
 	store := famselFixtureStore(t, map[string]string{
 		"oauth:" + famselFixOtherFamily + ":access_token": famselFixLoginToken,
@@ -174,8 +194,14 @@ func testFamselOtherKind(t *testing.T) {
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if gate.Entitled(context.Background(), famselFixOtherFamily) {
-		t.Fatal("gate answered true for the start-plan kind — only individual-coding-plan entitles")
+	if !gate.Entitled(context.Background(), famselFixOtherFamily, famselKindStart) {
+		t.Fatal("gate answered false for bigmodel's OWN selected start-plan kind — " +
+			"the selected connection kind must entitle that rule mode")
+	}
+
+	if gate.Entitled(context.Background(), famselFixOtherFamily, famselKindIndividual) {
+		t.Fatal("gate answered true for bigmodel's individual mode under a start-plan selection — " +
+			"only the selected kind's mode may be entitled")
 	}
 }
 
@@ -187,7 +213,7 @@ func testFamselNoToken(t *testing.T) {
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if gate.Entitled(context.Background(), famselFixFamily) {
+	if gate.Entitled(context.Background(), famselFixFamily, famselKindIndividual) {
 		t.Fatal("gate answered true without a store token — the desktop login must hold")
 	}
 }
@@ -205,7 +231,7 @@ func testFamselMissingSetting(t *testing.T) {
 
 	gate := interact.NewEntitlementGate(missing, store)
 
-	if gate.Entitled(context.Background(), famselFixFamily) {
+	if gate.Entitled(context.Background(), famselFixFamily, famselKindIndividual) {
 		t.Fatal("gate answered true with the setting.json absent — a fresh machine is not entitled")
 	}
 
@@ -231,7 +257,7 @@ func testFamselUndecodableSetting(t *testing.T) {
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if gate.Entitled(context.Background(), famselFixFamily) {
+	if gate.Entitled(context.Background(), famselFixFamily, famselKindIndividual) {
 		t.Fatal("gate answered true with an undecodable setting.json — honest degradation must answer false")
 	}
 
@@ -257,7 +283,87 @@ func testFamselAbsentMode(t *testing.T) {
 
 	gate := interact.NewEntitlementGate(setting, store)
 
-	if !gate.Entitled(context.Background(), famselFixFamily) {
+	if !gate.Entitled(context.Background(), famselFixFamily, famselKindIndividual) {
 		t.Fatal("gate vetoed on an absent mode entry — the rule rejects only the explicit apiKey value")
+	}
+}
+
+// testFamselTeamKind is arm (h), team half: a team-coding-plan selection
+// entitles the team mode and only the team mode.
+func testFamselTeamKind(t *testing.T) {
+	selections := famselZaiEntitledSelections()
+	selections[famselFixFamily] = map[string]any{famselSelectionKindKey: famselKindTeam}
+
+	setting := famselFixtureSetting(t, famselSetting(selections, famselOAuthModes()))
+	store := famselFixtureStore(t, map[string]string{
+		"oauth:" + famselFixFamily + ":access_token": famselFixLoginToken,
+	})
+
+	gate := interact.NewEntitlementGate(setting, store)
+
+	if !gate.Entitled(context.Background(), famselFixFamily, famselKindTeam) {
+		t.Fatal("gate answered false for the selected team mode — want true (kind == mode)")
+	}
+
+	if gate.Entitled(context.Background(), famselFixFamily, famselKindIndividual) {
+		t.Fatal("gate answered true for the individual mode under a team selection — " +
+			"a non-selected mode must never be entitled")
+	}
+}
+
+// testFamselStartKind is arm (h), start half: a start-plan selection
+// entitles the start mode and only the start mode.
+func testFamselStartKind(t *testing.T) {
+	selections := famselZaiEntitledSelections()
+	selections[famselFixFamily] = map[string]any{famselSelectionKindKey: famselKindStart}
+
+	setting := famselFixtureSetting(t, famselSetting(selections, famselOAuthModes()))
+	store := famselFixtureStore(t, map[string]string{
+		"oauth:" + famselFixFamily + ":access_token": famselFixLoginToken,
+	})
+
+	gate := interact.NewEntitlementGate(setting, store)
+
+	if !gate.Entitled(context.Background(), famselFixFamily, famselKindStart) {
+		t.Fatal("gate answered false for the selected start mode — want true (kind == mode)")
+	}
+
+	if gate.Entitled(context.Background(), famselFixFamily, famselKindIndividual) {
+		t.Fatal("gate answered true for the individual mode under a start selection — " +
+			"a non-selected mode must never be entitled")
+	}
+}
+
+// testFamselEmptyMode is arm (i): an empty rule mode (a rule with no
+// config.access.mode) can never equal a selected kind — false even when the
+// family's selection and token hold.
+func testFamselEmptyMode(t *testing.T) {
+	setting := famselFixtureSetting(t, famselSetting(famselZaiEntitledSelections(), famselOAuthModes()))
+	store := famselFixtureStore(t, map[string]string{
+		"oauth:" + famselFixFamily + ":access_token": famselFixLoginToken,
+	})
+
+	gate := interact.NewEntitlementGate(setting, store)
+
+	if gate.Entitled(context.Background(), famselFixFamily, "") {
+		t.Fatal("gate answered true for an empty rule mode — an absent access.mode must never match a selection kind")
+	}
+}
+
+// testFamselUnselectedFamily is arm (j): a family absent from the selections
+// map is entitled for no mode, even with a store token present.
+func testFamselUnselectedFamily(t *testing.T) {
+	setting := famselFixtureSetting(t, famselSetting(famselZaiEntitledSelections(), famselOAuthModes()))
+	store := famselFixtureStore(t, map[string]string{
+		"oauth:" + famselFixAbsentFamily + ":access_token": famselFixLoginToken,
+	})
+
+	gate := interact.NewEntitlementGate(setting, store)
+
+	for _, mode := range []string{famselKindIndividual, famselKindTeam, famselKindStart} {
+		if gate.Entitled(context.Background(), famselFixAbsentFamily, mode) {
+			t.Fatalf("gate answered true for an unselected family with mode %q — "+
+				"a family with no selection entry is entitled for no mode", mode)
+		}
 	}
 }

@@ -27,10 +27,15 @@ import (
 // schema (providerId / providerName / config.group / config.builtinModelIds /
 // config.access{type,mode,accountType} / config.visibility — shape verified
 // against this machine's revision-44 table, V-EXP 2026-11-22). It mixes:
-// three zhipu-account rules (two families — the gate arms need them; one
-// hidden — the visibility arms need it), one apiKey rule and one other-type
-// rule (the leak guards), a mixed-case model id and a slash-free provider
-// name (the no-transformation locks, AUTH-02 encoding).
+// four zhipu-account rules (three VISIBLE across two families — the gate
+// arms need them; one hidden — the visibility arms need it), one apiKey rule
+// and one other-type rule (the leak guards), a mixed-case model id and a
+// slash-free provider name (the no-transformation locks, AUTH-02 encoding).
+//
+// The visible zai family carries TWO rule modes (individual-coding-plan and
+// start-plan) so the per-(family, mode) gate can select one and prove the
+// other omitted; the start-plan rule deliberately carries NO visibility field
+// (the default-visible arm).
 //
 // The hidden row mirrors the real table's idle/highspeed class: the desktop's
 // revision-44 table carries config.visibility "hidden" on the
@@ -53,6 +58,15 @@ const accountFixtureTable = `{
             "group": "zai-family",
             "builtinModelIds": ["GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"],
             "access": {"type": "zhipu-account", "mode": "individual-coding-plan", "accountType": "zai"}
+          }
+        },
+        {
+          "providerId": "account:zai-start-plan",
+          "providerName": "Z.AI Start Plan",
+          "config": {
+            "group": "zai-family",
+            "builtinModelIds": ["GLM-4.6-Air"],
+            "access": {"type": "zhipu-account", "mode": "start-plan", "accountType": "zai"}
           }
         },
         {
@@ -101,6 +115,22 @@ const accountFixtureTable = `{
 // must never materialize.
 const hiddenFixtureProvider = "account:zai-offpeak-idle-plan"
 
+// The fixture's two visible zai rule modes — the per-(family, mode) selection
+// arms' match values (test-local spellings derived from the fixture table).
+const (
+	fixtureKindIndividual = "individual-coding-plan"
+	fixtureKindStartPlan  = "start-plan"
+)
+
+// The strict envelope's two record members and the fixture's two visible zai
+// provider ids (goconst: the package repeats these spellings across arms).
+const (
+	providersMember       = "providers"
+	statesMember          = "states"
+	zaiIndividualProvider = "account:zai-individual-coding-plan"
+	zaiStartPlanProvider  = "account:zai-start-plan"
+)
+
 // wantZhipuProviders is the exact providers/states shape the fixture's
 // VISIBLE zhipu-account rules must build (all-entitled gate): model lists are
 // the table's arrays verbatim, entitlement true. The hidden idle-plan row is
@@ -108,7 +138,8 @@ const hiddenFixtureProvider = "account:zai-offpeak-idle-plan"
 // fixture gochecknoglobals-clean — the accountFixtureTable precedent.)
 func wantZhipuProviders() map[string][]string {
 	return map[string][]string{
-		"account:zai-individual-coding-plan":      {"GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"},
+		zaiIndividualProvider:                     {"GLM-5.3", "GLM-5.3-Flash", "gLM-MiXeD-Case"},
+		zaiStartPlanProvider:                      {"GLM-4.6-Air"},
 		"account:bigmodel-individual-coding-plan": {"GLM-5.2"},
 	}
 }
@@ -166,6 +197,45 @@ func decodeEnvelope(t *testing.T, snap hostsvc.Snapshot) map[string]json.RawMess
 	return got
 }
 
+// decodeRecord decodes one strict-envelope member as a string-keyed record
+// (the providers/states maps).
+func decodeRecord(t *testing.T, what string, raw json.RawMessage) map[string]any {
+	t.Helper()
+
+	var record map[string]any
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatalf("%s does not decode as a record: %v (%s)", what, err, raw)
+	}
+
+	return record
+}
+
+// assertProviderStateKeys asserts the snapshot's providers AND states carry
+// exactly wantKeys (set comparison — a snapshot's map order is irrelevant).
+// Omission covers both maps: a rule the gate rejects must be absent from
+// each, so a per-mode selection can never leave a half-pushed provider.
+func assertProviderStateKeys(t *testing.T, snap hostsvc.Snapshot, wantKeys []string) {
+	t.Helper()
+
+	got := decodeEnvelope(t, snap)
+
+	for _, member := range []string{providersMember, statesMember} {
+		record := decodeRecord(t, member, got[member])
+
+		if len(record) != len(wantKeys) {
+			t.Fatalf("%s keys = %v, want exactly %v (omission covers providers AND states)",
+				member, keysOfAny(record), wantKeys)
+		}
+
+		for _, key := range wantKeys {
+			if _, ok := record[key]; !ok {
+				t.Fatalf("%s is missing %q — want exactly %v (omission covers providers AND states)",
+					member, key, wantKeys)
+			}
+		}
+	}
+}
+
 // assertModelIDsVerbatim asserts one provider's builtinModelIds equals the
 // fixture table's array element-for-element — every emitted string traces to
 // the table byte-for-byte (T-06-09: no wrapper-side renaming or editing).
@@ -208,7 +278,7 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 	fixed := "account-bridge:account-fix1"
 	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return fixed }))
 
-	snap, err := b.BuildAccount(instA, func(string) bool { return true })
+	snap, err := b.BuildAccount(instA, func(string, string) bool { return true })
 	if err != nil {
 		t.Fatalf("build account snapshot: %v", err)
 	}
@@ -222,7 +292,7 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 		t.Fatalf("basedOn = %q, want the exact supervisor.BuiltinRevision output %q", snap.BasedOn, wantA)
 	}
 
-	snapB, err := b.BuildAccount(instB, func(string) bool { return true })
+	snapB, err := b.BuildAccount(instB, func(string, string) bool { return true })
 	if err != nil {
 		t.Fatalf("build account snapshot (path B): %v", err)
 	}
@@ -240,8 +310,8 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 	got := decodeEnvelope(t, snap)
 
 	var providers map[string]any
-	if err := json.Unmarshal(got["providers"], &providers); err != nil {
-		t.Fatalf("providers does not decode as a record: %v (%s)", err, got["providers"])
+	if err := json.Unmarshal(got[providersMember], &providers); err != nil {
+		t.Fatalf("providers does not decode as a record: %v (%s)", err, got[providersMember])
 	}
 
 	if _, ok := providers[hiddenFixtureProvider]; ok {
@@ -252,7 +322,7 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 	}
 
 	if len(providers) != len(wantZhipuProviders()) {
-		t.Fatalf("providers keys = %v, want exactly the VISIBLE zhipu-account rules %v "+
+		t.Fatalf("providers keys = %v, want exactly the three VISIBLE zhipu-account rules %v "+
 			"(a non-zhipu rule leaked in, a family went missing, or a config.visibility "+
 			"\"hidden\" rule was entitled)",
 			keysOfAny(providers), keysOfStr(wantZhipuProviders()))
@@ -290,8 +360,8 @@ func TestAccountSnapshotVerbatimMirror(t *testing.T) {
 	}
 
 	var states map[string]any
-	if err := json.Unmarshal(got["states"], &states); err != nil {
-		t.Fatalf("states does not decode as a record: %v (%s)", err, got["states"])
+	if err := json.Unmarshal(got[statesMember], &states); err != nil {
+		t.Fatalf("states does not decode as a record: %v (%s)", err, got[statesMember])
 	}
 
 	if _, ok := states[hiddenFixtureProvider]; ok {
@@ -486,8 +556,8 @@ func writeBuiltinTable(t *testing.T, body string) supervisor.Install {
 	}
 }
 
-// allEntitled is the all-pass entitlement gate.
-func allEntitled(string) bool { return true }
+// allEntitled is the all-pass entitlement gate (per (family, mode)).
+func allEntitled(string, string) bool { return true }
 
 // assertNoPartialSnapshot locks the coded-error arm's shape: the zero
 // Snapshot returns nothing pushable — never a partial overlay.
@@ -505,52 +575,68 @@ func assertNoPartialSnapshot(t *testing.T, snap hostsvc.Snapshot, err error) {
 
 // TestAccountSnapshotGateOmission locks the gate's omission-only discipline
 // (D-08/T-06-09): a gate rejecting the bigmodel family omits EXACTLY that
-// family from providers AND states while the zai entry stays intact — the
-// gate may only omit, never edit an entry.
+// family from providers AND states while BOTH visible zai rules (individual
+// and start-plan) stay intact — the gate may only omit families/modes, never
+// edit an entry.
 func TestAccountSnapshotGateOmission(t *testing.T) {
 	inst := accountFixtureInstall(t)
 
 	fixed := "account-bridge:gate-fix1"
 	b := hostsvc.NewSnapshotBuilder(nil, hostsvc.WithRevisionSource(func() string { return fixed }))
 
-	snap, err := b.BuildAccount(inst, func(family string) bool { return family == fixtureFamily })
+	snap, err := b.BuildAccount(inst, func(family, _ string) bool { return family == fixtureFamily })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
 
+	wantPIDs := []string{zaiIndividualProvider, zaiStartPlanProvider}
+	assertProviderStateKeys(t, snap, wantPIDs)
+
 	got := decodeEnvelope(t, snap)
+	providers := decodeRecord(t, providersMember, got[providersMember])
 
-	var providers map[string]any
-	if err := json.Unmarshal(got["providers"], &providers); err != nil {
-		t.Fatalf("providers does not decode: %v (%s)", err, got["providers"])
+	for _, pid := range wantPIDs {
+		entry, ok := providers[pid].(map[string]any)
+		if !ok {
+			t.Fatalf("providers[%s] missing: %v", pid, providers)
+		}
+
+		assertModelIDsVerbatim(t, "providers["+pid+"]", entry["builtinModelIds"], wantZhipuProviders()[pid])
 	}
+}
 
-	if len(providers) != 1 {
-		t.Fatalf("providers keys = %v, want exactly [account:zai-individual-coding-plan] "+
-			"(the gate-rejected family must be omitted entirely)", keysOfAny(providers))
-	}
+// TestAccountSnapshotModeSelection locks the per-(family, mode) selection
+// (quick task 261123-vyl): the built overlay carries exactly the rule whose
+// access.mode equals the desktop's selected connection kind, per family. The
+// hidden off-peak rule and the non-selected visible modes are absent from
+// providers AND states.
+func TestAccountSnapshotModeSelection(t *testing.T) {
+	t.Run("individual selection", func(t *testing.T) {
+		inst := accountFixtureInstall(t)
 
-	entry, ok := providers["account:zai-individual-coding-plan"].(map[string]any)
-	if !ok {
-		t.Fatalf("providers[account:zai-individual-coding-plan] missing: %v", providers)
-	}
+		snap, err := hostsvc.NewSnapshotBuilder(nil).BuildAccount(inst,
+			func(_, mode string) bool { return mode == fixtureKindIndividual })
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
 
-	assertModelIDsVerbatim(t, "providers[account:zai-individual-coding-plan]",
-		entry["builtinModelIds"], wantZhipuProviders()["account:zai-individual-coding-plan"])
+		assertProviderStateKeys(t, snap, []string{
+			"account:bigmodel-individual-coding-plan",
+			"account:zai-individual-coding-plan",
+		})
+	})
 
-	var states map[string]any
-	if err := json.Unmarshal(got["states"], &states); err != nil {
-		t.Fatalf("states does not decode: %v (%s)", err, got["states"])
-	}
+	t.Run("start-plan selection", func(t *testing.T) {
+		inst := accountFixtureInstall(t)
 
-	if len(states) != 1 {
-		t.Fatalf("states keys = %v, want exactly [account:zai-individual-coding-plan] "+
-			"(omission covers providers AND states)", keysOfAny(states))
-	}
+		snap, err := hostsvc.NewSnapshotBuilder(nil).BuildAccount(inst,
+			func(_, mode string) bool { return mode == fixtureKindStartPlan })
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
 
-	if _, ok := states["account:zai-individual-coding-plan"]; !ok {
-		t.Fatal("states[account:zai-individual-coding-plan] missing — the entitled family must stay intact")
-	}
+		assertProviderStateKeys(t, snap, []string{zaiStartPlanProvider})
+	})
 }
 
 // TestAccountSnapshotNoRules locks the misconfiguration arm (AUTH-02 empty
@@ -586,7 +672,7 @@ func TestAccountSnapshotAllHidden(t *testing.T) {
 	if err == nil {
 		t.Fatalf("BuildAccount answered success (providers %v) for a table whose every "+
 			"zhipu-account rule carries config.visibility \"hidden\" — want the coded error, "+
-			"never an empty overlay", snap.Params["providers"])
+			"never an empty overlay", snap.Params[providersMember])
 	}
 
 	assertNoPartialSnapshot(t, snap, err)

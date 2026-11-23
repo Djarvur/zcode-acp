@@ -778,7 +778,7 @@ func codingPlanConfig(t *testing.T) (acpfront.AuthConfig, *recordingProbe, *scri
 		}),
 		Pat:   pat,
 		Probe: probe.probeKeyring,
-		Entitle: func(_ context.Context, family string) bool {
+		Entitle: func(_ context.Context, family, _ string) bool {
 			return family == cpFixAccountFamily
 		},
 	}

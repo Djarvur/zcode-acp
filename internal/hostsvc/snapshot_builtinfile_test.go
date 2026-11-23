@@ -112,7 +112,7 @@ func TestAccountBuildUsesRecordedBuiltinFile(t *testing.T) {
 	fixed := "account-bridge:recorded-fix1"
 	snap, err := hostsvc.NewSnapshotBuilder(nil,
 		hostsvc.WithRevisionSource(func() string { return fixed })).
-		BuildAccount(inst, func(string) bool { return true })
+		BuildAccount(inst, func(string, string) bool { return true })
 	if err != nil {
 		t.Fatalf("build account snapshot: %v", err)
 	}

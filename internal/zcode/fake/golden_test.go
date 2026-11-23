@@ -1544,7 +1544,7 @@ func driveCodingPlanAuthCycle(ctx context.Context, d *exchangeDriver) {
 		Probe:   func(_ context.Context) error { return nil }, // canned probe-pass
 		Creds:   corpusCreds(d.t),
 		Pat:     pat,
-		Entitle: func(_ context.Context, family string) bool { return family == cpCorpusAccountFamily },
+		Entitle: func(_ context.Context, family, _ string) bool { return family == cpCorpusAccountFamily },
 	}))
 
 	// Hook contract: the responder (scripted PAT source + the cipher seam)
@@ -1615,7 +1615,7 @@ func driveCodingPlanProbeFail(ctx context.Context, d *exchangeDriver) {
 		Probe:   func(_ context.Context) error { return errCannedProbeFailure },
 		Creds:   corpusCreds(d.t),
 		Pat:     &corpusPat{},
-		Entitle: func(_ context.Context, family string) bool { return family == cpCorpusAccountFamily },
+		Entitle: func(_ context.Context, family, _ string) bool { return family == cpCorpusAccountFamily },
 	}))
 
 	if err := front.Authenticate(ctx, acpfront.AuthMethodZaiCodingPlan); err == nil {
@@ -1753,7 +1753,7 @@ func driveRuntimeHeadersPat(ctx context.Context, d *exchangeDriver) {
 		Probe:   func(_ context.Context) error { return nil }, // canned probe-pass
 		Creds:   corpusCreds(t),
 		Pat:     patMinter,
-		Entitle: func(_ context.Context, family string) bool { return family == cpCorpusAccountFamily },
+		Entitle: func(_ context.Context, family, _ string) bool { return family == cpCorpusAccountFamily },
 	}))
 
 	// Hook contract: the mode-aware source is assigned before any frame
@@ -2409,7 +2409,7 @@ func corpusProbePokeFront(d *exchangeDriver, patMinter *corpusPatMinter) *acpfro
 		Probe:            func(_ context.Context) error { return nil }, // canned probe-pass
 		Creds:            corpusCreds(d.t),
 		Pat:              patMinter,
-		Entitle:          func(_ context.Context, family string) bool { return family == cpCorpusAccountFamily },
+		Entitle:          func(_ context.Context, family, _ string) bool { return family == cpCorpusAccountFamily },
 		ReadbackDeadline: cpCorpusProbeReadbackDeadline,
 	}))
 
