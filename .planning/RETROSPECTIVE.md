@@ -87,3 +87,30 @@
   executor/reviewer/verifier subagents per wave.
 - Notable: the fake-tier-first architecture kept the real-account spend bounded and the
   debugging reproducible offline.
+
+## Milestone: v0.21.0 — Card Command & Skill Autocomplete
+
+**Shipped:** 2026-11-23
+**Phases:** 1 | **Plans:** 1
+
+### What Was Built
+- The card's composer autocomplete: ONE `available_commands_update` per session/new —
+  ZCode commands (`~/.zcode/commands` + compat), skills (user/compat/plugin-cache/
+  workspace SKILL.md frontmatter), and `/model` with the selector hint.
+
+### What Worked
+- **Sources first** (the user's directive): the wire contract read from the installed
+  chunks was cross-verified against the orca v1.4.262 clone and the zcode clone BEFORE
+  implementation — the source check corrected the scanner's root set (the
+  `~/.agents` compat pair), the dedupe key (lowercase), and caught the Trim-order bug
+  in the manifest parse before it shipped.
+- The fake-tier composition made the whole feature CI-locked and the VM GUI pass a
+  20-minute affair: no real-account spend anywhere in this milestone.
+
+### Key Lessons
+- The client's slash menu distinguishes `commands` and `skills` surfaces, but the omp
+  dialect maps everything to `command` — one list serves both; don't invent a second
+  wire surface without reading the dialect first.
+- Orca's discovery scan matches the catalog frame by SESSION ID — per-session
+  emission is required, and the 9 s budget starts at connect (emit at session/new,
+  never lazily).
