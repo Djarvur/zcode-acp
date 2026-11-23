@@ -539,3 +539,41 @@ Still unresolved, recorded as known-unknowns (never presented as verified):
 ---
 *Phase: 1 — Research & Protocol Documentation (DISC-02)*
 *Verified against the installed client build on 2026-11-19*
+
+---
+
+## The slash-command catalog surface (2026-11-23, V-SRC + wire-truth read of the installed build)
+
+How the card's composer autocomplete gets its commands ("No matching commands" = the
+agent never sent the catalog update):
+
+- **The discovery session**: a disposable card process
+  `<program> acp [--plugin-dir …] --session-dir <dataDirectory>/acp-command-sessions/<agent>`
+  (fullAccess hardcoded false) — `acp-at-rest-commands.ts` drives it: `initialize` →
+  `session/new` (`start({cwd, mcpServers: []})`) → wait ≤9 s (`scanTimeoutMs`) for ONE
+  `session/update` notification whose `update.sessionUpdate === "available_commands_update"`
+  carrying `update.availableCommands` → teardown. If `agentCapabilities.sessionCapabilities.delete`
+  is truthy the client calls `session/delete`; otherwise (disposable `--session-dir`
+  storage present) it just kills the process. [V-SRC structured-agent-session-host-assembly-Do87TcHO.js
+  (`Jp`/`Yp`) + claude-stream-json-connection-BbSXMIDZ.js (`IV.adoptCommands`), installed build 2026-11-23.]
+- **Item shape** (per item of `availableCommands`): `{name, description?, input?: {hint?}}`.
+  The per-dialect mapper (`PV`) renders `{name, kind, description?, argumentHint?, builtin?}`
+  where `kind` is `"skill"` only when the dialect's `skillDescription(item)` returns a
+  description — **the omp dialect defines no skillDescription, so every omp item renders as
+  `command`**; skills rows for other agents ride the same list through that hook
+  (copilot: `input.hint === "instructions for the skill"`; kimi: `name.startsWith("skill:")`).
+- **The omp chat composer gates the menu on `commandsEnabled`/`skillsEnabled`; with neither
+  fed the composer shows "No matching commands".**
+- **The omp dialect's `/model` and its refusals are already catalog-aware**:
+  `modelCommand.resolvesSelectorsFrom: "18.1.9"` — a wrapper on/above 18.1.9 is expected to
+  serve the catalog (the wrapper's version stamp is `18.1.9+zacp.0`).
+- **skillRoots (visuals)**: the omp spec's `skillRoots` hook passes the configured visuals
+  skill roots to the card (`--plugin-dir`); version window `18.1.5` ≤ v < `18.1.9` disables it —
+  the wrapper's stamp (`18.1.9+zacp.0`) is on the enabled side.
+
+**Wrapper consequence (the v0.21.0 feature)**: on `session/new` the wrapper emits ONE
+`session/update` with `sessionUpdate: "available_commands_update"` whose items are the
+ZCode skills (scanned from `~/.zcode/skills/**/SKILL.md` + plugin caches, name/description
+from frontmatter) plus the wrapper's own `/model` — the same list for chat and discovery
+sessions. No delete-capability advertisement is required (the client's disposable-storage
+arm suffices; the wrapper answers `session/delete` regardless — SESS-02).
