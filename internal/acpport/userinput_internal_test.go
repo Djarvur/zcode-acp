@@ -10,11 +10,13 @@ import (
 // The shared catalog literals (goconst): the ask shapes the build/map
 // locks replay.
 const (
-	elicitSession = "sess-1"
-	elicitPhaseQ  = "Which phase?"
-	elicitVerify  = "Verify 1"
-	elicitExit    = "Exit manager"
-	elicitExtrasQ = "Which extras?"
+	elicitSession  = "sess-1"
+	elicitPickOne  = "Pick one"
+	elicitPhaseOne = "verify phase one"
+	elicitPhaseQ   = "Which phase?"
+	elicitVerify   = "Verify 1"
+	elicitExit     = "Exit manager"
+	elicitExtrasQ  = "Which extras?"
 )
 
 // TestBuildElicitationRequest locks the form mapping (UIB-02): one
@@ -26,13 +28,13 @@ func TestBuildElicitationRequest(t *testing.T) {
 	ask := UserInputAsk{
 		RequestID: "req-1",
 		SessionID: elicitSession,
-		Prompt:    "Pick one",
+		Prompt:    elicitPickOne,
 		Questions: []UserInputQuestion{
 			{
 				Question: elicitPhaseQ,
 				Header:   "Phase",
 				Options: []UserInputOption{
-					{Label: elicitVerify, Description: "verify phase one"},
+					{Label: elicitVerify, Description: elicitPhaseOne},
 					{Label: elicitExit},
 				},
 			},
@@ -176,9 +178,9 @@ func TestMapElicitationOutcome(t *testing.T) {
 func TestDecodeUserInputAsk(t *testing.T) {
 	full := json.RawMessage(`{
 		"requestId": "req-1", "sessionId": "sess-1", "toolName": "AskUserQuestion",
-		"prompt": "Pick one",
+		"prompt": "` + elicitPickOne + `",
 		"questions": [{"question": "Which phase?", "header": "Phase",
-			"options": [{"value": "Verify 1", "label": "Verify 1", "description": "verify phase one"}],
+			"options": [{"value": "Verify 1", "label": "Verify 1", "description": "` + elicitPhaseOne + `"}],
 			"multiSelect": false}]
 	}`)
 
@@ -187,12 +189,12 @@ func TestDecodeUserInputAsk(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	if ask.Prompt != "Pick one" || len(ask.Questions) != 1 {
+	if ask.Prompt != elicitPickOne || len(ask.Questions) != 1 {
 		t.Fatalf("ask = %+v, want the prompt and one question", ask)
 	}
 
 	if q := ask.Questions[0]; q.Question != "Which phase?" || q.Header != "Phase" ||
-		len(q.Options) != 1 || q.Options[0].Label != "Verify 1" || q.Options[0].Description != "verify phase one" {
+		len(q.Options) != 1 || q.Options[0].Label != "Verify 1" || q.Options[0].Description != elicitPhaseOne {
 		t.Fatalf("question = %+v, want the option labels and descriptions", q)
 	}
 
