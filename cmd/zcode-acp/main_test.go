@@ -360,6 +360,47 @@ const (
 	e2eFailureNoLine      = "no-line"
 )
 
+// Binary-tier failure-want constants.
+const (
+	e2eWantStepRead     = "read the mount line"
+	e2eWantStepValidate = "validate the mount tree"
+)
+
+// e2eMountFailureCase is one binary-tier failure family.
+type e2eMountFailureCase struct {
+	name    string
+	variant string
+	want    []string
+}
+
+// e2eMountFailureCases is the binary-tier fast failure matrix.
+func e2eMountFailureCases() []e2eMountFailureCase {
+	return []e2eMountFailureCase{
+		{
+			name:    "early-exit",
+			variant: e2eFailureEarlyExit,
+			want:    []string{e2eWantStepRead, "exit status 127"},
+		},
+		{
+			name:    "bogus-line",
+			variant: e2eFailureBogusLine,
+			want:    []string{e2eWantStepRead, "is not one .mount_* component"},
+		},
+		{
+			name:    "missing-tree",
+			variant: e2eFailureMissingTree,
+			want:    []string{e2eWantStepValidate, "zcode"},
+		},
+		{
+			name:    "no-fuse",
+			variant: e2eFailureNoFuse,
+			want: []string{
+				e2eWantStepRead, "dlopen(): error loading libfuse.so.2", "libfuse2t64", "/dev/fuse",
+			},
+		},
+	}
+}
+
 // TestAppImageMountFailures drives the BUILT wrapper through the fast mount
 // failure families: every arm exits 1 (a mount failure is a runtime failure,
 // never a usage error), writes the AppImage path, the failing step, the
@@ -370,36 +411,7 @@ const (
 func TestAppImageMountFailures(t *testing.T) {
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 
-	cases := []struct {
-		name    string
-		variant string
-		want    []string
-	}{
-		{
-			name:    "early-exit",
-			variant: e2eFailureEarlyExit,
-			want:    []string{"read the mount line", "exit status 127"},
-		},
-		{
-			name:    "bogus-line",
-			variant: e2eFailureBogusLine,
-			want:    []string{"read the mount line", "is not one .mount_* component"},
-		},
-		{
-			name:    "missing-tree",
-			variant: e2eFailureMissingTree,
-			want:    []string{"validate the mount tree", "zcode"},
-		},
-		{
-			name:    "no-fuse",
-			variant: e2eFailureNoFuse,
-			want: []string{
-				"read the mount line", "dlopen(): error loading libfuse.so.2", "libfuse2t64", "/dev/fuse",
-			},
-		},
-	}
-
-	for _, tc := range cases {
+	for _, tc := range e2eMountFailureCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := t.TempDir()
 			tmpRoot := t.TempDir()
@@ -714,6 +726,14 @@ func e2eTeardownFailureBeatsSignal(t *testing.T, agentBin, fakeBin string) {
 	}
 
 	e2eWaitExitCodeWithin(t, wrapper, e2eSignalExitWatchdog, 1)
+	e2eAssertTeardownFailure(t, fixture, base, mountPath, stderrBuf)
+}
+
+// e2eAssertTeardownFailure asserts the teardown-error arm: the exit-1 stderr
+// names the mount and remediation, the app-server went first, the base and its
+// .mount_* child are retained, and both children are reaped.
+func e2eAssertTeardownFailure(t *testing.T, fixture, base, mountPath string, stderrBuf *e2eSyncBuffer) {
+	t.Helper()
 
 	stderr := stderrBuf.String()
 	for _, want := range []string{mountPath, "teardown", "fusermount -u"} {

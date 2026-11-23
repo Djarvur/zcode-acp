@@ -42,6 +42,8 @@ const (
 	// variants wait for: the test writes it after PrepareMount returned a
 	// validated Mount, so the loss happens on an already-installed mount.
 	fakeAppServerPIDFile = "app-server.pid"
+	// testZcodeName is the invariant binary name the mounted tree must carry.
+	testZcodeName = "zcode"
 
 	// Fake-runtime variants (separate script bodies, never env-controlled:
 	// the helper env is a closed allowlist, RESEARCH Code Examples).
@@ -108,23 +110,21 @@ base=${TMPDIR:?TMPDIR must be set by the wrapper}
 
 // fakeTreeBody creates the invariant spawn surface inside a fresh .mount_*
 // directory and leaves the directory path in $dir.
-func fakeTreeBody() string {
-	return `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+const fakeTreeBody = `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
 printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
 : > "$dir/resources/glm/zcode.cjs"
 `
-}
 
-// fakeAppImageScript returns the variant's script body.
-func fakeAppImageScript(variant string) string {
-	switch variant {
-	case fakeVariantBadTree:
-		// Prints a valid mount line but leaves resources/glm/zcode.cjs out:
-		// the tree validation must reject it. The stderr marker proves the
-		// tap carries the helper's stderr into the failure diagnostics.
-		return fakeMountPreamble + `echo "fake-appimage: cannot mount (stderr marker)" >&2
+// Variant bodies. Each is a static script; writeFakeAppImage substitutes the
+// PID tokens at fixture creation.
+const (
+	// fakeScriptBadTree prints a valid mount line but leaves
+	// resources/glm/zcode.cjs out: the tree validation must reject it. The
+	// stderr marker proves the tap carries the helper's stderr into the
+	// failure diagnostics.
+	fakeScriptBadTree = fakeMountPreamble + `echo "fake-appimage: cannot mount (stderr marker)" >&2
 dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 trap 'rm -rf "$dir"; exit 143' TERM
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
@@ -133,78 +133,69 @@ chmod 755 "$dir/zcode"
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
-	case fakeVariantEarlyExit:
-		// Exits immediately with the legacy runtime's missing-helper status:
-		// the error must name the AppImage, the step, the exit, the observed
-		// output, and a remediation.
-		return fakeMountPreamble + "exit 127\n"
-	case fakeVariantNoLine:
-		// Creates a tree but never prints the mount line: readiness times out
-		// (tests use a millisecond ReadyTimeout) and teardown must still reap
-		// the helper and remove the private base.
-		return fakeMountPreamble + fakeTreeBody() + `while :; do sleep 0.05; done
-`
-	case fakeVariantBogusLine:
-		// An absolute line outside the private base: rejected immediately as
-		// an untrusted path-looking line, naming the observed line.
-		return fakeMountPreamble + `echo /tmp/zcode-acp-not-ours
+	// fakeScriptEarlyExit exits immediately with the legacy runtime's
+	// missing-helper status: the error must name the AppImage, the step, the
+	// exit, the observed output, and a remediation.
+	fakeScriptEarlyExit = fakeMountPreamble + "exit 127\n"
+	// fakeScriptNoLine creates a tree but never prints the mount line:
+	// readiness times out (millisecond ReadyTimeout) and teardown must still
+	// reap the helper and remove the private base.
+	fakeScriptNoLine = fakeMountPreamble + fakeTreeBody + "while :; do sleep 0.05; done\n"
+	// fakeScriptBogusLine prints an absolute line outside the private base:
+	// rejected immediately as an untrusted path-looking line, naming the
+	// observed line.
+	fakeScriptBogusLine = fakeMountPreamble + `echo /tmp/zcode-acp-not-ours
 while :; do sleep 0.05; done
 `
-	case fakeVariantMissingTree:
-		// A valid mount directory without the invariant zcode entry: tree
-		// validation fails naming the missing path; the helper is reaped.
-		return fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+	// fakeScriptMissingTree prints a valid mount directory without the
+	// invariant zcode entry: tree validation fails naming the missing path.
+	fakeScriptMissingTree = fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 mkdir -p "$dir/resources/glm"
 : > "$dir/resources/glm/zcode.cjs"
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
-	case fakeVariantNoFuse:
-		// The legacy runtime's FUSE failure text goes to STDOUT (notify(),
-		// RESEARCH Pattern 2): the blank line must be ignored and the two
-		// classification strings must reach the error with both remediation
-		// families.
-		return fakeMountPreamble + `echo ""
+	// fakeScriptNoFuse prints the legacy runtime's FUSE failure text to
+	// STDOUT (notify(), RESEARCH Pattern 2): the blank line must be ignored
+	// and the two classification strings must reach the error with both
+	// remediation families.
+	fakeScriptNoFuse = fakeMountPreamble + `echo ""
 echo "dlopen(): error loading libfuse.so.2"
 echo "Cannot mount AppImage, please check your FUSE setup."
 exit 127
 `
-	case fakeVariantLateText:
-		// Writes its final diagnostic line and exits immediately: the stdout
-		// tap is drained to EOF, so that exact line is in the failure error.
-		return fakeMountPreamble + `echo "fake-appimage: late failure text before exit"
+	// fakeScriptLateText writes its final diagnostic line and exits
+	// immediately: the stdout tap is drained to EOF, so that exact line is
+	// in the failure error.
+	fakeScriptLateText = fakeMountPreamble + `echo "fake-appimage: late failure text before exit"
 exit 1
 `
-	case fakeVariantLeaky:
-		// A valid tree that ignores SIGTERM and installs no cleanup trap: the
-		// tree outlives the helper, so a teardown that cannot prove the mount
-		// gone must fail loud and retain the private base.
-		return fakeMountPreamble + fakeTreeBody() + `trap '' TERM
+	// fakeScriptLeaky is a valid tree that ignores SIGTERM and installs no
+	// cleanup trap: the tree outlives the helper, so a teardown that cannot
+	// prove the mount gone must fail loud and retain the private base.
+	fakeScriptLeaky = fakeMountPreamble + fakeTreeBody + `trap '' TERM
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
-	case fakeVariantDieAfter:
-		// Prints the path, waits for the app-server PID file (the test writes
-		// it after PrepareMount returned a validated Mount), then removes the
-		// tree and exits: watcher-driven loss on an already-installed mount.
-		return fakeMountPreamble + fakeTreeBody() + `printf '%s\n' "$dir"
+	// fakeScriptDieAfter prints the path, waits for the app-server PID file
+	// (the test writes it after PrepareMount returned a validated Mount), then
+	// removes the tree and exits: watcher-driven loss on an installed mount.
+	fakeScriptDieAfter = fakeMountPreamble + fakeTreeBody + `printf '%s\n' "$dir"
 while [ ! -f "@@APP_PID@@" ]; do sleep 0.02; done
 rm -rf "$dir"
 exit 0
 `
-	case fakeVariantVanish:
-		// Prints the path, waits for the app-server PID file, removes the tree
-		// but stays alive: the poll-driven loss arm (helper alive, tree gone).
-		return fakeMountPreamble + fakeTreeBody() + `printf '%s\n' "$dir"
+	// fakeScriptVanish prints the path, waits for the app-server PID file,
+	// removes the tree but stays alive: the poll-driven loss arm.
+	fakeScriptVanish = fakeMountPreamble + fakeTreeBody + `printf '%s\n' "$dir"
 while [ ! -f "@@APP_PID@@" ]; do sleep 0.02; done
 rm -rf "$dir"
 while :; do sleep 0.05; done
 `
-	case fakeVariantStubborn:
-		// Ignores SIGTERM and keeps the tree alive; a detached (setsid)
-		// short-lived process removes the tree after the helper is killed —
-		// the fake analogue of the real keepalive-pipe unmount.
-		return fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+	// fakeScriptStubborn ignores SIGTERM and keeps the tree alive; a detached
+	// (setsid) short-lived process removes the tree after the helper is
+	// killed — the fake analogue of the real keepalive-pipe unmount.
+	fakeScriptStubborn = fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
 printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
@@ -214,10 +205,9 @@ setsid sh -c 'sleep 0.5; rm -rf "$1"' _ "$dir" >/dev/null 2>&1 &
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
-	default:
-		// The happy runtime: cleans its tree on TERM/INT and carries the
-		// bundled builtin copy (the QA-02 fresh-machine completion).
-		return fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+	// fakeScriptHappy cleans its tree on TERM/INT and carries the bundled
+	// builtin copy (the QA-02 fresh-machine completion).
+	fakeScriptHappy = fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 trap 'rm -rf "$dir"; exit 143' TERM
 trap 'rm -rf "$dir"; exit 130' INT
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
@@ -228,6 +218,35 @@ printf '{"schemaVersion":1,"revision":44}\n' > "$dir/resources/config/provider/z
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
+)
+
+// fakeAppImageScript returns the variant's script body.
+func fakeAppImageScript(variant string) string {
+	switch variant {
+	case fakeVariantBadTree:
+		return fakeScriptBadTree
+	case fakeVariantEarlyExit:
+		return fakeScriptEarlyExit
+	case fakeVariantNoLine:
+		return fakeScriptNoLine
+	case fakeVariantBogusLine:
+		return fakeScriptBogusLine
+	case fakeVariantMissingTree:
+		return fakeScriptMissingTree
+	case fakeVariantNoFuse:
+		return fakeScriptNoFuse
+	case fakeVariantLateText:
+		return fakeScriptLateText
+	case fakeVariantLeaky:
+		return fakeScriptLeaky
+	case fakeVariantDieAfter:
+		return fakeScriptDieAfter
+	case fakeVariantVanish:
+		return fakeScriptVanish
+	case fakeVariantStubborn:
+		return fakeScriptStubborn
+	default:
+		return fakeScriptHappy
 	}
 }
 
@@ -306,7 +325,7 @@ func assertMountBaseLocation(t *testing.T, root, tmpRoot string) {
 func assertMountTreeValidated(t *testing.T, root string) {
 	t.Helper()
 
-	for _, rel := range []string{"zcode", filepath.Join("resources", "glm", "zcode.cjs")} {
+	for _, rel := range []string{testZcodeName, filepath.Join("resources", "glm", "zcode.cjs")} {
 		if _, statErr := os.Stat(filepath.Join(root, rel)); statErr != nil {
 			t.Fatalf("the validated mounted tree misses %s: %v", rel, statErr)
 		}
@@ -656,6 +675,59 @@ type mountFailureCase struct {
 	want         []string
 }
 
+// Failure-want constants (the actionable-error contract's fixed substrings).
+const (
+	wantStepReadMountLine = "read the mount line"
+	wantStepValidateTree  = "validate the mount tree"
+	wantObservedOutput    = "observed output"
+	wantRemediation       = "remediation:"
+)
+
+// mountFailureCases is the failure-classification matrix.
+func mountFailureCases() []mountFailureCase {
+	return []mountFailureCase{
+		{
+			name:    "early-exit",
+			variant: fakeVariantEarlyExit,
+			want:    []string{wantStepReadMountLine, "exit status 127", wantObservedOutput, wantRemediation},
+		},
+		{
+			name:         "no-line",
+			variant:      fakeVariantNoLine,
+			readyTimeout: 400 * time.Millisecond,
+			want:         []string{wantStepReadMountLine, "no mount line", wantObservedOutput, wantRemediation},
+		},
+		{
+			name:    "bogus-line",
+			variant: fakeVariantBogusLine,
+			want: []string{
+				wantStepReadMountLine, "is not one .mount_* component", "/tmp/zcode-acp-not-ours",
+				wantRemediation,
+			},
+		},
+		{
+			name:    "missing-tree",
+			variant: fakeVariantMissingTree,
+			want:    []string{wantStepValidateTree, testZcodeName, wantObservedOutput, wantRemediation},
+		},
+		{
+			name:    "no-fuse",
+			variant: fakeVariantNoFuse,
+			want: []string{
+				wantStepReadMountLine, "dlopen(): error loading libfuse.so.2", "libfuse2t64", "/dev/fuse",
+				wantRemediation,
+			},
+		},
+		{
+			name:    "late-text",
+			variant: fakeVariantLateText,
+			want: []string{
+				wantStepReadMountLine, "late failure text before exit", wantObservedOutput, wantRemediation,
+			},
+		},
+	}
+}
+
 // TestMountFailures is the failure-classification matrix (MNT-04, D-03): every
 // arm fails loud with the AppImage, the failing step, the capped observed
 // output, and a remediation; the helper is reaped, the private base removed,
@@ -663,49 +735,7 @@ type mountFailureCase struct {
 // supervisor tier with a millisecond ReadyTimeout so CI never waits the 15 s
 // production default.
 func TestMountFailures(t *testing.T) {
-	cases := []mountFailureCase{
-		{
-			name:    "early-exit",
-			variant: fakeVariantEarlyExit,
-			want:    []string{"read the mount line", "exit status 127", "observed output", "remediation:"},
-		},
-		{
-			name:         "no-line",
-			variant:      fakeVariantNoLine,
-			readyTimeout: 400 * time.Millisecond,
-			want:         []string{"read the mount line", "no mount line", "observed output", "remediation:"},
-		},
-		{
-			name:    "bogus-line",
-			variant: fakeVariantBogusLine,
-			want: []string{
-				"read the mount line", "is not one .mount_* component", "/tmp/zcode-acp-not-ours",
-				"remediation:",
-			},
-		},
-		{
-			name:    "missing-tree",
-			variant: fakeVariantMissingTree,
-			want:    []string{"validate the mount tree", "zcode", "observed output", "remediation:"},
-		},
-		{
-			name:    "no-fuse",
-			variant: fakeVariantNoFuse,
-			want: []string{
-				"read the mount line", "dlopen(): error loading libfuse.so.2", "libfuse2t64", "/dev/fuse",
-				"remediation:",
-			},
-		},
-		{
-			name:    "late-text",
-			variant: fakeVariantLateText,
-			want: []string{
-				"read the mount line", "late failure text before exit", "observed output", "remediation:",
-			},
-		},
-	}
-
-	for _, tc := range cases {
+	for _, tc := range mountFailureCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpRoot := t.TempDir()
 			t.Setenv("TMPDIR", tmpRoot)
@@ -989,6 +1019,15 @@ func TestMountTeardownFailure(t *testing.T) {
 		}
 	}
 
+	assertRetainedBase(t, base)
+	assertProcessGone(t, readFixturePID(t, fixture, fakeHelperPIDFile), "the leaky mount helper")
+}
+
+// assertRetainedBase requires the private base and its .mount_* child to
+// survive, with the child's tree untouched (RemoveAll never traversed it).
+func assertRetainedBase(t *testing.T, base string) {
+	t.Helper()
+
 	entries, readErr := os.ReadDir(base)
 	if readErr != nil {
 		t.Fatalf("the private base %s must be retained: %v", base, readErr)
@@ -997,21 +1036,21 @@ func TestMountTeardownFailure(t *testing.T) {
 	foundMount := false
 
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), fakeMountDirGlob) {
-			foundMount = true
+		if !strings.HasPrefix(entry.Name(), fakeMountDirGlob) {
+			continue
+		}
 
-			child := filepath.Join(base, entry.Name())
-			if _, statErr := os.Stat(filepath.Join(child, "resources", "glm", "zcode.cjs")); statErr != nil {
-				t.Fatalf("RemoveAll traversed the retained mount %s: %v", child, statErr)
-			}
+		foundMount = true
+
+		child := filepath.Join(base, entry.Name())
+		if _, statErr := os.Stat(filepath.Join(child, "resources", "glm", "zcode.cjs")); statErr != nil {
+			t.Fatalf("RemoveAll traversed the retained mount %s: %v", child, statErr)
 		}
 	}
 
 	if !foundMount {
 		t.Fatalf("the retained private base %s lost its %s* child", base, fakeMountDirGlob)
 	}
-
-	assertProcessGone(t, readFixturePID(t, fixture, fakeHelperPIDFile), "the leaky mount helper")
 }
 
 // readFixturePID reads a PID the fixture helper recorded.
