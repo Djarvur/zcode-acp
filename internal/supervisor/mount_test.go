@@ -752,6 +752,191 @@ func TestMountFailures(t *testing.T) {
 // presence predicate compares against (0x65735546).
 const testFuseSuperblockMagic = 0x65735546
 
+// errUnguardedSpawn marks a guarded spawn closure that was reached with a
+// lost mount (the crash-loop respawn the Guard exists to forbid, T-10-08).
+var errUnguardedSpawn = errors.New("guarded spawn ran despite a lost mount")
+
+// TestMountLost is the loss-lifecycle matrix (MNT-05, D-05): Lost closes
+// exactly once after an already-validated mount is lost, Accessible is false,
+// Guard wraps ErrMountLost, and an intentional Stop never masquerades as a
+// loss.
+func TestMountLost(t *testing.T) {
+	t.Run("helper dies after the mount is installed", testMountLostHelperDies)
+	t.Run("tree vanishes while the helper lives", testMountLostTreeVanishes)
+	t.Run("intentional stop is not a loss", testMountStopIsNotLoss)
+}
+
+// testMountLostHelperDies covers the watcher-driven loss: the helper removes
+// the tree and exits (die-after) only after the app-server PID release, so
+// PrepareMount returned a validated Mount first.
+func testMountLostHelperDies(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantDieAfter)
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	t.Cleanup(func() { _ = mount.Stop() })
+
+	releaseMountLoss(t, fixture)
+	waitMountLost(t, mount)
+
+	if mount.Accessible() {
+		t.Fatal("Accessible() = true after the mount tree was removed")
+	}
+
+	guardErr := mount.Guard()
+	if !errors.Is(guardErr, supervisor.ErrMountLost) {
+		t.Fatalf("Guard() = %v, want a wrap of ErrMountLost", guardErr)
+	}
+
+	if !strings.Contains(guardErr.Error(), appImage) {
+		t.Fatalf("the guard error %q must name the AppImage", guardErr)
+	}
+
+	if err := mount.Stop(); err != nil {
+		t.Fatalf("Stop after loss: %v", err)
+	}
+
+	assertMountPathGone(t, mount.Root(), "the lost mount root")
+	assertNoMountBase(t, tmpRoot)
+}
+
+// testMountLostTreeVanishes covers the poll-driven loss: the helper stays
+// alive but removes the tree (vanish).
+func testMountLostTreeVanishes(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantVanish)
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	t.Cleanup(func() { _ = mount.Stop() })
+
+	releaseMountLoss(t, fixture)
+	waitMountLost(t, mount)
+
+	if mount.Accessible() {
+		t.Fatal("Accessible() = true after the tree vanished under a live helper")
+	}
+
+	if err := mount.Stop(); err != nil {
+		t.Fatalf("Stop after loss: %v", err)
+	}
+
+	assertProcessGone(t, readFixturePID(t, fixture, fakeHelperPIDFile), "the mount helper")
+	assertNoMountBase(t, tmpRoot)
+}
+
+// testMountStopIsNotLoss proves the stopping flag: an intentional teardown
+// closes the helper (the happy fixture removes its tree on TERM) but must
+// never close Lost — a teardown is not a mid-session loss (D-05).
+func testMountStopIsNotLoss(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantOK)
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	if err := mount.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	select {
+	case <-mount.Lost():
+		t.Fatal("an intentional Stop closed Lost (the teardown masqueraded as a mid-session loss)")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestMountGuard proves the guarded spawn seam (T-10-08): after the mount is
+// lost, Guard refuses the spawn and the supervisor's crash-loop seam runs
+// exactly once — never a respawn against a vanished root.
+func TestMountGuard(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantDieAfter)
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	t.Cleanup(func() { _ = mount.Stop() })
+
+	releaseMountLoss(t, fixture)
+	waitMountLost(t, mount)
+
+	spawnCount := 0
+
+	sup := supervisor.NewSupervisor(func(context.Context) (*supervisor.Child, error) {
+		spawnCount++
+
+		if guardErr := mount.Guard(); guardErr != nil {
+			return nil, guardErr
+		}
+
+		return nil, errUnguardedSpawn
+	}, supervisor.Policy{
+		CrashLimit:  1,
+		CrashWindow: 100 * time.Millisecond,
+		BaseBackoff: 10 * time.Millisecond,
+		Grace:       50 * time.Millisecond,
+	})
+
+	startErr := sup.Start(context.Background())
+	if !errors.Is(startErr, supervisor.ErrMountLost) {
+		t.Fatalf("Start() = %v, want a wrap of ErrMountLost", startErr)
+	}
+
+	if spawnCount != 1 {
+		t.Fatalf("the spawn seam ran %d times after the loss, want exactly 1 (no respawn)", spawnCount)
+	}
+}
+
+// waitMountLost waits for the Lost channel to close.
+func waitMountLost(t *testing.T, mount *supervisor.Mount) {
+	t.Helper()
+
+	select {
+	case <-mount.Lost():
+	case <-time.After(testMountReapDeadline):
+		t.Fatal("Lost never closed after the mount was lost")
+	}
+}
+
+// releaseMountLoss writes the release file the die-after/vanish fixtures wait
+// for (the test owns the app-server PID file at the supervisor tier).
+func releaseMountLoss(t *testing.T, fixture string) {
+	t.Helper()
+
+	path := filepath.Join(fixture, fakeAppServerPIDFile)
+	if err := os.WriteFile(path, []byte("1\n"), 0o600); err != nil {
+		t.Fatalf("write the loss release file %s: %v", path, err)
+	}
+}
+
 // TestMountTeardownFailure proves a live mount is never traversed by
 // RemoveAll: with the Statfs seam reporting the FUSE magic while the tree's
 // zcode entry is absent, the mount never disappears, Stop fails at the

@@ -281,6 +281,12 @@ const (
 	e2ePIDGoneWait = 5 * time.Second
 	// e2eFixturePoll is the fixture poll interval.
 	e2eFixturePoll = 20 * time.Millisecond
+	// e2eSignalExitWatchdog bounds the signal/teardown-failure exits: the
+	// production MountOpts grace (5 s) plus the mount-gone deadline (10 s)
+	// dominate on the teardown-failure arm.
+	e2eSignalExitWatchdog = 45 * time.Second
+	// e2eMountLossWatchdog bounds the mount-loss exit.
+	e2eMountLossWatchdog = 20 * time.Second
 )
 
 // TestAppImageMountEndToEnd (plan 10-01) proves the mount-first acquisition
@@ -351,6 +357,7 @@ const (
 	e2eFailureBogusLine   = "bogus-line"
 	e2eFailureMissingTree = "missing-tree"
 	e2eFailureNoFuse      = "no-fuse"
+	e2eFailureNoLine      = "no-line"
 )
 
 // TestAppImageMountFailures drives the BUILT wrapper through the fast mount
@@ -474,6 +481,17 @@ base=${TMPDIR:?TMPDIR must be set by the wrapper}
 `
 
 	switch variant {
+	case e2eFailureNoLine:
+		// Creates a valid tree but never prints the mount line: the wrapper
+		// sits in PrepareMount until a signal cancels it (the startup-signal
+		// arm), so teardown must stop and reap the helper and leave no base.
+		return preamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
+printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
+chmod 755 "$dir/zcode"
+: > "$dir/resources/glm/zcode.cjs"
+while :; do sleep 0.05; done
+`
 	case e2eFailureBogusLine:
 		return preamble + `echo /tmp/zcode-acp-not-ours
 while :; do sleep 0.05; done
@@ -512,6 +530,338 @@ func e2eAssertNoMountBase(t *testing.T, root string) {
 	}
 }
 
+// TestAppImageMountSignal is the OS-signal exit path (MNT-03, D-02): SIGTERM,
+// SIGINT, and SIGHUP run the staged teardown (app-server first, helper second),
+// exit 0, leave zero orphans and zero stale mounts, and the fake transcript —
+// written only after the app-server's clean stdin-EOF drain — proves a
+// signal-derived spawn context never SIGKILLed the child. A signal during
+// mount readiness is a clean exit 0; a teardown that cannot prove the mount
+// gone exits 1 even when a signal was delivered.
+func TestAppImageMountSignal(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
+
+	signals := []struct {
+		name string
+		sig  os.Signal
+	}{
+		{"SIGTERM", syscall.SIGTERM},
+		{"SIGINT", syscall.SIGINT},
+		{"SIGHUP", syscall.SIGHUP},
+	}
+
+	for _, tc := range signals {
+		t.Run(tc.name, func(t *testing.T) {
+			e2eSignalShutdownRide(t, agentBin, fakeBin, tc.sig)
+		})
+	}
+
+	t.Run("signal during mount readiness", func(t *testing.T) {
+		e2eSignalDuringReadiness(t, agentBin)
+	})
+
+	t.Run("teardown failure outranks the signal", func(t *testing.T) {
+		e2eTeardownFailureBeatsSignal(t, agentBin, fakeBin)
+	})
+}
+
+// e2eSignalShutdownRide drives one signal through a live ride and asserts the
+// clean staged teardown.
+func e2eSignalShutdownRide(t *testing.T, agentBin, fakeBin string, sig os.Signal) {
+	t.Helper()
+
+	scenarioAbs, err := filepath.Abs(e2eScenario)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", e2eScenario, err)
+	}
+
+	fixture := t.TempDir()
+	transcriptPath := filepath.Join(fixture, "fake-transcript.txt")
+	appImage := e2eWriteFakeAppImage(t, fixture, fakeBin, scenarioAbs, transcriptPath)
+
+	rideCtx, rideCancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+	defer rideCancel()
+
+	wrapper := exec.CommandContext(rideCtx, agentBin, ompFlagAppServer, appImage)
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stderrBuf := &e2eSyncBuffer{}
+	wrapper.Stderr = stderrBuf
+
+	t.Cleanup(e2eCleanupMountFixture(t, fixture))
+
+	stdin, stdout := e2eStartWrapper(t, wrapper, stderrBuf)
+
+	mountPath := e2eWaitMountRecord(t, fixture, stderrBuf)
+
+	client := acp.NewClientSideConnection(&e2eCollector{}, stdin, stdout)
+	e2eInitialize(rideCtx, t, client)
+	e2eNewSession(rideCtx, t, client)
+
+	if sigErr := wrapper.Process.Signal(sig); sigErr != nil {
+		t.Fatalf("send %v to the wrapper: %v", sig, sigErr)
+	}
+
+	e2eWaitExitWithin(t, wrapper, e2eSignalExitWatchdog)
+
+	e2eAssertGonePath(t, mountPath, "the managed mount")
+	e2eAssertGonePath(t, filepath.Dir(mountPath), "the private mount base")
+	e2eAssertPIDGone(t, filepath.Join(fixture, e2eFakeHelperPID), "mount helper")
+	e2eAssertPIDGone(t, filepath.Join(fixture, e2eFakeAppServerPID), "app-server")
+	e2eAssertOrderedTeardown(t, fixture)
+	e2eAssertServedTranscript(t, transcriptPath)
+}
+
+// e2eAssertServedTranscript proves the app-server reached its clean EOF-drain
+// exit: the transcript exists and carries a served session/create. A
+// signal-derived spawn context would SIGKILL the child mid-flight and never
+// produce it.
+func e2eAssertServedTranscript(t *testing.T, transcriptPath string) {
+	t.Helper()
+
+	lines := e2eWaitTranscript(t, transcriptPath)
+
+	for _, line := range lines {
+		if line.dir == "in" && strings.Contains(line.json, `"method":"session/create"`) {
+			return
+		}
+	}
+
+	t.Fatalf("the fake transcript carries no served session/create: the app-server was killed " +
+		"before its stdin-EOF drain (the spawn context must not be signal-derived)")
+}
+
+// e2eSignalDuringReadiness signals the wrapper while PrepareMount waits on a
+// helper that never prints: the run must stop and reap the helper and exit 0
+// (a signal during acquisition is an intentional shutdown, not a mount
+// failure), leaving no base residue.
+func e2eSignalDuringReadiness(t *testing.T, agentBin string) {
+	t.Helper()
+
+	fixture := t.TempDir()
+	tmpRoot := t.TempDir()
+	appImage := e2eWriteFakeAppImageFailure(t, fixture, e2eFailureNoLine)
+
+	ctx, cancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+	defer cancel()
+
+	wrapper := exec.CommandContext(ctx, agentBin, ompFlagAppServer, appImage)
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	wrapper.Env = append(os.Environ(), "TMPDIR="+tmpRoot)
+
+	stderrBuf := &e2eSyncBuffer{}
+	wrapper.Stderr = stderrBuf
+
+	t.Cleanup(e2eCleanupMountFixture(t, fixture))
+
+	_, _ = e2eStartWrapper(t, wrapper, stderrBuf)
+
+	e2eWaitPIDFile(t, filepath.Join(fixture, e2eFakeHelperPID), stderrBuf)
+
+	if sigErr := wrapper.Process.Signal(syscall.SIGTERM); sigErr != nil {
+		t.Fatalf("send SIGTERM during readiness: %v", sigErr)
+	}
+
+	e2eWaitExitWithin(t, wrapper, e2eSignalExitWatchdog)
+
+	e2eAssertPIDGone(t, filepath.Join(fixture, e2eFakeHelperPID), "mount helper")
+	e2eAssertNoMountBase(t, tmpRoot)
+	e2eAssertGonePath(t, filepath.Join(fixture, e2eFakeMountRecord), "the mount record")
+}
+
+// e2eTeardownFailureBeatsSignal proves the cause precedence: with SIGTERM
+// already delivered and the leaky helper's tree unable to disappear, the run
+// exits 1 with the mount and the manual-unmount remediation — never a clean 0
+// — after the app-server is torn down first, and retains the base.
+func e2eTeardownFailureBeatsSignal(t *testing.T, agentBin, fakeBin string) {
+	t.Helper()
+
+	scenarioAbs, err := filepath.Abs(e2eScenario)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", e2eScenario, err)
+	}
+
+	fixture := t.TempDir()
+	tmpRoot := t.TempDir()
+	transcriptPath := filepath.Join(fixture, "fake-transcript.txt")
+	appImage := e2eWriteFakeAppImageVariant(t, fixture, fakeBin, scenarioAbs, transcriptPath, e2eVariantLeaky)
+
+	rideCtx, rideCancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+	defer rideCancel()
+
+	wrapper := exec.CommandContext(rideCtx, agentBin, ompFlagAppServer, appImage)
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	wrapper.Env = append(os.Environ(), "TMPDIR="+tmpRoot)
+
+	stderrBuf := &e2eSyncBuffer{}
+	wrapper.Stderr = stderrBuf
+
+	t.Cleanup(e2eCleanupMountFixture(t, fixture))
+
+	stdin, stdout := e2eStartWrapper(t, wrapper, stderrBuf)
+
+	mountPath := e2eWaitMountRecord(t, fixture, stderrBuf)
+	base := filepath.Dir(mountPath)
+
+	t.Cleanup(func() { _ = os.RemoveAll(base) }) // the retained base, cleaned after the asserts
+
+	client := acp.NewClientSideConnection(&e2eCollector{}, stdin, stdout)
+	e2eInitialize(rideCtx, t, client)
+	e2eNewSession(rideCtx, t, client)
+
+	if sigErr := wrapper.Process.Signal(syscall.SIGTERM); sigErr != nil {
+		t.Fatalf("send SIGTERM while the mount is stuck: %v", sigErr)
+	}
+
+	e2eWaitExitCodeWithin(t, wrapper, e2eSignalExitWatchdog, 1)
+
+	stderr := stderrBuf.String()
+	for _, want := range []string{mountPath, "teardown", "fusermount -u"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q must carry %q (the teardown error must beat the signal)", stderr, want)
+		}
+	}
+
+	e2eAssertOrderedTeardown(t, fixture)
+
+	entries, readErr := os.ReadDir(base)
+	if readErr != nil {
+		t.Fatalf("the retained private base %s must exist: %v", base, readErr)
+	}
+
+	foundMount := false
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".mount_") {
+			foundMount = true
+		}
+	}
+
+	if !foundMount {
+		t.Fatalf("the retained private base %s lost its .mount_* child", base)
+	}
+
+	e2eAssertPIDGone(t, filepath.Join(fixture, e2eFakeHelperPID), "mount helper")
+	e2eAssertPIDGone(t, filepath.Join(fixture, e2eFakeAppServerPID), "app-server")
+}
+
+// TestAppImageMountLost proves mid-session loss (MNT-05, D-05): the helper
+// removes the tree and exits after the app-server started, the run exits 1
+// with the mount cause, and the app-server records no completed ride — the
+// supervisor never respawns against the vanished root.
+func TestAppImageMountLost(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
+
+	scenarioAbs, err := filepath.Abs(e2eScenario)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", e2eScenario, err)
+	}
+
+	fixture := t.TempDir()
+	tmpRoot := t.TempDir()
+	transcriptPath := filepath.Join(fixture, "fake-transcript.txt")
+	appImage := e2eWriteFakeAppImageVariant(t, fixture, fakeBin, scenarioAbs, transcriptPath, e2eVariantDieAfter)
+
+	rideCtx, rideCancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+	defer rideCancel()
+
+	wrapper := exec.CommandContext(rideCtx, agentBin, ompFlagAppServer, appImage)
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	wrapper.Env = append(os.Environ(), "TMPDIR="+tmpRoot)
+
+	stderrBuf := &e2eSyncBuffer{}
+	wrapper.Stderr = stderrBuf
+
+	t.Cleanup(e2eCleanupMountFixture(t, fixture))
+
+	_, _ = e2eStartWrapper(t, wrapper, stderrBuf)
+
+	mountPath := e2eWaitMountRecord(t, fixture, stderrBuf)
+	e2eWaitPIDFile(t, filepath.Join(fixture, e2eFakeAppServerPID), stderrBuf)
+
+	e2eWaitExitCodeWithin(t, wrapper, e2eMountLossWatchdog, 1)
+
+	stderr := stderrBuf.String()
+	for _, want := range []string{"mount lost", appImage} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q must carry the mount cause %q", stderr, want)
+		}
+	}
+
+	e2eAssertGonePath(t, mountPath, "the lost mount")
+	e2eAssertGonePath(t, filepath.Dir(mountPath), "the private mount base")
+	e2eAssertPIDGone(t, filepath.Join(fixture, e2eFakeHelperPID), "mount helper")
+	e2eAssertPIDGone(t, filepath.Join(fixture, e2eFakeAppServerPID), "app-server")
+
+	if data, readErr := os.ReadFile(transcriptPath); readErr == nil {
+		if strings.Contains(string(data), `"method":"session/send"`) ||
+			strings.Contains(string(data), `"method":"session/create"`) {
+			t.Fatalf("the app-server transcript records a completed ride after the mount was lost: %s", data)
+		}
+	}
+}
+
+// e2eWaitPIDFile polls for a recorded PID file and returns its pid.
+func e2eWaitPIDFile(t *testing.T, path string, stderrBuf *e2eSyncBuffer) int {
+	t.Helper()
+
+	deadline := time.After(e2eMountRecordWait)
+
+	for {
+		if pid := e2eReadPID(path); pid > 0 {
+			return pid
+		}
+
+		select {
+		case <-deadline:
+			stderrBuf.dump(t)
+
+			t.Fatalf("the fixture PID record %s never appeared within %v", path, e2eMountRecordWait)
+		case <-time.After(e2eFixturePoll):
+		}
+	}
+}
+
+// e2eWaitExitWithin waits for a clean exit 0 within the given bound.
+func e2eWaitExitWithin(t *testing.T, wrapper *exec.Cmd, within time.Duration) {
+	t.Helper()
+
+	if err := e2eAwaitWrapperExit(t, wrapper, within); err != nil {
+		t.Fatalf("wrapper exit = %v, want a clean exit 0", err)
+	}
+}
+
+// e2eWaitExitCodeWithin waits for the wrapper's exit and requires want.
+func e2eWaitExitCodeWithin(t *testing.T, wrapper *exec.Cmd, within time.Duration, want int) {
+	t.Helper()
+
+	err := e2eAwaitWrapperExit(t, wrapper, within)
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != want {
+		t.Fatalf("wrapper exit = %v, want exit code %d", err, want)
+	}
+}
+
+// e2eAwaitWrapperExit waits for the wrapper's exit within the bound.
+func e2eAwaitWrapperExit(t *testing.T, wrapper *exec.Cmd, within time.Duration) error {
+	t.Helper()
+
+	waitCh := make(chan error, 1)
+
+	go func() { waitCh <- wrapper.Wait() }()
+
+	select {
+	case err := <-waitCh:
+		return err
+	case <-time.After(within):
+		t.Fatalf("wrapper did not exit within %v", within)
+
+		return nil
+	}
+}
+
 // e2eWriteFakeAppImage writes the scripted AppImage runtime: it answers only
 // --appimage-mount, creates a .mount_* directory under the wrapper's private
 // TMPDIR with the invariant spawn surface, records its own PID and the mount
@@ -521,6 +871,21 @@ func e2eAssertNoMountBase(t *testing.T, root string) {
 // is the mount root, never the fixture dir) and records the app-server PID
 // before exec-ing it.
 func e2eWriteFakeAppImage(t *testing.T, fixture, fakeBin, scenarioAbs, transcript string) string {
+	t.Helper()
+
+	return e2eWriteFakeAppImageVariant(t, fixture, fakeBin, scenarioAbs, transcript, e2eVariantHappy)
+}
+
+// Fast lifecycle variant names for the loss/signal tests.
+const (
+	e2eVariantHappy    = "happy"
+	e2eVariantDieAfter = "die-after"
+	e2eVariantLeaky    = "leaky"
+)
+
+// e2eWriteFakeAppImageVariant writes one lifecycle variant of the scripted
+// runtime (the @@ tokens are substituted with the fixture's absolute paths).
+func e2eWriteFakeAppImageVariant(t *testing.T, fixture, fakeBin, scenarioAbs, transcript, variant string) string {
 	t.Helper()
 
 	replacements := strings.NewReplacer(
@@ -534,26 +899,42 @@ func e2eWriteFakeAppImage(t *testing.T, fixture, fakeBin, scenarioAbs, transcrip
 	)
 
 	appImage := filepath.Join(fixture, e2eFakeAppImageName)
-	if err := os.WriteFile(appImage, []byte(replacements.Replace(e2eFakeAppImageScript)), 0o750); err != nil {
+	if err := os.WriteFile(appImage, []byte(replacements.Replace(e2eFakeAppImageScript(variant))), 0o750); err != nil {
 		t.Fatalf("write the fake AppImage runtime: %v", err)
 	}
 
 	return appImage
 }
 
+// e2eFakeAppImageTree is the shared mount-tree creation body: the record, the
+// invariant spawn surface, and the app-server shim (which records its PID
+// before exec).
+const e2eFakeAppImageTree = `base=${TMPDIR:?TMPDIR must be set by the wrapper}
+dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+printf '%s\n' "$dir" > "@@MOUNT_RECORD@@"
+mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
+{
+  echo '#!/bin/sh'
+  echo 'echo $$ > "@@APP_PID@@"'
+  echo 'exec "@@FAKE_BIN@@" --scenario "@@SCENARIO@@" --transcript "@@TRANSCRIPT@@" "$@"'
+} > "$dir/zcode"
+chmod 755 "$dir/zcode"
+: > "$dir/resources/glm/zcode.cjs"
+`
+
 // e2eFakeAppImageScript is the scripted runtime body (the @@ tokens are
 // substituted with the fixture's absolute paths).
-const e2eFakeAppImageScript = `#!/bin/sh
+func e2eFakeAppImageScript(variant string) string {
+	const preamble = `#!/bin/sh
 set -eu
 if [ "${1:-}" != "--appimage-mount" ]; then
   echo "fake-appimage: unsupported argv: $*" >&2
   exit 64
 fi
 echo $$ > "@@HELPER_PID@@"
-base=${TMPDIR:?TMPDIR must be set by the wrapper}
-dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
-printf '%s\n' "$dir" > "@@MOUNT_RECORD@@"
-report_term() {
+`
+
+	const reportTerm = `report_term() {
   app=""
   if [ -s "@@APP_PID@@" ]; then
     app=$(cat "@@APP_PID@@")
@@ -563,21 +944,38 @@ report_term() {
   else
     echo app-server-gone-on-term >> "@@TERM_RECORD@@"
   fi
-  rm -rf "$dir"
-  exit 143
 }
-trap report_term TERM
-mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
-{
-  echo '#!/bin/sh'
-  echo 'echo $$ > "@@APP_PID@@"'
-  echo 'exec "@@FAKE_BIN@@" --scenario "@@SCENARIO@@" --transcript "@@TRANSCRIPT@@" "$@"'
-} > "$dir/zcode"
-chmod 755 "$dir/zcode"
-: > "$dir/resources/glm/zcode.cjs"
+`
+
+	switch variant {
+	case e2eVariantDieAfter:
+		// The loss arm: prints the path, waits for the app-server PID file,
+		// then removes the tree and exits (watcher-driven loss).
+		return preamble + e2eFakeAppImageTree + `printf '%s\n' "$dir"
+while [ ! -s "@@APP_PID@@" ]; do sleep 0.02; done
+rm -rf "$dir"
+exit 0
+`
+	case e2eVariantLeaky:
+		// The teardown-failure arm: ignores TERM (recording whether the
+		// app-server was alive), installs no cleanup trap, so the tree
+		// outlives the helper.
+		return preamble + e2eFakeAppImageTree + reportTerm + `trap report_term TERM
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
+	default:
+		return preamble + e2eFakeAppImageTree + reportTerm + `report_term_and_cleanup() {
+  report_term
+  rm -rf "$dir"
+  exit 143
+}
+trap report_term_and_cleanup TERM
+printf '%s\n' "$dir"
+while :; do sleep 0.05; done
+`
+	}
+}
 
 // e2eWaitMountRecord polls for the mount path the fake helper records before
 // it prints the line; a wrapper that never mounts the AppImage fails here.
