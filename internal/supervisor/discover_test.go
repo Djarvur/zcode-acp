@@ -745,6 +745,239 @@ func TestDiscoverRejectsVolatileMounts(t *testing.T) {
 	}
 }
 
+// xdgDiscover runs discovery with a user-level desktop entry naming
+// execTarget as its Exec target.
+func xdgDiscover(
+	t *testing.T, home, optDir string, apps []string, entryName, execTarget string,
+) (supervisor.Install, []supervisor.Probe, error) {
+	t.Helper()
+
+	writeDesktopEntry(t, filepath.Join(home, ".local", "share", "applications"), entryName, execTarget)
+
+	p := supervisor.Probers{
+		Home:    home,
+		OptDir:  optDir,
+		AppDirs: func() []string { return apps },
+	}
+	for _, seam := range noHitSeams() {
+		seam(&p)
+	}
+	p.XDGQuery = func(context.Context) (string, error) { return entryName, nil }
+
+	return p.Discover(context.Background())
+}
+
+// TestDiscoverDiagnostics pins DISC-03/D-09: the rank row carries layout,
+// version, and resolved path; one ordered candidate row per evaluated
+// candidate carries the display path, version, and the failing step.
+func TestDiscoverDiagnostics(t *testing.T) {
+	apps := filepath.Join(t.TempDir(), "Applications")
+	packed := filepath.Join(apps, "ZCode-4.0.0-linux-x64.AppImage")
+	dangling := filepath.Join(apps, "ZCode.AppImage")
+	invalidRoot := filepath.Join(apps, "zcode-3.18.2", "squashfs-root")
+	writePackedAppImage(t, packed)
+	writeAppImageSymlink(t, dangling, filepath.Join(apps, "ZCode-3.18.2-linux-x64.AppImage"))
+	if err := os.MkdirAll(invalidRoot, 0o750); err != nil {
+		t.Fatalf("mkdir invalid tree: %v", err)
+	}
+
+	install, probes, err := discoverApps(t, []string{dangling, invalidRoot, packed})
+	if err != nil {
+		t.Fatalf("the mixed fixture must still resolve the packed hit: %v", err)
+	}
+	if install.AppImage != packed || install.Version != "4.0.0" {
+		t.Fatalf("the packed 4.0.0 file must win: %+v", install)
+	}
+
+	rank, ok := probeRow(probes, "appimage-rank")
+	if !ok {
+		t.Fatal("the appimage-rank row must exist")
+	}
+	for _, want := range []string{"selected:", "appimage", "4.0.0", packed} {
+		if !strings.Contains(rank.Result, want) {
+			t.Errorf("appimage-rank row must carry %q: %+v", want, rank)
+		}
+	}
+
+	rows := probeRows(probes, "appimage-candidate")
+	if len(rows) != 3 {
+		t.Fatalf("one candidate row per evaluated candidate, got %d: %+v", len(rows), rows)
+	}
+	if !strings.HasPrefix(rows[0].Result, "hit:") || !strings.Contains(rows[0].Result, packed) ||
+		!strings.Contains(rows[0].Result, "4.0.0") {
+		t.Fatalf("the first row must be the winning hit with version: %+v", rows[0])
+	}
+	for _, row := range rows[1:] {
+		if !strings.HasPrefix(row.Result, "miss:") || !strings.Contains(row.Result, "version") {
+			t.Fatalf("skipped candidates must be miss rows naming the version: %+v", row)
+		}
+	}
+	assertCandidateMiss(t, probes, dangling, "unresolvable")
+	assertCandidateMiss(t, probes, invalidRoot, "spawnable tree")
+}
+
+// TestDiscoverXDGAppImageSeed pins D-13: an XDG Exec target that resolves to
+// an AppImage-family path joins the version ranking, while a package tree
+// still wins at order step 2.
+func TestDiscoverXDGAppImageSeed(t *testing.T) {
+	t.Run("packed target outside the applications dir", func(t *testing.T) {
+		home := t.TempDir()
+		packed := filepath.Join(home, "Downloads", "ZCode-4.0.0-linux-x64.AppImage")
+		writePackedAppImage(t, packed)
+
+		install, probes, err := xdgDiscover(t, home, filepath.Join(t.TempDir(), "ZCode"),
+			nil, "zcode.desktop", packed)
+		if err != nil {
+			t.Fatalf("an XDG AppImage target must be a ranked candidate: %v", err)
+		}
+		if install.AppImage != packed || install.Version != "4.0.0" || install.Layout != "appimage" {
+			t.Fatalf("the seeded packed target must win: %+v", install)
+		}
+
+		row, ok := probeRow(probes, "xdg-entry")
+		if !ok || !strings.Contains(row.Result, "fed to the AppImage ranking") {
+			t.Fatalf("xdg-entry must record that the target joined the ranking: %+v", row)
+		}
+	})
+
+	t.Run("package tree keeps step-2 precedence", func(t *testing.T) {
+		home := t.TempDir()
+		optDir := filepath.Join(t.TempDir(), "ZCode")
+		writeBundleTree(t, optDir)
+		packed := filepath.Join(home, "Applications", "ZCode-4.0.0-linux-x64.AppImage")
+		writePackedAppImage(t, packed)
+
+		install, probes, err := xdgDiscover(t, home, optDir, []string{packed},
+			"zcode.desktop", filepath.Join(optDir, "zcode"))
+		if err != nil {
+			t.Fatalf("the package-tree entry must resolve at step 2: %v", err)
+		}
+		if install.Root != optDir || install.Layout != "deb" || install.AppImage != "" {
+			t.Fatalf("the package tree must beat the newer packed candidate: %+v", install)
+		}
+
+		rank, ok := probeRow(probes, "appimage-rank")
+		if !ok || !strings.Contains(rank.Result, "not consulted; an earlier probe resolved the install") {
+			t.Fatalf("the stage must record the earlier-probe precedence: %+v", rank)
+		}
+		if rows := probeRows(probes, "appimage-candidate"); len(rows) != 0 {
+			t.Fatalf("a not-consulted stage must evaluate no candidates: %+v", rows)
+		}
+	})
+
+	t.Run("unpacked seed wins when it is the only candidate", func(t *testing.T) {
+		home := t.TempDir()
+		unpacked := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
+		writeBundleTree(t, unpacked)
+
+		install, probes, err := xdgDiscover(t, home, filepath.Join(t.TempDir(), "ZCode"),
+			nil, "zcode.desktop", filepath.Join(unpacked, "zcode"))
+		if err != nil {
+			t.Fatalf("an XDG squashfs-root target must be a ranked candidate: %v", err)
+		}
+		if install.Root != unpacked || install.Layout != "unpacked-appimage" || install.Version != "3.18.2" {
+			t.Fatalf("the seeded unpacked tree must win: %+v", install)
+		}
+
+		row, ok := probeRow(probes, "xdg-entry")
+		if !ok || !strings.Contains(row.Result, "fed to the AppImage ranking") {
+			t.Fatalf("xdg-entry must record that the tree joined the ranking: %+v", row)
+		}
+	})
+
+	t.Run("unpacked seed loses to a newer packed candidate", func(t *testing.T) {
+		home := t.TempDir()
+		unpacked := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
+		packed := filepath.Join(home, "Applications", "ZCode-4.0.0-linux-x64.AppImage")
+		writeBundleTree(t, unpacked)
+		writePackedAppImage(t, packed)
+
+		install, _, err := xdgDiscover(t, home, filepath.Join(t.TempDir(), "ZCode"),
+			[]string{packed}, "zcode.desktop", filepath.Join(unpacked, "zcode"))
+		if err != nil {
+			t.Fatalf("both candidates must resolve: %v", err)
+		}
+		if install.AppImage != packed || install.Version != "4.0.0" {
+			t.Fatalf("version ranking must beat the entry's older unpacked seed: %+v", install)
+		}
+	})
+}
+
+// TestDiscoverBuiltinDeferredForPacked pins the two packed builtin arms: a
+// runtime-cache hit keeps its literal, and no cache defers the bundled read
+// until the mount (Pitfall 15), naming the mount-relative path.
+func TestDiscoverBuiltinDeferredForPacked(t *testing.T) {
+	t.Run("runtime cache wins", func(t *testing.T) {
+		home := t.TempDir()
+		packed := filepath.Join(home, "Applications", "ZCode-4.0.0-linux-x64.AppImage")
+		writePackedAppImage(t, packed)
+		writeRuntimeTree(t, home, []string{"4.0.0"}, []int{51})
+
+		install, probes, err := discoverAppsHome(t, home, []string{packed})
+		if err != nil {
+			t.Fatalf("packed install plus runtime tree must resolve: %v", err)
+		}
+
+		wantBuiltin := filepath.Join(home, ".zcode", "v2", "runtime", "provider",
+			"linux-x86_64", "4.0.0", fixtureEndpointDir, "zcode-builtin.json")
+		if install.BuiltinFile != wantBuiltin {
+			t.Fatalf("the runtime-cache copy must win:\n got %q\nwant %q", install.BuiltinFile, wantBuiltin)
+		}
+
+		row, ok := probeRow(probes, "builtin-bundled")
+		if !ok || !strings.Contains(row.Result, "not consulted; the runtime cache resolved the builtin file") {
+			t.Fatalf("a cache hit keeps the pre-phase literal: %+v", row)
+		}
+		if strings.Contains(row.Result, "deferred until mount") {
+			t.Fatalf("a cache hit must not defer: %+v", row)
+		}
+	})
+
+	t.Run("no runtime cache defers to the mount", func(t *testing.T) {
+		home := t.TempDir()
+		packed := filepath.Join(home, "Applications", "ZCode-4.0.0-linux-x64.AppImage")
+		writePackedAppImage(t, packed)
+
+		install, probes, err := discoverAppsHome(t, home, []string{packed})
+		if err != nil {
+			t.Fatalf("the packed install must resolve without a runtime cache: %v", err)
+		}
+		if install.BuiltinFile != "" {
+			t.Fatalf("a packed install cannot read the bundled copy before the mount: got %q",
+				install.BuiltinFile)
+		}
+
+		row, ok := probeRow(probes, "builtin-bundled")
+		if !ok || !strings.Contains(row.Result, "deferred until mount") {
+			t.Fatalf("the packed empty arm must defer until the mount: %+v", row)
+		}
+		if !strings.Contains(row.Result, "<mount>/resources/config/provider/zcode-builtin.json") {
+			t.Fatalf("the deferred row must name the mount-relative bundled path: %+v", row)
+		}
+	})
+}
+
+// TestDiscoverProbeOrder pins the fixed probe order with a variable
+// appimage-candidate block between appimage-rank and dpkg.
+func TestDiscoverProbeOrder(t *testing.T) {
+	apps := filepath.Join(t.TempDir(), "Applications")
+	packed := filepath.Join(apps, "ZCode-4.0.0-linux-x64.AppImage")
+	staleRoot := filepath.Join(apps, "zcode-3.18.2", "squashfs-root")
+	writePackedAppImage(t, packed)
+	writeBundleTree(t, staleRoot)
+
+	_, probes, err := discoverApps(t, []string{staleRoot, packed})
+	if err != nil {
+		t.Fatalf("the ordered fixture must resolve: %v", err)
+	}
+
+	assertProbeOrder(t, probes)
+
+	if rows := probeRows(probes, "appimage-candidate"); len(rows) != 2 {
+		t.Fatalf("both candidates must produce rows: %+v", rows)
+	}
+}
+
 func TestBuiltinRevisionFormula(t *testing.T) {
 	// install-discovery.md :82 — revision = zcode-builtin:<rev>:<sha256(
 	// path.resolve(activeFilePath))>; the hash input is the resolved absolute
