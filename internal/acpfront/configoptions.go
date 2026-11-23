@@ -129,9 +129,13 @@ func digModelSettings(raw any) ModelSettings {
 		}
 
 		me := ModelEntry{
-			Ref:         *ref,
-			Label:       digString(e["label"]),
-			Description: digString(e["description"]),
+			Ref:   *ref,
+			Label: digString(e["label"]),
+			// The picker's per-entry subtitle: the model's own description
+			// when the wire carries one, else the provider's display name
+			// (providerLabel: "Z.AI Individual Coding Plan" etc.) — this
+			// distinguishes same-model entries across providers.
+			Description: pickNonEmpty(e["description"], e["providerLabel"]),
 		}
 
 		if reasoning, _ := e["reasoning"].(map[string]any); reasoning != nil {
@@ -143,6 +147,19 @@ func digModelSettings(raw any) ModelSettings {
 	}
 
 	return out
+}
+
+// pickNonEmpty digs the first non-empty string from the wire keys (the
+// model entry's subtitle: the model's own description when present, else
+// the provider's display label).
+func pickNonEmpty(keys ...any) string {
+	for _, k := range keys {
+		if v := digString(k); v != "" {
+			return v
+		}
+	}
+
+	return ""
 }
 
 // digModelRef captures one providerId/modelId pair; a missing or ref-less
