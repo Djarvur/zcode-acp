@@ -1,5 +1,5 @@
 ---
-status: testing
+status: complete
 phase: 06-OAuth Coding-Plan Path & Model Picker
 source: [06-VERIFICATION.md]
 started: 2026-11-22T05:52:00Z

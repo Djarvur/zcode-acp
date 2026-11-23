@@ -295,7 +295,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 | Category | Item | Status | Deferred At | Milestone |
 |----------|------|--------|-------------|-----------|
-| *(none)* | | | | |
+| deferred_items | 06-05: pre-existing lint-debt (funlen/goconst/err113/tagliatelle on files the plan did not author) — acknowledged at milestone close | open (acknowledged) | 2026-11-23 | v0.20.0 |
+| deferred_items | 06-05: familysel.go capture-verbatim camelCase wire keys (tagliatelle ×2, the desktop-read discipline requires them) — acknowledged at milestone close | open (acknowledged) | 2026-11-23 | v0.20.0 |
 
 ## Session Continuity
 

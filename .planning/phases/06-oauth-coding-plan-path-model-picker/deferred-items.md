@@ -4,7 +4,7 @@
 
 - 06-05: pre-existing `mise run lint` failures the wave-1 merge shipped, out of
   06-05's scope (files/functions this plan did not author):
-  status: open
+  status: acknowledged
   - front.go NewSession funlen (70 > 60 — 06-04's widened function)
   - snapshot.go readBuiltinProviderRules funlen (61 > 60) + err113 dynamic
     error + tagliatelle camelCase wire keys ×4 (06-03's capture-verbatim dig)
@@ -15,4 +15,4 @@
   (providerFamilyConnectionSelections / modelProviderFamilyModes): the
   desktop-read discipline REQUIRES these exact keys; same accepted class as
   snapshot.go's pre-existing hits.
-  status: open
+  status: acknowledged
