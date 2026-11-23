@@ -1,11 +1,18 @@
 # Milestones
 
-## v0.21.0 Card Command & Skill Autocomplete (Shipped: 2026-11-23)
+## v0.22.0 Ask-the-User Bridge (Shipped: 2026-11-23)
 
-**Phases completed:** 0 phases, 0 plans, 0 tasks
+**Phases completed:** 1 phases, 1 plans, 5 tasks
 
 **Key accomplishments:**
-- (none recorded)
+- The Ask-the-User Bridge: `interaction/requestUserInput` renders as ONE ACP form elicitation (message, question, option labels/descriptions, Skip) and the accept answer maps back into the dialect's `{action, content: {answers}}` merge contract — keyed by question text with option labels as values, multi-select joined ", " (UIB-01..04, unit/TDD locks + composed-binary E2E).
+- Field-proven end-to-end: the VM GUI dialog rendered and resolved the turn with the fake's scripted expect matching the bridged answer exactly, and the user's real-machine `/gsd-manager` acceptance passed (UIB-05).
+- The `/model` catalog fixes: the probe poke carries the model's reasoning level, `session/new` preserves the create snapshot's full unscoped catalog, provider labels distinguish same-model entries across providers, and the switch path merges the previous catalog under the confirmed current — 19 entries live-verified, stable across switches and turns.
+- Honest legacy/error arms: without a bound asker the legacy decline stays; an ask-surface failure declines with the reason and never fails the turn.
+
+**Known verification overrides:** none (verified closeout; 2 carried-forward audit acknowledgements remain suppressed).
+
+**Notes:** no `v0.22.0-MILESTONE-AUDIT.md` was run; phase 9 carries advisory VALIDATION.md/SECURITY.md gaps (recorded at phase close). Phase artifacts: `.planning/milestones/v0.22.0-phases/`.
 
 ---
 

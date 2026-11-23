@@ -13,7 +13,7 @@ fake app-server.
 
 - ✅ **v0.20.0 — v1: Honest ACP Server for ZCode Desktop** — Phases 1-7 (shipped 2026-11-23)
 - ✅ **v0.21.0 — Card Command & Skill Autocomplete** — Phase 8 (shipped 2026-11-23)
-- 🚧 **v0.22.0 — Ask-the-User Bridge** — Phase 9 (in progress)
+- ✅ **v0.22.0 — Ask-the-User Bridge** — Phase 9 (shipped 2026-11-23)
 
 ## Phases
 
@@ -42,32 +42,21 @@ Full details: `.planning/milestones/v0.21.0-phases/`, `v0.21.0-ROADMAP.md`, `v0.
 
 </details>
 
-- [x] **Phase 9: Ask-the-User Bridge** — `interaction/requestUserInput` bridges to a (completed 2026-11-23)
-  client-rendered form elicitation (the AskUserQuestion dialogs the card never showed);
-  the answer maps back into the dialect's `answers` merge contract
+<details>
+<summary>✅ v0.22.0 (Phase 9) — SHIPPED 2026-11-23</summary>
 
-## Phase Details
+- [x] Phase 9: Ask-the-User Bridge (1/1 plan) — `interaction/requestUserInput` renders
+  as ONE client form elicitation; the answer maps back into the dialect's
+  `{action, content.answers}` merge contract (VM GUI + real-machine acceptance)
 
-### Phase 9: Ask-the-User Bridge
-**Goal**: `interaction/requestUserInput` (the AskUserQuestion shape) bridges to ONE
-client-rendered ACP form elicitation, and the answer maps back into the dialect's
-`{action, content: {answers}}` merge contract — keyed by question text with option
-labels as values (multi-select joined ", "); decline/cancel verbatim; an emission
-failure declines with the reason and never fails the turn.
-**Depends on**: Nothing (first phase of v0.22.0)
-**Requirements**: UIB-01, UIB-02, UIB-03, UIB-04, UIB-05
-**Success Criteria** (what must be TRUE):
-  1. The AskUserQuestion dialog renders in Orca as a form elicitation and the chosen labels ride back as `content.answers`
-  2. Multi-select joins labels ", "; decline/cancel map verbatim
-  3. Without a bound asker the honest decline stays; an emission failure declines with the reason and never fails the turn
-  4. Field-verified on the real machine: the choice dialog renders and answering it feeds the workflow
-**Plans**: 1/1 plans complete
+Full details: `.planning/milestones/v0.22.0-phases/`, `v0.22.0-ROADMAP.md`, `v0.22.0-REQUIREMENTS.md`.
 
-Plans:
-- [x] 09-01: The ask-the-user bridge — requestUserInput ↔ form elicitation
+</details>
 
 ## Post-v1 Advisories (carried, non-blocking)
 
 - 07-REVIEW-DISPOSITION.md: IN-a..IN-h + the delta-review IN-02/IN-03
 - STATE.md Deferred Items: the two acknowledged phase-6 lint-debt entries
 - Delivered in v0.21.0: the slash-command catalog in the card's autocomplete
+- Delivered in v0.22.0: the ask-the-user bridge (choice dialogs render and feed the
+  workflow); the full `/model` catalog (19 entries, provider labels, stable across switches)

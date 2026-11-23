@@ -14,13 +14,24 @@ Go-обёртка (один статический бинарь), которая
 реальная E2E в Orca на живом аккаунте (coding-plan путь — прогон пользователя;
 api-key — гарантированный тестовый уровень + security-аудиты обеих фаз).
 
+**v0.21.0 — shipped (2026-11-23):** на `session/new` фронт отдаёт каталог слэш-команд
+и скиллов (`available_commands_update`: ZCode-команды, скиллы, `/model` с
+`<selector>`-hint) — автодополнение в композере карточки Orca.
+
+**v0.22.0 — shipped (2026-11-23):** диалоги выбора AskUserQuestion
+(`interaction/requestUserInput`) рендерятся в карточке как form-elicitation, а ответ
+возвращается в merge-контракт диалекта `{action, content.answers}`; каталог моделей
+в `/model` и picker полный (19 записей, provider labels) и сохраняется при
+переключениях.
+
 ## Core Value
 
 ACP-клиент может провести с ZCode полный ход end-to-end — от `initialize` до
 стриминга ответа с tool-calls и permission-запросами — на реальном аккаунте z.ai
 пользователя (api-key или OAuth coding plan). **Подтверждено живьём:** карточка Orca
 рендерит мысли, текст ответа, tool-calls и vision-чтение файлов; модели аккаунта
-переключаются через `/model` и picker.
+переключаются через `/model` и picker; диалоги выбора GSD рендерятся в карточке и
+их ответы доходят до workflow.
 
 ## Requirements
 
@@ -43,11 +54,22 @@ ACP-клиент может провести с ZCode полный ход end-to
   discovery-матрица + супервизор, машина ходов (exactly-once, cancel, -32010)
 - ✓ OAuth Coding-Plan Path & Model Picker (Phase 6): keyring→entitlement→snapshot→
   read-back→PAT-минт, account-модели в picker, `/model` slash-слой
+- ✓ Слэш-каталог в автодополнении карточки Orca (Phase 8, v0.21.0): один
+  `available_commands_update` на `session/new` — ZCode-команды, скиллы, `/model`
+  (CAT-01..05; VM GUI + живая карточка, 139-item каталог)
+- ✓ Ask-the-User Bridge (Phase 9, v0.22.0): `interaction/requestUserInput` → одна
+  form-elicitation; accept мапится в `{action, content.answers}` по тексту вопроса,
+  multi-select через ", ", decline/cancel verbatim, ошибка поверхности — decline с
+  причиной, ход не падает (UIB-01..05; VM GUI + real-machine acceptance)
+- ✓ Полный каталог моделей в `/model` и picker (v0.22.0 fix-set): 19 записей,
+  provider labels на каждой, каталог сохраняется при switch и между ходами
+  (create-snapshot несёт available, rebind — подтверждённый current)
 
 ### Active
 
-(None — v1 shipped; пост-v1 пожелания живут в 07-REVIEW-DISPOSITION.md (IN-a..h,
-IN-02/03), deferred-реестре STATE.md и как «commands catalog в автодополнении Orca».)
+(None — v0.22.0 shipped; пост-v1 пожелания живут в 07-REVIEW-DISPOSITION.md
+(IN-a..h, IN-02/03) и deferred-реестре STATE.md. Фазы 8–9 не имеют
+VALIDATION.md/SECURITY.md — это advisory-долг, отмеченный при закрытии фаз.)
 
 ### Out of Scope
 
@@ -89,13 +111,13 @@ IN-02/03), deferred-реестре STATE.md и как «commands catalog в ав
 Apache-2.0 → портирование на Go допустимо с атрибуцией) — `docs/research/reference-adapters.md`.
 Конкурирующие адаптеры (Rust/Python) coding-plan цепочку не делают.
 
-**Текущее состояние (v0.20.0):** 7 фаз выполнены (50 планов), 9 пакетов под
-`-race` зелёные, whole-tree lint strict 0 issues, три уровня проверки (CI / clean-VM /
-реальная Orca-E2E) пройдены. Полевые гэпы QA-03 закрыты тремя fix-циклами
-(стриминг-перевод model.streaming, терминальные сигналы desktop-диалекта,
-гонка «терминал раньше текста» + retry-окно reconcile с корреляцией по ходу).
-Известный долг: lint-подавления с wire-обоснованиями (nolint), 2 признанных
-deferred-пункта фазы 6, 8+2 пос-v1 advisories в 07-REVIEW-DISPOSITION.md.
+**Текущее состояние (v0.22.0):** 9 фаз / 60 планов; 12 Go-пакетов, ~54K строк Go
+(с тестами), `-race` зелёные, whole-tree lint strict 0 issues. После v0.20.0
+доставлены слэш-каталог в автодополнении карточки (v0.21.0) и bridge диалогов
+выбора (v0.22.0) вместе с field-фиксами каталога моделей (19 записей, provider
+labels, сохранение при переключении). Известный долг: lint-подавления с
+wire-обоснованиями (nolint), 2 признанных deferred-пункта фазы 6, advisories
+07-REVIEW-DISPOSITION.md; фазы 8–9 без VALIDATION.md/SECURITY.md (advisory).
 
 ## Constraints
 
@@ -128,6 +150,9 @@ deferred-пункта фазы 6, 8+2 пос-v1 advisories в 07-REVIEW-DISPOSIT
 | Документация на английском | Шире аудитория для PR | ✓ Good — README + docs/provenance.md + recipes shipped (DOCS-01..03) |
 | Ground-truth hierarchy (Phase 1): installed 3.18.2 bundle = V-SRC первоисточник; 3.17↔3.18.2 drift-базлайн — первоклассный раздел | Документы Фаз 3–7 строятся на проверенной правде провода | ✓ Good — оправдался многократно (credentialCipher, turn-сигналы, MCP-auth decline) |
 | Перезапуск верификации при фазовых границах — только по необходимости (решение пользователя 2026-11-22); при закрытии v0.20.0 стейлы фаз 1–6 приняты override-решением пользователя | Перезапуск 6 верификаторов не добавляет truth: исходники эволюционировали по проекту, не испортились | ✓ Done (2026-11-23, known override в MILESTONES.md) |
+| Слэш-каталог отдаётся на `session/new` одним `available_commands_update`, а не отдельным методом/по запросу | Клиент сканирует каталог при discovery в пределах 9 s; каталог — session-level nicety, не turn-update | ✓ Good — 139-item каталог в живой карточке (v0.21.0) |
+| `requestUserInput` бриджится в form-elicitation, ответ мапится в `{answers}` по тексту вопроса; deadline политики снят для bridged-ask | Orca нативно рендерит form-elicitation; merge-контракт диалекта ждёт answers по question text; человеческий диалог занимает минуты и не должен авто-отклоняться | ✓ Good — VM GUI + real-machine acceptance (v0.22.0) |
+| Полный каталог моделей собирается merge: create-snapshot несёт available, rebind — подтверждённый current | Backend сужает `settings.model.available` до текущего провайдера; без merge picker сжимается после switch | ✓ Good — 19 записей live-verified, сохраняется при переключении |
 
 ## Evolution
 
@@ -147,4 +172,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-23 after v0.20.0 milestone*
+*Last updated: 2026-11-23 after v0.22.0 milestone*
