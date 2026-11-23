@@ -668,10 +668,13 @@ func (f *Front) SetSessionConfigOption(
 		return nil, acpport.NewInternal("session/setModel: %v", err)
 	}
 
-	// The reply IS the confirmed state (D-10): the store overwrites from the
-	// reply BEFORE the rebuild — the response-before-store ordering is
-	// impossible by construction (the rebuild reads the store back).
-	f.recordSettings(sessionID, res)
+	// The reply IS the confirmed state (D-10): the store records it BEFORE
+	// the rebuild — the response-before-store ordering is impossible by
+	// construction (the rebuild reads the store back). The merge preserves
+	// the previous snapshot's model catalog: the reply's settings view is
+	// provider-scoped (a cross-provider switch narrows it — the 2026-11-23
+	// field report's picker shrink).
+	f.recordMergedSettings(sessionID, res)
 
 	confirmed, ok := f.latestSettings(sessionID)
 	if !ok {
@@ -840,8 +843,8 @@ func (f *Front) promptModelSlash(
 	}
 
 	// The reply IS the confirmed state (D-10) — the same settings update the
-	// picker performs.
-	f.recordSettings(params.SessionID, res)
+	// picker performs, with the same catalog-preserving merge.
+	f.recordMergedSettings(params.SessionID, res)
 
 	// A2: one short confirmation text chunk — the client classifies only
 	// refusals (error frames), never success text.
@@ -1068,20 +1071,10 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 		return acpport.NewInternal("session/setModel: %v", err)
 	}
 
-	// The follow-up reply is the CONFIRMED state (D-10) — but its settings
-	// view is PROVIDER-SCOPED (the 2026-11-23 field report's root): the
-	// backend scopes settings.model.available to the session's current
-	// provider, so the rebind reply narrows the catalog to the bound
-	// model's scope. Merge: the confirmed CURRENT rides the follow-up
-	// reply, the AVAILABLE catalog rides the create snapshot (the unscoped
-	// full registry view the picker's menu renders).
-	createRaw, _ := f.latestSettings(sid)
-
-	f.recordSettings(sid, setModelRes)
-
-	if merged, ok := mergeCatalogEntries(createRaw, setModelRes); ok {
-		f.recordSettings(sid, merged)
-	}
+	// The follow-up reply is the CONFIRMED state (D-10) — with the same
+	// catalog-preserving merge every setModel reply rides (the reply's
+	// provider-scoped view must not shrink the picker).
+	f.recordMergedSettings(sid, setModelRes)
 
 	return nil
 }
@@ -1256,6 +1249,27 @@ func (f *Front) closeOrphan(ctx context.Context, sessionID, stage string, cause 
 
 	slog.Warn("acpfront: closed the error-path backend session",
 		"session", sessionID, "stage", stage, "cause", cause)
+}
+
+// recordMergedSettings records one setModel-reply snapshot WITH the
+// catalog-preserving merge (the 2026-11-23 field report's root): the
+// backend scopes settings.model.available to the session's CURRENT
+// provider, so a switch's reply narrows the catalog to that provider's
+// entries — and the client adopting the reply replaces its picker with the
+// narrowed list. The merge keeps the PREVIOUS snapshot's available entries
+// under the reply's confirmed current (and thought level).
+func (f *Front) recordMergedSettings(sid string, res json.RawMessage) {
+	prev, hadPrev := f.latestSettings(sid)
+
+	f.recordSettings(sid, res)
+
+	if !hadPrev {
+		return
+	}
+
+	if merged, ok := mergeCatalogEntries(prev, res); ok {
+		f.recordSettings(sid, merged)
+	}
 }
 
 // turnStartStamp snapshots the active turn's backend-clock start stamp

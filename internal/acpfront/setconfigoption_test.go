@@ -580,15 +580,28 @@ func TestSetConfigOptionReEmit(t *testing.T) {
 			t.Fatalf("model switch: %v", err)
 		}
 
-		// The reply-built expectation — the ONLY source (D-10). The reply's
-		// available list and current differ from cfgCreateResult's on
-		// purpose: a pre-ask rebuild fails this comparison on both.
+		// The merged expectation (the 2026-11-23 catalog-preservation
+		// contract): the CONFIRMED current and thought level ride the
+		// reply; the AVAILABLE catalog rides the previous (create)
+		// snapshot — the reply's provider-scoped view must not shrink the
+		// picker's entries. Fixtures differ on both sides on purpose: a
+		// pre-ask rebuild fails on the current, a raw-reply rebuild fails
+		// on the catalog.
 		replySettings, parsed := acpfront.ParseSettings(json.RawMessage(cfgSetModelReply))
 		if !parsed {
 			t.Fatal("the fixture reply must parse")
 		}
 
-		want := acpfront.BuildConfigOptions(replySettings)
+		createSettings, createParsed := acpfront.ParseSettings(json.RawMessage(cfgCreateResult))
+		if !createParsed {
+			t.Fatal("the create fixture must parse")
+		}
+
+		createSettings.Model.Current = replySettings.Model.Current
+		createSettings.Model.LastUsed = replySettings.Model.LastUsed
+		createSettings.ThoughtLevel = replySettings.ThoughtLevel
+
+		want := acpfront.BuildConfigOptions(createSettings)
 
 		assertConfigOptionsMatch(t, resp.ConfigOptions, want)
 	})
