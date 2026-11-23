@@ -205,6 +205,56 @@ type ompOptions struct {
 	pluginDirSet  bool
 	sessionDirSet bool
 	unknownCount  int
+
+	// The non-interactive text-task surface (--print / --mode text): the
+	// mode flags, the thinking level, the explicitly accepted no-* switches
+	// and the positional prompt tokens (@file chunks or a literal prompt).
+	printMode    bool
+	mode         string
+	thinking     string
+	noSession    bool
+	noTools      bool
+	noExtensions bool
+	noSkills     bool
+	noRules      bool
+	prompts      []string
+}
+
+// ompModeText is the only supported --mode value (the text-task arm):
+// anything else is a usage error, never a silent ACP fall-through.
+const ompModeText = "text"
+
+// ompCardToken is the card's own `acp` positional marker (the production
+// twin of the test-only ompCardMarker fixture constant — package main cannot
+// reference the test declaration from production code).
+const ompCardToken = "acp"
+
+// errUnsupportedMode is the usage-class sentinel for an unsupported --mode
+// value (wrapped with the got value at the validation site).
+var errUnsupportedMode = errors.New("omp: unsupported --mode (only \"text\" is supported)")
+
+// textMode reports whether the argv selects the non-interactive text-task
+// arm (stub: RED skeleton).
+func (o ompOptions) textMode() bool {
+	_ = o
+
+	return false
+}
+
+// validateMode rejects a --mode value the wrapper cannot serve (stub: RED
+// skeleton).
+func (o ompOptions) validateMode() error {
+	_ = o
+
+	return nil
+}
+
+// textLevel returns the effective reasoning level for the text-task arm
+// (stub: RED skeleton).
+func textLevel(o ompOptions) string {
+	_ = o
+
+	return ""
 }
 
 // ompFlagValues holds the omp FlagSet's parsed value pointers so ompParse's
