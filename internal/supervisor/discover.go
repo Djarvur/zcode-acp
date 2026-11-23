@@ -55,10 +55,6 @@ const (
 	// appimage-candidate rows add one row per evaluated candidate.
 	probeCount = 8
 
-	// dirPerm is the permission for directories discovery creates (the
-	// AppImage extraction working dir).
-	dirPerm = 0o750
-
 	// appExecMask is the executable-bit mask a packed candidate must carry
 	// before discovery adopts it (D-12's file-level usability checks).
 	appExecMask = 0o111
@@ -134,9 +130,6 @@ type Probers struct {
 	DpkgQuery func(ctx context.Context) (string, error)
 	// RpmQuery returns the rpm package identity for zcode (where applicable).
 	RpmQuery func(ctx context.Context) (string, error)
-	// ExtractAppImage unpacks a packed AppImage (--appimage-extract route)
-	// and returns the extracted bundle root.
-	ExtractAppImage func(ctx context.Context, appImagePath, workDir string) (string, error)
 	// Home is the user's home dir (~ for the applications scan and the
 	// runtime-provider tree).
 	Home string
@@ -164,11 +157,14 @@ func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 	}
 
 	add(p.probeOverride())
-	add(p.probeXDGEntry(ctx))
 
-	// Order step 3 is one version-ranked stage: it appends the rank row and
-	// one candidate row per evaluated candidate, then the winner.
-	stageRows, stageInstall, stageOK := p.probeAppImageStage(nil, found)
+	xdgRow, xdgInstall, xdgSeeds, xdgOK := p.probeXDGEntry(ctx)
+	add(xdgRow, xdgInstall, xdgOK)
+
+	// Order step 3 is one version-ranked stage: an AppImage-family XDG target
+	// joins the candidate set (D-13), the stage appends the rank row and one
+	// candidate row per evaluated candidate, then the winner.
+	stageRows, stageInstall, stageOK := p.probeAppImageStage(xdgSeeds, found)
 	probes = append(probes, stageRows...)
 	if stageOK && !found {
 		winner, found = stageInstall, true
@@ -373,78 +369,80 @@ func (p Probers) xdgEntryDirs() []string {
 
 // probeXDGEntry is order step 2: the desktop entry's Exec target instantly
 // identifies the owning layout (deb /opt/ZCode/zcode vs an AppImage path)
-// (install-discovery.md :65-69).
-func (p Probers) probeXDGEntry(ctx context.Context) (Probe, Install, bool) {
+// (install-discovery.md :65-69). A package-tree target wins here unchanged
+// (D-10); an AppImage-family target is returned as a seed for the version
+// ranking instead, so a stale entry can never pin an older backend (D-13).
+func (p Probers) probeXDGEntry(ctx context.Context) (Probe, Install, []string, bool) {
 	row := Probe{Name: "xdg-entry", Query: "xdg-mime query default x-scheme-handler/zcode"}
 	if p.XDGQuery == nil {
 		row.Result = "xdg-mime seam not configured"
 
-		return row, Install{}, false
+		return row, Install{}, nil, false
 	}
 	entryName, err := p.XDGQuery(ctx)
 	if err != nil {
 		row.Result = fmt.Sprintf("xdg-mime query failed: %v", err)
 
-		return row, Install{}, false
+		return row, Install{}, nil, false
 	}
 	entryName = strings.TrimSpace(entryName)
 	if entryName == "" {
 		row.Result = "no default handler for x-scheme-handler/zcode"
 
-		return row, Install{}, false
+		return row, Install{}, nil, false
 	}
 	entryPath, ok := findDesktopEntry(p.xdgEntryDirs(), entryName)
 	if !ok {
 		row.Result = fmt.Sprintf("default handler %q not found in the xdg entry search order", entryName)
 
-		return row, Install{}, false
+		return row, Install{}, nil, false
 	}
 	execBinary, ok := desktopEntryExec(entryPath)
 	if !ok {
 		row.Result = "entry " + entryPath + " has no Exec line"
 
-		return row, Install{}, false
+		return row, Install{}, nil, false
 	}
-	inst, ok, missReason := resolveExecTarget(execBinary)
+	inst, seeds, ok, missReason := resolveExecTarget(execBinary)
 	if !ok {
 		row.Result = missReason
 
-		return row, Install{}, false
+		return row, Install{}, seeds, false
 	}
 	row.Result = "found: default handler " + entryName + " -> " + execBinary
 
-	return row, inst, true
+	return row, inst, nil, true
 }
 
 // resolveExecTarget turns the entry's Exec binary into the install it
-// identifies (deb vs AppImage dichotomy, install-discovery.md :68). ok=false
+// identifies (deb vs AppImage dichotomy, install-discovery.md :68). A
+// package tree returns the step-2 install; a packed AppImage or an unpacked
+// squashfs-root tree returns a seed for the version-ranked stage; ok=false
 // carries the honest miss reason for the diagnostics row.
-func resolveExecTarget(execBinary string) (inst Install, ok bool, missReason string) {
+func resolveExecTarget(execBinary string) (inst Install, seeds []string, ok bool, missReason string) {
 	resolved, err := filepath.EvalSymlinks(execBinary)
 	if err != nil {
-		return Install{}, false, fmt.Sprintf("Exec target %s unresolvable: %v", execBinary, err)
+		return Install{}, nil, false, fmt.Sprintf("Exec target %s unresolvable: %v", execBinary, err)
 	}
 	if mountDecoy(resolved) {
-		return Install{}, false, "rejected volatile mount Exec target " + resolved
+		return Install{}, nil, false, "rejected volatile mount Exec target " + resolved
 	}
 	if strings.HasSuffix(resolved, appImageSuffix) {
-		// The packed AppImage route belongs to the version-ranked AppImage
-		// stage, not to the entry resolution (:41).
-		return Install{}, false, "default handler points at packed AppImage " +
-			resolved + " (the AppImage ranking resolves it)"
+		return Install{}, []string{resolved}, false, "default handler points at packed AppImage " +
+			resolved + " (fed to the AppImage ranking)"
 	}
 	root := filepath.Dir(resolved)
-	layout := layoutDeb
 	if filepath.Base(root) == unpackedDirName {
-		layout = layoutUnpackedAppImage
+		return Install{}, []string{root}, false, "default handler points at an unpacked " +
+			unpackedDirName + " tree " + root + " (fed to the AppImage ranking)"
 	}
-	inst, ok = bundleInstall(root, layout)
+	inst, ok = bundleInstall(root, layoutDeb)
 	if !ok {
-		return Install{}, false, "Exec target " + resolved + " does not carry the spawnable tree (" +
+		return Install{}, nil, false, "Exec target " + resolved + " does not carry the spawnable tree (" +
 			binaryName + " + " + entrypointRel + ")"
 	}
 
-	return inst, true, ""
+	return inst, nil, true, ""
 }
 
 // findDesktopEntry resolves an entry name through the xdg search order.
@@ -531,7 +529,8 @@ func (p Probers) probeAppImageStage(seeds []string, found bool) ([]Probe, Instal
 	rows := make([]Probe, 0, len(candidates)+1)
 	rows = append(rows, row)
 
-	for _, cand := range candidates {
+	for i := range candidates {
+		cand := candidates[i]
 		rows = append(rows, Probe{Name: "appimage-candidate", Query: cand.display, Result: cand.result()})
 	}
 
@@ -691,7 +690,8 @@ func dedupeAppCandidates(candidates []appCandidate) []appCandidate {
 	index := make(map[string]int, len(candidates))
 	deduped := make([]appCandidate, 0, len(candidates))
 
-	for _, cand := range candidates {
+	for i := range candidates {
+		cand := candidates[i]
 		key := cand.resolved
 		if key == "" {
 			key = "display:" + cand.display
@@ -724,7 +724,7 @@ func preferAppCandidate(cand, incumbent appCandidate) bool {
 		return cand.rank < incumbent.rank
 	}
 
-	return strings.Compare(cand.display, incumbent.display) < 0
+	return cand.display < incumbent.display
 }
 
 // sortAppCandidates orders candidates newest version first (an empty version
@@ -747,9 +747,9 @@ func sortAppCandidates(candidates []appCandidate) {
 // appImageWinner returns the first non-miss candidate — the newest usable
 // backend after ranking (D-06/D-12).
 func appImageWinner(candidates []appCandidate) (appCandidate, bool) {
-	for _, cand := range candidates {
-		if cand.miss == "" {
-			return cand, true
+	for i := range candidates {
+		if candidates[i].miss == "" {
+			return candidates[i], true
 		}
 	}
 
@@ -941,8 +941,10 @@ func (p Probers) probeBuiltinBundled(winner Install, found bool) (row Probe, bun
 	}
 	if winner.RequiresMount() {
 		// A packed install is not readable before the mount: the bundled copy
-		// is validated inside the mounted tree by PrepareMount (Pitfall 15).
-		row.Result = "deferred until the packed AppImage is mounted"
+		// is read inside the mounted tree by PrepareMount (Pitfall 15) and
+		// fills BuiltinFile only when discovery left it empty (10-01).
+		row.Result = "deferred until mount; <mount>/" + bundledProviderRel + "/" +
+			builtinFileName + " is read after PrepareMount"
 
 		return row, ""
 	}
@@ -1122,14 +1124,13 @@ func pathList(out string) []string {
 // home and optDir. Tests build their own Probers with stubbed seams instead.
 func DefaultProbers(home, optDir string) Probers {
 	return Probers{
-		Override:        defaultOverride,
-		XDGQuery:        defaultXDGQuery,
-		AppDirs:         defaultAppDirs(home),
-		DpkgQuery:       defaultDpkgQuery,
-		RpmQuery:        defaultRpmQuery,
-		ExtractAppImage: defaultExtractAppImage,
-		Home:            home,
-		OptDir:          optDir,
+		Override:  defaultOverride,
+		XDGQuery:  defaultXDGQuery,
+		AppDirs:   defaultAppDirs(home),
+		DpkgQuery: defaultDpkgQuery,
+		RpmQuery:  defaultRpmQuery,
+		Home:      home,
+		OptDir:    optDir,
 	}
 }
 
@@ -1195,24 +1196,4 @@ func defaultRpmQuery(ctx context.Context) (string, error) {
 	}
 
 	return strings.TrimSpace(string(out)), nil
-}
-
-// defaultExtractAppImage runs the documented extraction route: the resolved
-// AppImage with --appimage-extract in a stable working dir next to the image
-// (install-discovery.md :41 — extraction is the reproducible route). The
-// production path is exercised only outside CI; tests stub the seam.
-func defaultExtractAppImage(ctx context.Context, appImagePath, workDir string) (string, error) {
-	if workDir == "" {
-		workDir = filepath.Dir(appImagePath)
-	}
-	if err := os.MkdirAll(workDir, dirPerm); err != nil {
-		return "", fmt.Errorf("prepare extraction dir %s: %w", workDir, err)
-	}
-	cmd := exec.CommandContext(ctx, appImagePath, "--appimage-extract")
-	cmd.Dir = workDir
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s --appimage-extract: %w", appImagePath, err)
-	}
-
-	return filepath.Join(workDir, unpackedDirName), nil
 }
