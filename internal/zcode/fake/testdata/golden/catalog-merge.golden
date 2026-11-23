@@ -1,0 +1,10 @@
+in	{"id":1,"method":"session/create","params":{"workspace":{"workspaceKey":"/tmp/happy-turn-ws","workspacePath":"/tmp/happy-turn-ws"}}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"starting","generation":1,"revision":1,"lastError":null}}
+out	{"id":"fake-1","method":"session/requestRuntimePreferences","params":{"sessionId":"sess_fix1","scope":"runtime-materialization"}}
+in	{"id":"fake-1","result":{"memoryEnabled":false,"nativeSearchEnhancementsEnabled":false}}
+out	{"method":"session/lifecycle/changed","params":{"sessionId":"sess_fix1","state":"ready","generation":1,"revision":2,"lastError":null}}
+out	{"id":1,"result":{"session":{"sessionId":"sess_fix1"},"protocol":{"name":"ZCode Protocol","version":1},"settings":{"model":{"current":{"providerId":"zai-api","modelId":"GLM-5.3"},"available":[{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"},"label":"GLM-5.3","reasoning":{"levels":[{"value":"low"},{"value":"high"}],"defaultLevel":"high"}},{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"},"label":"GLM-5.3-Flash","reasoning":{"levels":[{"value":"low"},{"value":"high"},{"value":"max"}],"defaultLevel":"low"}}]},"thoughtLevel":{"enabled":true,"current":"high","available":[{"value":"low"},{"value":"high"}]}}}}
+in	{"id":2,"method":"session/subscribe","params":{"deliveryKind":"desktop-continuous","sessionId":"sess_fix1"}}
+out	{"id":2,"result":{"sessionId":"sess_fix1","eventSeq":0,"events":[]}}
+in	{"id":3,"method":"session/setModel","params":{"model":{"modelId":"GLM-5.3-Flash","options":{"reasoningLevel":"high"},"providerId":"zai-api"},"persistAsWorkspaceLastUsed":false,"sessionId":"sess_fix1"}}
+out	{"id":3,"result":{"settings":{"model":{"current":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"},"available":[{"ref":{"providerId":"zai-api","modelId":"GLM-5.3-Flash"},"label":"GLM-5.3-Flash","reasoning":{"levels":[{"value":"low"},{"value":"high"},{"value":"max"}],"defaultLevel":"low"}}]},"thoughtLevel":{"enabled":true,"current":"low","available":[{"value":"low"},{"value":"high"}]}}}}

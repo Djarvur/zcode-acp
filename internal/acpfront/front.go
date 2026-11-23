@@ -1008,8 +1008,23 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 	// the honest answer for level-strict providers. Never a fabricated
 	// level: an unlisted target answers "".
 	level := f.model.ReasoningLevel
+
+	// The coding-plan catalog binding (the 2026-11-23 field report: the
+	// /model picker carried ONLY the bound model — the backend scopes
+	// settings.model.available to the session's BOUND provider, and the
+	// builtin zai-api scope holds a single model, shrinking the composer's
+	// model menu on every coding-plan chat). When the session authenticated
+	// through the coding plan and the configured model is the builtin
+	// zai-api serialization, bind the SAME model through the account
+	// provider — the model the user's plan actually serves, and the create-
+	// reply view (the FULL account catalog) survives the follow-up.
+	bindProvider, bindModel := f.model.ProviderID, f.model.ModelID
+	if f.AuthMode() == AuthModeCodingPlan && bindProvider == "zai-api" {
+		bindProvider = "account:zai-individual-coding-plan"
+	}
+
 	if level == "" {
-		level = f.snapshotDefaultLevel(sid, f.model.ProviderID, f.model.ModelID)
+		level = f.snapshotDefaultLevel(sid, bindProvider, bindModel)
 	}
 
 	// IN-04 (plan 05-05): the options object rides ONLY when a level is
@@ -1018,8 +1033,8 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 	// refusal surfaces for level-strict providers. The configured-with-
 	// level preamble stays byte-locked by the corpus.
 	model := map[string]any{
-		"providerId":   f.model.ProviderID,
-		wireKeyModelID: f.model.ModelID,
+		"providerId":   bindProvider,
+		wireKeyModelID: bindModel,
 	}
 
 	if level != "" {
@@ -1041,10 +1056,20 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 		return acpport.NewInternal("session/setModel: %v", err)
 	}
 
-	// The follow-up reply is the CONFIRMED state (D-10): it overwrites
-	// the create snapshot — an unconfirmed target is never shown
-	// selected.
+	// The follow-up reply is the CONFIRMED state (D-10) — but its settings
+	// view is PROVIDER-SCOPED (the 2026-11-23 field report's root): the
+	// backend scopes settings.model.available to the session's current
+	// provider, so the rebind reply narrows the catalog to the bound
+	// model's scope. Merge: the confirmed CURRENT rides the follow-up
+	// reply, the AVAILABLE catalog rides the create snapshot (the unscoped
+	// full registry view the picker's menu renders).
+	createRaw, _ := f.latestSettings(sid)
+
 	f.recordSettings(sid, setModelRes)
+
+	if merged, ok := mergeCatalogEntries(createRaw, setModelRes); ok {
+		f.recordSettings(sid, merged)
+	}
 
 	return nil
 }

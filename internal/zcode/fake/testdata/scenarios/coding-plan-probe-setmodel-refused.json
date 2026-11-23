@@ -1,93 +1,93 @@
 {
-  "name": "coding-plan-probe-setmodel-refused",
-  "on_request": [
-    {
-      "method": "provider/updateAccountConfig",
-      "reply": {
-        "result": {
-          "receivedRevision": "account-bridge:cp-fix1",
-          "providerCount": 1,
-          "status": "received"
-        }
-      }
-    },
-    {
-      "method": "provider/refreshRegistry",
-      "reply": {
-        "result": {
-          "refreshed": true
-        }
-      }
-    },
-    {
-      "method": "session/create",
-      "reply": {
-        "result": {
-          "session": {
-            "sessionId": "sess_cp1"
-          },
-          "protocol": {
-            "name": "ZCode Protocol",
-            "version": 1
-          },
-          "settings": {
-            "model": {
-              "available": [
-                {
-                  "ref": {
-                    "providerId": "zai-api",
-                    "modelId": "GLM-5.3-Flash"
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "side_effects": [
-        {
-          "emit": {
-            "method": "session/lifecycle/changed",
-            "params": {
-              "sessionId": "sess_cp1",
-              "state": "starting",
-              "generation": 1,
-              "revision": 1,
-              "lastError": null
-            }
-          }
-        },
-        {
-          "emit": {
-            "method": "session/lifecycle/changed",
-            "params": {
-              "sessionId": "sess_cp1",
-              "state": "ready",
-              "generation": 1,
-              "revision": 2,
-              "lastError": null
-            }
-          }
-        }
-      ]
-    },
-    {
-      "method": "session/setModel",
-      "reply": {
-        "error": {
-          "code": -32002,
-          "message": "model not in registry: account:zai-individual-coding-plan/GLM-5.3-Flash"
-        }
-      }
-    },
-    {
-      "method": "session/close",
-      "reply": {
-        "result": {
-          "closed": true
-        }
-      }
+ "name": "coding-plan-probe-setmodel-refused",
+ "on_request": [
+  {
+   "method": "provider/updateAccountConfig",
+   "reply": {
+    "result": {
+     "receivedRevision": "account-bridge:cp-fix1",
+     "providerCount": 1,
+     "status": "received"
     }
-  ],
-  "eof_drain_ms": 100
+   }
+  },
+  {
+   "method": "provider/refreshRegistry",
+   "reply": {
+    "result": {
+     "refreshed": true
+    }
+   }
+  },
+  {
+   "method": "session/create",
+   "reply": {
+    "result": {
+     "session": {
+      "sessionId": "sess_cp1"
+     },
+     "protocol": {
+      "name": "ZCode Protocol",
+      "version": 1
+     },
+     "settings": {
+      "model": {
+       "available": [
+        {
+         "ref": {
+          "providerId": "zai-api",
+          "modelId": "GLM-5.3-Flash"
+         }
+        }
+       ]
+      }
+     }
+    }
+   },
+   "side_effects": [
+    {
+     "emit": {
+      "method": "session/lifecycle/changed",
+      "params": {
+       "sessionId": "sess_cp1",
+       "state": "starting",
+       "generation": 1,
+       "revision": 1,
+       "lastError": null
+      }
+     }
+    },
+    {
+     "emit": {
+      "method": "session/lifecycle/changed",
+      "params": {
+       "sessionId": "sess_cp1",
+       "state": "ready",
+       "generation": 1,
+       "revision": 2,
+       "lastError": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "method": "session/setModel",
+   "reply": {
+    "error": {
+     "code": -32002,
+     "message": "model not in registry: account:zai-individual-coding-plan/GLM-5.3-Flash"
+    }
+   }
+  },
+  {
+   "method": "session/close",
+   "reply": {
+    "result": {
+     "closed": true
+    }
+   }
+  }
+ ],
+ "eof_drain_ms": 100
 }

@@ -267,6 +267,7 @@ func goldenDrivers() map[string]driverFunc {
 		"desktop-delta-streaming":        driveDesktopDeltaStreaming,
 		"desktop-nodelta-messages":       driveDesktopNodeltaMessages,
 		"desktop-nodelta-lateprojection": driveDesktopNodeltaLateProjection,
+		"catalog-merge":                  driveCatalogMerge,
 		"desktop-twoturn-lateprojection": driveDesktopTwoTurnLateProjection,
 		"desktop-nodelta-latedelta":      driveDesktopNodeltaLateDelta,
 		"desktop-nodelta-breach":         driveDesktopNodeltaBreach,
@@ -902,6 +903,14 @@ func driveDesktopReconcileTurn(ctx context.Context, d *exchangeDriver) {
 
 	h := happyTurnHarness{t: d.t, conn: d.conn}
 	h.send(ctx)
+}
+
+// driveCatalogMerge: the catalog-preservation row (v0.22.0 follow-up) —
+// the preamble only (create with the FULL two-model snapshot, subscribe,
+// the setModel rebind whose reply narrows the scope): the replay locks the
+// narrowed-reply mechanics.
+func driveCatalogMerge(ctx context.Context, d *exchangeDriver) {
+	driveFrontPreamble(ctx, d)
 }
 
 // driveNoReasoning: the CORE-04 negative corpus row (plan 04-04) — the
@@ -2581,6 +2590,9 @@ func assertHeadersAskAnswered(t *testing.T, tr fake.Transcript) {
 func assertCodingPlanProbeSetModelTranscript(t *testing.T, tr fake.Transcript) {
 	t.Helper()
 
+	// The poke carries the model's own defaultLevel as the reasoning level
+	// (the account models are level-strict — the 2026-11-23 field refusal
+	// proved the omit-shape fatal and shrank the /model catalog).
 	poke := tr.Lines[assertProbePokeWireOrder(t, tr)].JSON
 
 	for _, marker := range []string{
@@ -2588,14 +2600,11 @@ func assertCodingPlanProbeSetModelTranscript(t *testing.T, tr fake.Transcript) {
 		`"providerId":"` + cpCorpusAccountProvider + `"`,
 		`"modelId":"GLM-5.3-Flash"`,
 		`"persistAsWorkspaceLastUsed":false`,
+		`"options":{"reasoningLevel":"low"}`,
 	} {
 		if !strings.Contains(poke, marker) {
 			t.Fatalf("setModel frame %s lacks the poke marker %s", poke, marker)
 		}
-	}
-
-	if strings.Contains(poke, `"options"`) {
-		t.Fatalf("setModel frame %s carries an options object — the omit-shape must ride", poke)
 	}
 
 	assertHeadersAskAnswered(t, tr)

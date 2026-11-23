@@ -2,6 +2,7 @@ package acpfront
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -624,18 +625,19 @@ func (f *Front) probeCreateSetModelReadback(ctx context.Context, watcher *hostsv
 
 	// The poke: the deterministic want model — the account provider's
 	// materializer (the model selection the runtime's
-	// modelSelectionReadinessSource machinery reacts to).
+	// modelSelectionReadinessSource machinery reacts to). Account models
+	// are LEVEL-STRICT: the poke carries the want model's own declared
+	// level (its DefaultLevel, else its first reasoning level — the
+	// create reply's settings snapshot lists both; the 2026-11-23 field
+	// refusal "Reasoning level is required" proved the omit-shape fatal,
+	// and an unmaterialized account provider shrinks the /model catalog
+	// to the builtin scope).
+	// The poke: the deterministic want model — the account provider's
+	// materializer. Account models are LEVEL-STRICT: the poke carries the
+	// model's own declared level (the 2026-11-23 field refusal "Reasoning
+	// level is required" proved the omit-shape fatal).
 	if model := ProbeWantModel(want); model != "" {
-		providerID, modelID, _ := strings.Cut(model, "/")
-
-		if _, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
-			wireKeySessionID:       sid,
-			optionIDModel:          map[string]any{wireKeyProviderID: providerID, wireKeyModelID: modelID},
-			wireKeyPersistLastUsed: false,
-		}); err != nil {
-			slog.Warn("acpfront: authenticate probe setModel refused "+
-				"(coded evidence recorded; the verdict still awaits its surfaces)", "model", model, "err", err)
-		}
+		f.probePokeSetModel(ctx, sid, res, model)
 	} else {
 		slog.Warn("acpfront: authenticate probe setModel skipped (the want list carried no bindable model)")
 	}
@@ -661,4 +663,48 @@ func advertisedAuthMethods() []acpport.AuthMethodDef {
 // — never key material).
 func authLog(methodID, outcome string) {
 	slog.Info("acpfront: authenticate", "method", methodID, "outcome", outcome)
+}
+
+// probePokeSetModel fires the probe session's setModel poke with the want
+// model — carrying the model's OWN declared reasoning level (its
+// DefaultLevel, else its first reasoning level: the create reply's settings
+// snapshot lists both; the 2026-11-23 field refusal "Reasoning level is
+// required" proved the omit-shape fatal for account models).
+func (f *Front) probePokeSetModel(ctx context.Context, sid string, res json.RawMessage, model string) {
+	providerID, modelID, _ := strings.Cut(model, "/")
+
+	modelPayload := map[string]any{
+		wireKeyProviderID: providerID,
+		wireKeyModelID:    modelID,
+	}
+
+	if settings, ok := ParseSettings(res); ok {
+		for i := range settings.Model.Available {
+			entry := &settings.Model.Available[i]
+
+			if entry.Ref.ProviderID != providerID || entry.Ref.ModelID != modelID {
+				continue
+			}
+
+			level := entry.DefaultLevel
+			if level == "" && len(entry.ReasoningLevels) > 0 {
+				level = entry.ReasoningLevels[0].Value
+			}
+
+			if level != "" {
+				modelPayload["options"] = map[string]any{wireKeyReasoningLevel: level}
+			}
+
+			break
+		}
+	}
+
+	if _, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, map[string]any{
+		wireKeySessionID:       sid,
+		optionIDModel:          modelPayload,
+		wireKeyPersistLastUsed: false,
+	}); err != nil {
+		slog.Warn("acpfront: authenticate probe setModel refused "+
+			"(coded evidence recorded; the verdict still awaits its surfaces)", "model", model, "err", err)
+	}
 }

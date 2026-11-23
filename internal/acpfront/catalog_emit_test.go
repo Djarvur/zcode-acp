@@ -95,7 +95,7 @@ func TestSessionNewEmitsCommandRoots(t *testing.T) {
 	}
 
 	sn, err := h.client.NewSession(ctx, acp.NewSessionRequest{
-		Cwd:        "/tmp/happy-turn-ws",
+		Cwd:        cpCycleWorkspace,
 		McpServers: []acp.McpServer{},
 	})
 	if err != nil {

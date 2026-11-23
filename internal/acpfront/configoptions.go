@@ -394,3 +394,67 @@ func levelsToOptionsFromAvailable(levels []LevelEntry) []acpport.SelectOptionDef
 
 	return opts
 }
+
+// mergeCatalogEntries preserves the CREATE snapshot's model catalog under
+// the follow-up reply's CONFIRMED current (the 2026-11-23 field report's
+// root): the backend scopes settings.model.available to the session's
+// current provider — the rebind reply's view narrows to the bound model's
+// scope, and an overwrite shrinks the /model menu to that single model.
+// The merged snapshot: the follow-up's confirmed current/last-used/
+// thought-level (each falling back to the create's when the reply carries
+// none) over the create's AVAILABLE catalog. ok=false when either side
+// fails to decode or the create carries no catalog to preserve — the
+// caller keeps the plain follow-up overwrite then.
+func mergeCatalogEntries(createRaw, followRaw json.RawMessage) (json.RawMessage, bool) {
+	var create, follow struct {
+		Settings struct {
+			Model struct {
+				Current   json.RawMessage `json:"current"`
+				LastUsed  json.RawMessage `json:"lastUsed"` //nolint:tagliatelle // capture-verbatim
+				Available json.RawMessage `json:"available"`
+			} `json:"model"`
+			ThoughtLevel json.RawMessage `json:"thoughtLevel"` //nolint:tagliatelle // capture-verbatim
+		} `json:"settings"`
+	}
+
+	if err := json.Unmarshal(createRaw, &create); err != nil {
+		return nil, false
+	}
+
+	if err := json.Unmarshal(followRaw, &follow); err != nil {
+		return nil, false
+	}
+
+	available := create.Settings.Model.Available
+	if len(available) == 0 || string(available) == "null" {
+		return nil, false
+	}
+
+	pick := func(followVal, createVal json.RawMessage) json.RawMessage {
+		if len(followVal) > 0 && string(followVal) != "null" {
+			return followVal
+		}
+
+		return createVal
+	}
+
+	// The map keys are the settings snapshot's capture-verbatim WIRE shape
+	// (camelCase) — this literal re-emits the backend's own bytes.
+	merged := map[string]any{
+		"settings": map[string]any{
+			"model": map[string]any{
+				"current":   pick(follow.Settings.Model.Current, create.Settings.Model.Current),
+				"lastUsed":  pick(follow.Settings.Model.LastUsed, create.Settings.Model.LastUsed),
+				"available": available,
+			},
+			"thoughtLevel": pick(follow.Settings.ThoughtLevel, create.Settings.ThoughtLevel),
+		},
+	}
+
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return nil, false
+	}
+
+	return out, true
+}
