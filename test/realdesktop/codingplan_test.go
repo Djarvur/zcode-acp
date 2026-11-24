@@ -640,23 +640,41 @@ var cpDesktopVersionPattern = regexp.MustCompile(`\d+\.\d+(\.\d+)?`)
 const cpDesktopVersionFallback = "0.0.0"
 
 // cpClientVersion resolves the mint chain's clientVersion seam input (the
-// DESKTOP's version per main.go patClientVersion's posture): the best-effort
-// install dig when present, the documented fallback otherwise. Lazy by
-// contract — the minter calls it only when a mint actually runs.
+// DESKTOP's version per main.go patClientVersion's posture): version-first
+// like main.go's desktopVersion — Install.Version, then the packed AppImage
+// basename, then the best-effort install dig — with the documented fallback
+// otherwise. Lazy by contract — the minter calls it only when a mint actually
+// runs.
 func cpClientVersion(inst supervisor.Install) func() string {
 	return func() string {
-		paths := []string{inst.Binary, inst.Root, inst.Entrypoint}
+		if inst.Version != "" {
+			return inst.Version
+		}
 
-		for _, path := range paths {
-			segs := strings.Split(path, string(filepath.Separator))
+		if v := cpVersionFromPath(inst.AppImage); v != "" {
+			return v
+		}
 
-			for i := len(segs) - 1; i >= 0; i-- {
-				if v := cpDesktopVersionPattern.FindString(segs[i]); v != "" {
-					return v
-				}
+		for _, path := range []string{inst.Binary, inst.Root, inst.Entrypoint} {
+			if v := cpVersionFromPath(path); v != "" {
+				return v
 			}
 		}
 
 		return cpDesktopVersionFallback
 	}
+}
+
+// cpVersionFromPath digs a version-looking segment out of one install path,
+// deepest segment first (main.go versionFromPath's mirror).
+func cpVersionFromPath(path string) string {
+	segs := strings.Split(path, string(filepath.Separator))
+
+	for i := len(segs) - 1; i >= 0; i-- {
+		if v := cpDesktopVersionPattern.FindString(segs[i]); v != "" {
+			return v
+		}
+	}
+
+	return ""
 }

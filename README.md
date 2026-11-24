@@ -21,18 +21,36 @@ Build from source with a Go toolchain pinned via
 go build -o zcode-acp ./cmd/zcode-acp
 ```
 
-(`mise run build` is the plain compile check.) The result is a single static
-binary with no runtime dependencies of its own. Alternatively, fetch a release
-artifact and verify its checksum against the publisher's sidecar.
+(`mise run build` is the plain compile check.) The wrapper itself is a single
+static binary with no runtime dependencies of its own; the backend it drives is
+the ZCode desktop install. Alternatively, fetch a release artifact and verify
+its checksum against the publisher's sidecar.
 
 On the target machine the binary needs:
 
 - a ZCode desktop install — the wrapper discovers it at startup
-  (env/flag override → desktop entry → AppImage paths → package paths;
-  `--app-server` overrides the search), and
+  (env/flag override → desktop entry → version-ranked AppImage paths → package
+  paths; `--app-server` overrides the search), and
 - `secret-tool` (the `libsecret-tools` package) plus an unlocked
   gnome-keyring **only for the coding-plan auth path** — the api-key path
   needs neither.
+
+**Packed-AppImage backend.** When the selected install is a packed `.AppImage`,
+the wrapper mounts it read-only at startup through the AppImage's own
+`--appimage-mount` runtime and runs the app-server from that mount. It creates
+no extraction copy: no `squashfs-root`/`zcode-<ver>` directory is added, and
+pre-existing extracts (such as a research `squashfs-root`) are left untouched.
+There is no extraction fallback — a host that cannot mount fails loud with the
+AppImage path, the failing step, the observed output, and a remediation. The
+packed-AppImage backend therefore needs host prerequisites the
+unpacked/deb/rpm backends do not:
+
+- a working FUSE setup — `/dev/fuse` present and unprivileged mounts allowed;
+  and
+- for the legacy AppImage runtime, the libfuse2 library — `libfuse2t64` on
+  Ubuntu 24.04 (`sudo apt install libfuse2t64`) or `libfuse2` on older
+  releases (`sudo apt install libfuse2`). Newer static type-2 AppImage runtimes
+  carry their own FUSE client and do not need libfuse2.
 
 Check the build: `./zcode-acp --version` prints `zcode-acp 18.1.9+zacp.0`.
 
@@ -41,15 +59,17 @@ Check the build: `./zcode-acp --version` prints `zcode-acp 18.1.9+zacp.0`.
 | Flag | Env fallback | Meaning |
 |------|--------------|---------|
 | `--api-key` | `ZCODE_ACP_API_KEY` | z.ai API key for the `authenticate{zai-api-key}` path — prefer the env var: the flag's value rides the process argv (world-readable via `ps`/`/proc` for the wrapper's lifetime) |
-| `--app-server` | `ZCODE_ACP_APP_SERVER` | path to a ZCode install root (or app-server binary) overriding discovery |
+| `--app-server` | `ZCODE_ACP_APP_SERVER` | path to a ZCode install root, app-server binary, or packed AppImage overriding discovery |
 | `--model` | `ZCODE_ACP_MODEL` | backend model selection as `providerId/modelId` |
 | `--reasoning-level` | `ZCODE_ACP_REASONING_LEVEL` | reasoning level accompanying `--model` |
 | `--version` | — | print the version and exit |
 
-The flag always wins over its env var. A `--reasoning-level` without a
-`--model` is a configuration error; malformed input exits with code 2, runtime
-failures exit 1. Every log line goes to stderr — stdout carries protocol
-frames only.
+The flag always wins over its env var, and the override wins over on-disk
+discovery (precedence unchanged); a packed `.AppImage` override routes through
+the same managed mount as a discovered packed winner. A `--reasoning-level`
+without a `--model` is a configuration error; malformed input exits with code
+2, runtime failures exit 1. Every log line goes to stderr — stdout carries
+protocol frames only.
 
 ### Authentication: two paths
 
@@ -83,6 +103,27 @@ fix:
 | `keyring probe: no desktop session available (the keyring bus cannot autolaunch headless — run inside your desktop session)` | the wrapper runs outside a desktop session; the keyring bus cannot autolaunch |
 | `keyring probe: no ZCode desktop login found in the keyring (log in via the ZCode desktop first)` | no matching ZCode credential in the keyring — log in via the desktop first |
 | `keyring probe: keyring lookup did not answer within its bound` | the bounded lookup (5 s ceiling) outlived its bound |
+
+**FUSE / packed-AppImage mount** (the packed-AppImage backend). The AppImage
+runtime reports these exact messages; they may arrive on stdout after a leading
+empty line, so the wrapper classifies the observed text rather than trusting
+the first line:
+
+| Message | Meaning |
+|---------|---------|
+| `AppImages require FUSE to run.` | FUSE is not available to the runtime — check `/dev/fuse` and that unprivileged mounts are allowed |
+| `Cannot mount AppImage, please check your FUSE setup.` | the mount failed after the runtime started — same FUSE remediation family |
+| `dlopen(): error loading libfuse.so.2` | the legacy runtime's libfuse2 library is missing — install `libfuse2t64` on Ubuntu 24.04 or `libfuse2` on older releases |
+
+Remediation family: ensure `/dev/fuse` exists (load the `fuse` module) and
+unprivileged mounts are allowed, then install the libfuse2 package when the
+runtime needs it (`sudo apt install libfuse2t64` on Ubuntu 24.04,
+`sudo apt install libfuse2` on older releases). A mount failure exits non-zero
+with the AppImage path and the failing step (`read the mount line`, `validate
+the mount tree`, …) rather than falling back to extraction — there is no
+extraction fallback by design. A mount that disappears mid-session ends the
+session with an explicit cause (`zcode: appimage mount lost: <appimage> (mount
+<root>)`) instead of continuing against a vanished root.
 
 **Version floor** — a preset-agent card is probed with `<program> --version`
 and requires semver ≥ 18.1.9 for model selectors to resolve (≥ 17.0.5 to

@@ -1,11 +1,11 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v0.22.0 — Ask-the-User Bridge",
+  "milestone": "v0.23.0 — Mount-First AppImage Backend",
   "phases": [
     {
-      "number": "9",
-      "name": "Ask-the-User Bridge",
+      "number": "10",
+      "name": "Mount-First AppImage Backend",
       "status": "complete"
     }
   ],
@@ -14,5 +14,5 @@
     "label": "Start a new milestone",
     "reason": "All phases complete — start a new milestone"
   },
-  "updated_at": "2026-11-23T19:06:17.190Z"
+  "updated_at": "2026-11-24T01:25:46.585Z"
 }

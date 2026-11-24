@@ -334,8 +334,11 @@ func writeScratchFile(t *testing.T, ws string) string {
 
 // discoverRealInstall runs the REAL discovery (the override seam first when
 // ZCODE_ACP_APP_SERVER is set, the production matrix otherwise) and logs
-// every probe row (the diagnostics ARE the product). A host without an
-// install SKIPS — the full-cycle path needs one.
+// every probe row (the diagnostics ARE the product). The override maps through
+// supervisor.OverrideInstall — the single production mapper, never a local
+// mirror. A packed AppImage winner is mounted through the production mount
+// owner and its mounted Install is returned; the mount is stopped by
+// t.Cleanup. A host without an install SKIPS — the full-cycle path needs one.
 func discoverRealInstall(ctx context.Context, t *testing.T) supervisor.Install {
 	t.Helper()
 
@@ -347,7 +350,7 @@ func discoverRealInstall(ctx context.Context, t *testing.T) supervisor.Install {
 	probers := supervisor.DefaultProbers(home, optDir)
 	if override := os.Getenv(envAppServer); override != "" {
 		probers.Override = func() (supervisor.Install, bool) {
-			return overrideInstall(override), true
+			return supervisor.OverrideInstall(override)
 		}
 	}
 
@@ -364,51 +367,53 @@ func discoverRealInstall(ctx context.Context, t *testing.T) supervisor.Install {
 		t.Fatalf("discover: %v", err)
 	}
 
+	// Mount-aware: discovery/override may return a packed AppImage whose root
+	// is not readable until the production mount owner prepares it (D-01/D-02).
+	// Every manual-tier call site then spawns from the mounted Install.
+	if inst.RequiresMount() {
+		m, mountErr := supervisor.PrepareMount(ctx, inst, supervisor.DefaultMountOpts())
+		if mountErr != nil {
+			t.Fatalf("mount the packed AppImage %s (step: PrepareMount): %v", inst.AppImage, mountErr)
+		}
+
+		t.Cleanup(func() {
+			if stopErr := m.Stop(); stopErr != nil {
+				t.Errorf("stop the mount for %s: %v", inst.AppImage, stopErr)
+			}
+		})
+
+		return m.Install()
+	}
+
 	return inst
 }
 
-// overrideInstall maps the override path into the discovery Install shape
-// (main.go overrideInstall's exported-piece mirror: a directory validates
-// against the invariant spawn surface; a regular file is the app-server
-// binary itself).
-func overrideInstall(path string) supervisor.Install {
-	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-		if inst, ok := supervisor.ExplicitRootInstall(path); ok {
-			return inst
-		}
-
-		return supervisor.Install{
-			Root:   path,
-			Binary: filepath.Join(path, "zcode"),
-			Layout: "explicit",
-		}
-	}
-
-	root := filepath.Dir(path)
-
-	return supervisor.Install{
-		Root:       root,
-		Binary:     path,
-		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
-		Layout:     "explicit",
-	}
-}
-
 // logObservedInstall records the probe-time install facts (capture-header
-// discipline: record the layout and the builtin revision, never assume).
+// discipline: record the layout and the builtin revision, never assume). The
+// packed fields (version, appimage) print when present; a mounted install's
+// root is the mount root, a pre-mount packed install reports an empty root.
 func logObservedInstall(t *testing.T, inst supervisor.Install) {
 	t.Helper()
 
+	fields := fmt.Sprintf("layout=%s", inst.Layout)
+	if inst.Version != "" {
+		fields += " version=" + inst.Version
+	}
+
+	fields += fmt.Sprintf(" root=%s binary=%s", inst.Root, inst.Binary)
+
+	if inst.AppImage != "" {
+		fields += " appimage=" + inst.AppImage
+	}
+
 	revision, revErr := readBuiltinRevision(inst.BuiltinFile)
 	if revErr != nil {
-		t.Logf("observed install: layout=%s root=%s binary=%s builtinRevision=unknown (%v)",
-			inst.Layout, inst.Root, inst.Binary, revErr)
+		t.Logf("observed install: %s builtinRevision=unknown (%v)", fields, revErr)
 
 		return
 	}
 
-	t.Logf("observed install: layout=%s root=%s binary=%s builtinRevision=%s",
-		inst.Layout, inst.Root, inst.Binary, supervisor.BuiltinRevision(inst.BuiltinFile, revision))
+	t.Logf("observed install: %s builtinRevision=%s", fields, supervisor.BuiltinRevision(inst.BuiltinFile, revision))
 }
 
 // readBuiltinRevision reads the recorded revision number out of the active

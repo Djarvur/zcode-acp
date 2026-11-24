@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 17
+open_count: 18
 waived_count: 0
 fixed_count: 1
-total_count: 18
-last_updated: 2026-11-22T14:45:18.399Z
+total_count: 19
+last_updated: 2026-11-24T00:18:44.913Z
 ---
 
 # Broken Windows Ledger
@@ -33,6 +33,7 @@ last_updated: 2026-11-22T14:45:18.399Z
 | 16 | 7 | deviation | .planning/tdd/07-01-task1-red.json |  | Task-1 RED landed as the plan-sanctioned CONFIRM-UNREPRODUCED branch: both WR-05 tests pass pre-fix (window cannot land), classifier verdict INVALID_RED unexpected_green persisted in the record; tasks 2-3 produced genuine RED_EVIDENCE_OK REDs | open |  | 2026-11-22T11:36:17.784Z |  |
 | 17 | 7 | unrun-verify | .planning/phases/07-hardening-vm-manual-e2e-documentation/07-UAT.md |  | QA-02 VM field run of scripts/vm-e2e.sh is the human-gated end-of-phase UAT (D-05): executor staged the copy-pasteable runbook + PENDING ledger row; the one documented VM execution happens under user control at phase verification, never autonomously | open |  | 2026-11-22T14:45:18.280Z |  |
 | 18 | 7 | unrun-verify | .planning/phases/07-hardening-vm-manual-e2e-documentation/07-UAT.md |  | QA-03 Orca card E2E through BOTH auth paths is THE phase user gate (D-06): executor staged per-path checklists + observation items + PENDING ledger row; the real-account run happens under user control at phase verification, never autonomously | open |  | 2026-11-22T14:45:18.399Z |  |
+| 19 | 10 | unrun-verify | internal/supervisor/appimage_realdesktop_test.go |  | Manual-Only VER-02 real run not executed by the executor: ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run TestRealAppImageMount ./internal/supervisor/ must run once on a FUSE-capable host before ship | open |  | 2026-11-24T00:18:44.913Z |  |
 
 ````json
 [
@@ -269,6 +270,19 @@ last_updated: 2026-11-22T14:45:18.399Z
     "recorded_at": "2026-11-22T14:45:18.399Z",
     "resolved_at": null,
     "milestone": "v0.20.0"
+  },
+  {
+    "id": 19,
+    "kind": "unrun-verify",
+    "phase": "10",
+    "file": "internal/supervisor/appimage_realdesktop_test.go",
+    "line": null,
+    "description": "Manual-Only VER-02 real run not executed by the executor: ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run TestRealAppImageMount ./internal/supervisor/ must run once on a FUSE-capable host before ship",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-24T00:18:44.913Z",
+    "resolved_at": null,
+    "milestone": "v0.23.0"
   }
 ]
 ````

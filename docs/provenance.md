@@ -16,6 +16,14 @@ This wrapper is an honest adapter. The contract it keeps with every user:
   v1 on its own stdio; no file of the desktop install is modified, no update
   or revision bookkeeping is forged, and the builtin-provider revision is
   computed from the install's real files.
+- **The packed AppImage is mounted read-only, never extracted by the wrapper.**
+  When the backend is a packed `.AppImage`, the wrapper mounts it through the
+  AppImage's own `--appimage-mount` runtime and runs the app-server from that
+  mount. The mount is read-only; the wrapper creates no `squashfs-root` /
+  `zcode-<ver>` copy, leaves pre-existing extracts (such as a research extract)
+  untouched and never deletes them, and modifies no desktop file. A host
+  without a working FUSE setup fails loud with an actionable message instead of
+  silently extracting — there is no extraction fallback by design.
 - **No attestation or signature forgery.** Where a fact cannot be known, the
   wrapper reports nothing rather than a wrong number. The clearest case: the
   account quota is not exposed by the API over the OAuth coding-plan chain,
@@ -81,6 +89,19 @@ Stated plainly, so nobody discovers them as failures:
   standard method-not-found frame — spec-loose clients keep working, and the
   capability-gated client never sends them. These are designed decline arms,
   never crash paths.
+- **Packed-AppImage hosting requires FUSE.** The mount path needs a working
+  FUSE setup (`/dev/fuse` present and unprivileged mounts allowed) and, for the
+  legacy AppImage runtime, the libfuse2 library (`libfuse2t64` on Ubuntu 24.04,
+  `libfuse2` on older releases). A host that cannot mount gets a loud,
+  actionable failure naming the AppImage and the failing step; the wrapper
+  never falls back to extraction.
+- **The mount path is version-agnostic; the verified 4.0.0 scope stops at
+  `session/create`.** The mount-first acquisition works across desktop
+  versions, and this milestone's real-machine acceptance covers mount →
+  app-server → `session/create` → teardown with zero leftover processes and
+  mounts. A live prompt on ZCode 4.0.0 is not claimed — wire/protocol drift for
+  a major desktop upgrade is a separate milestone, and the gap is documented
+  rather than papered over.
 - **The client's `agentCmdOverrides` persistence path is Settings-UI-only.**
   Configure the launch recipe through the client's Settings UI; where the
   client persists the override underneath is a labeled known-unknown
