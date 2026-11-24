@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run '^TestPickerRecoverableSetModelValidationPreservesSession$' ./internal/acpfront",
+  "exitCode": 1,
+  "output": "2026/11/24 23:27:22 INFO acpfront: session opened session=sess_wr01\n2026/11/24 23:27:22 INFO acpfront: session closed session=sess_wr01\n2026/11/24 23:27:22 WARN zcode: read loop ended err=\"io: read/write on closed pipe\"\n2026/11/24 23:27:22 INFO acpfront: session opened session=sess_wr01\n2026/11/24 23:27:22 INFO acpfront: session closed session=sess_wr01\n2026/11/24 23:27:22 WARN zcode: read loop ended err=\"io: read/write on closed pipe\"\n--- FAIL: TestPickerRecoverableSetModelValidationPreservesSession (0.01s)\n    --- FAIL: TestPickerRecoverableSetModelValidationPreservesSession/structured_ModelProtocolError (0.00s)\n        pickerrefusal_internal_test.go:253: a recoverable setModel refusal dropped the registered session: core: no session registered under id\n    --- FAIL: TestPickerRecoverableSetModelValidationPreservesSession/data-less_field-message_fallback (0.00s)\n        pickerrefusal_internal_test.go:253: a recoverable setModel refusal dropped the registered session: core: no session registered under id\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpfront\t0.016s\nFAIL\n",
+  "targetTest": "TestPickerRecoverableSetModelValidationPreservesSession",
+  "targetFile": "internal/acpfront/pickerrefusal_internal_test.go",
+  "expected": "The recoverable validation refusal preserves the registered session, cwd, and byte-identical confirmed settings so a later valid switch succeeds.",
+  "actual": "Both subtests reached the planned registry assertion and failed because the current unconditional teardown removed the session.",
+  "semanticAssessment": "Valid RED: the target compiled and executed, and both subtests failed on the planned session-preservation assertion after the backend validation refusal; no fixture or build failure occurred."
+}

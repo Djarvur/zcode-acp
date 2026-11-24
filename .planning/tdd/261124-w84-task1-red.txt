@@ -1,0 +1,14 @@
+2026/11/24 23:27:22 INFO acpfront: session opened session=sess_wr01
+2026/11/24 23:27:22 INFO acpfront: session closed session=sess_wr01
+2026/11/24 23:27:22 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/24 23:27:22 INFO acpfront: session opened session=sess_wr01
+2026/11/24 23:27:22 INFO acpfront: session closed session=sess_wr01
+2026/11/24 23:27:22 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestPickerRecoverableSetModelValidationPreservesSession (0.01s)
+    --- FAIL: TestPickerRecoverableSetModelValidationPreservesSession/structured_ModelProtocolError (0.00s)
+        pickerrefusal_internal_test.go:253: a recoverable setModel refusal dropped the registered session: core: no session registered under id
+    --- FAIL: TestPickerRecoverableSetModelValidationPreservesSession/data-less_field-message_fallback (0.00s)
+        pickerrefusal_internal_test.go:253: a recoverable setModel refusal dropped the registered session: core: no session registered under id
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	0.016s
+FAIL
