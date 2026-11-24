@@ -75,12 +75,13 @@ func pickerSnapshot() json.RawMessage {
 // teardown issues one), and any session/send fails loud (a send after the
 // refusal is exactly the zombie arm this lock forbids).
 func pickerRefusalScenario(setModelRules ...fake.RequestRule) *fake.Scenario {
-	rules := []fake.RequestRule{
-		{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: pickerSnapshot()}},
-		{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{
+	rules := make([]fake.RequestRule, 0, 2+len(setModelRules)+1)
+	rules = append(rules,
+		fake.RequestRule{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: pickerSnapshot()}},
+		fake.RequestRule{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{
 			Result: json.RawMessage(`{"sessionId":"` + pickerSID + `","eventSeq":0,"events":[]}`),
 		}},
-	}
+	)
 	rules = append(rules, setModelRules...)
 	rules = append(rules, fake.RequestRule{
 		Method: zcode.MethodSessionClose,
@@ -88,8 +89,8 @@ func pickerRefusalScenario(setModelRules ...fake.RequestRule) *fake.Scenario {
 	})
 
 	return &fake.Scenario{
-		Name:          "picker-refusal-teardown",
-		OnRequest:     rules,
+		Name:      "picker-refusal-teardown",
+		OnRequest: rules,
 		UnknownMethod: &fake.Reply{
 			Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"},
 		},

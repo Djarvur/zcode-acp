@@ -709,9 +709,12 @@ func (f *Front) SetSessionConfigOption(
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, params)
 	if err != nil {
-		// WR-01 (plan 07-01): the full SESS-01 teardown — never a zombie
-		// front session against a dead mutation target.
-		f.teardownAfterPickerRefusal(ctx, sessionID, err)
+		// Recoverable selection validation leaves the established session and
+		// its confirmed snapshot intact. Fatal/dead-target refusals retain the
+		// WR-01 full SESS-01 teardown — never a zombie against a dead target.
+		if !isRecoverableSetModelError(err) {
+			f.teardownAfterPickerRefusal(ctx, sessionID, err)
+		}
 
 		return nil, acpport.NewInternal("session/setModel: %v", err)
 	}
@@ -937,8 +940,50 @@ func (f *Front) promptModelSlash(
 	return acpport.StopEndTurn, true, nil
 }
 
+// isRecoverableSetModelError recognizes only model-selection validation
+// failures that leave the backend session usable. Invalid-params is
+// authoritative on its numeric code alone. Internal errors require the exact
+// structured ModelProtocolError pair whenever data is present; malformed,
+// null, or unknown data is fatal and never falls through to message matching.
+// The narrow unsupported-reasoning message compatibility arm applies ONLY
+// when data is omitted. Every other failure, including transport and
+// cancellation, remains fatal so the caller runs the full teardown.
+func isRecoverableSetModelError(err error) bool {
+	var callErr *zcode.CallError
+	if !errors.As(err, &callErr) || callErr == nil || callErr.Err == nil {
+		return false
+	}
+
+	wireErr := callErr.Err
+	if wireErr.Code == zcode.CodeInvalidParams {
+		return true
+	}
+
+	if wireErr.Code != zcode.CodeInternalError {
+		return false
+	}
+
+	if len(wireErr.Data) > 0 {
+		var data struct {
+			Name string `json:"name"`
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(wireErr.Data, &data); err != nil {
+			return false
+		}
+
+		return data.Name == "ModelProtocolError" && data.Code == "invalid_model_request"
+	}
+
+	validationPrefix := strings.HasPrefix(wireErr.Message, `Reasoning effort "`) ||
+		strings.HasPrefix(wireErr.Message, `Reasoning level "`)
+
+	return validationPrefix && strings.Contains(wireErr.Message, `" is not supported by `)
+}
+
 // teardownAfterPickerRefusal runs the WR-01 full SESS-01 teardown after a
-// refused picker setModel on an ESTABLISHED session (the wire-only orphan
+// fatal or dead-target picker setModel refusal on an ESTABLISHED session
+// (the wire-only orphan
 // close left the front session registered against a dead mutation target —
 // the zombie: later prompts sent to a dead backend, later picker asks
 // re-failed). The teardown's own failure logs structurally — never a
