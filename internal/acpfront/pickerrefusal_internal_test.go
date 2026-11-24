@@ -19,6 +19,7 @@ package acpfront
 //	  alive (the teardown fires only on the refusal arm).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,19 +74,22 @@ func pickerSnapshot() json.RawMessage {
 // refused arm, the teardown's session/close answers (the full SESS-01
 // teardown issues one), and any session/send fails loud (a send after the
 // refusal is exactly the zombie arm this lock forbids).
-func pickerRefusalScenario(setModelRule fake.RequestRule) *fake.Scenario {
+func pickerRefusalScenario(setModelRules ...fake.RequestRule) *fake.Scenario {
+	rules := []fake.RequestRule{
+		{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: pickerSnapshot()}},
+		{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{
+			Result: json.RawMessage(`{"sessionId":"` + pickerSID + `","eventSeq":0,"events":[]}`),
+		}},
+	}
+	rules = append(rules, setModelRules...)
+	rules = append(rules, fake.RequestRule{
+		Method: zcode.MethodSessionClose,
+		Reply:  &fake.Reply{Result: json.RawMessage(`{"closed":true}`)},
+	})
+
 	return &fake.Scenario{
-		Name: "picker-refusal-teardown",
-		OnRequest: []fake.RequestRule{
-			{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: pickerSnapshot()}},
-			{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{
-				Result: json.RawMessage(`{"sessionId":"` + pickerSID + `","eventSeq":0,"events":[]}`),
-			}},
-			setModelRule,
-			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{
-				Result: json.RawMessage(`{"closed":true}`),
-			}},
-		},
+		Name:          "picker-refusal-teardown",
+		OnRequest:     rules,
 		UnknownMethod: &fake.Reply{
 			Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"},
 		},
@@ -146,6 +150,125 @@ func assertPickerSendCount(t *testing.T, tr fake.Transcript, want int) {
 	if sends != want {
 		t.Fatalf("back leg records %d session/send frames, want exactly %d "+
 			"(a post-refusal prompt must never reach the backend)", sends, want)
+	}
+}
+
+// assertPickerSessionPreserved locks the recoverable-refusal contract: the
+// live registry entry, cwd, and byte-identical confirmed settings all survive.
+func assertPickerSessionPreserved(t *testing.T, f *Front, sid, cwd string, before []byte) {
+	t.Helper()
+
+	if _, getErr := f.registry.Get(sid); getErr != nil {
+		t.Fatalf("a recoverable setModel refusal dropped the registered session: %v", getErr)
+	}
+
+	if got := f.sessionCwdLocked(sid); got != cwd {
+		t.Fatalf("a recoverable setModel refusal changed cwd to %q, want %q", got, cwd)
+	}
+
+	after, ok := f.latestSettings(sid)
+	if !ok {
+		t.Fatal("a recoverable setModel refusal dropped the confirmed settings")
+	}
+
+	if !bytes.Equal(after, before) {
+		t.Fatalf("a recoverable setModel refusal changed confirmed settings:\n got: %s\nwant: %s", after, before)
+	}
+}
+
+// assertPickerCloseCount counts the backend session/close frames on the
+// composed leg — zero for a preserved session, one for fatal teardown.
+func assertPickerCloseCount(t *testing.T, tr fake.Transcript, want int) {
+	t.Helper()
+
+	closes := 0
+	for _, line := range tr.Lines {
+		if string(line.Dir) == "in" && strings.Contains(line.JSON, `"method":"session/close"`) {
+			closes++
+		}
+	}
+
+	if closes != want {
+		t.Fatalf("back leg records %d session/close frames, want exactly %d", closes, want)
+	}
+}
+
+// TestPickerRecoverableSetModelValidationPreservesSession proves the real
+// picker path preserves a live session after a recoverable selection refusal,
+// then records the confirmed settings from a later valid reply. Both the
+// structured backend error and the data-less field-message compatibility arm
+// ride the composed fake leg and the exported picker handler.
+//
+//nolint:funlen // the full lifecycle/retry proof is one composed contract
+func TestPickerRecoverableSetModelValidationPreservesSession(t *testing.T) {
+	const message = `Reasoning effort "max" is not supported by OpenCodeGo/hungerg-free`
+
+	for _, tc := range []struct {
+		name string
+		data json.RawMessage
+	}{
+		{
+			name: "structured ModelProtocolError",
+			data: json.RawMessage(`{"name":"ModelProtocolError","code":"invalid_model_request"}`),
+		},
+		{name: "data-less field-message fallback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			ctx := context.Background()
+
+			refusal := &zcode.WireError{Code: zcode.CodeInternalError, Message: message, Data: tc.data}
+			success := fake.RequestRule{
+				Method: zcode.MethodSessionSetModel,
+				Reply: &fake.Reply{Result: json.RawMessage(`{
+				  "session": {"sessionId": "` + pickerSID + `"},
+				  "settings": {"model": {"current": {
+				    "providerId": "zai-api", "modelId": "GLM-5.3-Flash"
+				  }}}
+				}`)},
+			}
+			f, closeLegs := newInterleaveFront(t, pickerRefusalScenario(
+				fake.RequestRule{Method: zcode.MethodSessionSetModel, Times: 1, Reply: &fake.Reply{Error: refusal}},
+				success,
+			))
+			defer closeLegs()
+
+			sid := openPickerSession(ctx, t, f, cwd)
+			before, ok := f.latestSettings(sid)
+			if !ok {
+				t.Fatal("the create reply must record the initial confirmed settings")
+			}
+
+			_, err := f.SetSessionConfigOption(ctx, sid, optionIDModel, pickerFlashValue)
+			var seamErr *acpport.Error
+			if !errors.As(err, &seamErr) || seamErr.Code != acpport.CodeInternal {
+				t.Fatalf("refusal error = %v, want the coded internal setModel refusal", err)
+			}
+
+			wantMessage := "session/setModel: zcode: wire error -32603: " + message
+			if seamErr.Message != wantMessage {
+				t.Fatalf("refusal message = %q, want unchanged %q", seamErr.Message, wantMessage)
+			}
+
+			assertPickerSessionPreserved(t, f, sid, cwd, before)
+
+			if _, err := f.SetSessionConfigOption(ctx, sid, optionIDModel, pickerFlashValue); err != nil {
+				t.Fatalf("the later valid picker switch must succeed on the preserved session: %v", err)
+			}
+
+			updated, ok := f.latestSettings(sid)
+			if !ok {
+				t.Fatal("the successful retry must record confirmed settings")
+			}
+
+			s, parsed := ParseSettings(updated)
+			if !parsed || s.Model.Current == nil || s.Model.Current.ModelID != "GLM-5.3-Flash" {
+				t.Fatalf("the successful retry did not record Flash as current: %s", updated)
+			}
+
+			assertPickerSessionPreserved(t, f, sid, cwd, updated)
+			assertPickerCloseCount(t, closeLegs(), 0)
+		})
 	}
 }
 
