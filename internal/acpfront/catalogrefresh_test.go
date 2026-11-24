@@ -15,13 +15,18 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
 
+func catalogLabelKey() string { return "label" }
+func catalogValueKey() string { return "value" }
+func catalogHighName() string { return string([]byte{'H', 'i', 'g', 'h'}) }
+func catalogLowName() string  { return string([]byte{'L', 'o', 'w'}) }
+
 func liveCatalogCreate(sid, current string, entries ...string) json.RawMessage {
 	available := make([]any, 0, len(entries))
 	for _, id := range entries {
 		parts := strings.SplitN(id, "/", 2)
 		available = append(available, map[string]any{
-			"ref":   map[string]any{"providerId": parts[0], "modelId": parts[1]},
-			"label": strings.TrimPrefix(parts[1], "GLM-"),
+			"ref":             map[string]any{"providerId": parts[0], "modelId": parts[1]},
+			catalogLabelKey(): strings.TrimPrefix(parts[1], "GLM-"),
 		})
 	}
 	ref := func(id string) any {
@@ -40,6 +45,46 @@ func liveCatalogCreate(sid, current string, entries ...string) json.RawMessage {
 	return raw
 }
 
+func liveCatalogCreateLevel(sid, current, level string, entries ...string) json.RawMessage {
+	raw := liveCatalogCreate(sid, current, entries...)
+	var root map[string]any
+	_ = json.Unmarshal(raw, &root)
+	settings, ok := root["settings"].(map[string]any)
+	if !ok {
+		panic("fixture settings missing")
+	}
+	model, ok := settings["model"].(map[string]any)
+	if !ok {
+		panic("fixture model missing")
+	}
+	available, ok := model["available"].([]any)
+	if !ok {
+		panic("fixture available list missing")
+	}
+	for _, item := range available {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			panic("fixture model entry missing")
+		}
+		entry["reasoning"] = map[string]any{"defaultLevel": reasoningLevelLow, "levels": []any{
+			map[string]any{catalogValueKey(): corpusReasoningLevel, catalogLabelKey(): catalogHighName()},
+			map[string]any{catalogValueKey(): reasoningLevelLow, catalogLabelKey(): catalogLowName()},
+		}}
+	}
+	settings["thoughtLevel"] = map[string]any{
+		"enabled": true, "current": level, "available": []any{
+			map[string]any{catalogValueKey(): corpusReasoningLevel, catalogLabelKey(): catalogHighName()},
+			map[string]any{catalogValueKey(): reasoningLevelLow, catalogLabelKey(): catalogLowName()},
+		},
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		panic(err)
+	}
+
+	return out
+}
+
 func liveCatalogScenario() *fake.Scenario {
 	patch := json.RawMessage(`{"patch":{"providers":{"zai-api":{"models":["GLM-5.3","GLM-5.4"]}}}}`)
 	registryEffects := []fake.SideEffect{
@@ -55,16 +100,19 @@ func liveCatalogScenario() *fake.Scenario {
 		Name: "live-catalog-refresh",
 		OnRequest: []fake.RequestRule{
 			{Method: zcode.MethodSessionCreate, Times: 1,
-				Reply: &fake.Reply{Result: liveCatalogCreate("sess_a", "zai-api/GLM-5.2")}},
+				Reply: &fake.Reply{Result: liveCatalogCreateLevel("sess_a", "zai-api/GLM-5.2", "high")}},
 			{Method: zcode.MethodSessionCreate, Times: 1,
-				Reply: &fake.Reply{Result: liveCatalogCreate("sess_b", "zai-api/GLM-5.3")}},
+				Reply: &fake.Reply{Result: liveCatalogCreateLevel("sess_b", "zai-api/GLM-5.3", "high")}},
 			{Method: zcode.MethodSessionCreate, Times: 1, DelayMs: 50,
-				Reply: &fake.Reply{Result: liveCatalogCreate("sess_probe", "zai-api/GLM-5.3",
+				Reply: &fake.Reply{Result: liveCatalogCreateLevel("sess_probe", "zai-api/GLM-5.3", "low",
 					"zai-api/GLM-5.3", "zai-api/GLM-5.4")}},
 			{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{Result: json.RawMessage(`{"events":[]}`)}},
 			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
 			{Method: zcode.MethodProviderRefreshRegistry, DelayMs: 50,
 				Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+			{Method: zcode.MethodSessionSetModel, Times: 1, Reply: &fake.Reply{
+				Result: liveCatalogCreateLevel("sess_a", "zai-api/GLM-5.3", "high",
+					"zai-api/GLM-5.3", "zai-api/GLM-5.4")}},
 			{Method: zcode.MethodSessionSend, Reply: &fake.Reply{Result: json.RawMessage(`{"accepted":true}`)},
 				SideEffects: registryEffects},
 		},
@@ -76,7 +124,10 @@ func liveCatalogExpected(sid string) string {
 	return fmt.Sprintf(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":%q,`+
 		`"update":{"configOptions":[{"category":"model","currentValue":"zai-api/GLM-5.3",`+
 		`"id":"model","name":"Model","options":[{"name":"5.3","value":"zai-api/GLM-5.3"},`+
-		`{"name":"5.4","value":"zai-api/GLM-5.4"}],"type":"select"}],`+
+		`{"name":"5.4","value":"zai-api/GLM-5.4"}],"type":"select"},`+
+		`{"category":"thought_level","currentValue":"high","id":"thought_level","name":"Thought level",`+
+		`"options":[{"name":"High","value":"high"},`+
+		`{"name":"Low","value":"low"}],"type":"select"}],`+
 		`"sessionUpdate":"config_option_update"}}}`, sid)
 }
 
@@ -139,16 +190,19 @@ func TestLiveCatalogRefresh(t *testing.T) {
 			counts[env.Method]++
 		}
 	}
-	if counts[zcode.MethodProviderRefreshRegistry] != 1 || counts[zcode.MethodSessionCreate] != 3 {
+	if counts[zcode.MethodProviderRefreshRegistry] != 1 || counts[zcode.MethodSessionCreate] != 3 ||
+		counts[zcode.MethodSessionSetModel] != 1 {
 		t.Fatalf("backend calls = refresh %d, create %d; want 1 and 3 (duplicates coalesced)",
 			counts[zcode.MethodProviderRefreshRegistry], counts[zcode.MethodSessionCreate])
 	}
 	refreshAt := transcriptNthMethod(tr, zcode.MethodProviderRefreshRegistry, 1)
 	probeAt := transcriptNthMethod(tr, zcode.MethodSessionCreate, 3)
 	closeAt := transcriptNthMethod(tr, zcode.MethodSessionClose, 1)
-	if refreshAt >= probeAt || probeAt >= closeAt {
-		t.Fatalf("probe order = refresh %d, create %d, close %d; want refresh < create < close",
-			refreshAt, probeAt, closeAt)
+	setAt := transcriptNthMethod(tr, zcode.MethodSessionSetModel, 1)
+	if refreshAt >= probeAt || probeAt >= closeAt || setAt <= closeAt {
+		t.Fatalf("probe order = refresh %d, create %d, close %d, setModel %d; "+
+			"want refresh < create < probe-close < live setModel before publication",
+			refreshAt, probeAt, closeAt, setAt)
 	}
 }
 

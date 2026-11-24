@@ -130,6 +130,12 @@ type Front struct {
 	catalogRefreshRunning bool
 	catalogRefreshPending bool
 	catalogRefreshSignal  string
+	catalogPendingSignal  string
+
+	// catalogSessionLocks serializes model/config mutation with catalog
+	// publication per session. Fixed stripes bound memory with the registry;
+	// the lock order is session stripe -> closingMu -> settingsMu.
+	catalogSessionLocks [64]sync.Mutex
 
 	// catalogRoots are the slash-command catalog scan roots for SKILLS
 	// (v0.21.0, CAT-02); commandRoots the same for COMMAND manifests.
@@ -633,9 +639,14 @@ const (
 // source, so a fabricated currentValue is impossible by construction: the
 // re-emit consumes the store the reply just overwrote), and the FULL
 // rebuilt list returns — the spec MUST the adapter's response carries.
+//
+//nolint:funlen // validation, backend mutation, teardown, and confirmed rebuild form one atomic operation
 func (f *Front) SetSessionConfigOption(
 	ctx context.Context, sessionID, configID, value string,
 ) ([]acpport.ConfigOptionDef, error) {
+	unlock := f.lockCatalogSession(sessionID)
+	defer unlock()
+
 	if f.isClosing(sessionID) {
 		return nil, acpport.NewInvalidRequest(
 			"session/set_config_option: %s: the session is closing or closed", sessionID)
@@ -786,6 +797,8 @@ func (f *Front) slashTurnBusy(sessionID string) bool {
 // refused switch never holds the front-wide turn slot; the busy gate below
 // keeps that placement from becoming a bypass — mid-turn commands still
 // take the CORE-05 rejection instead of racing the slot.
+//
+//nolint:funlen // the slash validation/mutation/confirmation sequence stays atomic under the session stripe
 func (f *Front) promptModelSlash(
 	ctx context.Context, params acpport.PromptParams, sink acpport.UpdateSink,
 ) (acpport.StopReason, bool, error) {
@@ -793,6 +806,9 @@ func (f *Front) promptModelSlash(
 	if !isCommand {
 		return "", false, nil
 	}
+
+	unlock := f.lockCatalogSession(params.SessionID)
+	defer unlock()
 
 	// WR-02 (07-REVIEW): the session-scoped busy gate. A command prompt
 	// issued while THIS session's turn is active takes the CORE-05 -32003
@@ -1029,6 +1045,9 @@ func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
 	if f.model == nil {
 		return nil
 	}
+
+	unlock := f.lockCatalogSession(sid)
+	defer unlock()
 
 	// The reasoning level's default chain (plan 07-04, D-03): the explicit
 	// configured level first, else the target model's backend-confirmed

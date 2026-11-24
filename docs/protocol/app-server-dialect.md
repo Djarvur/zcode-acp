@@ -372,7 +372,10 @@ The registry snapshot flows host→server via `provider/updateAccountConfig`; th
   the temporary directory, and fan the complete list out to active ACP sessions.
   Refresh alone does not guarantee a `state.updated` patch, so the fresh create
   read-back is mandatory; neither the acknowledgement nor a requested selection
-  is catalog evidence. The worker is event-driven, single-flight, coalesced, and
+  is catalog evidence. A disappeared live selection is applied with
+  `session/setModel` on that session and only its reply confirms the fallback;
+  a no-current probe remains valid for sessions whose prior current is listed.
+  The worker is event-driven, single-flight, coalesced, and
   bounded by one 15-second context-owned lifetime. The shipped triggers are
   registry events plus an explicit post-authenticate refresh request; a
   polling/watch fallback is deferred by this task's constraint.

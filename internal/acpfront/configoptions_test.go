@@ -2,6 +2,7 @@ package acpfront_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Djarvur/zcode-acp/internal/acpfront"
@@ -344,6 +345,41 @@ func TestConfigOptionsTranslator(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestParseSettingsRejectsPartialModelRefs(t *testing.T) {
+	for name, raw := range map[string]string{
+		"provider-only-current": `{"settings":{"model":{"current":{"providerId":"zai-api"},` +
+			`"available":[{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"},"label":"GLM-5.3"}]}}}`,
+		"model-only-current": `{"settings":{"model":{"current":{"modelId":"GLM-5.3"},` +
+			`"available":[{"ref":{"providerId":"zai-api","modelId":"GLM-5.3"},"label":"GLM-5.3"}]}}}`,
+		"provider-only-entry": `{"settings":{"model":{"current":{"providerId":"zai-api","modelId":"GLM-5.3"},` +
+			`"available":[{"ref":{"providerId":"zai-api"},"label":"broken"}]}}}`,
+		"model-only-entry": `{"settings":{"model":{"current":{"providerId":"zai-api","modelId":"GLM-5.3"},` +
+			`"available":[{"ref":{"modelId":"GLM-5.3"},"label":"broken"}]}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			settings, ok := acpfront.ParseSettings(json.RawMessage(raw))
+			if !ok {
+				t.Fatal("valid JSON settings envelope must parse")
+			}
+			if settings.Model.Current != nil && (settings.Model.Current.ProviderID == "" ||
+				settings.Model.Current.ModelID == "") {
+				t.Fatalf("partial current ref was accepted: %+v", settings.Model.Current)
+			}
+			for _, entry := range settings.Model.Available {
+				if entry.Ref.ProviderID == "" || entry.Ref.ModelID == "" {
+					t.Fatalf("partial available ref was accepted: %+v", entry.Ref)
+				}
+			}
+			for _, option := range acpfront.BuildConfigOptions(settings) {
+				if option.CurrentValue == "" || strings.HasPrefix(option.CurrentValue, "/") ||
+					strings.HasSuffix(option.CurrentValue, "/") {
+					t.Fatalf("partial ref reached rendered currentValue %q", option.CurrentValue)
+				}
+			}
+		})
+	}
 }
 
 // assertSelectOptions compares the emitted select entries element-for-

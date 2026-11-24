@@ -37,6 +37,12 @@ func TestRegistryCatalogPatchClassification(t *testing.T) {
 	}
 }
 
+func catalogLabelKey() string  { return "label" }
+func catalogHighValue() string { return string([]byte{'h', 'i', 'g', 'h'}) }
+func catalogLowValue() string  { return "low" }
+func catalogHighName() string  { return "High" }
+func catalogLowName() string   { return "Low" }
+
 func catalogSnapshot(current, lastUsed string, available ...string) json.RawMessage {
 	ref := func(id string) any {
 		if id == "" {
@@ -49,7 +55,7 @@ func catalogSnapshot(current, lastUsed string, available ...string) json.RawMess
 	}
 	entries := make([]any, 0, len(available))
 	for _, id := range available {
-		entries = append(entries, map[string]any{"ref": ref(id), "label": id})
+		entries = append(entries, map[string]any{"ref": ref(id), catalogLabelKey(): id})
 	}
 	raw, err := json.Marshal(map[string]any{"settings": map[string]any{"model": map[string]any{
 		"current": ref(current), "lastUsed": ref(lastUsed), "available": entries,
@@ -73,7 +79,9 @@ func TestSnapshotForLiveCatalogSafety(t *testing.T) {
 		//nolint:lll // each fixture row keeps its input snapshots and expected result together
 		{"preserve listed current", catalogSnapshot("new/B", "", "old/A", "new/B"), catalogSnapshot("old/A", "", "old/A"), true, "old/A", 1},
 		//nolint:lll // each fixture row keeps its input snapshots and expected result together
-		{"confirmed listed fallback", catalogSnapshot("new/B", "", "new/B", "new/C"), catalogSnapshot("old/A", "", "old/A"), true, "new/B", 1},
+		{"probe current requires live setModel", catalogSnapshot("new/B", "", "new/B", "new/C"), catalogSnapshot("old/A", "", "old/A"), false, "", 0},
+		{"listed lastUsed cannot replace disappeared current", catalogSnapshot("new/B", "", "new/B", "new/C"),
+			catalogSnapshot("old/A", "new/B", "old/A", "new/B"), false, "", 0},
 		//nolint:lll // each fixture row keeps its input snapshots and expected result together
 		{"preserve without probe current", catalogSnapshot("", "", "old/A", "new/B"), catalogSnapshot("old/A", "", "old/A"), true, "old/A", 1},
 		{"no fallback", catalogSnapshot("", "", "new/B"), catalogSnapshot("old/A", "", "old/A"), false, "", 0},
@@ -249,7 +257,8 @@ func TestCatalogWorkerFailureThenIdenticalRefresh(t *testing.T) {
 	defer closeLegs()
 	openInterleaveSession(t, f, t.TempDir())
 	const sid = interleaveSID
-	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A"))
+	f.recordSettings(sid, json.RawMessage(strings.Replace(string(catalogSnapshot("new/B", "", "new/B")),
+		`"label":"new/B"`, `"label":"Old B"`, 1)))
 	calls := 0
 	f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
 		calls++
@@ -291,4 +300,339 @@ func awaitCatalogWorker(t *testing.T, f *Front) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("catalog worker did not finish within the bound")
+}
+
+func TestCatalogObserverDoesNotTakeClosingLock(t *testing.T) {
+	f, closeLegs := newInterleaveFront(t, interleaveScenario(0))
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	f.recordSettings(interleaveSID, catalogSnapshot("old/A", "", "old/A"))
+
+	f.closingMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			f.closingMu.Unlock()
+		}
+	}()
+	done := make(chan struct{})
+	go func() {
+		f.observeEnvelope(zcode.Envelope{Method: zcode.MethodStateUpdated,
+			Params: json.RawMessage(`{"patch":{"providers":{"zai-api":{"models":["B"]}}}}`)})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("registry observer blocked on closingMu held by close/resume")
+	}
+	f.closingMu.Unlock()
+	locked = false
+	awaitCatalogWorker(t, f)
+}
+
+func TestCatalogPublicationSerializesModelMutation(t *testing.T) {
+	sc := &fake.Scenario{
+		Name: "catalog-publication-mutation",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionSetModel, Reply: &fake.Reply{Result: json.RawMessage(
+				`{"settings":{"model":{"current":{"providerId":"new","modelId":"C"},` +
+					`"available":[{"ref":{"providerId":"new","modelId":"C"},"label":"C"}]}}}`)}},
+			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	const sid = interleaveSID
+	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A", "new/B", "new/C"))
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
+		close(entered)
+		<-release
+
+		return nil
+	})
+	merged := catalogSnapshot("new/B", "", "old/A", "new/B", "new/C")
+	published := make(chan bool, 1)
+	go func() {
+		published <- f.publishCatalogUpdate(context.Background(), sid, merged,
+			BuildConfigOptions(mustSettings(t, merged)))
+	}()
+	<-entered
+	mutated := make(chan error, 1)
+	go func() {
+		_, err := f.SetSessionConfigOption(context.Background(), sid, optionIDModel, "old/A")
+		mutated <- err
+	}()
+	select {
+	case err := <-mutated:
+		t.Fatalf("mutation completed during catalog client I/O: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if !<-published {
+		t.Fatal("catalog publication failed")
+	}
+	if err := <-mutated; err != nil {
+		t.Fatalf("model mutation: %v", err)
+	}
+	latest, _ := f.latestSettings(sid)
+	settings := mustSettings(t, latest)
+	if settings.Model.Current == nil || settings.Model.Current.ModelID != "C" {
+		t.Fatalf("older catalog snapshot overwrote newer mutation: %s", latest)
+	}
+}
+
+func catalogProbeWithThought(current, level string) json.RawMessage {
+	raw := catalogSnapshot(current, "", "new/B", "new/C")
+	raw = json.RawMessage(strings.Replace(string(raw), `"label":"new/B"`,
+		//nolint:lll // raw reasoning fixture stays adjacent to its label replacement
+		`"label":"B","reasoning":{"defaultLevel":"low","levels":[{"value":"high","label":"High"},{"value":"low","label":"Low"}]}`, 1))
+	var root map[string]any
+	_ = json.Unmarshal(raw, &root)
+	settings, ok := root["settings"].(map[string]any)
+	if !ok {
+		panic("fixture settings missing")
+	}
+	settings["thoughtLevel"] = map[string]any{"enabled": true, "current": level,
+		"available": []any{map[string]any{"value": catalogHighValue(), catalogLabelKey(): catalogHighName()},
+			map[string]any{"value": catalogLowValue(), catalogLabelKey(): catalogLowName()}}}
+	out, err := json.Marshal(root)
+	if err != nil {
+		panic(err)
+	}
+
+	return json.RawMessage(`{"session":{"sessionId":"sess_probe"},` + string(out[1:]))
+}
+
+func TestCatalogFallbackUsesLiveSetModelConfirmation(t *testing.T) {
+	probe := catalogProbeWithThought("new/B", "low")
+	confirmed := catalogProbeWithThought("new/B", "high")
+	confirmed = json.RawMessage(strings.Replace(string(confirmed),
+		`"sessionId":"sess_probe"`, `"sessionId":"sess_live"`, 1))
+	sc := &fake.Scenario{
+		Name: "catalog-live-fallback",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodProviderRefreshRegistry,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+			{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: probe}},
+			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+			{Method: zcode.MethodSessionSetModel, Reply: &fake.Reply{Result: confirmed}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	openInterleaveSession(t, f, t.TempDir())
+	const sid = interleaveSID
+	previous := catalogProbeWithThought("old/A", "high")
+	f.recordSettings(sid, previous)
+	var notes []acpport.SessionNote
+	f.BindUpdateSink(func(_ context.Context, note acpport.SessionNote) error {
+		notes = append(notes, note)
+
+		return nil
+	})
+	f.RequestCatalogRefresh(context.Background())
+	awaitCatalogWorker(t, f)
+	if len(notes) != 1 {
+		t.Fatalf("catalog notes = %d, want 1 after live fallback confirmation", len(notes))
+	}
+	if len(notes[0].ConfigOptions) != 2 || notes[0].ConfigOptions[1].CurrentValue != "high" {
+		t.Fatalf("fallback did not use live reply reasoning level: %+v", notes[0].ConfigOptions)
+	}
+	tr := closeLegs()
+	setAt := catalogTranscriptNthMethod(tr, zcode.MethodSessionSetModel, 1)
+	closeAt := catalogTranscriptNthMethod(tr, zcode.MethodSessionClose, 1)
+	if setAt < 0 || closeAt < 0 || setAt <= closeAt {
+		t.Fatalf("backend order setModel=%d probe-close=%d; "+
+			"live setModel must follow probe close and precede publication", setAt, closeAt)
+	}
+}
+
+func TestCatalogFallbackRejectsUnconfirmedReply(t *testing.T) {
+	for name, confirmed := range map[string]json.RawMessage{
+		"wrong current":      catalogProbeWithThought("new/C", catalogHighValue()),
+		"invalid reasoning":  catalogProbeWithThought("new/B", "medium"),
+		"malformed settings": json.RawMessage(`{"settings":"bad"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			sc := &fake.Scenario{
+				Name: "catalog-fallback-rejected",
+				OnRequest: []fake.RequestRule{
+					{Method: zcode.MethodProviderRefreshRegistry,
+						Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+					{Method: zcode.MethodSessionCreate,
+						Reply: &fake.Reply{Result: catalogProbeWithThought("new/B", catalogLowValue())}},
+					{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+					{Method: zcode.MethodSessionSetModel, Reply: &fake.Reply{Result: confirmed}},
+				},
+				EOFDrainMs: 1,
+			}
+			f, closeLegs := newInterleaveFront(t, sc)
+			defer closeLegs()
+			openInterleaveSession(t, f, t.TempDir())
+			previous := catalogProbeWithThought("old/A", catalogHighValue())
+			f.recordSettings(interleaveSID, previous)
+			calls := 0
+			f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
+				calls++
+
+				return nil
+			})
+			f.RequestCatalogRefresh(context.Background())
+			awaitCatalogWorker(t, f)
+			if calls != 0 {
+				t.Fatalf("unconfirmed fallback published %d updates", calls)
+			}
+			if got, _ := f.latestSettings(interleaveSID); !bytes.Equal(got, previous) {
+				t.Fatalf("unconfirmed fallback replaced settings: %s", got)
+			}
+		})
+	}
+}
+
+func TestCatalogNoCurrentProbePreservesListedSelection(t *testing.T) {
+	probe := catalogSnapshot("", "", "old/A", "new/B")
+	probe = json.RawMessage(`{"session":{"sessionId":"sess_probe"},` + string(probe[1:]))
+	sc := &fake.Scenario{
+		Name: "catalog-no-current-probe",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodProviderRefreshRegistry,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+			{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: probe}},
+			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	f.recordSettings(interleaveSID, catalogSnapshot("old/A", "", "old/A"))
+	calls := 0
+	f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
+		calls++
+
+		return nil
+	})
+	f.RequestCatalogRefresh(context.Background())
+	awaitCatalogWorker(t, f)
+	if calls != 1 {
+		t.Fatalf("no-current probe suppressed listed prior selection: calls=%d", calls)
+	}
+}
+
+func TestCatalogPendingSignalSurvivesFailedPass(t *testing.T) {
+	probe := catalogSnapshot("new/B", "", "new/B")
+	probe = json.RawMessage(`{"session":{"sessionId":"sess_probe"},` + string(probe[1:]))
+	sc := &fake.Scenario{
+		Name: "catalog-pending-signal",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodProviderRefreshRegistry, Times: 2, DelayMs: 30,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+			{Method: zcode.MethodSessionCreate, Times: 2, Reply: &fake.Reply{Result: probe}},
+			{Method: zcode.MethodSessionClose, Times: 2,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	openInterleaveSession(t, f, t.TempDir())
+	previous := json.RawMessage(strings.Replace(string(catalogSnapshot("new/B", "", "new/B")),
+		`"label":"new/B"`, `"label":"Old B"`, 1))
+	f.recordSettings(interleaveSID, previous)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	calls := 0
+	f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
+		calls++
+		if calls == 1 {
+			close(entered)
+			<-release
+
+			return errCatalogWrite
+		}
+
+		return nil
+	})
+	f.requestCatalogRefresh(context.Background(), "signal-A")
+	<-entered
+	f.requestCatalogRefresh(context.Background(), "signal-B")
+	close(release)
+	awaitCatalogWorker(t, f)
+	if calls != 2 {
+		t.Fatalf("sink calls = %d, want failed A plus pending B", calls)
+	}
+	f.catalogRefreshMu.Lock()
+	current := f.catalogRefreshSignal
+	f.catalogRefreshMu.Unlock()
+	if current != "signal-B" {
+		t.Fatalf("pending signal was not installed: %q", current)
+	}
+	f.requestCatalogRefresh(context.Background(), "signal-B")
+	time.Sleep(30 * time.Millisecond)
+	tr := closeLegs()
+	if got := catalogTranscriptMethodCount(tr, zcode.MethodProviderRefreshRegistry); got != 2 {
+		t.Fatalf("signal B repeated after its pass: refreshes=%d", got)
+	}
+}
+
+func TestCatalogClosingSkipDoesNotAbortHealthyFanout(t *testing.T) {
+	f, closeLegs := newInterleaveFront(t, interleaveScenario(0))
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	f.registry.Register(core.Session{ID: "healthy"})
+	previous := json.RawMessage(strings.Replace(string(catalogSnapshot("new/B", "", "new/B")),
+		`"label":"new/B"`, `"label":"Old B"`, 1))
+	f.recordSettings(interleaveSID, previous)
+	f.recordSettings("healthy", previous)
+	f.closingMu.Lock()
+	f.closing = map[string]bool{interleaveSID: true}
+	f.closingMu.Unlock()
+	var ids []string
+	f.BindUpdateSink(func(_ context.Context, note acpport.SessionNote) error {
+		ids = append(ids, note.SessionID)
+
+		return nil
+	})
+	fresh := catalogSnapshot("new/B", "", "new/B")
+	if err := f.publishFreshCatalog(context.Background(), fresh); err != nil {
+		t.Fatalf("closing skip aborted healthy fan-out: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "healthy" {
+		t.Fatalf("published sessions = %v, want only healthy", ids)
+	}
+}
+
+func catalogTranscriptNthMethod(tr fake.Transcript, method string, nth int) int {
+	seen := 0
+	for i, line := range tr.Lines {
+		var env struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal([]byte(line.JSON), &env) == nil && env.Method == method {
+			seen++
+			if seen == nth {
+				return i
+			}
+		}
+	}
+
+	return -1
+}
+
+func catalogTranscriptMethodCount(tr fake.Transcript, method string) int {
+	count := 0
+	for _, line := range tr.Lines {
+		var env struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal([]byte(line.JSON), &env) == nil && env.Method == method {
+			count++
+		}
+	}
+
+	return count
 }
