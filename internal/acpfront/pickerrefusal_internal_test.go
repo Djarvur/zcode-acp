@@ -738,8 +738,6 @@ func assertPickerSetModelPayload(t *testing.T, tr fake.Transcript, providerID, m
 // TestPickerCrossModelRetryResolvesTargetReasoning starts from the observed
 // already-preserved DeepSeek/max snapshot and proves one retry sends the exact
 // target's advertised high without driving the historical refusal lifecycle.
-//
-//nolint:funlen // one composed preservation/retry contract; splitting would hide its causal sequence
 func TestPickerCrossModelRetryResolvesTargetReasoning(t *testing.T) {
 	cwd := t.TempDir()
 	ctx := context.Background()
@@ -754,8 +752,10 @@ func TestPickerCrossModelRetryResolvesTargetReasoning(t *testing.T) {
 			{Method: zcode.MethodSessionSetModel, Times: 1, Reply: &fake.Reply{Result: pickerCrossModelReply()}},
 			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
 		},
-		UnknownMethod: &fake.Reply{Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"}},
-		EOFDrainMs:    1,
+		UnknownMethod: &fake.Reply{
+			Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: failureMethodNotFound},
+		},
+		EOFDrainMs: 1,
 	})
 	defer closeLegs()
 

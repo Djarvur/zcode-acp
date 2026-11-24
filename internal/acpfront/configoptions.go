@@ -271,6 +271,45 @@ func digBool(raw any) bool {
 	return b
 }
 
+// resolveTargetReasoningLevel chooses a reasoning level from the exact target
+// model's advertised metadata. A confirmed current level survives only when the
+// target lists it; otherwise an advertised default wins, then the first listed
+// level. A level-less target emits no options, and a missing target fails closed
+// rather than borrowing source-model or global thought-level values.
+func resolveTargetReasoningLevel(
+	s Settings, target ModelRef, current string,
+) (level string, emitOptions bool, err error) {
+	for _, entry := range s.Model.Available {
+		if entry.Ref != target {
+			continue
+		}
+
+		if len(entry.ReasoningLevels) == 0 {
+			return "", false, nil
+		}
+
+		for _, advertised := range entry.ReasoningLevels {
+			if current != "" && advertised.Value == current {
+				return current, true, nil
+			}
+		}
+
+		if entry.DefaultLevel != "" {
+			for _, advertised := range entry.ReasoningLevels {
+				if advertised.Value == entry.DefaultLevel {
+					return entry.DefaultLevel, true, nil
+				}
+			}
+		}
+
+		return entry.ReasoningLevels[0].Value, true, nil
+	}
+
+	return "", false, acpport.NewInvalidParams(
+		"session/set_config_option: target model %s/%s is not listed in settings.model.available",
+		target.ProviderID, target.ModelID)
+}
+
 // BuildConfigOptions translates one confirmed settings snapshot into the
 // neutral configOptions vocabulary (the adapter alone assembles the SDK
 // select variants — the neutral DTOs never leak SDK types across the seam,

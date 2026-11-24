@@ -1000,13 +1000,13 @@ func (f *Front) teardownAfterPickerRefusal(ctx context.Context, sessionID string
 // wire path: BOTH switch kinds ride session/setModel. A model switch parses
 // the value with strings.Cut on the FIRST slash only (no composite forms —
 // the backend's display-only $ separator stays out of the wire contract)
-// and carries options.reasoningLevel = the CURRENT confirmed level unless
-// the ask changes it (Pitfall 2: a switch must never silently drop the
-// level — the field-proven binding path per EXP-TURN-01); a thought-level
-// switch carries the CONFIRMED current model unchanged with the requested
-// level. persistAsWorkspaceLastUsed stays false on both paths (the Open
-// Question 3 posture), and the options object emits the documented
-// omit-shape whenever no confirmed level exists (IN-04).
+// and resolves reasoning against the exact target: preserve the confirmed
+// level only when that target advertises it, else use its advertised default
+// or first level. A level-less target retains the documented options
+// omit-shape (IN-04), and a missing target fails before payload construction.
+// A thought-level switch carries the CONFIRMED current model unchanged with
+// the requested level. persistAsWorkspaceLastUsed stays false on both paths
+// (the Open Question 3 posture).
 func setConfigMutation(
 	sessionID string, s Settings, configID, value string,
 ) (map[string]any, error) {
@@ -1022,9 +1022,14 @@ func setConfigMutation(
 				configID, value)
 		}
 
-		model := map[string]any{wireKeyProviderID: providerID, wireKeyModelID: modelID}
+		target := ModelRef{ProviderID: providerID, ModelID: modelID}
+		level, emitOptions, err := resolveTargetReasoningLevel(s, target, confirmedLevel(s))
+		if err != nil {
+			return nil, err
+		}
 
-		if level := confirmedLevel(s); level != "" {
+		model := map[string]any{wireKeyProviderID: providerID, wireKeyModelID: modelID}
+		if emitOptions {
 			model["options"] = map[string]any{wireKeyReasoningLevel: level}
 		}
 
