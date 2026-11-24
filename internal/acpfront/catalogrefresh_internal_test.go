@@ -39,16 +39,22 @@ func catalogSnapshot(current, lastUsed string, available ...string) json.RawMess
 		if id == "" {
 			return nil
 		}
+
 		parts := strings.SplitN(id, "/", 2)
+
 		return map[string]any{"providerId": parts[0], "modelId": parts[1]}
 	}
 	entries := make([]any, 0, len(available))
 	for _, id := range available {
 		entries = append(entries, map[string]any{"ref": ref(id), "label": id})
 	}
-	raw, _ := json.Marshal(map[string]any{"settings": map[string]any{"model": map[string]any{
+	raw, err := json.Marshal(map[string]any{"settings": map[string]any{"model": map[string]any{
 		"current": ref(current), "lastUsed": ref(lastUsed), "available": entries,
 	}}})
+	if err != nil {
+		panic(err) // fixture contains only JSON-safe scalar/map/slice values
+	}
+
 	return raw
 }
 
@@ -61,10 +67,14 @@ func TestSnapshotForLiveCatalogSafety(t *testing.T) {
 		wantCurrent   string
 		wantOptionLen int
 	}{
+		//nolint:lll // each fixture row keeps its input snapshots and expected result together
 		{"preserve listed current", catalogSnapshot("new/B", "", "old/A", "new/B"), catalogSnapshot("old/A", "", "old/A"), true, "old/A", 1},
+		//nolint:lll // each fixture row keeps its input snapshots and expected result together
 		{"confirmed listed fallback", catalogSnapshot("new/B", "", "new/B", "new/C"), catalogSnapshot("old/A", "", "old/A"), true, "new/B", 1},
+		//nolint:lll // each fixture row keeps its input snapshots and expected result together
 		{"preserve without probe current", catalogSnapshot("", "", "old/A", "new/B"), catalogSnapshot("old/A", "", "old/A"), true, "old/A", 1},
 		{"no fallback", catalogSnapshot("", "", "new/B"), catalogSnapshot("old/A", "", "old/A"), false, "", 0},
+		//nolint:lll // each fixture row keeps its input snapshots and expected result together
 		{"unlisted fallback", catalogSnapshot("gone/X", "", "new/B"), catalogSnapshot("old/A", "", "old/A"), false, "", 0},
 		{"malformed fresh", json.RawMessage(`{`), catalogSnapshot("old/A", "", "old/A"), false, "", 0},
 	}
@@ -91,6 +101,7 @@ func TestSnapshotForLiveCatalogSafety(t *testing.T) {
 	}
 }
 
+//nolint:funlen // both close arms form one deterministic publication/teardown contract
 func TestCatalogPublicationCloseGate(t *testing.T) {
 	t.Run("closed session", func(t *testing.T) {
 		f, closeLegs := newInterleaveFront(t, interleaveScenario(0))
@@ -98,12 +109,17 @@ func TestCatalogPublicationCloseGate(t *testing.T) {
 		openInterleaveSession(t, f, t.TempDir())
 		f.recordSettings(interleaveSID, catalogSnapshot("old/A", "", "old/A"))
 		calls := 0
-		f.BindUpdateSink(func(context.Context, acpport.SessionNote) error { calls++; return nil })
+		f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
+			calls++
+
+			return nil
+		})
 		if err := f.CloseSession(context.Background(), interleaveSID); err != nil {
 			t.Fatalf("close: %v", err)
 		}
 		merged := catalogSnapshot("new/B", "", "new/B")
-		if f.publishCatalogUpdate(context.Background(), interleaveSID, merged, BuildConfigOptions(mustSettings(t, merged))) {
+		if f.publishCatalogUpdate(context.Background(), interleaveSID, merged,
+			BuildConfigOptions(mustSettings(t, merged))) {
 			t.Fatal("stale publication passed the closed-session gate")
 		}
 		if calls != 0 {
@@ -126,13 +142,18 @@ func TestCatalogPublicationCloseGate(t *testing.T) {
 		calls := 0
 		f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
 			calls++
-			once.Do(func() { close(entered); <-release })
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+
 			return nil
 		})
 		merged := catalogSnapshot("new/B", "", "new/B")
 		published := make(chan bool, 1)
+		options := BuildConfigOptions(mustSettings(t, merged))
 		go func() {
-			published <- f.publishCatalogUpdate(context.Background(), interleaveSID, merged, BuildConfigOptions(mustSettings(t, merged)))
+			published <- f.publishCatalogUpdate(context.Background(), interleaveSID, merged, options)
 		}()
 		select {
 		case <-entered:
@@ -167,8 +188,11 @@ func mustSettings(t *testing.T, raw json.RawMessage) Settings {
 	if !ok {
 		t.Fatalf("parse fixture: %s", raw)
 	}
+
 	return settings
 }
+
+var errCatalogWrite = errors.New("write failed")
 
 func TestCatalogPublicationFailureThenIdenticalRefresh(t *testing.T) {
 	const sid = "sess_retry"
@@ -178,8 +202,9 @@ func TestCatalogPublicationFailureThenIdenticalRefresh(t *testing.T) {
 	f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
 		calls++
 		if calls == 1 {
-			return errors.New("write failed")
+			return errCatalogWrite
 		}
+
 		return nil
 	})
 	old := catalogSnapshot("old/A", "", "old/A")

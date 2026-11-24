@@ -122,6 +122,15 @@ type Front struct {
 	settingsMu sync.Mutex
 	settings   map[string]json.RawMessage
 
+	// catalogSink is the connection-bound asynchronous update sink. The
+	// refresh gate is single-flight; pending folds any different signal into
+	// one follow-up pass, while an identical signal during a pass is ignored.
+	catalogSink           atomic.Pointer[acpport.UpdateSink]
+	catalogRefreshMu      sync.Mutex
+	catalogRefreshRunning bool
+	catalogRefreshPending bool
+	catalogRefreshSignal  string
+
 	// catalogRoots are the slash-command catalog scan roots for SKILLS
 	// (v0.21.0, CAT-02); commandRoots the same for COMMAND manifests.
 	// Empty both — the catalog carries only the /model item.

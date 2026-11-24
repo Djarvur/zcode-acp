@@ -26,12 +26,17 @@ func liveCatalogCreate(sid, current string, entries ...string) json.RawMessage {
 	}
 	ref := func(id string) any {
 		parts := strings.SplitN(id, "/", 2)
+
 		return map[string]any{"providerId": parts[0], "modelId": parts[1]}
 	}
-	raw, _ := json.Marshal(map[string]any{"session": map[string]any{"sessionId": sid},
+	raw, err := json.Marshal(map[string]any{"session": map[string]any{"sessionId": sid},
 		"settings": map[string]any{"model": map[string]any{
 			"current": ref(current), "available": available,
 		}}})
+	if err != nil {
+		panic(err) // fixture contains only JSON-safe scalar/map/slice values
+	}
+
 	return raw
 }
 
@@ -45,6 +50,7 @@ func liveCatalogScenario() *fake.Scenario {
 		{Emit: &fake.Emit{Method: zcode.MethodSessionEvent, Params: json.RawMessage(
 			`{"sessionId":"sess_a","type":"turn.completed","turnId":"turn_live"}`)}},
 	}
+
 	return &fake.Scenario{
 		Name: "live-catalog-refresh",
 		OnRequest: []fake.RequestRule{
@@ -74,6 +80,7 @@ func liveCatalogExpected(sid string) string {
 		`"sessionUpdate":"config_option_update"}}}`, sid)
 }
 
+//nolint:gocognit,gocyclo,cyclop,funlen // one composed backend-to-two-client proof keeps causal ordering explicit
 func TestLiveCatalogRefresh(t *testing.T) {
 	h := ComposeFront(t, liveCatalogScenario(), func(conn *zcode.Conn) acp.Agent {
 		return acpport.NewAgent(acpfront.New(conn))
@@ -139,7 +146,7 @@ func TestLiveCatalogRefresh(t *testing.T) {
 	refreshAt := transcriptNthMethod(tr, zcode.MethodProviderRefreshRegistry, 1)
 	probeAt := transcriptNthMethod(tr, zcode.MethodSessionCreate, 3)
 	closeAt := transcriptNthMethod(tr, zcode.MethodSessionClose, 1)
-	if !(refreshAt < probeAt && probeAt < closeAt) {
+	if refreshAt >= probeAt || probeAt >= closeAt {
 		t.Fatalf("probe order = refresh %d, create %d, close %d; want refresh < create < close",
 			refreshAt, probeAt, closeAt)
 	}
@@ -158,5 +165,6 @@ func transcriptNthMethod(tr fake.Transcript, method string, nth int) int {
 			}
 		}
 	}
+
 	return -1
 }
