@@ -277,7 +277,7 @@ func e2eDiscoverOverride(ctx context.Context, t *testing.T, fakeBinary string) s
 			return supervisor.Install{
 				Root:   filepath.Dir(fakeBinary),
 				Binary: fakeBinary,
-				Layout: "explicit",
+				Layout: fixtureExplicitLayout,
 			}, true
 		},
 		Home:   t.TempDir(),

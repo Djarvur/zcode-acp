@@ -94,7 +94,8 @@ func main() {
 
 	showVersion := flag.Bool("version", false, "print version and exit")
 	appServerFlag := flag.String("app-server", "",
-		"path to a ZCode install root, app-server binary, or packed .AppImage overriding discovery — also "+envAppServer)
+		"path to a ZCode install root, app-server binary, or packed .AppImage "+
+			"overriding discovery — also "+envAppServer)
 	modelFlag := flag.String("model", "", "backend model selection as providerId/modelId — also "+envModel)
 	reasoningFlag := flag.String("reasoning-level", "", "reasoning level for --model — also "+envReasoningLevel)
 	apiKeyFlag := flag.String("api-key", "",

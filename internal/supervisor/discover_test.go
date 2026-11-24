@@ -29,10 +29,12 @@ import (
 const fixtureEndpointDir = "endpoint-78d7c3bef4024722642626fe3669a799"
 
 // fixtureUnpackedLayout and fixtureUnpackedVer name the stale research-copy
-// layout the version ranking must beat (D-06).
+// layout the version ranking must beat (D-06). fixtureExplicitLayout is the
+// layout marker an override maps a directory or app-server binary to.
 const (
 	fixtureUnpackedLayout = "unpacked-appimage"
 	fixtureUnpackedVer    = "3.18.2"
+	fixtureExplicitLayout = "explicit"
 )
 
 // documentedProbeNames returns the fixed probe set in the documented order
@@ -1238,7 +1240,7 @@ func testOverrideDirectoryValid(t *testing.T) {
 		Root:       root,
 		Binary:     filepath.Join(root, "zcode"),
 		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
-		Layout:     "explicit",
+		Layout:     fixtureExplicitLayout,
 	}
 	if inst != want {
 		t.Fatalf("directory override = %+v, want %+v", inst, want)
@@ -1254,7 +1256,7 @@ func testOverrideDirectoryUnvalidated(t *testing.T) {
 		t.Fatal("an existing directory must keep the unvalidated fallback shape")
 	}
 	if inst.Root != root || inst.Binary != filepath.Join(root, "zcode") ||
-		inst.Entrypoint != "" || inst.Layout != "explicit" || inst.AppImage != "" {
+		inst.Entrypoint != "" || inst.Layout != fixtureExplicitLayout || inst.AppImage != "" {
 		t.Fatalf("unvalidated directory override = %+v", inst)
 	}
 }
@@ -1339,7 +1341,7 @@ func testOverrideBinary(t *testing.T) {
 		Root:       dir,
 		Binary:     bin,
 		Entrypoint: filepath.Join(dir, "resources", "glm", "zcode.cjs"),
-		Layout:     "explicit",
+		Layout:     fixtureExplicitLayout,
 	}
 	if inst != want {
 		t.Fatalf("binary override = %+v, want %+v", inst, want)

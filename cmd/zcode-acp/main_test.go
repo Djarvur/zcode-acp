@@ -459,7 +459,8 @@ func e2eRunDanglingOverride(t *testing.T, agentBin string) {
 	}
 	if strings.Contains(stderr, "no ZCode desktop install found") ||
 		strings.Contains(stderr, "serving ACP v1 over stdio") {
-		t.Fatalf("a bad packed override must fail at the mount step, never fall through to discovery or a session: %s", stderr)
+		t.Fatalf("a bad packed override must fail at the mount step, never fall through to "+
+			"discovery or a session: %s", stderr)
 	}
 
 	e2eAssertNoExtraction(t, dir)
@@ -2754,7 +2755,7 @@ const mountedFixtureVersion = "4.0.0"
 // basename — never the documented 0.0.0 fallback once a version is knowable.
 func TestDesktopVersionMounted(t *testing.T) {
 	t.Run("mounted install reports Install.Version", func(t *testing.T) {
-		mountRoot := filepath.Join("/tmp", "zcode-acp-mount-1700000000", ".mount_ZCode-AbCdEf")
+		mountRoot := "/tmp/zcode-acp-mount-1700000000/.mount_ZCode-AbCdEf"
 		inst := supervisor.Install{
 			Root:       mountRoot,
 			Binary:     filepath.Join(mountRoot, "zcode"),
