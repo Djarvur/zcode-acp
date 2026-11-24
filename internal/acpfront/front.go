@@ -601,8 +601,11 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 // id's string doubles as the setModel params' wire key (the dialect spells
 // both the same).
 const (
-	optionIDModel   = "model"
-	optionIDThought = "thought_level"
+	optionIDModel        = "model"
+	optionIDThought      = "thought_level"
+	thoughtAliasEnabled  = "enabled"
+	thoughtAliasDisabled = "disabled"
+	reasoningLevelOff    = "off"
 )
 
 // The omp dialect's /model slash-prompt command form (SESS-03, plan 07-05,
@@ -688,21 +691,28 @@ func (f *Front) SetSessionConfigOption(
 			"session/set_config_option: %s: the confirmed settings snapshot does not decode", sessionID)
 	}
 
-	options := BuildConfigOptions(s)
-
-	def := configOptionByID(options, configID)
-	if def == nil {
-		return nil, acpport.NewInvalidParams(
-			"session/set_config_option: unknown configId %q (allowed: %s)", configID, allowedOptionIDs(options))
+	normalized, handled, err := normalizeThoughtAlias(s, configID, value)
+	if err != nil {
+		return nil, err
 	}
 
-	if !configOptionListed(def, value) {
-		return nil, acpport.NewInvalidParams(
-			"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
-			configID, value, listedOptionValues(def))
+	if !handled {
+		options := BuildConfigOptions(s)
+
+		def := configOptionByID(options, configID)
+		if def == nil {
+			return nil, acpport.NewInvalidParams(
+				"session/set_config_option: unknown configId %q (allowed: %s)", configID, allowedOptionIDs(options))
+		}
+
+		if !configOptionListed(def, value) {
+			return nil, acpport.NewInvalidParams(
+				"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
+				configID, value, listedOptionValues(def))
+		}
 	}
 
-	params, err := setConfigMutation(sessionID, s, configID, value)
+	params, err := setConfigMutation(sessionID, s, configID, normalized)
 	if err != nil {
 		return nil, err
 	}
@@ -994,6 +1004,89 @@ func (f *Front) teardownAfterPickerRefusal(ctx context.Context, sessionID string
 		slog.Warn("acpfront: picker-refusal teardown failed",
 			"session", sessionID, "stage", "set_config_option setModel", "cause", cause, "err", err)
 	}
+}
+
+// normalizeThoughtAlias accepts Orca's exact enabled/disabled spellings for
+// thought_level before rendered-option lookup and listed-value validation.
+// Enabled uses the shared exact-target resolver; disabled maps only to an
+// advertised off. Every other config id or value keeps the existing validation
+// path unchanged, and missing model metadata fails closed before mutation.
+func normalizeThoughtAlias(
+	s Settings, configID, value string,
+) (normalized string, handled bool, err error) {
+	if configID != optionIDThought || (value != thoughtAliasEnabled && value != thoughtAliasDisabled) {
+		return value, false, nil
+	}
+
+	bound := s.Model.Current
+	if bound == nil {
+		bound = s.Model.LastUsed
+	}
+
+	if bound == nil {
+		return "", true, acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q: no confirmed model binding", configID, value)
+	}
+
+	var entry *ModelEntry
+	for i := range s.Model.Available {
+		if s.Model.Available[i].Ref == *bound {
+			entry = &s.Model.Available[i]
+
+			break
+		}
+	}
+
+	if entry == nil {
+		return "", true, acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q: target model %s/%s "+
+				"is not listed in settings.model.available",
+			configID, value, bound.ProviderID, bound.ModelID)
+	}
+
+	if value == thoughtAliasEnabled {
+		level, emitOptions, err := resolveTargetReasoningLevel(s, *bound, confirmedLevel(s))
+		if err != nil {
+			return "", true, err
+		}
+
+		if !emitOptions {
+			return "", true, acpport.NewInvalidParams(
+				"session/set_config_option: configId %q: value %q: target model %s/%s advertises no reasoning levels",
+				configID, value, bound.ProviderID, bound.ModelID)
+		}
+
+		return level, true, nil
+	}
+
+	normalized, err = normalizeDisabledThoughtAlias(configID, value, *bound, *entry)
+
+	return normalized, true, err
+}
+
+// normalizeDisabledThoughtAlias maps disabled only to an advertised off and
+// otherwise retains the existing listed-value invalid-params shape.
+func normalizeDisabledThoughtAlias(
+	configID, value string, bound ModelRef, entry ModelEntry,
+) (string, error) {
+	if len(entry.ReasoningLevels) == 0 {
+		return "", acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q: target model %s/%s advertises no reasoning levels",
+			configID, value, bound.ProviderID, bound.ModelID)
+	}
+
+	values := make([]string, 0, len(entry.ReasoningLevels))
+	for _, level := range entry.ReasoningLevels {
+		if level.Value == reasoningLevelOff {
+			return reasoningLevelOff, nil
+		}
+
+		values = append(values, level.Value)
+	}
+
+	return "", acpport.NewInvalidParams(
+		"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
+		configID, value, strings.Join(values, ", "))
 }
 
 // setConfigMutation maps a VALIDATED config-option ask onto the locked OQ1
