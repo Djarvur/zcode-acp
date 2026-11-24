@@ -8,7 +8,8 @@
 #   The script encodes the field lessons of phases 4-6:
 #   - the desktop-discovery probe order the wrapper itself drives
 #     (cmd/zcode-acp discoverInstall: env/flag override -> desktop entry ->
-#     AppImage paths -> package paths; docs/protocol/install-discovery.md);
+#     version-ranked AppImage stage -> package paths;
+#     docs/protocol/install-discovery.md);
 #   - the runtime-only dependency posture (Pitfall 6: a static binary needs
 #     NO dev toolchain on the VM — the script asserts runtime deps only);
 #   - the four coded keyring sentinels as the client-facing no-keyring
@@ -43,6 +44,10 @@
 #   1. env/flag override (ZCODE_ACP_APP_SERVER)
 #   2. desktop entry (xdg-mime query default x-scheme-handler/zcode -> Exec)
 #   3. AppImage paths (~/Applications/ZCode*.AppImage, ~/Applications/zcode-*/squashfs-root)
+#      — version-ranked by the wrapper: the newest {ver} wins; equal versions
+#      prefer the unpacked tree, then the symlink, then the regular file, then
+#      the lexicographic path; a packed winner is mounted read-only by the
+#      wrapper AFTER selection, never by this mirror
 #   4. package paths (/opt/ZCode/resources/glm/zcode.cjs, dpkg-query zcode)
 #
 # Runtime dependencies (asserted, never installed):
@@ -50,6 +55,10 @@
 #   - the zcode-acp binary (see --binary above)
 #   - the ZCode desktop install — required by the run/auth-codingplan stages
 #     (the wrapper discovers it; the run stage proves discovery by working)
+#   - FUSE (/dev/fuse + unprivileged mounts) and, for the legacy AppImage
+#     runtime, libfuse2 (libfuse2t64 on Ubuntu 24.04) — asserted ONLY when a
+#     packed ZCode*.AppImage is present; the unpacked/deb/rpm backends need
+#     neither
 #   - secret-tool (libsecret-tools) — required ONLY by the coding-plan stage;
 #     its absence is exactly the binary-missing sentinel arm the no-keyring
 #     stage asserts
@@ -307,14 +316,46 @@ json_field() { # json_field <json-line> <member> — first string value of membe
 	printf '%s' "$1" | sed -n 's/.*"'"$2"'":"\([^"]*\)".*/\1/p'
 }
 
+# check_packed_appimage_deps asserts the packed-AppImage host prerequisites.
+# Run ONLY when a packed ZCode*.AppImage is present; a host with only an
+# unpacked tree records skips (that backend needs no FUSE). Presence checks
+# only: nothing is installed, mounted, or executed — the wrapper's own
+# discovery stays authoritative.
+check_packed_appimage_deps() { # check_packed_appimage_deps <packed-candidate-count>
+	local packed=$1 libs=""
+	if [ "$packed" -le 0 ]; then
+		check "appimage-fuse-device" skip "no packed ZCode*.AppImage present — the unpacked-tree backend needs no FUSE"
+		check "appimage-libfuse2" skip "no packed ZCode*.AppImage present — the unpacked-tree backend needs no libfuse2"
+		return 0
+	fi
+
+	if [ -e /dev/fuse ]; then
+		check "appimage-fuse-device" pass "/dev/fuse present (a packed winner is mounted read-only; unprivileged mounts must also be allowed)"
+	else
+		check "appimage-fuse-device" fail \
+			"/dev/fuse is absent — a packed AppImage cannot be mounted; load the fuse module (sudo modprobe fuse) so /dev/fuse exists, then rerun (remediation family: sudo apt install libfuse2t64 on Ubuntu 24.04, libfuse2 on older releases)"
+	fi
+
+	if command -v ldconfig >/dev/null 2>&1; then
+		libs=$(ldconfig -p 2>/dev/null || true)
+	fi
+	if grep -Fq 'libfuse.so.2' <<< "$libs"; then
+		check "appimage-libfuse2" pass "libfuse.so.2 is resolvable via ldconfig -p (the legacy --appimage-mount runtime loads it)"
+	else
+		check "appimage-libfuse2" fail \
+			"libfuse.so.2 is not resolvable via ldconfig -p — the legacy --appimage-mount runtime cannot mount; install 'sudo apt install libfuse2t64' on Ubuntu 24.04 or 'sudo apt install libfuse2' on older releases (newer static type-2 runtimes do not need libfuse2, but this read-only mirror cannot classify the embedded runtime without mounting)"
+	fi
+}
+
 # ---------------------------------------------------------------------------
 # Stage: discovery — mirror the wrapper's probe order read-only
 # ---------------------------------------------------------------------------
 
 stage_discovery() {
-	info "documented probe order: env/flag override -> desktop entry -> AppImage paths -> package paths (the wrapper's discoverInstall drives the same order; the run stage proves discovery by working)"
+	info "documented probe order: env/flag override -> desktop entry -> version-ranked AppImage stage -> package paths (the wrapper's discoverInstall drives the same order; the run stage proves discovery by working)"
 
 	local found=0 row_detail=() out exec_target
+	local packed_candidates=() unpacked_trees=() candidate list=""
 
 	# Row 1: env/flag override (the wrapper's ZCODE_ACP_APP_SERVER / --app-server)
 	if [ -n "${ZCODE_ACP_APP_SERVER:-}" ]; then
@@ -342,17 +383,30 @@ stage_discovery() {
 		row_detail+=("desktop entry: no x-scheme-handler/zcode default (hint: install the ZCode desktop; xdg-utils provides xdg-mime)")
 	fi
 
-	# Row 3: AppImage paths
-	local appimg=""
-	if ls "$HOME"/Applications/ZCode*.AppImage >/dev/null 2>&1; then
-		appimg=$(ls "$HOME"/Applications/ZCode*.AppImage 2>/dev/null | head -1)
+	# Row 3: AppImage paths — the wrapper's version-ranked stage. This mirror
+	# reports EVERY packed candidate and unpacked tree (not just the first) and
+	# never mounts: a packed winner is mounted read-only by the wrapper only
+	# after selection. Ranking: newest {ver} wins; at equal versions the
+	# unpacked tree beats the symlink, which beats the regular file, then the
+	# lexicographic path (D-06/D-08).
+	while IFS= read -r candidate; do
+		[ -n "$candidate" ] && packed_candidates+=("$candidate")
+	done < <(compgen -G "$HOME/Applications/ZCode*.AppImage" || true)
+	while IFS= read -r candidate; do
+		[ -n "$candidate" ] && unpacked_trees+=("$candidate")
+	done < <(compgen -G "$HOME/Applications/zcode-*/squashfs-root" || true)
+	if [ "${#packed_candidates[@]}" -gt 0 ]; then
+		for candidate in "${packed_candidates[@]}"; do
+			list+="${list:+, }$candidate (packed)"
+		done
 	fi
-	local unpacked=""
-	if compgen -G "$HOME/Applications/zcode-*/squashfs-root" >/dev/null 2>&1; then
-		unpacked=$(ls -d "$HOME"/Applications/zcode-*/squashfs-root 2>/dev/null | head -1)
+	if [ "${#unpacked_trees[@]}" -gt 0 ]; then
+		for candidate in "${unpacked_trees[@]}"; do
+			list+="${list:+, }$candidate (unpacked tree)"
+		done
 	fi
-	if [ -n "$appimg" ] || [ -n "$unpacked" ]; then
-		row_detail+=("AppImage paths: ${appimg:-}${appimg:+ + }${unpacked:-}${unpacked:+ (unpacked)}")
+	if [ -n "$list" ]; then
+		row_detail+=("AppImage paths (version-ranked, newest {ver} wins; ties: unpacked tree > symlink > regular file > lexicographic path; a packed winner is mounted read-only by the wrapper after selection): $list")
 		found=$((found + 1))
 	else
 		row_detail+=("AppImage paths: no ~/Applications/ZCode*.AppImage, no ~/Applications/zcode-*/squashfs-root")
@@ -377,6 +431,8 @@ stage_discovery() {
 	for row in "${row_detail[@]}"; do
 		info "$row"
 	done
+
+	check_packed_appimage_deps "${#packed_candidates[@]}"
 
 	if [ "$found" -gt 0 ]; then
 		check "discovery-install-found" pass "probe rows: $found hit(s)"
