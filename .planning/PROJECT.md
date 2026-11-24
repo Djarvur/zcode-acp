@@ -123,13 +123,17 @@ VALIDATION.md/SECURITY.md — это advisory-долг, отмеченный п�
 Apache-2.0 → портирование на Go допустимо с атрибуцией) — `docs/research/reference-adapters.md`.
 Конкурирующие адаптеры (Rust/Python) coding-plan цепочку не делают.
 
-**Текущее состояние (v0.22.0):** 9 фаз / 60 планов; 12 Go-пакетов, ~54K строк Go
-(с тестами), `-race` зелёные, whole-tree lint strict 0 issues. После v0.20.0
-доставлены слэш-каталог в автодополнении карточки (v0.21.0) и bridge диалогов
-выбора (v0.22.0) вместе с field-фиксами каталога моделей (19 записей, provider
-labels, сохранение при переключении). Известный долг: lint-подавления с
-wire-обоснованиями (nolint), 2 признанных deferred-пункта фазы 6, advisories
-07-REVIEW-DISPOSITION.md; фазы 8–9 без VALIDATION.md/SECURITY.md (advisory).
+**Текущее состояние (v0.23.0):** 10 фаз / 66 планов; 12 Go-пакетов, ~63K строк Go
+(с тестами), `-race` зелёные, whole-tree lint strict 0 issues, CI (build/vet/lint/
+test/tidy + govulncheck + secret-scan) зелёный. После v0.22.0 доставлены
+mount-first AppImage backend (Phase 10: app-server запускается из packed `.AppImage`
+без распаковки; discovery ранжирует по версии; real-machine acceptance
+mount→session/create прошёл), OMP print mode для текстовых задач Orca
+(quick `261124-154`) и очередь `-32003 session_busy` для конкурентных prompt'ов
+(quick `261124-1ou`). Известный долг: lint-подавления с wire-обоснованиями
+(nolint), 2 признанных deferred-пункта фазы 6, advisories 07-REVIEW-DISPOSITION.md
+и 7 Info-замечаний Phase 10 (IN-01..07); фазы 8–9 без VALIDATION.md/SECURITY.md
+(advisory).
 
 ## Constraints
 

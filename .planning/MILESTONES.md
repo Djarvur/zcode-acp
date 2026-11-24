@@ -1,5 +1,19 @@
 # Milestones
 
+## v0.23.0 Mount-First AppImage Backend (Shipped: 2026-11-24)
+
+**Phases completed:** 1 phases, 6 plans, 13 tasks
+
+**Key accomplishments:**
+- A packed `.AppImage` is mounted by a supervised `--appimage-mount` helper and the app-server serves the full ACP ride from the mount — no extraction, ordered teardown, unchanged spawn line/env pair
+- Every mount failure now exits 1 with the AppImage, step, observed output, and a remediation; a lost mount ends the session with an explicit cause and no respawn; SIGINT/SIGTERM/SIGHUP tear down cleanly with zero orphans — and a teardown that cannot prove the mount gone still exits 1, even under a signal.
+- One pure-read AppImage stage now selects the newest usable backend by version — a packed 4.0.0 beats a stale unpacked 3.18.2, the real machine's dangling `ZCode.AppImage` is a miss row instead of a probe abort, and every candidate is explained by an ordered diagnostic.
+- `--app-server` now handles all three real user shapes — install root, app-server binary, and packed `.AppImage` including symlinked and dangling values — with a mount-safe PAT client version and startup diagnostics that name the selected layout, version, and path.
+- TestRealAppImageMount drives a real packed AppImage through the production mount owner and spawn contract to session/create, proving sha256/no-extraction/zero-leftover teardown while the legacy real path is retired and the manual tier becomes mount-aware.
+- Mount-first documentation set: the managed mount is a first-class layout, AppImage discovery is documented as version-ranked with a deterministic tie-break, README/provenance state the read-only no-extraction contract and FUSE prerequisites, and vm-e2e mirrors it with FUSE dependency checks.
+
+---
+
 ## v0.22.0 Ask-the-User Bridge (Shipped: 2026-11-23)
 
 **Phases completed:** 1 phases, 1 plans, 5 tasks
