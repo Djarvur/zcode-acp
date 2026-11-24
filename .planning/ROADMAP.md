@@ -93,7 +93,7 @@ a stale unpacked `squashfs-root` can never pin an older version.
      tests drive the mount lifecycle without FUSE, the real-machine test stays
      env-gated, and the install-discovery doc, README, and provenance note match behavior
 
-**Plans**: 5/6 plans executed
+**Plans**: 6/6 plans executed
 
 Plans:
 - [x] 10-01-PLAN.md — tracer: packed AppImage to managed mount to app-server to ACP session
@@ -101,7 +101,7 @@ Plans:
 - [x] 10-03-PLAN.md — version-ranked AppImage discovery with per-candidate diagnostics
 - [x] 10-04-PLAN.md — override/env routing, PAT version seam, selection diagnostics
 - [x] 10-05-PLAN.md — guarded real-machine acceptance and mount-aware manual tier
-- [ ] 10-06-PLAN.md — install-discovery, README, provenance, and vm-e2e coherence
+- [x] 10-06-PLAN.md — install-discovery, README, provenance, and vm-e2e coherence
 
 ## Post-v1 Advisories (carried, non-blocking)
 

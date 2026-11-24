@@ -30,7 +30,7 @@ selects the newest usable backend across layouts.
 
 - [x] **VER-01**: CI-safe unit tests drive mount lifecycle via a scripted fake AppImage runtime (mount line, readiness, teardown, early death, missing FUSE) without requiring FUSE
 - [x] **VER-02**: A guarded real-machine test (env-gated, never CI) mounts a real AppImage, spawns the app-server, performs `session/create`, and shuts down with zero leftovers
-- [ ] **VER-03**: Docs updated coherently: `docs/protocol/install-discovery.md` (managed mount is a first-class layout; volatile-mount rule revised), README (AppImage override and behavior), and the provenance note; no documented claim contradicts behavior
+- [x] **VER-03**: Docs updated coherently: `docs/protocol/install-discovery.md` (managed mount is a first-class layout; volatile-mount rule revised), README (AppImage override and behavior), and the provenance note; no documented claim contradicts behavior
 
 ## v2 Requirements
 
@@ -70,7 +70,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISC-04 | Phase 10 | Complete |
 | VER-01 | Phase 10 | Complete |
 | VER-02 | Phase 10 | Complete |
-| VER-03 | Phase 10 | Pending |
+| VER-03 | Phase 10 | Complete |
 
 **Coverage:**
 - v1 requirements: 13 total
