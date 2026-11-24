@@ -386,6 +386,10 @@ func assertSetCfgModelFrame(t *testing.T, raw, providerID, modelID, wantLevel st
 		t.Fatalf("setModel model = %s/%s, want %s/%s: %s", model.ProviderID, model.ModelID, providerID, modelID, raw)
 	}
 
+	if frame.Params.PersistAsWorkspaceLastUsed == nil || *frame.Params.PersistAsWorkspaceLastUsed {
+		t.Fatalf("setModel persistAsWorkspaceLastUsed must be explicitly false: %s", raw)
+	}
+
 	if wantLevel == "" {
 		if len(model.Options) != 0 {
 			t.Fatalf("setModel must carry the omit-shape (no options key), got %s: %s", model.Options, raw)
@@ -405,10 +409,6 @@ func assertSetCfgModelFrame(t *testing.T, raw, providerID, modelID, wantLevel st
 	if opts.ReasoningLevel != wantLevel {
 		t.Fatalf("setModel options.reasoningLevel = %q, want %q (the level must ride options): %s",
 			opts.ReasoningLevel, wantLevel, raw)
-	}
-
-	if frame.Params.PersistAsWorkspaceLastUsed == nil || *frame.Params.PersistAsWorkspaceLastUsed {
-		t.Fatalf("setModel persistAsWorkspaceLastUsed must be explicitly false: %s", raw)
 	}
 }
 
@@ -697,4 +697,246 @@ func assertConfigOptionsMatch(t *testing.T, got []acp.SessionConfigOption, want 
 			}
 		}
 	}
+}
+
+const (
+	reasoningSnapshotProvider       = "zai-api"
+	reasoningSnapshotSource         = "DeepSeek"
+	reasoningSnapshotTargetProvider = "OpenCodeGo"
+	reasoningSnapshotTargetModel    = "hungerg-free"
+	reasoningSnapshotTarget         = reasoningSnapshotTargetProvider + "/" + reasoningSnapshotTargetModel
+	reasoningLevelMax               = "max"
+	reasoningLevelOff               = "off"
+	reasoningLabelOff               = "Off"
+	reasoningSnapshotLabelKey       = "label"
+)
+
+// cfgReasoningEntry builds one catalog entry without duplicating wire JSON.
+// Labels mirror the values; the resolver and wire assertions key on values.
+func cfgReasoningEntry(ref acpfront.ModelRef, levels ...string) acpfront.ModelEntry {
+	entry := acpfront.ModelEntry{Ref: ref, Label: ref.ModelID}
+	entry.ReasoningLevels = make([]acpfront.ReasoningLevel, 0, len(levels))
+
+	for _, value := range levels {
+		entry.ReasoningLevels = append(entry.ReasoningLevels, acpfront.ReasoningLevel{Value: value, Label: value})
+	}
+
+	return entry
+}
+
+func cfgReasoningRefWire(ref acpfront.ModelRef) map[string]any {
+	return map[string]any{"providerId": ref.ProviderID, "modelId": ref.ModelID}
+}
+
+func cfgReasoningCatalogWire(available []acpfront.ModelEntry) []any {
+	entries := make([]any, 0, len(available))
+	for _, entry := range available {
+		wireEntry := map[string]any{
+			"ref": cfgReasoningRefWire(entry.Ref), reasoningSnapshotLabelKey: entry.Label,
+		}
+		if len(entry.ReasoningLevels) > 0 || entry.DefaultLevel != "" {
+			levels := make([]any, 0, len(entry.ReasoningLevels))
+			for _, level := range entry.ReasoningLevels {
+				levels = append(levels, map[string]any{
+					"value": level.Value, reasoningSnapshotLabelKey: level.Label, "description": level.Description,
+				})
+			}
+
+			wireEntry["reasoning"] = map[string]any{
+				"levels": levels, "defaultLevel": entry.DefaultLevel,
+			}
+		}
+
+		entries = append(entries, wireEntry)
+	}
+
+	return entries
+}
+
+func cfgReasoningFallbackWire(globalLevels []acpfront.LevelEntry) []any {
+	fallback := make([]any, 0, len(globalLevels))
+	for _, level := range globalLevels {
+		fallback = append(fallback, map[string]any{
+			"value": level.Value, reasoningSnapshotLabelKey: level.Label, "description": level.Description,
+		})
+	}
+
+	return fallback
+}
+
+// cfgReasoningCreateResult builds a backend-confirmed settings snapshot with
+// independently controlled bindings, exact catalog entries, and global fallback
+// values. It stays test-local so later ACP wire vectors reuse the same shape.
+func cfgReasoningCreateResult(
+	t *testing.T,
+	current, lastUsed *acpfront.ModelRef,
+	currentLevel string,
+	thoughtEnabled bool,
+	available []acpfront.ModelEntry,
+	globalLevels []acpfront.LevelEntry,
+) string {
+	t.Helper()
+
+	model := map[string]any{"available": cfgReasoningCatalogWire(available)}
+	if current != nil {
+		model["current"] = cfgReasoningRefWire(*current)
+	}
+
+	if lastUsed != nil {
+		model["lastUsed"] = cfgReasoningRefWire(*lastUsed)
+	}
+
+	raw, err := json.Marshal(map[string]any{
+		"session": map[string]any{"sessionId": "sess_cfg"},
+		"settings": map[string]any{
+			"model": model,
+			"thoughtLevel": map[string]any{
+				"enabled": thoughtEnabled, "current": currentLevel,
+				"defaultLevel": currentLevel, "available": cfgReasoningFallbackWire(globalLevels),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal reasoning snapshot: %v", err)
+	}
+
+	return string(raw)
+}
+
+// TestSetConfigOptionTargetReasoningResolution locks the exact-target order at
+// the ACP wire: preserve an advertised current level, else advertised default,
+// else first listed level; no source level still selects a target level, and a
+// level-less target omits options.
+//
+//nolint:funlen // the table is one ACP wire contract; splitting would scatter its cases
+func TestSetConfigOptionTargetReasoningResolution(t *testing.T) {
+	source := acpfront.ModelRef{ProviderID: reasoningSnapshotProvider, ModelID: reasoningSnapshotSource}
+	target := acpfront.ModelRef{ProviderID: reasoningSnapshotTargetProvider, ModelID: reasoningSnapshotTargetModel}
+
+	for _, tc := range []struct {
+		name          string
+		current       string
+		targetLevels  []string
+		targetDefault string
+		sameModel     bool
+		want          string
+	}{
+		{
+			name:          "current max advertised by target is preserved",
+			current:       reasoningLevelMax,
+			targetLevels:  []string{reasoningLevelLow, corpusReasoningLevel, reasoningLevelMax},
+			targetDefault: corpusReasoningLevel, want: reasoningLevelMax,
+		},
+		{
+			name:          "same-model max carry is preserved",
+			current:       reasoningLevelMax,
+			targetLevels:  []string{reasoningLevelLow, corpusReasoningLevel, reasoningLevelMax},
+			targetDefault: corpusReasoningLevel, sameModel: true, want: reasoningLevelMax,
+		},
+		{
+			name:    "stale max falls back to advertised target default",
+			current: reasoningLevelMax, targetLevels: []string{reasoningLevelLow, corpusReasoningLevel},
+			targetDefault: corpusReasoningLevel, want: corpusReasoningLevel,
+		},
+		{
+			name:    "absent target default falls back to first low",
+			current: reasoningLevelMax, targetLevels: []string{reasoningLevelLow, corpusReasoningLevel},
+			want: reasoningLevelLow,
+		},
+		{
+			name:    "unadvertised target default falls back to first low",
+			current: reasoningLevelMax, targetLevels: []string{reasoningLevelLow, corpusReasoningLevel},
+			targetDefault: reasoningLevelMax, want: reasoningLevelLow,
+		},
+		{
+			name:          "no source confirmed level selects advertised target default",
+			targetLevels:  []string{reasoningLevelLow, corpusReasoningLevel},
+			targetDefault: corpusReasoningLevel, want: corpusReasoningLevel,
+		},
+		{
+			name:    "source max into level-less target omits options",
+			current: reasoningLevelMax, want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sourceEntry := cfgReasoningEntry(source, reasoningLevelLow, corpusReasoningLevel, reasoningLevelMax)
+			sourceEntry.DefaultLevel = reasoningLevelMax
+			targetEntry := cfgReasoningEntry(target, tc.targetLevels...)
+			targetEntry.DefaultLevel = tc.targetDefault
+			available := []acpfront.ModelEntry{sourceEntry}
+
+			askTarget := target
+			if tc.sameModel {
+				targetEntry.Ref = source
+				available[0] = targetEntry
+				askTarget = source
+			} else {
+				available = append(available, targetEntry)
+			}
+
+			create := cfgReasoningCreateResult(t, &source, nil, tc.current, true, available,
+				[]acpfront.LevelEntry{{Value: reasoningLevelOff, Label: reasoningLabelOff}})
+			reply := cfgReasoningCreateResult(t, &askTarget, nil, tc.want, tc.want != "",
+				[]acpfront.ModelEntry{targetEntry}, nil)
+			h := newSetCfgFront(t, cfgOptionScenario(create, fake.RequestRule{
+				Method: zcode.MethodSessionSetModel,
+				Reply:  &fake.Reply{Result: json.RawMessage(reply)},
+			}))
+
+			ctx, cancel := h.ExchangeCtx()
+			defer cancel()
+
+			sid := openSetCfgSession(ctx, t, h)
+			value := askTarget.ProviderID + "/" + askTarget.ModelID
+			if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDModel, value)); err != nil {
+				t.Fatalf("model switch: %v", err)
+			}
+
+			tr, trErr := h.Transcript(t)
+			if trErr != nil {
+				t.Fatalf("fake transcript: %v", trErr)
+			}
+
+			assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), askTarget.ProviderID, askTarget.ModelID, tc.want)
+			if closes := transcriptIndexes(tr, "in", `"method":"session/close"`); len(closes) != 0 {
+				t.Fatalf("a successful target resolution must not close the session: %+v", closes)
+			}
+		})
+	}
+}
+
+// TestModelSlashTargetReasoningResolution proves /model shares the picker's
+// exact-target resolver rather than carrying the source level independently.
+func TestModelSlashTargetReasoningResolution(t *testing.T) {
+	source := acpfront.ModelRef{ProviderID: reasoningSnapshotProvider, ModelID: reasoningSnapshotSource}
+	target := acpfront.ModelRef{ProviderID: reasoningSnapshotTargetProvider, ModelID: reasoningSnapshotTargetModel}
+	sourceEntry := cfgReasoningEntry(source, reasoningLevelLow, corpusReasoningLevel, reasoningLevelMax)
+	sourceEntry.DefaultLevel = reasoningLevelMax
+	targetEntry := cfgReasoningEntry(target, reasoningLevelLow, corpusReasoningLevel)
+	targetEntry.DefaultLevel = corpusReasoningLevel
+
+	create := cfgReasoningCreateResult(t, &source, nil, reasoningLevelMax, true,
+		[]acpfront.ModelEntry{sourceEntry, targetEntry},
+		[]acpfront.LevelEntry{{Value: reasoningLevelOff, Label: reasoningLabelOff}})
+	reply := cfgReasoningCreateResult(t, &target, nil, corpusReasoningLevel, true,
+		[]acpfront.ModelEntry{targetEntry}, nil)
+	h := newSetCfgFront(t, cfgOptionScenario(create, fake.RequestRule{
+		Method: zcode.MethodSessionSetModel,
+		Reply:  &fake.Reply{Result: json.RawMessage(reply)},
+	}))
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	sid := openSetCfgSession(ctx, t, h)
+	if _, err := h.client.Prompt(ctx, slashPrompt(sid, "/model "+reasoningSnapshotTarget)); err != nil {
+		t.Fatalf("the /model switch must succeed: %v", err)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), target.ProviderID, target.ModelID, corpusReasoningLevel)
 }
