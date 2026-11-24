@@ -54,7 +54,7 @@ Full details: `.planning/milestones/v0.22.0-phases/`, `v0.22.0-ROADMAP.md`, `v0.
 
 </details>
 
-- [ ] **Phase 10: Mount-First AppImage Backend** — the wrapper runs the ZCode
+- [x] **Phase 10: Mount-First AppImage Backend** — the wrapper runs the ZCode (completed 2026-11-24)
   app-server from a packed `.AppImage` through a managed `--appimage-mount` helper
   (no extraction, no ~850 MB on-disk duplicate) and discovery ranks the newest usable
   backend across layouts
@@ -93,7 +93,7 @@ a stale unpacked `squashfs-root` can never pin an older version.
      tests drive the mount lifecycle without FUSE, the real-machine test stays
      env-gated, and the install-discovery doc, README, and provenance note match behavior
 
-**Plans**: 6/6 plans executed
+**Plans**: 6/6 plans complete
 
 Plans:
 - [x] 10-01-PLAN.md — tracer: packed AppImage to managed mount to app-server to ACP session
