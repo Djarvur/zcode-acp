@@ -610,3 +610,215 @@ func TestPickerSetModelRefusalRunsFullTeardown(t *testing.T) {
 		}
 	})
 }
+
+const (
+	pickerDeepSeekValue    = "zai-api/DeepSeek"
+	pickerHungergFreeValue = "OpenCodeGo/hungerg-free"
+)
+
+// pickerCrossModelCreateSnapshot models the state already preserved after the
+// historical recoverable refusal: DeepSeek/max is confirmed, while the exact
+// retry target advertises its own low/high levels and high default.
+func pickerCrossModelCreateSnapshot() json.RawMessage {
+	return json.RawMessage(`{
+	  "session": {"sessionId": "` + pickerSID + `"},
+	  "settings": {
+	    "model": {
+	      "current": {"providerId": "zai-api", "modelId": "DeepSeek"},
+	      "available": [
+	        {"ref": {"providerId": "zai-api", "modelId": "DeepSeek"}, "label": "DeepSeek",
+	         "reasoning": {"levels": [
+	            {"value": "low", "label": "Low"},
+	            {"value": "high", "label": "High"},
+	            {"value": "max", "label": "Max"}], "defaultLevel": "max"}},
+	        {"ref": {"providerId": "OpenCodeGo", "modelId": "hungerg-free"}, "label": "hungerg-free",
+	         "reasoning": {"levels": [
+	            {"value": "low", "label": "Low"},
+	            {"value": "high", "label": "High"}], "defaultLevel": "high"}}
+	      ]
+	    },
+	    "thoughtLevel": {
+	      "enabled": true, "current": "max", "defaultLevel": "max",
+	      "available": [{"value": "max", "label": "Max"}]
+	    }
+	  }
+	}`)
+}
+
+// pickerCrossModelReply confirms the one post-fix retry: the target is current
+// with its advertised high level. The prior snapshot remains the catalog source.
+func pickerCrossModelReply() json.RawMessage {
+	return json.RawMessage(`{
+	  "session": {"sessionId": "` + pickerSID + `"},
+	  "settings": {
+	    "model": {
+	      "current": {"providerId": "OpenCodeGo", "modelId": "hungerg-free"}
+	    },
+	    "thoughtLevel": {
+	      "enabled": true, "current": "high", "defaultLevel": "high",
+	      "available": [{"value": "high", "label": "High"}]
+	    }
+	  }
+	}`)
+}
+
+// assertPickerReasoningState requires the stored backend-confirmed snapshot to
+// name the exact model and reasoning level.
+func assertPickerReasoningState(t *testing.T, f *Front, sid, providerID, modelID, level string) {
+	t.Helper()
+
+	raw, ok := f.latestSettings(sid)
+	if !ok {
+		t.Fatal("the confirmed settings snapshot must remain recorded")
+	}
+
+	s, parsed := ParseSettings(raw)
+	if !parsed || s.Model.Current == nil {
+		t.Fatalf("the confirmed settings must carry a current model: %s", raw)
+	}
+
+	if s.Model.Current.ProviderID != providerID || s.Model.Current.ModelID != modelID {
+		t.Fatalf("current model = %s/%s, want %s/%s: %s",
+			s.Model.Current.ProviderID, s.Model.Current.ModelID, providerID, modelID, raw)
+	}
+
+	if got := confirmedLevel(s); got != level {
+		t.Fatalf("confirmed reasoning level = %q, want %q: %s", got, level, raw)
+	}
+}
+
+// assertPickerSetModelPayload decodes the sole inbound setModel frame and
+// locks the exact target, target-supported level, and explicit persist-false.
+func assertPickerSetModelPayload(t *testing.T, tr fake.Transcript, providerID, modelID, level string) {
+	t.Helper()
+
+	assertPickerSetModelCount(t, tr, 1)
+
+	for _, line := range tr.Lines {
+		if string(line.Dir) != "in" || !strings.Contains(line.JSON, `"method":"session/setModel"`) {
+			continue
+		}
+
+		var frame struct {
+			Params struct {
+				Model struct {
+					ProviderID string `json:"providerId"`
+					ModelID    string `json:"modelId"`
+					Options    *struct {
+						ReasoningLevel string `json:"reasoningLevel"`
+					} `json:"options"`
+				} `json:"model"`
+				PersistAsWorkspaceLastUsed *bool `json:"persistAsWorkspaceLastUsed"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(line.JSON), &frame); err != nil {
+			t.Fatalf("decode setModel frame: %v (%s)", err, line.JSON)
+		}
+
+		model := frame.Params.Model
+		if model.ProviderID != providerID || model.ModelID != modelID {
+			t.Fatalf("setModel model = %s/%s, want %s/%s: %s",
+				model.ProviderID, model.ModelID, providerID, modelID, line.JSON)
+		}
+
+		if model.Options == nil || model.Options.ReasoningLevel != level {
+			t.Fatalf("setModel options = %+v, want reasoningLevel %q: %s", model.Options, level, line.JSON)
+		}
+
+		if frame.Params.PersistAsWorkspaceLastUsed == nil || *frame.Params.PersistAsWorkspaceLastUsed {
+			t.Fatalf("setModel persistAsWorkspaceLastUsed must be explicitly false: %s", line.JSON)
+		}
+
+		return
+	}
+
+	t.Fatal("the sole setModel frame was not found")
+}
+
+// TestPickerCrossModelRetryResolvesTargetReasoning starts from the observed
+// already-preserved DeepSeek/max snapshot and proves one retry sends the exact
+// target's advertised high without driving the historical refusal lifecycle.
+//
+//nolint:funlen // one composed preservation/retry contract; splitting would hide its causal sequence
+func TestPickerCrossModelRetryResolvesTargetReasoning(t *testing.T) {
+	cwd := t.TempDir()
+	ctx := context.Background()
+
+	f, closeLegs := newInterleaveFront(t, &fake.Scenario{
+		Name: "picker-cross-model-post-preservation-retry",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: pickerCrossModelCreateSnapshot()}},
+			{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{
+				Result: json.RawMessage(`{"sessionId":"` + pickerSID + `","eventSeq":0,"events":[]}`),
+			}},
+			{Method: zcode.MethodSessionSetModel, Times: 1, Reply: &fake.Reply{Result: pickerCrossModelReply()}},
+			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		UnknownMethod: &fake.Reply{Error: &zcode.WireError{Code: zcode.CodeMethodNotFound, Message: "MethodNotFound"}},
+		EOFDrainMs:    1,
+	})
+	defer closeLegs()
+
+	sid := openPickerSession(ctx, t, f, cwd)
+	beforeRegistry, err := f.registry.Get(sid)
+	if err != nil {
+		t.Fatalf("capture registry baseline: %v", err)
+	}
+
+	before, ok := f.latestSettings(sid)
+	if !ok {
+		t.Fatal("the create reply must record the already-preserved baseline")
+	}
+
+	assertPickerReasoningState(t, f, sid, "zai-api", "DeepSeek", "max")
+	assertPickerSessionPreserved(t, f, sid, cwd, before)
+
+	if _, err := f.SetSessionConfigOption(ctx, sid, optionIDModel, pickerHungergFreeValue); err != nil {
+		t.Fatalf("the single post-preservation retry must succeed: %v", err)
+	}
+
+	assertPickerReasoningState(t, f, sid, "OpenCodeGo", "hungerg-free", "high")
+
+	afterRegistry, err := f.registry.Get(sid)
+	if err != nil {
+		t.Fatalf("the successful retry dropped registry membership: %v", err)
+	}
+
+	if afterRegistry.ID != beforeRegistry.ID || afterRegistry.Machine != beforeRegistry.Machine {
+		t.Fatal("the successful retry replaced the registered session machinery")
+	}
+
+	if got := f.sessionCwdLocked(sid); got != cwd {
+		t.Fatalf("the successful retry changed cwd to %q, want %q", got, cwd)
+	}
+
+	tr := closeLegs()
+	assertPickerSetModelPayload(t, tr, "OpenCodeGo", "hungerg-free", "high")
+	assertPickerCloseCount(t, tr, 0)
+}
+
+// TestSetConfigMutationMissingTargetFailsClosed proves a direct mutation cannot
+// borrow source/global levels when the requested target has no catalog entry.
+func TestSetConfigMutationMissingTargetFailsClosed(t *testing.T) {
+	s := Settings{
+		Model: ModelSettings{Available: []ModelEntry{{Ref: ModelRef{ProviderID: "zai-api", ModelID: "DeepSeek"}}}},
+		ThoughtLevel: ThoughtLevelSettings{
+			Enabled: true,
+			Current: "max",
+		},
+	}
+
+	payload, err := setConfigMutation(pickerSID, s, optionIDModel, pickerHungergFreeValue)
+	if err == nil {
+		t.Fatal("a target absent from settings.model.available must fail closed")
+	}
+
+	var seamErr *acpport.Error
+	if !errors.As(err, &seamErr) || seamErr.Code != acpport.CodeInvalidParams {
+		t.Fatalf("missing-target error = %v, want coded invalid params", err)
+	}
+
+	if payload != nil {
+		t.Fatalf("a missing target must return no payload, got %+v", payload)
+	}
+}
