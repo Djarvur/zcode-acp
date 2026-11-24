@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/Djarvur/zcode-acp/internal/core"
+	"github.com/Djarvur/zcode-acp/internal/zcode"
+	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
 
 func TestRegistryCatalogPatchClassification(t *testing.T) {
@@ -226,4 +229,66 @@ func TestCatalogPublicationFailureThenIdenticalRefresh(t *testing.T) {
 	if got, _ := f.latestSettings(sid); !bytes.Equal(got, merged) {
 		t.Fatalf("successful retry did not record merged snapshot: %s", got)
 	}
+}
+
+func TestCatalogWorkerFailureThenIdenticalRefresh(t *testing.T) {
+	probe := catalogSnapshot("new/B", "", "new/B")
+	probe = json.RawMessage(`{"session":{"sessionId":"sess_probe"},` + string(probe[1:]))
+	sc := &fake.Scenario{
+		Name: "catalog-worker-retry",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodProviderRefreshRegistry, Times: 2,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+			{Method: zcode.MethodSessionCreate, Times: 2, Reply: &fake.Reply{Result: probe}},
+			{Method: zcode.MethodSessionClose, Times: 2,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	const sid = interleaveSID
+	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A"))
+	calls := 0
+	f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
+		calls++
+		if calls == 1 {
+			return errCatalogWrite
+		}
+
+		return nil
+	})
+	const signal = "identical-registry-signal"
+	f.RequestCatalogRefresh(context.Background())
+	awaitCatalogWorker(t, f)
+	f.catalogRefreshMu.Lock()
+	remembered := f.catalogRefreshSignal
+	f.catalogRefreshMu.Unlock()
+	if remembered != "" {
+		t.Fatalf("failed pass retained dedupe signal %q", remembered)
+	}
+	f.requestCatalogRefresh(context.Background(), signal)
+	awaitCatalogWorker(t, f)
+	if calls != 2 {
+		t.Fatalf("sink calls = %d, want failed pass plus identical retry", calls)
+	}
+	if got, _ := f.latestSettings(sid); !reflect.DeepEqual(mustSettings(t, got), mustSettings(t, probe)) {
+		t.Fatalf("retry did not record confirmed catalog: %s", got)
+	}
+}
+
+func awaitCatalogWorker(t *testing.T, f *Front) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		f.catalogRefreshMu.Lock()
+		running := f.catalogRefreshRunning
+		f.catalogRefreshMu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("catalog worker did not finish within the bound")
 }

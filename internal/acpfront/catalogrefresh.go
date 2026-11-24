@@ -23,7 +23,10 @@ const (
 	catalogWriteBudget   = 5 * time.Second
 )
 
-var errCatalogUnconfirmed = errors.New("probe session/create: no confirmed listed model selection")
+var (
+	errCatalogUnconfirmed = errors.New("probe session/create: no confirmed listed model selection")
+	errCatalogPublish     = errors.New("catalog update publication failed")
+)
 
 // BindUpdateSink binds the connection-owned asynchronous sink before traffic.
 func (f *Front) BindUpdateSink(sink acpport.UpdateSink) {
@@ -138,7 +141,9 @@ func (f *Front) refreshCatalogOnce(ctx context.Context) error {
 		return err
 	}
 
-	f.publishFreshCatalog(ctx, probe)
+	if err := f.publishFreshCatalog(ctx, probe); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -177,7 +182,7 @@ func (f *Front) probeCatalog(ctx context.Context) (json.RawMessage, error) {
 	return res, nil
 }
 
-func (f *Front) publishFreshCatalog(ctx context.Context, fresh json.RawMessage) {
+func (f *Front) publishFreshCatalog(ctx context.Context, fresh json.RawMessage) error {
 	f.settingsMu.Lock()
 	ids := make([]string, 0, len(f.settings))
 	for id := range f.settings {
@@ -188,7 +193,7 @@ func (f *Front) publishFreshCatalog(ctx context.Context, fresh json.RawMessage) 
 
 	for _, id := range ids {
 		if ctx.Err() != nil {
-			return
+			return fmt.Errorf("catalog fan-out canceled: %w", ctx.Err())
 		}
 		if _, err := f.registry.Get(id); err != nil || f.isClosing(id) {
 			continue
@@ -213,8 +218,12 @@ func (f *Front) publishFreshCatalog(ctx context.Context, fresh json.RawMessage) 
 		if oldParsed && reflect.DeepEqual(BuildConfigOptions(oldSettings), options) {
 			continue
 		}
-		f.publishCatalogUpdate(ctx, id, merged, options)
+		if !f.publishCatalogUpdate(ctx, id, merged, options) {
+			return fmt.Errorf("%w: session %s", errCatalogPublish, id)
+		}
 	}
+
+	return nil
 }
 
 func listedCurrentValues(options []acpport.ConfigOptionDef) bool {
