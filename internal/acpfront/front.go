@@ -907,10 +907,11 @@ func (f *Front) promptModelSlash(
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, mutation)
 	if err != nil {
-		// WR-01 parity (plan 07-01): a refused slash setModel runs the same
-		// full SESS-01 teardown as the picker refusal — never a zombie front
-		// session against a dead mutation target.
-		f.teardownAfterPickerRefusal(ctx, params.SessionID, err)
+		// Picker parity: recoverable selection validation preserves the live
+		// session; fatal/dead-target refusals retain the full SESS-01 teardown.
+		if !isRecoverableSetModelError(err) {
+			f.teardownAfterPickerRefusal(ctx, params.SessionID, err)
+		}
 
 		return "", true, acpport.NewInternal("session/setModel: %v", err)
 	}

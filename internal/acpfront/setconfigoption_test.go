@@ -431,8 +431,8 @@ func assertSingleSetModel(t *testing.T, tr fake.Transcript) string {
 // the CURRENT confirmed level when one exists (the level-carry vector — a
 // switch must never silently drop the level) or omit options entirely when
 // none does (the IN-04 omit-shape); persistAsWorkspaceLastUsed stays false,
-// and a refused setModel tears the backend session down best-effort (the
-// WR-04 discipline — never an orphan).
+// and a fatal/dead-target setModel refusal tears the backend session down
+// best-effort (the WR-04 discipline — never an orphan).
 //
 //nolint:funlen // each subtest is a full harness lock; splitting would scatter its sequencing
 func TestSetConfigOptionModelSwitch(t *testing.T) {
@@ -484,12 +484,12 @@ func TestSetConfigOptionModelSwitch(t *testing.T) {
 		assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), corpusProviderID, corpusModelID, "")
 	})
 
-	t.Run("a refused setModel closes the backend session (WR-04, never an orphan)", func(t *testing.T) {
+	t.Run("a fatal setModel refusal closes the backend session (WR-04, never an orphan)", func(t *testing.T) {
 		h := newSetCfgFront(t, cfgOptionScenario(cfgCreateResult,
 			fake.RequestRule{
 				Method: zcode.MethodSessionSetModel,
 				Reply: &fake.Reply{Error: &zcode.WireError{
-					Code: zcode.CodeInternalError, Message: "Reasoning level is required for this model",
+					Code: zcode.CodeResourceNotFound, Message: "session not found",
 				}},
 			},
 			fake.RequestRule{

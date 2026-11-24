@@ -9,8 +9,8 @@ package acpfront
 // is driven through the exported Front.SetSessionConfigOption (the same
 // validated path the adapter's set_config_option arm takes).
 //
-//	TestPickerSetModelRefusalRunsFullTeardown — a refused backend setModel
-//	  on an ESTABLISHED session must run the full SESS-01 teardown: the
+//	TestPickerSetModelRefusalRunsFullTeardown — a fatal/dead-target backend
+//	  setModel on an ESTABLISHED session must run the full SESS-01 teardown: the
 //	  registry holds no entry for the id and the cwd/settings maps are
 //	  empty (the zombie gone — the RED arm), the client still receives the
 //	  coded setModel refusal (the reply is preserved), a follow-up prompt
@@ -37,9 +37,12 @@ const (
 	// snapshot digs it back out unchanged).
 	pickerSID = "sess_wr01"
 
+	// pickerFlashModelID is the reply-confirmed retry target.
+	pickerFlashModelID = "GLM-5.3-Flash"
+
 	// pickerFlashValue is the picker target (the providerId/modelId
 	// serialization the snapshot's model option lists).
-	pickerFlashValue = "zai-api/GLM-5.3-Flash"
+	pickerFlashValue = "zai-api/" + pickerFlashModelID
 
 	// pickerValidationMessage is the confirmed field-refusal shape used by
 	// the structured-data precedence and lifecycle locks.
@@ -210,13 +213,45 @@ func assertPickerCloseCount(t *testing.T, tr fake.Transcript, want int) {
 	}
 }
 
+// assertPickerCurrentFlash requires the stored snapshot to confirm Flash as
+// the current model after a successful retry.
+func assertPickerCurrentFlash(t *testing.T, f *Front, sid string) json.RawMessage {
+	t.Helper()
+
+	updated, ok := f.latestSettings(sid)
+	if !ok {
+		t.Fatal("the successful retry must record confirmed settings")
+	}
+
+	s, parsed := ParseSettings(updated)
+	if !parsed || s.Model.Current == nil || s.Model.Current.ModelID != pickerFlashModelID {
+		t.Fatalf("the successful retry did not record Flash as current: %s", updated)
+	}
+
+	return updated
+}
+
+// assertPickerSetModelCount requires exactly want backend setModel frames.
+func assertPickerSetModelCount(t *testing.T, tr fake.Transcript, want int) {
+	t.Helper()
+
+	setModels := 0
+	for _, line := range tr.Lines {
+		if string(line.Dir) == "in" && strings.Contains(line.JSON, `"method":"session/setModel"`) {
+			setModels++
+		}
+	}
+
+	if setModels != want {
+		t.Fatalf("back leg records %d session/setModel frames, want exactly %d", setModels, want)
+	}
+}
+
 // TestPickerRecoverableSetModelValidationPreservesSession proves the real
 // picker path preserves a live session after a recoverable selection refusal,
 // then records the confirmed settings from a later valid reply. Both the
 // structured backend error and the data-less field-message compatibility arm
 // ride the composed fake leg and the exported picker handler.
-//
-//nolint:funlen // the full lifecycle/retry proof is one composed contract
 func TestPickerRecoverableSetModelValidationPreservesSession(t *testing.T) {
 	const message = pickerValidationMessage
 
@@ -268,15 +303,7 @@ func TestPickerRecoverableSetModelValidationPreservesSession(t *testing.T) {
 				t.Fatalf("the later valid picker switch must succeed on the preserved session: %v", err)
 			}
 
-			updated, ok := f.latestSettings(sid)
-			if !ok {
-				t.Fatal("the successful retry must record confirmed settings")
-			}
-
-			s, parsed := ParseSettings(updated)
-			if !parsed || s.Model.Current == nil || s.Model.Current.ModelID != "GLM-5.3-Flash" {
-				t.Fatalf("the successful retry did not record Flash as current: %s", updated)
-			}
+			updated := assertPickerCurrentFlash(t, f, sid)
 
 			assertPickerSessionPreserved(t, f, sid, cwd, updated)
 			assertPickerCloseCount(t, closeLegs(), 0)
@@ -321,7 +348,7 @@ func TestIsRecoverableSetModelError(t *testing.T) {
 			want: true,
 		},
 		{name: "nil", err: nil},
-		{name: "non-call error", err: errors.New("transport failed")},
+		{name: "non-call error", err: fmt.Errorf("transport failed: %w", zcode.ErrConnClosed)},
 		{name: "call error with nil wire error", err: &zcode.CallError{}},
 		{name: "typed nil call error", err: (*zcode.CallError)(nil)},
 		{
@@ -420,8 +447,6 @@ func TestPickerMalformedOrUnrecognizedSetModelDataRunsFullTeardown(t *testing.T)
 // direct /model intercept: recoverable validation preserves the live session,
 // and a later valid command succeeds with reply-confirmed settings and no
 // session/close frame.
-//
-//nolint:funlen // the full slash lifecycle/retry proof is one composed contract
 func TestModelSlashRecoverableSetModelValidationPreservesSession(t *testing.T) {
 	cwd := t.TempDir()
 	ctx := context.Background()
@@ -470,36 +495,18 @@ func TestModelSlashRecoverableSetModelValidationPreservesSession(t *testing.T) {
 			stop, handled, err)
 	}
 
-	updated, ok := f.latestSettings(sid)
-	if !ok {
-		t.Fatal("the successful slash retry must record confirmed settings")
-	}
-
-	s, parsed := ParseSettings(updated)
-	if !parsed || s.Model.Current == nil || s.Model.Current.ModelID != "GLM-5.3-Flash" {
-		t.Fatalf("the successful slash retry did not record Flash as current: %s", updated)
-	}
+	updated := assertPickerCurrentFlash(t, f, sid)
 
 	assertPickerSessionPreserved(t, f, sid, cwd, updated)
 
 	tr := closeLegs()
-	setModels := 0
-	for _, line := range tr.Lines {
-		if string(line.Dir) == "in" && strings.Contains(line.JSON, `"method":"session/setModel"`) {
-			setModels++
-		}
-	}
-
-	if setModels != 2 {
-		t.Fatalf("back leg records %d session/setModel frames, want exactly 2", setModels)
-	}
-
+	assertPickerSetModelCount(t, tr, 2)
 	assertPickerCloseCount(t, tr, 0)
 }
 
-// TestPickerSetModelRefusalRunsFullTeardown locks the WR-01 contract: the
-// refused picker setModel fully tears the front session down (no zombie),
-// the refusal reply is preserved, the follow-up prompt lands the coded
+// TestPickerSetModelRefusalRunsFullTeardown locks the WR-01 contract: a
+// fatal/dead-target picker setModel fully tears the front session down (no
+// zombie), the refusal reply is preserved, the follow-up prompt lands the coded
 // closing/closed class without a backend send, and the successful switch
 // keeps the session fully alive.
 //
@@ -509,10 +516,10 @@ func TestPickerSetModelRefusalRunsFullTeardown(t *testing.T) {
 	ctx := context.Background()
 
 	refusalRule := fake.RequestRule{Method: zcode.MethodSessionSetModel, Reply: &fake.Reply{
-		Error: &zcode.WireError{Code: zcode.CodeInternalError, Message: "Reasoning level is required for this model"},
+		Error: &zcode.WireError{Code: zcode.CodeResourceNotFound, Message: "session not found"},
 	}}
 
-	t.Run("the refusal tears the front session down (no zombie)", func(t *testing.T) {
+	t.Run("the fatal refusal tears the front session down (no zombie)", func(t *testing.T) {
 		f, closeLegs := newInterleaveFront(t, pickerRefusalScenario(refusalRule))
 		defer closeLegs()
 
