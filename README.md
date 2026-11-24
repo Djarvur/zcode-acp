@@ -14,6 +14,14 @@ engineering surface.
 
 ## Install
 
+**Platform support.** Linux is the supported platform (v1 targets Ubuntu GNOME).
+Windows is not supported: the wrapper does not currently build there — the
+process-management and AppImage-mount layers use POSIX/Linux primitives, so
+`GOOS=windows go build ./...` fails. A Windows port is very welcome: if you make
+it build and work there, send a pull request and we will review and merge it with
+gratitude. macOS is not supported by this tree yet; its port is being adapted
+separately.
+
 Build from source with a Go toolchain pinned via
 [mise](https://mise.jdx.dev) (`mise.toml` carries the exact versions CI runs):
 
