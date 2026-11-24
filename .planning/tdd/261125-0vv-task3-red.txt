@@ -1,0 +1,106 @@
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:12 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:12 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+--- FAIL: TestSetConfigOptionOrcaThoughtAliases (0.62s)
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/enabled_preserves_supported_current_low (0.01s)
+        setconfigoption_test.go:1166: thought alias "enabled": {"code":-32602,"message":"session/set_config_option: configId \"thought_level\": value \"enabled\" is not one of the listed values (low, high)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/enabled_replaces_stale_max_with_advertised_default (0.01s)
+        setconfigoption_test.go:1166: thought alias "enabled": {"code":-32602,"message":"session/set_config_option: configId \"thought_level\": value \"enabled\" is not one of the listed values (low, high)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/enabled_without_default_uses_first_low (0.01s)
+        setconfigoption_test.go:1166: thought alias "enabled": {"code":-32602,"message":"session/set_config_option: configId \"thought_level\": value \"enabled\" is not one of the listed values (low, high)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/disabled_maps_to_advertised_off (0.01s)
+        setconfigoption_test.go:1166: thought alias "disabled": {"code":-32602,"message":"session/set_config_option: configId \"thought_level\": value \"disabled\" is not one of the listed values (off, high)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/enabled_works_with_thought-disabled_omitted_select (0.01s)
+        setconfigoption_test.go:1166: thought alias "enabled": {"code":-32602,"message":"session/set_config_option: unknown configId \"thought_level\" (allowed: model)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/disabled_works_with_thought-disabled_omitted_select (0.01s)
+        setconfigoption_test.go:1166: thought alias "disabled": {"code":-32602,"message":"session/set_config_option: unknown configId \"thought_level\" (allowed: model)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/enabled_works_with_current-empty_omitted_select (0.01s)
+        setconfigoption_test.go:1166: thought alias "enabled": {"code":-32602,"message":"session/set_config_option: unknown configId \"thought_level\" (allowed: model)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/disabled_works_with_current-empty_omitted_select (0.01s)
+        setconfigoption_test.go:1166: thought alias "disabled": {"code":-32602,"message":"session/set_config_option: unknown configId \"thought_level\" (allowed: model)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/enabled_resolves_the_lastUsed_binding (0.01s)
+        setconfigoption_test.go:1166: thought alias "enabled": {"code":-32602,"message":"session/set_config_option: configId \"thought_level\": value \"enabled\" is not one of the listed values (low, high)"}
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/enabled_missing_bound_catalog_entry_fails_closed (0.01s)
+        setconfigoption_test.go:1230: error message "session/set_config_option: configId \"thought_level\": value \"enabled\" is not one of the listed values (off, high)" must name "OpenCodeGo/hungerg-free"
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/enabled_bound_entry_without_levels_fails_closed (0.01s)
+        setconfigoption_test.go:1230: error message "session/set_config_option: configId \"thought_level\": value \"enabled\" is not one of the listed values (off, high)" must name "OpenCodeGo/hungerg-free"
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/disabled_missing_bound_catalog_entry_fails_closed (0.01s)
+        setconfigoption_test.go:1230: error message "session/set_config_option: configId \"thought_level\": value \"disabled\" is not one of the listed values (off, high)" must name "OpenCodeGo/hungerg-free"
+    --- FAIL: TestSetConfigOptionOrcaThoughtAliases/disabled_bound_entry_without_levels_fails_closed (0.01s)
+        setconfigoption_test.go:1230: error message "session/set_config_option: configId \"thought_level\": value \"disabled\" is not one of the listed values (off, high)" must name "OpenCodeGo/hungerg-free"
+2026/11/25 01:21:13 INFO acpfront: session opened session=sess_cfg
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 01:21:13 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 01:21:13 INFO connection closed cause="io: read/write on closed pipe"
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	0.642s
+FAIL
