@@ -349,6 +349,198 @@ func TestAppImageMountEndToEnd(t *testing.T) {
 	e2eAssertNoExtraction(t, fixture)
 }
 
+// TestAppImageOverride (plan 10-04) closes the real user surface around the
+// packed override: the env-only form mounts and serves, the flag still wins
+// over the env, a bad packed value fails loud at the mount step instead of
+// falling through to discovery, and a directory override keeps its tree
+// diagnostics.
+func TestAppImageOverride(t *testing.T) {
+	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
+	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
+
+	scenarioAbs, err := filepath.Abs(e2eScenario)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", e2eScenario, err)
+	}
+
+	t.Run("env-only packed override mounts and serves", func(t *testing.T) {
+		e2eRunEnvPackedOverride(t, agentBin, fakeBin, scenarioAbs)
+	})
+
+	t.Run("flag beats a broken env value", func(t *testing.T) {
+		e2eRunFlagBeatsEnvOverride(t, agentBin, fakeBin, scenarioAbs)
+	})
+
+	t.Run("dangling packed override fails loud", func(t *testing.T) {
+		e2eRunDanglingOverride(t, agentBin)
+	})
+
+	t.Run("directory override keeps the tree shape", func(t *testing.T) {
+		e2eRunDirectoryOverride(t, agentBin, fakeBin, scenarioAbs)
+	})
+}
+
+// e2eWriteOverrideFixture writes the fake AppImage and its ride transcript in
+// a fresh fixture dir, registers the failed-run cleanup, and returns the
+// AppImage path.
+func e2eWriteOverrideFixture(t *testing.T, fakeBin, scenarioAbs string) string {
+	t.Helper()
+
+	fixture := t.TempDir()
+	transcript := filepath.Join(fixture, "fake-transcript.txt")
+	appImage := e2eWriteFakeAppImage(t, fixture, fakeBin, scenarioAbs, transcript)
+	t.Cleanup(e2eCleanupMountFixture(t, fixture))
+
+	return appImage
+}
+
+// e2eRunEnvPackedOverride proves the env-only configuration path: no flag, a
+// single ZCODE_ACP_APP_SERVER value, a mounted backend serving ACP.
+func e2eRunEnvPackedOverride(t *testing.T, agentBin, fakeBin, scenarioAbs string) {
+	t.Helper()
+
+	appImage := e2eWriteOverrideFixture(t, fakeBin, scenarioAbs)
+
+	stderr := e2eRideOverride(t, agentBin, nil, e2eOverrideEnv("ZCODE_ACP_APP_SERVER="+appImage))
+
+	e2eAssertPackedSelection(t, stderr, appImage)
+}
+
+// e2eRunFlagBeatsEnvOverride proves flag-over-env precedence: the env names a
+// missing AppImage and the flag names the working fixture, so a reversed
+// precedence would fail the mount before any session exists.
+func e2eRunFlagBeatsEnvOverride(t *testing.T, agentBin, fakeBin, scenarioAbs string) {
+	t.Helper()
+
+	appImage := e2eWriteOverrideFixture(t, fakeBin, scenarioAbs)
+	broken := filepath.Join(t.TempDir(), "ZCode-9.9.9-linux-x64.AppImage")
+
+	stderr := e2eRideOverride(t, agentBin,
+		[]string{ompFlagAppServer, appImage},
+		e2eOverrideEnv("ZCODE_ACP_APP_SERVER="+broken))
+
+	e2eAssertPackedSelection(t, stderr, appImage)
+}
+
+// e2eRunDanglingOverride proves the fail-loud contract: a missing packed
+// override exits 1 naming the path and the mount step, never falls through to
+// discovery, starts no session, and leaves no extraction copy.
+func e2eRunDanglingOverride(t *testing.T, agentBin string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "ZCode-9.9.9-linux-x64.AppImage")
+
+	ctx, cancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+	defer cancel()
+
+	wrapper := exec.CommandContext(ctx, agentBin, ompFlagAppServer, missing)
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	wrapper.Env = append(os.Environ(), e2eOverrideEnv("")...)
+
+	stderrBuf := &e2eSyncBuffer{}
+	wrapper.Stderr = stderrBuf
+
+	err := wrapper.Run()
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		stderrBuf.dump(t)
+
+		t.Fatalf("wrapper exit = %v, want exit code 1 for a dangling packed override", err)
+	}
+
+	stderr := stderrBuf.String()
+
+	for _, want := range []string{missing, "mount the app-server AppImage", "spawn the helper"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("the dangling-override stderr must carry %q: %s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "no ZCode desktop install found") ||
+		strings.Contains(stderr, "serving ACP v1 over stdio") {
+		t.Fatalf("a bad packed override must fail at the mount step, never fall through to discovery or a session: %s", stderr)
+	}
+
+	e2eAssertNoExtraction(t, dir)
+}
+
+// e2eRunDirectoryOverride proves the directory form is unchanged: the tree
+// resolves through the explicit layout, reports its root, mounts nothing, and
+// still serves the session.
+func e2eRunDirectoryOverride(t *testing.T, agentBin, fakeBin, scenarioAbs string) {
+	t.Helper()
+
+	transcript := filepath.Join(t.TempDir(), "fake-transcript.txt")
+	installRoot := t.TempDir()
+	e2eWriteFakeInstallRoot(t, installRoot, fakeBin, scenarioAbs, transcript)
+
+	stderr := e2eRideOverride(t, agentBin,
+		[]string{ompFlagAppServer, installRoot},
+		e2eOverrideEnv(""))
+
+	if !strings.Contains(stderr, "layout=explicit") || !strings.Contains(stderr, "root="+installRoot) {
+		t.Fatalf("a directory override must keep its tree diagnostics (layout/root): %s", stderr)
+	}
+	if strings.Contains(stderr, "appimage backend mounted") {
+		t.Fatalf("a directory override must not mount anything: %s", stderr)
+	}
+}
+
+// e2eOverrideEnv blanks every wrapper env fallback and appends extra, so a
+// subtest's environment is exactly what it configured.
+func e2eOverrideEnv(extra string) []string {
+	env := []string{"ZCODE_ACP_APP_SERVER=", "ZCODE_ACP_MODEL=", "ZCODE_ACP_REASONING_LEVEL=", "ZCODE_ACP_API_KEY="}
+	if extra != "" {
+		env = append(env, extra)
+	}
+
+	return env
+}
+
+// e2eRideOverride starts the built wrapper with argv over the caller's env,
+// drives initialize and session/new, closes stdin for the clean staged
+// shutdown, and returns the captured stderr.
+func e2eRideOverride(t *testing.T, agentBin string, argv, extraEnv []string) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+	defer cancel()
+
+	wrapper := exec.CommandContext(ctx, agentBin, argv...)
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	wrapper.Env = append(os.Environ(), extraEnv...)
+
+	stderrBuf := &e2eSyncBuffer{}
+	wrapper.Stderr = stderrBuf
+
+	stdin, stdout := e2eStartWrapper(t, wrapper, stderrBuf)
+
+	client := acp.NewClientSideConnection(&e2eCollector{}, stdin, stdout)
+	e2eInitialize(ctx, t, client)
+	e2eNewSession(ctx, t, client)
+
+	if err := stdin.Close(); err != nil {
+		t.Logf("close wrapper stdin: %v", err)
+	}
+
+	e2eWaitExit(t, wrapper)
+
+	return stderrBuf.String()
+}
+
+// e2eAssertPackedSelection asserts the startup diagnostics name the packed
+// layout, its version, and the resolved AppImage path.
+func e2eAssertPackedSelection(t *testing.T, stderr, appImage string) {
+	t.Helper()
+
+	for _, want := range []string{"layout=appimage", "version=" + mountedFixtureVersion, "appimage=" + appImage} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("the packed-override startup diagnostics must carry %q: %s", want, stderr)
+		}
+	}
+}
+
 // Fast failure fixture variants for the binary tier (MNT-04): each fails
 // before any ACP session exists, so the test can assert exit code, stderr,
 // and the absence of a mount/base without driving a ride.
