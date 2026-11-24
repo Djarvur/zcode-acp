@@ -171,12 +171,17 @@ func TestCatalogPublicationCloseGate(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("publication never entered sink")
 		}
-		if f.closingMu.TryLock() {
-			f.closingMu.Unlock()
-			t.Fatal("close gate was available during client I/O")
+		if !f.closingMu.TryLock() {
+			t.Fatal("closingMu stayed held across catalog client I/O")
 		}
+		f.closingMu.Unlock()
 		closed := make(chan error, 1)
 		go func() { closed <- f.CloseSession(context.Background(), interleaveSID) }()
+		select {
+		case err := <-closed:
+			t.Fatalf("close completed while publication held the session stripe: %v", err)
+		case <-time.After(25 * time.Millisecond):
+		}
 		close(release)
 		if !<-published {
 			t.Fatal("publication failed before close could tear down")
@@ -499,9 +504,52 @@ func TestCatalogFallbackCommitsCurrentWithoutInvalidReasoning(t *testing.T) {
 	}
 }
 
+func TestCatalogFallbackFreshReasoningMismatchPublishesModelOnly(t *testing.T) {
+	fresh := catalogProbeWithThought("new/B", catalogLowValue())
+	fresh = json.RawMessage(strings.Replace(string(fresh),
+		`"levels":[{"label":"High","value":"high"},{"label":"Low","value":"low"}]`,
+		`"levels":[{"label":"Low","value":"low"}]`, 1))
+	confirmed := catalogProbeWithThought("new/B", catalogHighValue())
+	sc := &fake.Scenario{
+		Name: "catalog-fresh-reasoning-mismatch",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodProviderRefreshRegistry,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+			{Method: zcode.MethodSessionCreate, Reply: &fake.Reply{Result: fresh}},
+			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+			{Method: zcode.MethodSessionSetModel, Reply: &fake.Reply{Result: confirmed}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	f.recordSettings(interleaveSID, catalogProbeWithThought("old/A", catalogHighValue()))
+	var notes []acpport.SessionNote
+	f.BindUpdateSink(func(_ context.Context, note acpport.SessionNote) error {
+		notes = append(notes, note)
+
+		return nil
+	})
+	f.RequestCatalogRefresh(context.Background())
+	awaitCatalogWorker(t, f)
+	if len(notes) != 1 || len(notes[0].ConfigOptions) != 1 {
+		t.Fatalf("B/high live reply with fresh B/low catalog = %+v, want model-only", notes)
+	}
+	if notes[0].ConfigOptions[0].CurrentValue != "new/B" {
+		t.Fatalf("confirmed current = %q, want new/B", notes[0].ConfigOptions[0].CurrentValue)
+	}
+	latest, _ := f.latestSettings(interleaveSID)
+	settings := mustSettings(t, latest)
+	if settings.Model.Current == nil || settings.Model.Current.ModelID != "B" ||
+		settings.ThoughtLevel.Enabled || settings.ThoughtLevel.Current != "" {
+		t.Fatalf("fallback current/reasoning snapshot = %s", latest)
+	}
+}
+
 func TestCatalogFallbackClosesOnUnreconciledReply(t *testing.T) {
 	for name, confirmed := range map[string]json.RawMessage{
-		"wrong current":      catalogProbeWithThought("new/C", catalogHighValue()),
+		"unlisted current":   catalogProbeWithThought("gone/X", catalogHighValue()),
 		"malformed settings": json.RawMessage(`{"settings":"bad"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -851,6 +899,154 @@ func TestCatalogSessionLockCancellationDoesNotWait(t *testing.T) {
 		}
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("cancelled context waited on the session stripe")
+	}
+}
+
+func TestModelSlashRechecksClosingAfterSessionStripe(t *testing.T) {
+	sc := &fake.Scenario{
+		Name: "model-slash-closing",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionSetModel, Reply: &fake.Reply{Result: json.RawMessage(
+				`{"settings":{"model":{"current":{"providerId":"new","modelId":"B"},` +
+					`"available":[{"ref":{"providerId":"new","modelId":"B"},"label":"B"}]}}}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	f.recordSettings(interleaveSID, catalogSnapshot("old/A", "", "old/A", "new/B"))
+	f.closingMu.Lock()
+	f.closing = map[string]bool{interleaveSID: true}
+	f.closingMu.Unlock()
+	sinkCalls := 0
+	_, handled, err := f.promptModelSlash(context.Background(), acpport.PromptParams{
+		SessionID: interleaveSID, Text: "/model new/B",
+	}, func(context.Context, acpport.SessionNote) error {
+		sinkCalls++
+
+		return nil
+	})
+	if !handled || err == nil {
+		t.Fatalf("closing /model was not rejected: handled=%v err=%v", handled, err)
+	}
+	var seam *acpport.Error
+	if !errors.As(err, &seam) || seam.Code != acpport.CodeInvalidRequest {
+		t.Fatalf("closing /model error = %v, want invalid-request", err)
+	}
+	if sinkCalls != 0 {
+		t.Fatalf("closing /model emitted %d sink writes", sinkCalls)
+	}
+	tr := closeLegs()
+	if got := catalogTranscriptMethodCount(tr, zcode.MethodSessionSetModel); got != 0 {
+		t.Fatalf("closing /model issued %d backend setModel calls", got)
+	}
+}
+
+func TestFinalCloseStripeTimeoutCompletesLocalTeardown(t *testing.T) {
+	sc := &fake.Scenario{
+		Name: "final-close-timeout",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionClose, DelayMs: 500,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	const sid = interleaveSID
+	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A"))
+	f.closeStripeWaitOverride = 30 * time.Millisecond
+	closed := make(chan error, 1)
+	go func() { closed <- f.CloseSession(context.Background(), sid) }()
+	deadline := time.Now().Add(time.Second)
+	for !f.isClosing(sid) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !f.isClosing(sid) {
+		t.Fatal("close never entered the closing window")
+	}
+	unlock, err := f.lockCatalogSession(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("hold final stripe: %v", err)
+	}
+	defer unlock()
+	select {
+	case err := <-closed:
+		if err == nil {
+			t.Fatal("final stripe timeout unexpectedly reported success")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("close remained blocked past the final stripe timeout")
+	}
+	if f.isClosing(sid) {
+		t.Fatal("final stripe timeout left the session permanently closing")
+	}
+	if _, err := f.registry.Get(sid); err == nil {
+		t.Fatal("final stripe timeout left a half-closed registry entry")
+	}
+	if _, ok := f.latestSettings(sid); ok {
+		t.Fatal("final stripe timeout left settings behind")
+	}
+}
+
+func TestLateSetModelReplyCannotRecreateSettingsAfterLocalTeardown(t *testing.T) {
+	sc := &fake.Scenario{
+		Name: "late-setmodel-after-teardown",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionSetModel, DelayMs: 150, Reply: &fake.Reply{Result: json.RawMessage(
+				`{"settings":{"model":{"current":{"providerId":"new","modelId":"C"},` +
+					`"available":[{"ref":{"providerId":"new","modelId":"C"},"label":"C"}]}}}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	const sid = interleaveSID
+	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A", "new/C"))
+	st, err := f.registry.Get(sid)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	mutated := make(chan error, 1)
+	go func() {
+		_, callErr := f.SetSessionConfigOption(context.Background(), sid, optionIDModel, "old/A")
+		mutated <- callErr
+	}()
+	time.Sleep(25 * time.Millisecond)
+	f.closingMu.Lock()
+	f.closing = map[string]bool{sid: true}
+	f.closingMu.Unlock()
+	f.finishCloseLocally(sid, st)
+	if err := <-mutated; err == nil {
+		t.Fatal("late setModel reply reported success after local teardown")
+	}
+	if _, ok := f.latestSettings(sid); ok {
+		t.Fatal("late setModel reply recreated settings after local teardown")
+	}
+	if _, err := f.registry.Get(sid); err == nil {
+		t.Fatal("late setModel reply recreated registry state")
+	}
+}
+
+func TestCatalogRefreshCancellationBoundsContendedClosingCheck(t *testing.T) {
+	f := New(nil)
+	const sid = "closing-contended"
+	f.registry.Register(core.Session{ID: sid})
+	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A"))
+	f.closingMu.Lock()
+	defer f.closingMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := f.publishFreshCatalog(ctx, catalogSnapshot("new/B", "", "new/B"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("contended closing check error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("contended closing check waited %v past refresh deadline", elapsed)
 	}
 }
 

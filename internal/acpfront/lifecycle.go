@@ -126,7 +126,7 @@ func (f *Front) resumeSessionLocked(ctx context.Context, sessionID, cwd string) 
 	// /model slash the pinned no-model refusal despite the
 	// backend-confirmed binding (no setModel follow-up re-records it — the
 	// binding persists backend-side).
-	f.recordSettings(sid, res)
+	f.recordSettingsUnchecked(sid, res)
 
 	// The re-issued subscribe (the D-03 gate applies to a reattached
 	// session exactly as to a new one — session/event pushes are gated on
@@ -261,31 +261,46 @@ func (f *Front) closeSession(ctx context.Context, sessionID string, unlock func(
 	f.drainActiveTurn(sessionID, st)
 
 	if managed {
-		closeCtx, cancel := context.WithTimeout(context.Background(), catalogRefreshBudget)
+		closeCtx, cancel := context.WithTimeout(context.Background(), f.closeStripeWait())
 		//nolint:contextcheck // final teardown must complete even when the request context is canceled
 		unlock, err = f.lockCatalogSession(closeCtx, sessionID)
 		cancel()
 		if err != nil {
+			f.finishCloseLocally(sessionID, st)
+			slog.Warn("acpfront: final close stripe timed out; local teardown completed",
+				"session", sessionID, "err", err)
+
 			return acpport.NewInternal("session/close: final teardown synchronization: %v", err)
 		}
 	}
 
-	// Steps 3-5: registry release, then both observer removes (WR-07 — the
-	// plan-05-03 exposed CloseObservers drives the notification and router
-	// fan-outs, idempotently), then the cwd entry (the map stays bounded
-	// with the registry).
-	f.registry.Remove(sessionID)
-	st.Machine.CloseObservers()
-	f.dropCwd(sessionID)
-	f.dropSettings(sessionID)
-
-	f.closingMu.Lock()
-	delete(f.closing, sessionID)
-	f.closingMu.Unlock()
+	f.finishCloseLocally(sessionID, st)
 
 	slog.Info("acpfront: session closed", "session", sessionID)
 
 	return nil
+}
+
+func (f *Front) closeStripeWait() time.Duration {
+	if f.closeStripeWaitOverride > 0 {
+		return f.closeStripeWaitOverride
+	}
+
+	return catalogRefreshBudget
+}
+
+// finishCloseLocally is the transactional final drop. closingMu makes registry
+// removal, settings/cwd removal, and marker deletion atomic with
+// recordSettings' closing/registry-aware commit, even if the stripe is gone.
+func (f *Front) finishCloseLocally(sessionID string, st core.Session) {
+	f.closingMu.Lock()
+	defer f.closingMu.Unlock()
+
+	f.registry.Remove(sessionID)
+	st.Machine.CloseObservers()
+	f.dropCwd(sessionID)
+	f.dropSettings(sessionID)
+	delete(f.closing, sessionID)
 }
 
 // drainActiveTurn cancels the session's active turn (machine.Cancel —

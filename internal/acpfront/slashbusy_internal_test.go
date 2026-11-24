@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
+	"github.com/Djarvur/zcode-acp/internal/core"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
@@ -115,6 +116,7 @@ func runBusyScopeArm(t *testing.T, holderSID string) (acpport.StopReason, fake.T
 
 	f, closeLegs := newInterleaveFront(t, busyScopeScenario())
 
+	f.registry.Register(core.Session{ID: busySID})
 	f.recordSettings(busySID, json.RawMessage(busySnapshot))
 	holdSlot(f, holderSID)
 

@@ -108,7 +108,7 @@ func (f *Front) requestCatalogRefresh(ctx context.Context, signal string) {
 	go f.runCatalogRefresh()
 }
 
-func (f *Front) hasActiveCatalogSession() bool {
+func (f *Front) hasActiveCatalogSession(ctx context.Context) bool {
 	f.settingsMu.Lock()
 	ids := make([]string, 0, len(f.settings))
 	for id := range f.settings {
@@ -117,7 +117,11 @@ func (f *Front) hasActiveCatalogSession() bool {
 	f.settingsMu.Unlock()
 
 	for _, id := range ids {
-		if _, err := f.registry.Get(id); err == nil && !f.isClosing(id) {
+		closing, err := f.isClosingContext(ctx, id)
+		if err != nil {
+			return false
+		}
+		if _, err := f.registry.Get(id); err == nil && !closing {
 			return true
 		}
 	}
@@ -133,7 +137,7 @@ func (f *Front) runCatalogRefresh() {
 	defer cancel()
 
 	for ctx.Err() == nil {
-		if !f.hasActiveCatalogSession() {
+		if !f.hasActiveCatalogSession(ctx) {
 			f.finishCatalogRefresh(false)
 
 			return
@@ -252,6 +256,9 @@ func (f *Front) publishFreshCatalog(ctx context.Context, fresh json.RawMessage) 
 		}
 		result := f.publishFreshSession(ctx, id, fresh)
 		unlock()
+		if ctx.Err() != nil {
+			return fmt.Errorf("catalog fan-out canceled: %w", ctx.Err())
+		}
 		if result == catalogPublishFailed {
 			publishErr = errors.Join(publishErr, fmt.Errorf("%w: session %s", errCatalogPublish, id))
 		}
@@ -264,9 +271,13 @@ func (f *Front) publishFreshCatalog(ctx context.Context, fresh json.RawMessage) 
 // same stripe lock as SetSessionConfigOption and /model. Closing skips do not
 // abort healthy-session fan-out; only an actual write failure is retryable.
 //
-//nolint:cyclop,funlen,nestif // each branch is a distinct confirmed-state safety gate
+//nolint:cyclop,funlen,nestif,gocognit,gocyclo // each branch is a distinct confirmed-state safety gate
 func (f *Front) publishFreshSession(ctx context.Context, id string, fresh json.RawMessage) catalogPublishResult {
-	if f.isClosing(id) {
+	closing, err := f.isClosingContext(ctx, id)
+	if err != nil {
+		return catalogPublishFailed
+	}
+	if closing {
 		return catalogPublishSkipped
 	}
 	if _, err := f.registry.Get(id); err != nil {
@@ -315,6 +326,15 @@ func (f *Front) publishFreshSession(ctx context.Context, id string, fresh json.R
 
 			return catalogPublishFailed
 		}
+		confirmedSettings, parsed := ParseSettings(confirmed)
+		if !parsed || confirmedSettings.Model.Current == nil ||
+			!modelListed(*confirmedSettings.Model.Current, freshSettings.Model.Available) {
+			if closeErr := f.closeSessionLocked(ctx, id); closeErr != nil {
+				slog.Warn("acpfront: fallback current teardown failed", "session", id, "err", closeErr)
+			}
+
+			return catalogPublishSkipped
+		}
 		merged, valid = snapshotFromConfirmedModel(fresh, confirmed)
 	}
 	if !valid {
@@ -350,8 +370,8 @@ func (f *Front) confirmCatalogFallback(ctx context.Context, id string, fallback 
 		return nil, fmt.Errorf("live session setModel: %w", err)
 	}
 	settings, parsed := ParseSettings(res)
-	if !parsed || settings.Model.Current == nil || *settings.Model.Current != fallback.Ref {
-		return nil, fmt.Errorf("%w: reply did not confirm requested current", errCatalogFallbackMismatch)
+	if !parsed || settings.Model.Current == nil {
+		return nil, fmt.Errorf("%w: reply carried no current", errCatalogFallbackMismatch)
 	}
 	if settings.ThoughtLevel.Enabled && settings.ThoughtLevel.Current != "" &&
 		!thoughtLevelListed(settings, fallback.Ref) {
@@ -423,7 +443,7 @@ func snapshotForLiveCatalog(fresh, previous json.RawMessage) (json.RawMessage, b
 		return nil, false
 	}
 	thought := settingsSection(previous, "thoughtLevel")
-	merged, ok := snapshotWithSelection(fresh, *selected, thought, true)
+	merged, ok := snapshotWithSelection(fresh, *selected, thought)
 	if !ok {
 		return nil, false
 	}
@@ -449,7 +469,7 @@ func snapshotFromConfirmedModel(fresh, confirmed json.RawMessage) (json.RawMessa
 		return nil, false
 	}
 	thought := settingsSection(confirmed, "thoughtLevel")
-	merged, ok := snapshotWithSelection(fresh, *settings.Model.Current, thought, false)
+	merged, ok := snapshotWithSelection(fresh, *settings.Model.Current, thought)
 	if !ok {
 		return nil, false
 	}
@@ -462,7 +482,7 @@ func snapshotFromConfirmedModel(fresh, confirmed json.RawMessage) (json.RawMessa
 }
 
 func snapshotWithSelection(
-	fresh json.RawMessage, selected ModelRef, thought json.RawMessage, preserveThought bool,
+	fresh json.RawMessage, selected ModelRef, thought json.RawMessage,
 ) (json.RawMessage, bool) {
 	var root map[string]any
 	if err := json.Unmarshal(fresh, &root); err != nil {
@@ -485,7 +505,7 @@ func snapshotWithSelection(
 	if !valid {
 		return nil, false
 	}
-	if preserveThought && parsed.ThoughtLevel.Enabled && parsed.ThoughtLevel.Current != "" &&
+	if parsed.ThoughtLevel.Enabled && parsed.ThoughtLevel.Current != "" &&
 		!thoughtLevelListed(parsed, selected) {
 		delete(settings, "thoughtLevel")
 	}
@@ -602,9 +622,11 @@ func (f *Front) publishCatalogUpdateLocked(
 		return catalogPublishFailed
 	}
 
-	f.closingMu.Lock()
-	defer f.closingMu.Unlock()
-	if f.closing[sessionID] {
+	closing, err := f.isClosingContext(ctx, sessionID)
+	if err != nil {
+		return catalogPublishFailed
+	}
+	if closing {
 		return catalogPublishSkipped
 	}
 	if _, err := f.registry.Get(sessionID); err != nil {

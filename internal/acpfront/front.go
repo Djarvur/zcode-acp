@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,10 @@ type Front struct {
 	// deadline-arm test seam (WithCloseTurnWait); zero keeps the
 	// production default.
 	closeWaitOverride time.Duration
+
+	// closeStripeWaitOverride bounds the final teardown's stripe reacquisition
+	// in tests; zero keeps the production budget.
+	closeStripeWaitOverride time.Duration
 
 	// auth is the injected authenticate machinery (plan 05-07, WithAuth):
 	// the configured key binding, the resolved install, and the read-back
@@ -356,7 +361,7 @@ func (f *Front) NewSession(
 	// reply-snapshot fact): capture it BEFORE the follow-up so a snapshot-
 	// carrying reply renders even with no model configured (the no-model
 	// arm).
-	f.recordSettings(sid, res)
+	f.recordSettingsUnchecked(sid, res)
 
 	if err := f.applyConfiguredModelLocked(ctx, sid); err != nil {
 		return "", nil, err
@@ -711,13 +716,21 @@ func (f *Front) SetSessionConfigOption(
 		return nil, acpport.NewInternal("session/setModel: %v", err)
 	}
 
+	if !f.sessionMutationActive(sessionID) {
+		return nil, acpport.NewInvalidRequest(
+			"session/set_config_option: %s: the session closed before setModel confirmed", sessionID)
+	}
+
 	// The reply IS the confirmed state (D-10): the store records it BEFORE
 	// the rebuild — the response-before-store ordering is impossible by
 	// construction (the rebuild reads the store back). The merge preserves
 	// the previous snapshot's model catalog: the reply's settings view is
 	// provider-scoped (a cross-provider switch narrows it — the 2026-11-23
 	// field report's picker shrink).
-	f.recordMergedSettings(sessionID, res)
+	if !f.recordMergedSettings(sessionID, res) {
+		return nil, acpport.NewInvalidRequest(
+			"session/set_config_option: %s: the session closed before setModel committed", sessionID)
+	}
 
 	confirmed, ok := f.latestSettings(sessionID)
 	if !ok {
@@ -832,6 +845,11 @@ func (f *Front) promptModelSlash(
 	}
 	defer unlock()
 
+	if f.isClosing(params.SessionID) {
+		return "", true, acpport.NewInvalidRequest(
+			"session/prompt /model: %s: the session is closing or closed", params.SessionID)
+	}
+
 	// WR-02 (07-REVIEW): the session-scoped busy gate. A command prompt
 	// issued while THIS session's turn is active takes the CORE-05 -32003
 	// session-busy refusal (NewSessionBusy + turnActiveMessage) — the same
@@ -894,9 +912,17 @@ func (f *Front) promptModelSlash(
 		return "", true, acpport.NewInternal("session/setModel: %v", err)
 	}
 
+	if f.isClosing(params.SessionID) {
+		return "", true, acpport.NewInvalidRequest(
+			"session/prompt /model: %s: the session closed before setModel confirmed", params.SessionID)
+	}
+
 	// The reply IS the confirmed state (D-10) — the same settings update the
 	// picker performs, with the same catalog-preserving merge.
-	f.recordMergedSettings(params.SessionID, res)
+	if !f.recordMergedSettings(params.SessionID, res) {
+		return "", true, acpport.NewInvalidRequest(
+			"session/prompt /model: %s: the session closed before setModel committed", params.SessionID)
+	}
 
 	// A2: one short confirmation text chunk — the client classifies only
 	// refusals (error frames), never success text.
@@ -1126,7 +1152,7 @@ func (f *Front) applyConfiguredModelLocked(ctx context.Context, sid string) erro
 	// The follow-up reply is the CONFIRMED state (D-10) — with the same
 	// catalog-preserving merge every setModel reply rides (the reply's
 	// provider-scoped view must not shrink the picker).
-	f.recordMergedSettings(sid, setModelRes)
+	f.recordMergedSettingsUnchecked(sid, setModelRes)
 
 	return nil
 }
@@ -1231,7 +1257,24 @@ func (f *Front) recordCwd(sessionID, cwd string) {
 // re-initialization lives here (IN-04, plan 07-01: the dead nil-guard is
 // gone; the sibling lazy-init of closing in CloseSession is load-bearing
 // and stays).
-func (f *Front) recordSettings(sessionID string, raw json.RawMessage) {
+func (f *Front) recordSettings(sessionID string, raw json.RawMessage) bool {
+	f.closingMu.Lock()
+	defer f.closingMu.Unlock()
+	if f.closing[sessionID] {
+		return false
+	}
+	if _, err := f.registry.Get(sessionID); err != nil {
+		return false
+	}
+	f.recordSettingsUnchecked(sessionID, raw)
+
+	return true
+}
+
+// recordSettingsUnchecked records pre-registration new/resume snapshots while
+// the caller holds the session stripe. Late post-registration commits must use
+// recordSettings so a local teardown cannot be undone.
+func (f *Front) recordSettingsUnchecked(sessionID string, raw json.RawMessage) {
 	f.settingsMu.Lock()
 	defer f.settingsMu.Unlock()
 
@@ -1278,6 +1321,38 @@ func (f *Front) isClosing(sessionID string) bool {
 	return f.closing[sessionID]
 }
 
+func (f *Front) sessionMutationActive(sessionID string) bool {
+	if f.isClosing(sessionID) {
+		return false
+	}
+	_, err := f.registry.Get(sessionID)
+
+	return err == nil
+}
+
+// isClosingContext bounds contention on the short closing-state critical
+// section. No closingMu holder performs backend or client I/O.
+func (f *Front) isClosingContext(ctx context.Context, sessionID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("closing check canceled: %w", err)
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if f.closingMu.TryLock() {
+			closing := f.closing[sessionID]
+			f.closingMu.Unlock()
+
+			return closing, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("closing check canceled: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 // closeOrphan is the WR-04 error-path close (plan 05-05): a session/new
 // failure after session/create succeeded tears the just-created backend
 // session down best-effort and logs structurally. It is the wire-level
@@ -1310,18 +1385,34 @@ func (f *Front) closeOrphan(ctx context.Context, sessionID, stage string, cause 
 // entries — and the client adopting the reply replaces its picker with the
 // narrowed list. The merge keeps the PREVIOUS snapshot's available entries
 // under the reply's confirmed current (and thought level).
-func (f *Front) recordMergedSettings(sid string, res json.RawMessage) {
+func (f *Front) recordMergedSettings(sid string, res json.RawMessage) bool {
+	return f.recordMergedSettingsMode(sid, res, true)
+}
+
+func (f *Front) recordMergedSettingsUnchecked(sid string, res json.RawMessage) bool {
+	return f.recordMergedSettingsMode(sid, res, false)
+}
+
+func (f *Front) recordMergedSettingsMode(sid string, res json.RawMessage, checked bool) bool {
 	prev, hadPrev := f.latestSettings(sid)
-
-	f.recordSettings(sid, res)
-
+	if checked {
+		if !f.recordSettings(sid, res) {
+			return false
+		}
+	} else {
+		f.recordSettingsUnchecked(sid, res)
+	}
 	if !hadPrev {
-		return
+		return true
+	}
+	if merged, ok := mergeCatalogEntries(prev, res); ok {
+		if checked {
+			return f.recordSettings(sid, merged)
+		}
+		f.recordSettingsUnchecked(sid, merged)
 	}
 
-	if merged, ok := mergeCatalogEntries(prev, res); ok {
-		f.recordSettings(sid, merged)
-	}
+	return true
 }
 
 // turnStartStamp snapshots the active turn's backend-clock start stamp
