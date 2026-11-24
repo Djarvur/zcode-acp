@@ -368,11 +368,14 @@ const wireKeySessionID = "sessionId"
 // prompts (D-05, CORE-05): whatever guard layer fires — the front-wide turn
 // slot here, or the machine's ErrTurnActive below (whose backend-refusal leg
 // is the machine's numeric -32010 mapping, message text never matched) — the
-// client sees the same invalid-request class carrying this message. No
-// internal locations or content ever ride the error (the machine-path rule).
-// The text names the FRONT-WIDE scope accurately (WR-05, plan 05-05): the
-// slot spans every session of this agent, so the message must not send a
-// cross-session prompt hunting for a stuck turn in the wrong conversation.
+// client sees the same -32003 session-busy class carrying this message and
+// data exactly {"reason":"session_busy"} (acpport.NewSessionBusy): the shape
+// Orca's retryBusyPrompts gate retries, matched by code plus data.reason,
+// never by this text. No internal locations or content ever ride the error
+// (the machine-path rule). The text names the FRONT-WIDE scope accurately
+// (WR-05, plan 05-05): the slot spans every session of this agent, so the
+// message must not send a cross-session prompt hunting for a stuck turn in
+// the wrong conversation.
 const turnActiveMessage = "another prompt is already running (this agent runs one turn at a time)"
 
 // Prompt runs one prompt turn (D-04/D-05): the front-wide turn slot is
@@ -381,8 +384,9 @@ const turnActiveMessage = "another prompt is already running (this agent runs on
 // context is front-owned (NOT the SDK request ctx — turnctx.go), and the
 // machine's outcome maps onto the neutral stop reasons. Cancelled resolves
 // as a SUCCESS stopReason exactly once; the concurrency guard fires as ONE
-// invalid-request rejection (both the slot and the machine's ErrTurnActive);
-// other backend failures surface as coded -32603 internal errors (A5).
+// -32003 session-busy rejection (both the slot and the machine's
+// ErrTurnActive); other backend failures surface as coded -32603 internal
+// errors (A5).
 func (f *Front) Prompt(
 	sdkCtx context.Context, params acpport.PromptParams, sink acpport.UpdateSink,
 ) (acpport.StopReason, error) {
@@ -412,7 +416,7 @@ func (f *Front) Prompt(
 	}
 
 	if release == nil {
-		return "", acpport.NewInvalidRequest(turnActiveMessage)
+		return "", acpport.NewSessionBusy(turnActiveMessage)
 	}
 
 	defer release()
@@ -442,10 +446,10 @@ func (f *Front) Prompt(
 		// The concurrency guard (CORE-05): the machine's ErrTurnActive — its
 		// backend-refusal leg being the numeric -32010 mapping — is the same
 		// rejection the front-wide slot answers, so both surfaces share the
-		// one invalid-request constructor and message (never the wrapped
+		// one NewSessionBusy constructor and message (never the wrapped
 		// transport noise, which carries the server's wire error verbatim).
 		if errors.Is(runErr, turn.ErrTurnActive) {
-			return "", acpport.NewInvalidRequest(turnActiveMessage)
+			return "", acpport.NewSessionBusy(turnActiveMessage)
 		}
 
 		return "", acpport.NewInternal("session/prompt: %v", runErr)
@@ -782,13 +786,14 @@ func (f *Front) promptModelSlash(
 	}
 
 	// WR-02 (07-REVIEW): the session-scoped busy gate. A command prompt
-	// issued while THIS session's turn is active takes the CORE-05
-	// turnActiveMessage rejection — the same surface any literal prompt
-	// gets from the slot — instead of issuing a mid-turn setModel mutation
-	// whose refusal would run the picker-refusal teardown (CloseSession →
-	// drainActiveTurn) and cancel the user's RUNNING turn.
+	// issued while THIS session's turn is active takes the CORE-05 -32003
+	// session-busy refusal (NewSessionBusy + turnActiveMessage) — the same
+	// surface any literal prompt gets from the slot — instead of issuing a
+	// mid-turn setModel mutation whose refusal would run the
+	// picker-refusal teardown (CloseSession → drainActiveTurn) and cancel
+	// the user's RUNNING turn.
 	if f.slashTurnBusy(params.SessionID) {
-		return "", true, acpport.NewInvalidRequest(turnActiveMessage)
+		return "", true, acpport.NewSessionBusy(turnActiveMessage)
 	}
 
 	if selector == "" {

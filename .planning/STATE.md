@@ -297,6 +297,7 @@ None yet.
 | 261123-vyl | Push only the selected connection mode per account family (config.access.mode + per-(family, mode) entitlement gate) | 2026-11-23 | b65901f | [261123-vyl-option-b-push-only-the-selected-connecti](./quick/261123-vyl-option-b-push-only-the-selected-connecti/) |
 | 261124-13n | Clear the 10 pre-existing acpfront golangci-lint findings so mise run lint / CI pr-sanity is green | 2026-11-24 | b6ab5bf | [261124-13n-fix-the-10-pre-existing-golangci-lint-fi](./quick/261124-13n-fix-the-10-pre-existing-golangci-lint-fi/) |
 | 4 | Make the keyring probe test arms host-independent (inject LookPath success so CI runners without libsecret-tools pass) | 2026-11-24 | b94fa1e | — |
+| 261124-1ou | Refuse concurrent ACP prompts as -32003 with data.reason session_busy so Orca's retryBusyPrompts queue engages (message, other codes, cancel/stop unchanged) | 2026-11-24 | c1887e4 | [261124-1ou-return-acp-concurrent-prompt-refusals-as](./quick/261124-1ou-return-acp-concurrent-prompt-refusals-as/) |
 | 261124-154 | OMP print mode: serve Orca non-interactive text tasks (chat/branch names, commit messages) via one-shot workspace/generateText | 2026-11-24 | b1d7470 | [261124-154-omp-print-mode-make-zcode-acp-omp-serve-](./quick/261124-154-omp-print-mode-make-zcode-acp-omp-serve-/) |
 
 ## Deferred Items
