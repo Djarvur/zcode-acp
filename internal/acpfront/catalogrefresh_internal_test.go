@@ -943,6 +943,44 @@ func TestModelSlashRechecksClosingAfterSessionStripe(t *testing.T) {
 	}
 }
 
+func TestCatalogCloseLockedHonorsSingleRefreshDeadline(t *testing.T) {
+	f, closeLegs := newInterleaveFront(t, interleaveScenario(0))
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	const sid = interleaveSID
+	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A"))
+	f.closeWaitOverride = 250 * time.Millisecond
+	f.turnMu.Lock()
+	f.turnActive = true
+	f.turnSession = sid
+	f.turnDone = make(chan struct{})
+	f.turnMu.Unlock()
+	unlock, err := f.lockCatalogSession(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("hold session stripe: %v", err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if err := f.closeSessionLocked(ctx, sid); err != nil {
+		t.Fatalf("catalog close: %v", err)
+	}
+	elapsed := time.Since(started)
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("catalog teardown took %v; two independent 250ms drains exceeded the 30ms refresh deadline", elapsed)
+	}
+	if _, err := f.registry.Get(sid); err == nil {
+		t.Fatal("short-deadline teardown left a registry entry")
+	}
+	if _, ok := f.latestSettings(sid); ok {
+		t.Fatal("short-deadline teardown left settings")
+	}
+	if f.isClosing(sid) {
+		t.Fatal("short-deadline teardown left the closing marker set")
+	}
+}
+
 func TestFinalCloseStripeTimeoutCompletesLocalTeardown(t *testing.T) {
 	sc := &fake.Scenario{
 		Name: "final-close-timeout",

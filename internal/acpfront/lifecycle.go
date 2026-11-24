@@ -179,13 +179,13 @@ func (f *Front) CloseSession(ctx context.Context, sessionID string) error {
 		return acpport.NewInternal("session/close: session synchronization: %v", err)
 	}
 
-	return f.closeSession(ctx, sessionID, unlock, true)
+	return f.closeSession(ctx, sessionID, unlock, true, time.Time{})
 }
 
 // closeSessionLocked tears down one session while the caller holds its stripe,
 // preventing an in-flight mutation from recording settings after the drop.
 func (f *Front) closeSessionLocked(ctx context.Context, sessionID string) error {
-	return f.closeSession(ctx, sessionID, nil, false)
+	return f.closeSession(ctx, sessionID, nil, false, f.sharedCloseDrainDeadline(ctx))
 }
 
 // closeSession marks closing under the session stripe. A standalone close
@@ -193,7 +193,9 @@ func (f *Front) closeSessionLocked(ctx context.Context, sessionID string) error 
 // reject the closing session, then reacquires it for the final atomic drop.
 //
 //nolint:funlen // ordered close/drain/backend/final-drop lifecycle stays in one transactional sequence
-func (f *Front) closeSession(ctx context.Context, sessionID string, unlock func(), managed bool) error {
+func (f *Front) closeSession(
+	ctx context.Context, sessionID string, unlock func(), managed bool, drainDeadline time.Time,
+) error {
 	if managed {
 		defer func() {
 			if unlock != nil {
@@ -231,10 +233,21 @@ func (f *Front) closeSession(ctx context.Context, sessionID string, unlock func(
 		unlock = nil
 	}
 
+	// Catalog/picker teardown shares ONE deadline across both drains and the
+	// backend close. Standalone CloseSession passes a zero deadline and keeps
+	// its existing independent closeWait windows.
+	drain := func() bool {
+		if drainDeadline.IsZero() {
+			return f.drainActiveTurn(sessionID, st)
+		}
+
+		return f.drainActiveTurnUntil(sessionID, st, drainDeadline)
+	}
+
 	// Teardown order, step 1: cancel any active turn and wait bounded for
 	// it to drain (the stop's observed outcome resolves it; the drain also
 	// re-cancels a turn that sneaked in at the slot).
-	if f.drainActiveTurn(sessionID, st) {
+	if drain() {
 		// Pitfall 2: the cancelled turn's pending permission bridges must
 		// not dangle — the session-scoped sweep (plan 05-15 WR-07) cancels
 		// exactly the closing session's pendings, never another session's
@@ -258,7 +271,7 @@ func (f *Front) closeSession(ctx context.Context, sessionID string, unlock func(
 	// the slot BEFORE the closing gate — impossible: the gate predates both
 	// drains. The second drain is the cheap re-check that keeps the
 	// release steps strictly behind an unwound turn.
-	f.drainActiveTurn(sessionID, st)
+	drain()
 
 	if managed {
 		closeCtx, cancel := context.WithTimeout(context.Background(), f.closeStripeWait())
@@ -315,8 +328,22 @@ func (f *Front) finishCloseLocally(sessionID string, st core.Session) {
 // was cancelled, never on an idle close). A turn of another session (the
 // front-wide slot) never blocks this session's close beyond the check.
 func (f *Front) drainActiveTurn(sessionID string, st core.Session) bool {
-	deadline := time.Now().Add(f.closeWait())
+	return f.drainActiveTurnUntil(sessionID, st, time.Now().Add(f.closeWait()))
+}
 
+func (f *Front) sharedCloseDrainDeadline(ctx context.Context) time.Time {
+	if ctx == nil {
+		return time.Time{}
+	}
+	deadline := time.Now().Add(f.closeWait())
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
+	}
+
+	return deadline
+}
+
+func (f *Front) drainActiveTurnUntil(sessionID string, st core.Session, deadline time.Time) bool {
 	sawTurn := false
 
 	for {
