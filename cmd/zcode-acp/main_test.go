@@ -2372,6 +2372,26 @@ func TestOmpFlagSet(t *testing.T) {
 	t.Run("level without model answers the existing sentinel", testOmpFlagSetLevelWithoutModel)
 
 	t.Run("the omp parse composes into parseConfig with env fallbacks", testOmpFlagSetEnvCompose)
+
+	t.Run("app-server help names the packed AppImage shape", testOmpFlagSetAppServerHelp)
+}
+
+// testOmpFlagSetAppServerHelp locks the user-facing flag description to the
+// shipped override contract: a directory, an app-server binary, OR a packed
+// AppImage. A help string that omits the packed arm misdescribes the feature.
+func testOmpFlagSetAppServerHelp(t *testing.T) {
+	fs, _ := ompFlagSet()
+
+	flag := fs.Lookup("app-server")
+	if flag == nil {
+		t.Fatal("the omp flag set carries no --app-server flag")
+	}
+
+	for _, want := range []string{"install root", "app-server binary", "packed AppImage"} {
+		if !strings.Contains(flag.Usage, want) {
+			t.Errorf("--app-server help = %q, want it to name %q", flag.Usage, want)
+		}
+	}
 }
 
 // testOmpFlagSetUnknownTolerated locks the tolerance contract: an unknown

@@ -124,7 +124,7 @@ func main() {
 
 	showVersion := flag.Bool("version", false, "print version and exit")
 	appServerFlag := flag.String("app-server", "",
-		"path to a ZCode install root (or app-server binary) overriding discovery — also "+envAppServer)
+		"path to a ZCode install root, app-server binary, or packed AppImage overriding discovery — also "+envAppServer)
 	modelFlag := flag.String("model", "", "backend model selection as providerId/modelId — also "+envModel)
 	reasoningFlag := flag.String("reasoning-level", "", "reasoning level for --model — also "+envReasoningLevel)
 	apiKeyFlag := flag.String("api-key", "",
@@ -323,7 +323,7 @@ func ompFlagSet() (*flag.FlagSet, *ompFlagValues) {
 	return fs, &ompFlagValues{
 		version: fs.Bool("version", false, "print version and exit"),
 		appServer: fs.String("app-server", "",
-			"path to a ZCode install root (or app-server binary) overriding discovery"),
+			"path to a ZCode install root, app-server binary, or packed AppImage overriding discovery"),
 		model:          fs.String("model", "", "backend model selection as providerId/modelId"),
 		reasoningLevel: fs.String("reasoning-level", "", "reasoning level for --model"),
 		apiKey:         fs.String("api-key", "", "z.ai API key for authenticate{zai-api-key}"),
