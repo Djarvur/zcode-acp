@@ -94,7 +94,7 @@ func main() {
 
 	showVersion := flag.Bool("version", false, "print version and exit")
 	appServerFlag := flag.String("app-server", "",
-		"path to a ZCode install root (or app-server binary) overriding discovery — also "+envAppServer)
+		"path to a ZCode install root, app-server binary, or packed .AppImage overriding discovery — also "+envAppServer)
 	modelFlag := flag.String("model", "", "backend model selection as providerId/modelId — also "+envModel)
 	reasoningFlag := flag.String("reasoning-level", "", "reasoning level for --model — also "+envReasoningLevel)
 	apiKeyFlag := flag.String("api-key", "",
@@ -233,7 +233,7 @@ func ompFlagSet() (*flag.FlagSet, *ompFlagValues) {
 	return fs, &ompFlagValues{
 		version: fs.Bool("version", false, "print version and exit"),
 		appServer: fs.String("app-server", "",
-			"path to a ZCode install root (or app-server binary) overriding discovery"),
+			"path to a ZCode install root, app-server binary, or packed .AppImage overriding discovery"),
 		model:          fs.String("model", "", "backend model selection as providerId/modelId"),
 		reasoningLevel: fs.String("reasoning-level", "", "reasoning level for --model"),
 		apiKey:         fs.String("api-key", "", "z.ai API key for authenticate{zai-api-key}"),
@@ -915,10 +915,11 @@ func acquireMount(ctx context.Context, inst supervisor.Install) (supervisor.Inst
 		return supervisor.Install{}, nil, fmt.Errorf("mount the app-server AppImage: %w", err)
 	}
 
-	slog.Info("zcode-acp: appimage backend mounted",
-		"appimage", mount.AppImage(), "version", inst.Version, "mount", mount.Root(), "pid", mount.HelperPID())
-
 	installed := mount.Install()
+
+	slog.Info("zcode-acp: appimage backend mounted",
+		"layout", installed.Layout, "version", installed.Version, "root", mount.Root(),
+		"appimage", mount.AppImage(), "pid", mount.HelperPID())
 
 	return installed, mount, nil
 }
@@ -972,7 +973,8 @@ func discoverInstall(ctx context.Context, appServer string) (supervisor.Install,
 	}
 
 	slog.Info("zcode-acp: app-server resolved",
-		"layout", inst.Layout, "binary", inst.Binary, "appimage", inst.AppImage, "version", inst.Version)
+		"layout", inst.Layout, "version", inst.Version, "root", inst.Root,
+		"appimage", inst.AppImage, "binary", inst.Binary)
 
 	return inst, nil
 }
