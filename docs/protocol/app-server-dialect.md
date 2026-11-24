@@ -374,7 +374,9 @@ The registry snapshot flows host→server via `provider/updateAccountConfig`; th
   read-back is mandatory; neither the acknowledgement nor a requested selection
   is catalog evidence. A disappeared live selection is applied with
   `session/setModel` on that session and only its reply confirms the fallback;
-  a no-current probe remains valid for sessions whose prior current is listed.
+  absent or invalid live reasoning omits the thought-level option and never
+  borrows the probe's level. A no-current probe remains valid for sessions whose
+  prior current is listed.
   The worker is event-driven, single-flight, coalesced, and
   bounded by one 15-second context-owned lifetime. The shipped triggers are
   registry events plus an explicit post-authenticate refresh request; a

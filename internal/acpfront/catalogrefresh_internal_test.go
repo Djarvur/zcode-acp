@@ -452,15 +452,15 @@ func TestCatalogFallbackUsesLiveSetModelConfirmation(t *testing.T) {
 	}
 }
 
-func TestCatalogFallbackRejectsUnconfirmedReply(t *testing.T) {
+func TestCatalogFallbackCommitsCurrentWithoutInvalidReasoning(t *testing.T) {
 	for name, confirmed := range map[string]json.RawMessage{
-		"wrong current":      catalogProbeWithThought("new/C", catalogHighValue()),
-		"invalid reasoning":  catalogProbeWithThought("new/B", "medium"),
-		"malformed settings": json.RawMessage(`{"settings":"bad"}`),
+		"invalid reasoning": catalogProbeWithThought("new/B", "medium"),
+		"absent reasoning": withoutSettingsSection(
+			catalogProbeWithThought("new/B", catalogHighValue()), "thoughtLevel"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			sc := &fake.Scenario{
-				Name: "catalog-fallback-rejected",
+				Name: "catalog-fallback-no-reasoning",
 				OnRequest: []fake.RequestRule{
 					{Method: zcode.MethodProviderRefreshRegistry,
 						Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
@@ -474,8 +474,53 @@ func TestCatalogFallbackRejectsUnconfirmedReply(t *testing.T) {
 			f, closeLegs := newInterleaveFront(t, sc)
 			defer closeLegs()
 			openInterleaveSession(t, f, t.TempDir())
-			previous := catalogProbeWithThought("old/A", catalogHighValue())
-			f.recordSettings(interleaveSID, previous)
+			f.recordSettings(interleaveSID, catalogProbeWithThought("old/A", catalogHighValue()))
+			var notes []acpport.SessionNote
+			f.BindUpdateSink(func(_ context.Context, note acpport.SessionNote) error {
+				notes = append(notes, note)
+
+				return nil
+			})
+			f.RequestCatalogRefresh(context.Background())
+			awaitCatalogWorker(t, f)
+			if len(notes) != 1 || len(notes[0].ConfigOptions) != 1 {
+				t.Fatalf("fallback notes = %+v, want model-only publication", notes)
+			}
+			if notes[0].ConfigOptions[0].CurrentValue != "new/B" {
+				t.Fatalf("fallback current = %q, want new/B", notes[0].ConfigOptions[0].CurrentValue)
+			}
+			latest, _ := f.latestSettings(interleaveSID)
+			settings := mustSettings(t, latest)
+			if settings.Model.Current == nil || settings.Model.Current.ModelID != "B" ||
+				settings.ThoughtLevel.Enabled || settings.ThoughtLevel.Current != "" {
+				t.Fatalf("valid current was not committed with reasoning omitted: %s", latest)
+			}
+		})
+	}
+}
+
+func TestCatalogFallbackClosesOnUnreconciledReply(t *testing.T) {
+	for name, confirmed := range map[string]json.RawMessage{
+		"wrong current":      catalogProbeWithThought("new/C", catalogHighValue()),
+		"malformed settings": json.RawMessage(`{"settings":"bad"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			sc := &fake.Scenario{
+				Name: "catalog-fallback-mismatch",
+				OnRequest: []fake.RequestRule{
+					{Method: zcode.MethodProviderRefreshRegistry,
+						Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+					{Method: zcode.MethodSessionCreate,
+						Reply: &fake.Reply{Result: catalogProbeWithThought("new/B", catalogLowValue())}},
+					{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+					{Method: zcode.MethodSessionSetModel, Reply: &fake.Reply{Result: confirmed}},
+				},
+				EOFDrainMs: 1,
+			}
+			f, closeLegs := newInterleaveFront(t, sc)
+			defer closeLegs()
+			openInterleaveSession(t, f, t.TempDir())
+			f.recordSettings(interleaveSID, catalogProbeWithThought("old/A", catalogHighValue()))
 			calls := 0
 			f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
 				calls++
@@ -485,12 +530,69 @@ func TestCatalogFallbackRejectsUnconfirmedReply(t *testing.T) {
 			f.RequestCatalogRefresh(context.Background())
 			awaitCatalogWorker(t, f)
 			if calls != 0 {
-				t.Fatalf("unconfirmed fallback published %d updates", calls)
+				t.Fatalf("unreconciled fallback published %d updates", calls)
 			}
-			if got, _ := f.latestSettings(interleaveSID); !bytes.Equal(got, previous) {
-				t.Fatalf("unconfirmed fallback replaced settings: %s", got)
+			if _, ok := f.latestSettings(interleaveSID); ok {
+				t.Fatal("unreconciled successful setModel retained known-stale settings")
+			}
+			if _, err := f.registry.Get(interleaveSID); err == nil {
+				t.Fatal("unreconciled successful setModel did not close the session")
 			}
 		})
+	}
+}
+
+func TestCatalogFailedFallbackRetriesAfterHealthyFanout(t *testing.T) {
+	probe := catalogProbeWithThought("new/B", catalogLowValue())
+	confirmed := catalogProbeWithThought("new/B", catalogHighValue())
+	sc := &fake.Scenario{
+		Name: "catalog-fallback-retry",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodProviderRefreshRegistry, Times: 2,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"refreshed":true}`)}},
+			{Method: zcode.MethodSessionCreate, Times: 2, Reply: &fake.Reply{Result: probe}},
+			{Method: zcode.MethodSessionClose, Times: 2,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+			{Method: zcode.MethodSessionSetModel, Times: 1,
+				Reply: &fake.Reply{Error: &zcode.WireError{Code: -32603, Message: "transient"}}},
+			{Method: zcode.MethodSessionSetModel, Times: 1, Reply: &fake.Reply{Result: confirmed}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	f.registry.Register(core.Session{ID: "z-healthy"})
+	f.recordSettings(interleaveSID, catalogProbeWithThought("old/A", catalogHighValue()))
+	healthyOld := json.RawMessage(strings.Replace(string(catalogProbeWithThought("new/B", catalogHighValue())),
+		`"label":"B"`, `"label":"Old B"`, 1))
+	f.recordSettings("z-healthy", healthyOld)
+	var ids []string
+	f.BindUpdateSink(func(_ context.Context, note acpport.SessionNote) error {
+		ids = append(ids, note.SessionID)
+
+		return nil
+	})
+	const signal = "fallback-retry-signal"
+	f.requestCatalogRefresh(context.Background(), signal)
+	awaitCatalogWorker(t, f)
+	if len(ids) != 1 || ids[0] != "z-healthy" {
+		t.Fatalf("failed fallback prevented healthy fan-out: %v", ids)
+	}
+	f.catalogRefreshMu.Lock()
+	remembered := f.catalogRefreshSignal
+	f.catalogRefreshMu.Unlock()
+	if remembered != "" {
+		t.Fatalf("failed fallback retained dedupe signal %q", remembered)
+	}
+	f.requestCatalogRefresh(context.Background(), signal)
+	awaitCatalogWorker(t, f)
+	if len(ids) != 2 || ids[1] != interleaveSID {
+		t.Fatalf("identical retry did not publish recovered fallback: %v", ids)
+	}
+	tr := closeLegs()
+	if got := catalogTranscriptMethodCount(tr, zcode.MethodProviderRefreshRegistry); got != 2 {
+		t.Fatalf("identical fallback retry issued %d refreshes, want 2", got)
 	}
 }
 
@@ -603,6 +705,152 @@ func TestCatalogClosingSkipDoesNotAbortHealthyFanout(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != "healthy" {
 		t.Fatalf("published sessions = %v, want only healthy", ids)
+	}
+}
+
+func TestCatalogCloseSerializesInFlightMutation(t *testing.T) {
+	sc := &fake.Scenario{
+		Name: "catalog-close-mutation",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionSetModel, DelayMs: 200, Reply: &fake.Reply{Result: json.RawMessage(
+				`{"settings":{"model":{"current":{"providerId":"new","modelId":"C"},` +
+					`"available":[{"ref":{"providerId":"new","modelId":"C"},"label":"C"}]}}}`)}},
+			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	const sid = interleaveSID
+	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A", "new/C"))
+	mutated := make(chan error, 1)
+	go func() {
+		_, err := f.SetSessionConfigOption(context.Background(), sid, optionIDModel, "old/A")
+		mutated <- err
+	}()
+	time.Sleep(25 * time.Millisecond)
+	closed := make(chan error, 1)
+	go func() { closed <- f.CloseSession(context.Background(), sid) }()
+	select {
+	case err := <-closed:
+		t.Fatalf("close completed during in-flight setModel: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	if err := <-mutated; err != nil {
+		t.Fatalf("setModel: %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, ok := f.latestSettings(sid); ok {
+		t.Fatal("late setModel recreated settings after close")
+	}
+}
+
+func TestCatalogResumeSerializesPublication(t *testing.T) {
+	resume := json.RawMessage(`{"session":{"sessionId":"sess_stress"},` +
+		string(catalogSnapshot("new/D", "", "new/D")[1:]))
+	sc := &fake.Scenario{
+		Name: "catalog-resume-publication",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionResume, Reply: &fake.Reply{Result: resume}},
+			{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{Result: json.RawMessage(`{"events":[]}`)}},
+			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	resumeCwd := t.TempDir()
+	const sid = interleaveSID
+	f.recordSettings(sid, catalogSnapshot("old/A", "", "old/A"))
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	f.BindUpdateSink(func(context.Context, acpport.SessionNote) error {
+		close(entered)
+		<-release
+
+		return nil
+	})
+	merged := catalogSnapshot("new/B", "", "new/B")
+	published := make(chan bool, 1)
+	go func() {
+		published <- f.publishCatalogUpdate(context.Background(), sid, merged,
+			BuildConfigOptions(mustSettings(t, merged)))
+	}()
+	<-entered
+	resumed := make(chan error, 1)
+	go func() {
+		_, err := f.ResumeSession(context.Background(), sid, resumeCwd)
+		resumed <- err
+	}()
+	select {
+	case err := <-resumed:
+		t.Fatalf("resume completed during catalog publication: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(release)
+	if !<-published {
+		t.Fatal("catalog publication failed")
+	}
+	if err := <-resumed; err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	latest, _ := f.latestSettings(sid)
+	settings := mustSettings(t, latest)
+	if settings.Model.Current == nil || settings.Model.Current.ModelID != "D" {
+		t.Fatalf("stale publication overwrote resume snapshot: %s", latest)
+	}
+}
+
+func TestPickerRefusalTeardownUnderSessionStripe(t *testing.T) {
+	sc := &fake.Scenario{
+		Name: "picker-refusal-under-stripe",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionSetModel,
+				Reply: &fake.Reply{Error: &zcode.WireError{Code: -32603, Message: "refused"}}},
+			{Method: zcode.MethodSessionClose, Reply: &fake.Reply{Result: json.RawMessage(`{"closed":true}`)}},
+		},
+		EOFDrainMs: 1,
+	}
+	f, closeLegs := newInterleaveFront(t, sc)
+	defer closeLegs()
+	openInterleaveSession(t, f, t.TempDir())
+	f.recordSettings(interleaveSID, catalogSnapshot("old/A", "", "old/A", "new/B"))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := f.SetSessionConfigOption(ctx, interleaveSID, optionIDModel, "new/B"); err == nil {
+		t.Fatal("refused setModel unexpectedly succeeded")
+	}
+	if _, ok := f.latestSettings(interleaveSID); ok {
+		t.Fatal("picker-refusal teardown retained settings")
+	}
+}
+
+func TestCatalogSessionLockCancellationDoesNotWait(t *testing.T) {
+	f := New(nil)
+	const sid = "cancel-lock"
+	unlock, err := f.lockCatalogSession(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("initial lock: %v", err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, lockErr := f.lockCatalogSession(ctx, sid)
+		result <- lockErr
+	}()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled lock error = %v, want context.Canceled", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("cancelled context waited on the session stripe")
 	}
 }
 

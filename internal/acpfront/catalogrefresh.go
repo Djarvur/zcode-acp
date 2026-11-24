@@ -25,9 +25,9 @@ const (
 )
 
 var (
-	errCatalogUnconfirmed = errors.New("probe session/create: no confirmed model catalog")
-	errCatalogPublish     = errors.New("catalog update publication failed")
-	errCatalogFallback    = errors.New("catalog fallback was not confirmed by the live session")
+	errCatalogUnconfirmed      = errors.New("probe session/create: no confirmed model catalog")
+	errCatalogPublish          = errors.New("catalog update publication failed")
+	errCatalogFallbackMismatch = errors.New("catalog fallback reply confirmed an unreconciled current")
 )
 
 type catalogPublishResult uint8
@@ -43,13 +43,16 @@ func (f *Front) BindUpdateSink(sink acpport.UpdateSink) {
 	f.catalogSink.Store(&sink)
 }
 
-func (f *Front) lockCatalogSession(sessionID string) func() {
+func (f *Front) lockCatalogSession(ctx context.Context, sessionID string) (func(), error) {
 	hash := fnv.New32a()
 	_, _ = hash.Write([]byte(sessionID))
-	lock := &f.catalogSessionLocks[int(hash.Sum32()%uint32(len(f.catalogSessionLocks)))]
-	lock.Lock()
-
-	return lock.Unlock
+	sem := f.catalogSessionLocks[int(hash.Sum32()%uint32(len(f.catalogSessionLocks)))]
+	select {
+	case sem <- struct{}{}:
+		return func() { <-sem }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("session stripe wait canceled: %w", ctx.Err())
+	}
 }
 
 func registryCatalogPatch(raw json.RawMessage) bool {
@@ -237,27 +240,31 @@ func (f *Front) publishFreshCatalog(ctx context.Context, fresh json.RawMessage) 
 	f.settingsMu.Unlock()
 	slices.Sort(ids)
 
+	var publishErr error
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			return fmt.Errorf("catalog fan-out canceled: %w", ctx.Err())
 		}
 
-		unlock := f.lockCatalogSession(id)
+		unlock, err := f.lockCatalogSession(ctx, id)
+		if err != nil {
+			return fmt.Errorf("catalog fan-out synchronization: %w", err)
+		}
 		result := f.publishFreshSession(ctx, id, fresh)
 		unlock()
 		if result == catalogPublishFailed {
-			return fmt.Errorf("%w: session %s", errCatalogPublish, id)
+			publishErr = errors.Join(publishErr, fmt.Errorf("%w: session %s", errCatalogPublish, id))
 		}
 	}
 
-	return nil
+	return publishErr
 }
 
 // publishFreshSession recomputes from the latest snapshot while holding the
 // same stripe lock as SetSessionConfigOption and /model. Closing skips do not
 // abort healthy-session fan-out; only an actual write failure is retryable.
 //
-//nolint:cyclop,funlen // each branch is a distinct confirmed-state safety gate
+//nolint:cyclop,funlen,nestif // each branch is a distinct confirmed-state safety gate
 func (f *Front) publishFreshSession(ctx context.Context, id string, fresh json.RawMessage) catalogPublishResult {
 	if f.isClosing(id) {
 		return catalogPublishSkipped
@@ -296,10 +303,17 @@ func (f *Front) publishFreshSession(ctx context.Context, id string, fresh json.R
 			return catalogPublishSkipped
 		}
 		confirmed, err := f.confirmCatalogFallback(ctx, id, entry)
-		if err != nil {
-			slog.Warn("acpfront: catalog fallback suppressed", "session", id, "err", err)
+		if errors.Is(err, errCatalogFallbackMismatch) {
+			if closeErr := f.closeSessionLocked(ctx, id); closeErr != nil {
+				slog.Warn("acpfront: fallback mismatch teardown failed", "session", id, "err", closeErr)
+			}
 
 			return catalogPublishSkipped
+		}
+		if err != nil {
+			slog.Warn("acpfront: catalog fallback failed", "session", id, "err", err)
+
+			return catalogPublishFailed
 		}
 		merged, valid = snapshotFromConfirmedModel(fresh, confirmed)
 	}
@@ -337,11 +351,11 @@ func (f *Front) confirmCatalogFallback(ctx context.Context, id string, fallback 
 	}
 	settings, parsed := ParseSettings(res)
 	if !parsed || settings.Model.Current == nil || *settings.Model.Current != fallback.Ref {
-		return nil, fmt.Errorf("%w: current mismatch", errCatalogFallback)
+		return nil, fmt.Errorf("%w: reply did not confirm requested current", errCatalogFallbackMismatch)
 	}
 	if settings.ThoughtLevel.Enabled && settings.ThoughtLevel.Current != "" &&
 		!thoughtLevelListed(settings, fallback.Ref) {
-		return nil, fmt.Errorf("%w: invalid reasoning level", errCatalogFallback)
+		res = withoutSettingsSection(res, "thoughtLevel")
 	}
 
 	return res, nil
@@ -422,8 +436,8 @@ func snapshotForLiveCatalog(fresh, previous json.RawMessage) (json.RawMessage, b
 }
 
 // snapshotFromConfirmedModel combines fresh availability with a live setModel
-// reply. Changed-model reasoning comes only from that reply; an invalid enabled
-// level rejects the update, while an absent/disabled level omits the option.
+// reply. Changed-model reasoning comes only from that reply; absent, disabled,
+// or invalid enabled reasoning omits the option rather than borrowing probe state.
 func snapshotFromConfirmedModel(fresh, confirmed json.RawMessage) (json.RawMessage, bool) {
 	freshSettings, ok := ParseSettings(fresh)
 	if !ok || len(freshSettings.Model.Available) == 0 {
@@ -467,28 +481,38 @@ func snapshotWithSelection(
 	if err != nil {
 		return nil, false
 	}
-	merged, ok := mergeCatalogEntries(fresh, candidate)
-	if !ok {
-		return nil, false
-	}
-	parsed, valid := ParseSettings(merged)
+	parsed, valid := ParseSettings(candidate)
 	if !valid {
 		return nil, false
 	}
 	if preserveThought && parsed.ThoughtLevel.Enabled && parsed.ThoughtLevel.Current != "" &&
 		!thoughtLevelListed(parsed, selected) {
 		delete(settings, "thoughtLevel")
-		candidate, err = json.Marshal(root)
-		if err != nil {
-			return nil, false
-		}
-		merged, ok = mergeCatalogEntries(fresh, candidate)
-		if !ok {
-			return nil, false
-		}
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return nil, false
 	}
 
-	return merged, true
+	return out, true
+}
+
+func withoutSettingsSection(raw json.RawMessage, key string) json.RawMessage {
+	var root map[string]any
+	if json.Unmarshal(raw, &root) != nil {
+		return raw
+	}
+	settings, _ := root["settings"].(map[string]any)
+	if settings == nil {
+		return raw
+	}
+	delete(settings, key)
+	out, err := json.Marshal(root)
+	if err != nil {
+		return raw
+	}
+
+	return out
 }
 
 func settingsSection(raw json.RawMessage, key string) json.RawMessage {
@@ -561,7 +585,10 @@ func thoughtLevelListed(settings Settings, model ModelRef) bool {
 func (f *Front) publishCatalogUpdate(
 	ctx context.Context, sessionID string, merged json.RawMessage, options []acpport.ConfigOptionDef,
 ) bool {
-	unlock := f.lockCatalogSession(sessionID)
+	unlock, err := f.lockCatalogSession(ctx, sessionID)
+	if err != nil {
+		return false
+	}
 	defer unlock()
 
 	return f.publishCatalogUpdateLocked(ctx, sessionID, merged, options) == catalogPublishConfirmed

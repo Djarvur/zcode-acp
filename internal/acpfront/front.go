@@ -135,7 +135,7 @@ type Front struct {
 	// catalogSessionLocks serializes model/config mutation with catalog
 	// publication per session. Fixed stripes bound memory with the registry;
 	// the lock order is session stripe -> closingMu -> settingsMu.
-	catalogSessionLocks [64]sync.Mutex
+	catalogSessionLocks [64]chan struct{}
 
 	// catalogRoots are the slash-command catalog scan roots for SKILLS
 	// (v0.21.0, CAT-02); commandRoots the same for COMMAND manifests.
@@ -245,6 +245,10 @@ func New(conn *zcode.Conn, opts ...Option) *Front {
 		},
 	}
 
+	for i := range f.catalogSessionLocks {
+		f.catalogSessionLocks[i] = make(chan struct{}, 1)
+	}
+
 	for _, opt := range opts {
 		opt(f)
 	}
@@ -286,6 +290,8 @@ func (f *Front) Initialize(ctx context.Context) (acpport.InitReport, error) {
 // Handlers contract (plan 06-04) returns the session's config options —
 // the confirmed-reply capture that fills them lands in Task 3 (06-04
 // sequencing: the signature widens here, the settings store follows).
+//
+//nolint:funlen // create/subscribe/settings/model/register is one stripe-owned session lifecycle
 func (f *Front) NewSession(
 	ctx context.Context, params acpport.NewSessionParams,
 ) (string, []acpport.ConfigOptionDef, error) {
@@ -323,6 +329,16 @@ func (f *Front) NewSession(
 		return "", nil, err
 	}
 
+	unlock, err := f.lockCatalogSession(ctx, sid)
+	if err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), catalogWriteBudget)
+		f.closeOrphan(cleanupCtx, sid, "session synchronization", err)
+		cancel()
+
+		return "", nil, acpport.NewInternal("session/new: session synchronization: %v", err)
+	}
+	defer unlock()
+
 	f.recordCwd(sid, params.Cwd)
 
 	if _, err := f.conn.Call(ctx, zcode.MethodSessionSubscribe, map[string]any{
@@ -342,7 +358,7 @@ func (f *Front) NewSession(
 	// arm).
 	f.recordSettings(sid, res)
 
-	if err := f.applyConfiguredModel(ctx, sid); err != nil {
+	if err := f.applyConfiguredModelLocked(ctx, sid); err != nil {
 		return "", nil, err
 	}
 
@@ -644,7 +660,10 @@ const (
 func (f *Front) SetSessionConfigOption(
 	ctx context.Context, sessionID, configID, value string,
 ) ([]acpport.ConfigOptionDef, error) {
-	unlock := f.lockCatalogSession(sessionID)
+	unlock, err := f.lockCatalogSession(ctx, sessionID)
+	if err != nil {
+		return nil, acpport.NewInternal("session/set_config_option: session synchronization: %v", err)
+	}
 	defer unlock()
 
 	if f.isClosing(sessionID) {
@@ -807,7 +826,10 @@ func (f *Front) promptModelSlash(
 		return "", false, nil
 	}
 
-	unlock := f.lockCatalogSession(params.SessionID)
+	unlock, err := f.lockCatalogSession(ctx, params.SessionID)
+	if err != nil {
+		return "", true, acpport.NewInternal("session/prompt /model: session synchronization: %v", err)
+	}
 	defer unlock()
 
 	// WR-02 (07-REVIEW): the session-scoped busy gate. A command prompt
@@ -896,7 +918,7 @@ func (f *Front) promptModelSlash(
 // re-failed). The teardown's own failure logs structurally — never a
 // silent skip. The client-facing refusal error is unchanged.
 func (f *Front) teardownAfterPickerRefusal(ctx context.Context, sessionID string, cause error) {
-	if err := f.CloseSession(ctx, sessionID); err != nil {
+	if err := f.closeSessionLocked(ctx, sessionID); err != nil {
 		slog.Warn("acpfront: picker-refusal teardown failed",
 			"session", sessionID, "stage", "set_config_option setModel", "cause", cause, "err", err)
 	}
@@ -1041,13 +1063,10 @@ func listedOptionValues(def *acpport.ConfigOptionDef) string {
 // (nil error, nothing recorded) when no model is bound — the create reply's
 // snapshot stays the confirmed one. A refused follow-up fails the caller
 // with the coded internal error exactly as the inline arm did.
-func (f *Front) applyConfiguredModel(ctx context.Context, sid string) error {
+func (f *Front) applyConfiguredModelLocked(ctx context.Context, sid string) error {
 	if f.model == nil {
 		return nil
 	}
-
-	unlock := f.lockCatalogSession(sid)
-	defer unlock()
 
 	// The reasoning level's default chain (plan 07-04, D-03): the explicit
 	// configured level first, else the target model's backend-confirmed
