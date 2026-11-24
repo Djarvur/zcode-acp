@@ -6,13 +6,13 @@
     {
       "number": "10",
       "name": "Mount-First AppImage Backend",
-      "status": "in_progress"
+      "status": "complete"
     }
   ],
   "next": {
-    "command": "/gsd-progress --next",
-    "label": "Advance to the next step (verify)",
-    "reason": "Phase 1 of 1 · ready to verify"
+    "command": "/gsd-new-milestone",
+    "label": "Start a new milestone",
+    "reason": "All phases complete — start a new milestone"
   },
-  "updated_at": "2026-11-24T00:27:14.375Z"
+  "updated_at": "2026-11-24T01:25:46.585Z"
 }
