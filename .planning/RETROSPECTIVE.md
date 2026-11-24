@@ -171,3 +171,89 @@
   on the live account (19 entries) during the fix cycle.
 - Sessions: one orchestrator session for the manager close-out; the phase execution
   itself predates this milestone-close session.
+
+## Milestone: v0.23.0 — Mount-First AppImage Backend
+
+**Shipped:** 2026-11-24
+**Phases:** 1 | **Plans:** 6
+
+### What Was Built
+- Mount-first backend: a packed `.AppImage` is mounted by a supervised
+  `--appimage-mount` helper and the app-server serves ACP from the mount — no
+  extraction, no ~850 MB duplicate; private 0700 base, allowlist helper env,
+  whole-line mount validation, ordered teardown (app-server → helper → mount-gone →
+  base), zero orphans.
+- Fail-loud lifecycle: every readiness/validation/FUSE failure exits 1 with the
+  AppImage, step, observed output and remediation; a lost mount ends the session with
+  an explicit cause and no respawn; SIGINT/SIGTERM/SIGHUP tear down cleanly; a failed
+  teardown outranks a signal (CR-01).
+- Version-ranked discovery: one pure-read stage evaluates every candidate, ranks by
+  version with a documented tie-break, rejects volatile `/tmp/.mount_*`, records
+  per-candidate misses, and deletes the extraction seam.
+- Override completeness: `--app-server`/`ZCODE_ACP_APP_SERVER` accepts directory,
+  binary, or packed `.AppImage` (literal paths absolutized); mount-safe PAT version.
+- Real-machine acceptance: production mount owner → real app-server → `session/create`
+  → zero leftovers, sha256 unchanged, 0 extraction entries added.
+- Docs and vm-e2e mirror the shipped contract (managed-mount row, ranking, FUSE
+  prerequisites, exact failure text).
+- Shipped alongside (merged during the milestone window): OMP print mode for Orca
+  text tasks (`261124-154`) and `-32003 session_busy` for concurrent prompts
+  (`261124-1ou`).
+
+### What Worked
+- The tracer wave (10-01) established the whole contract — mount owner, spawn seam,
+  binary e2e — before failure handling, discovery, and docs expanded on it.
+- A scripted fake AppImage runtime exercised the real exec/readiness/teardown path in
+  CI without FUSE; the real-machine tier stayed env-gated and ran once on the host.
+- The deep code review earned its cost: CR-01 (a signal masking a failed teardown)
+  was a real must-have violation caught before the verifier, with a RED/GREEN arm.
+- Running the "human-only" real-machine item as a machine-checkable guard cleared
+  `human_needed` honestly instead of asking the user to type a command.
+- Security (24 threats, 0 open) and nyquist (0 gaps) gates ran before the verifier,
+  so the phase closed with evidence rather than checkbox flips.
+
+### What Was Inefficient
+- The manager is cwd-bound: Phase 10 lived in a side worktree, so execution required
+  moving the branch into the session workspace before any GSD skill could see it.
+- The PR conflicted with master because parallel agents landed OMP text and
+  `-32003` while the phase branch waited; the merge replayed an architectural
+  conflict in `main.go` (mount lifecycle vs the new `startBackend`/text arm).
+- `internal/acpfront` `TestFullCycle` failed twice under load at wave gates and passed
+  on rerun and on the master baseline — a pre-existing ordering flake, not a phase
+  regression, but it cost a diagnosis detour.
+- The repo advertises merge-commit support but rejects merge commits; the first
+  merge attempt failed and the close had to switch to squash.
+- The verification fingerprint went stale when the PR merge changed `main.go`, so the
+  milestone readiness gate correctly blocked until the verifier re-ran — an extra
+  cycle caused by merging after verification.
+
+### Patterns Established
+- Manager/phase work should be moved into the session workspace (branch checked out
+  there) before dispatching, or the manager will report zero phases.
+- Before any PR: fetch master; if it advanced, merge it into the phase branch and run
+  the full gate before pushing — the PR's own conflict state is not the place to
+  discover it.
+- Real-machine acceptance is a guard, not a human ritual: when the host has FUSE and a
+  real AppImage, the test itself is the evidence.
+- Verification is content-addressed: any post-verification merge invalidates it;
+  re-run the verifier rather than hand-editing the report.
+- In a squash-only repo, tags belong on the post-merge master tip, not the PR head.
+
+### Key Lessons
+- A signal must never excuse a failed teardown: exit-cause precedence needs an explicit
+  predicate (`MountFailure`) and a binary test that makes teardown genuinely fail.
+- Parallel work on master is the norm here; plan for a merge before PR, not a clean
+  fast-forward.
+- The advisory gates (code review Info findings) must be recorded, not silently
+  dropped — `10-REVIEW-DISPOSITION.md` keeps IN-01..IN-07 traceable.
+- Squash merges collapse phase history; keep the phase branch or a backup until the
+  milestone close is merged and tagged.
+
+### Cost Observations
+- No api.z.ai spend: the real acceptance is scoped to mount → app-server →
+  `session/create` (D-14) and never sends a prompt.
+- Sessions: one manager session through execute/verify/close; one background verifier
+  re-run after the PR merge.
+- Repo state at close: 10 phases / 66 plans, 12 Go packages, ~63K lines of Go
+  (tests included), lint 0 issues, CI green.
+
