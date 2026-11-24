@@ -349,20 +349,31 @@ const (
 	StopCancelled StopReason = "cancelled"
 )
 
-// JSON-RPC error codes the error helpers map front errors onto. Plan
-// 04-05 sharpens the concurrency mapping (-32010) on top of these.
+// JSON-RPC error codes the error helpers map front errors onto.
 const (
 	CodeInvalidRequest = -32600
 	CodeInvalidParams  = -32602
 	CodeInternal       = -32603
 )
 
+// CodeSessionBusy is an implementation-defined server error (-32000..-32099
+// is the JSON-RPC 2.0 server-error band): -32003 is the ONE code Orca's
+// retryBusyPrompts gate retries for the omp card, paired with
+// ReasonSessionBusy in the data payload.
+const CodeSessionBusy = -32003
+
+// ReasonSessionBusy is the data.reason value of a concurrent-prompt
+// refusal (NewSessionBusy): Orca's retryBusyPrompts gate requires code
+// -32003 AND exactly this string before it queues a session/prompt retry,
+// so it is part of the wire contract, never a human-facing detail.
+const ReasonSessionBusy = "session_busy"
+
 // Error is a seam-carried front error with its wire code; the adapter
 // translates it onto the SDK's RequestError so the client sees the coded
-// JSON-RPC error. A non-empty Details rides the wire as
-// data:{"details": ...} (agent.go wireError) — the ONLY carriage some
-// clients classify on (the omp dialect's matchers read code -32603 +
-// data.details, Pitfall 1, plan 07-05).
+// JSON-RPC error. The optional payload rides the wire as data (agent.go
+// wireError): a non-empty Details becomes data:{"details": ...} and a
+// non-empty Reason becomes data:{"reason": ...}; both are empty by default,
+// so generic coded frames keep data null.
 type Error struct {
 	Code    int
 	Message string
@@ -371,11 +382,16 @@ type Error struct {
 	// except NewInternalWithData — the seam widens ONLY detail-carrying
 	// errors, so generic coded frames keep data null.
 	Details string
+
+	// Reason is the opt-in machine-readable data.reason payload: empty on
+	// every constructor except NewSessionBusy. Clients match the busy
+	// refusal on code plus this field, never on the human message.
+	Reason string
 }
 
 // NewInvalidRequest builds a -32600 front error (protocol-level request
-// violation — e.g. the D-05 second-prompt guard until 04-05 sharpens the
-// concurrency mapping).
+// violation — e.g. an unknown session id, or a prompt targeting a session
+// that is closing or closed).
 func NewInvalidRequest(format string, args ...any) *Error {
 	return &Error{Code: CodeInvalidRequest, Message: fmt.Sprintf(format, args...)}
 }
@@ -403,6 +419,19 @@ func NewInternalWithData(format string, args ...any) *Error {
 	details := fmt.Sprintf(format, args...)
 
 	return &Error{Code: CodeInternal, Message: details, Details: details}
+}
+
+// NewSessionBusy builds a -32003 front error whose payload rides the wire
+// as data:{"reason": "session_busy"} — the concurrent-prompt refusal shape
+// Orca's retryBusyPrompts gate retries (omp card only: code -32003 AND
+// data.reason "session_busy", the message text is never matched). The
+// message is the stable human-readable busy text; Details stays empty.
+func NewSessionBusy(format string, args ...any) *Error {
+	return &Error{
+		Code:    CodeSessionBusy,
+		Message: fmt.Sprintf(format, args...),
+		Reason:  ReasonSessionBusy,
+	}
 }
 
 // Error implements the error interface with the plain message.

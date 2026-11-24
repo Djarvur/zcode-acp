@@ -10,12 +10,15 @@ package acpfront_test
 //	  any post-cancel updates precede the response frame (the spec rule:
 //	  updates may follow session/cancel but MUST precede the response).
 //	TestSecondPromptRejected: a second prompt while a turn is active
-//	  answers ONE clean invalid-request (-32600) error with the stable
-//	  concurrent-prompt message — from BOTH guard layers (the front-wide
+//	  answers the ONE clean session-busy refusal — JSON-RPC -32003 with
+//	  the stable concurrent-prompt message and data exactly
+//	  {"reason":"session_busy"} — from BOTH guard layers (the front-wide
 //	  turn slot and the machine's ErrTurnActive, whose backend-refusal
-//	  leg is the numeric -32010 mapping, message text never matched) —
+//	  leg is the numeric -32010 mapping, message text never matched);
 //	  never a hang, never -32603 internal noise, never a second
-//	  concurrent turn on the wire.
+//	  concurrent turn on the wire. -32003 plus data.reason is the shape
+//	  Orca's retryBusyPrompts gate retries; the message stays stable for
+//	  humans but is never matched.
 //	TestCancelAfterCompleteNoOp: a cancel arriving after the prompt
 //	  already answered produces no second response and no error frame —
 //	  the SDK notification is consumed and the machine's idempotent
@@ -29,6 +32,7 @@ package acpfront_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -171,19 +175,23 @@ func TestCancelMidTurn(t *testing.T) {
 	assertSingleSend(t, tr, "the turn ran once")
 }
 
-// TestSecondPromptRejected locks the ONE invalid-request rejection surface
-// for concurrent prompts (D-05): whatever guard layer fires, the client sees
-// the same -32600 class and the same stable message — never a hang, never
-// -32603 internal noise, never a second concurrent turn on the wire.
+// TestSecondPromptRejected locks the ONE session-busy rejection surface for
+// concurrent prompts (D-05): whatever guard layer fires, the client sees the
+// same -32003 code, the same stable message and data.reason session_busy —
+// never a hang, never -32603 internal noise, never a second concurrent turn
+// on the wire.
 func TestSecondPromptRejected(t *testing.T) {
 	t.Run("front turn slot held", testFrontSlotRejection)
 	t.Run("backend -32010 refusal mapped", testBackendRefusalRejection)
 }
 
-// assertRejectedInvalidRequest checks one prompt error against the stable
-// rejection surface: a coded JSON-RPC error in the invalid-request class
-// carrying the concurrent-prompt message verbatim.
-func assertRejectedInvalidRequest(t *testing.T, err error) {
+// assertRejectedSessionBusy checks one prompt error against the stable
+// concurrent-prompt refusal surface: a coded JSON-RPC -32003 error carrying
+// the busy message verbatim and data exactly {"reason":"session_busy"},
+// with the raw agent->client frame proving the same shape on the wire. Code
+// plus data.reason is the contract Orca's retryBusyPrompts gate reads; the
+// message is never matched.
+func assertRejectedSessionBusy(t *testing.T, lines []TeeLine, err error) {
 	t.Helper()
 
 	if err == nil {
@@ -195,14 +203,60 @@ func assertRejectedInvalidRequest(t *testing.T, err error) {
 		t.Fatalf("rejection error = %T (%v), want a coded JSON-RPC RequestError", err, err)
 	}
 
-	if reqErr.Code != acpport.CodeInvalidRequest {
-		t.Fatalf("rejection code = %d, want %d (invalid-request class); message %q",
-			reqErr.Code, acpport.CodeInvalidRequest, reqErr.Message)
+	if reqErr.Code != acpport.CodeSessionBusy {
+		t.Fatalf("rejection code = %d, want %d (session-busy class); message %q",
+			reqErr.Code, acpport.CodeSessionBusy, reqErr.Message)
 	}
 
 	if reqErr.Message != turnActiveMessage {
 		t.Fatalf("rejection message = %q, want the one stable surface %q", reqErr.Message, turnActiveMessage)
 	}
+
+	assertBusyData(t, reqErr.Data, "SDK-decoded RequestError")
+
+	frame := teeBusyError(t, lines)
+	if frame.Error.Code != acpport.CodeSessionBusy {
+		t.Fatalf("wire rejection code = %d, want %d (session-busy class)",
+			frame.Error.Code, acpport.CodeSessionBusy)
+	}
+
+	assertBusyData(t, frame.Error.Data, "raw JSON-RPC frame")
+}
+
+// assertBusyData decodes one carrier's data payload and requires exactly
+// {"reason":"session_busy"} — no extra keys (the client matches the reason
+// string, so an invented sibling field would be dead wire weight at best).
+func assertBusyData(t *testing.T, raw json.RawMessage, what string) {
+	t.Helper()
+
+	var data map[string]string
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatalf("decode %s busy data: %v (%s)", what, err, raw)
+	}
+
+	if len(data) != 1 || data["reason"] != acpport.ReasonSessionBusy {
+		t.Fatalf("%s busy data = %v, want exactly {reason: %s}", what, data, acpport.ReasonSessionBusy)
+	}
+}
+
+// teeBusyError finds the ONE agent->client -32003 frame on the tee and
+// decodes it. Flows that also carry other coded frames (a fanned-in -32021
+// permission cancel races this refusal) stay unambiguous: the busy refusal
+// is the only -32003 this front emits, so the code itself identifies it.
+func teeBusyError(t *testing.T, lines []TeeLine) teeErrorFrame {
+	t.Helper()
+
+	indexes := teeLineIndexes(lines, "in", `"code":-32003`)
+	if len(indexes) != 1 {
+		t.Fatalf("tee records %d agent->client -32003 frame(s), want exactly 1", len(indexes))
+	}
+
+	var frame teeErrorFrame
+	if err := json.Unmarshal([]byte(lines[indexes[0]].JSON), &frame); err != nil {
+		t.Fatalf("decode busy error frame: %v (%s)", err, lines[indexes[0]].JSON)
+	}
+
+	return frame
 }
 
 // testFrontSlotRejection rides the cancel-mid-turn corpus: prompt #1 holds
@@ -227,7 +281,7 @@ func testFrontSlotRejection(t *testing.T) {
 		SessionId: acp.SessionId(sid),
 		Prompt:    []acp.ContentBlock{acp.TextBlock("second")},
 	})
-	assertRejectedInvalidRequest(t, err)
+	assertRejectedSessionBusy(t, h.ACPLines(), err)
 
 	// The displaced prompt still resolves as the cancelled SUCCESS (the SDK
 	// cancels it when the second prompt registers — registerPrompt — and the
@@ -254,8 +308,9 @@ func testFrontSlotRejection(t *testing.T) {
 // slot is FREE but the app-server refuses the send with the dialect §6
 // concurrency guard (-32010); the machine maps the numeric code to
 // ErrTurnActive (never the message text) and the front must surface the same
-// ONE invalid-request rejection the slot path answers — the RED target: the
-// internal-class mapping answers -32603 with the wrapped transport noise.
+// ONE session-busy refusal the slot path answers — -32003 with
+// data.reason session_busy, so the client's busy-retry gate engages instead
+// of the wrapped -32603 transport noise.
 func testBackendRefusalRejection(t *testing.T) {
 	h := newTracerFront(t, "send-refused-32010")
 
@@ -272,7 +327,7 @@ func testBackendRefusalRejection(t *testing.T) {
 		SessionId: acp.SessionId(sid),
 		Prompt:    []acp.ContentBlock{acp.TextBlock("refused")},
 	})
-	assertRejectedInvalidRequest(t, err)
+	assertRejectedSessionBusy(t, h.ACPLines(), err)
 
 	tr, trErr := h.Transcript(t)
 	if trErr != nil {
@@ -452,13 +507,13 @@ func TestCancelFanInOnlyWhenSlotHeld(t *testing.T) {
 	// The SDK displacement: the second prompt's registration cancels turn
 	// 1's SDK ctx — the fan-in goroutine machine.Cancels turn 1 (its
 	// genuine arm) AND, under the fixed contract, fans its pending bridge
-	// in; the second prompt itself is rejected by the held slot (one clean
-	// invalid-request).
+	// in; the second prompt itself is rejected by the held slot (the one
+	// clean -32003 session-busy refusal).
 	_, err := h.client.Prompt(ctx, acp.PromptRequest{
 		SessionId: acp.SessionId(sid),
 		Prompt:    []acp.ContentBlock{acp.TextBlock("second")},
 	})
-	assertRejectedInvalidRequest(t, err)
+	assertRejectedSessionBusy(t, h.ACPLines(), err)
 
 	// The displaced turn resolved cancelled — exactly once, as the SUCCESS
 	// stopReason (D-05; the fan-in adds no second reply and no -32800).
@@ -619,7 +674,7 @@ func TestCancelFanInStaleArmSkips(t *testing.T) {
 		SessionId: acp.SessionId(sid),
 		Prompt:    []acp.ContentBlock{acp.TextBlock("second")},
 	})
-	assertRejectedInvalidRequest(t, err)
+	assertRejectedSessionBusy(t, h.ACPLines(), err)
 
 	outcome := waitPermissionOutcome(t, prompt1Done)
 

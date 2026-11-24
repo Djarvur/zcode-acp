@@ -1051,7 +1051,8 @@ func assertPromptContentJoin(t *testing.T, req acp.PromptRequest) {
 }
 
 // assertPromptCodedErrors checks the error-coding table: seam
-// invalid-request codes -32600, seam and raw internal errors code -32603.
+// invalid-request codes -32600, the session-busy refusal -32003, and seam
+// and raw internal errors code -32603.
 func assertPromptCodedErrors(t *testing.T, req acp.PromptRequest) {
 	t.Helper()
 
@@ -1060,7 +1061,8 @@ func assertPromptCodedErrors(t *testing.T, req acp.PromptRequest) {
 		frontErr error
 		wantCode int
 	}{
-		{"invalid request", acpport.NewInvalidRequest("a prompt is already running for this session"), -32600},
+		{"invalid request", acpport.NewInvalidRequest("unknown session: sess_x"), -32600},
+		{"session busy", acpport.NewSessionBusy("a prompt is already running for this session"), -32003},
 		{"internal", acpport.NewInternal("backend session send failed"), -32603},
 		{"raw error is coded internal", errRawFront, -32603},
 	}
@@ -1084,6 +1086,134 @@ func assertPromptCodedErrors(t *testing.T, req acp.PromptRequest) {
 				t.Fatalf("error code = %d, want %d", rerr.Code, tt.wantCode)
 			}
 		})
+	}
+}
+
+// TestSessionBusyWireCarriage pins the -32003 session-busy carriage end to
+// end: the seam constructor's fields, the adapter mapping (code -32003 with
+// data decoding to exactly {"reason":"session_busy"}), and the unchanged
+// carriages of the other constructors (details on -32603, no data on
+// -32600). Orca's retryBusyPrompts gate matches code plus data.reason, never
+// the message, so the data shape is the contract under test.
+func TestSessionBusyWireCarriage(t *testing.T) {
+	t.Run("constructor fields", func(t *testing.T) {
+		busyErr := acpport.NewSessionBusy("busy: %s", "turn")
+
+		if busyErr.Code != -32003 || busyErr.Message != "busy: turn" || busyErr.Reason != "session_busy" {
+			t.Fatalf("constructor fields = (%d, %q, %q), want (-32003, %q, session_busy)",
+				busyErr.Code, busyErr.Message, busyErr.Reason, "busy: turn")
+		}
+
+		if busyErr.Details != "" {
+			t.Fatalf("busy constructor Details = %q, want empty", busyErr.Details)
+		}
+	})
+
+	t.Run("adapter maps to -32003 with exactly data.reason", assertSessionBusyWireCarriage)
+	t.Run("details carriage unchanged", assertDetailsWireCarriage)
+	t.Run("invalid request keeps no data", assertInvalidRequestNoData)
+}
+
+// assertSessionBusyWireCarriage drives one NewSessionBusy refusal through
+// the adapter and pins the client-observed shape: *acp.RequestError code
+// -32003, the message verbatim, and data decoding to exactly one key,
+// reason "session_busy".
+func assertSessionBusyWireCarriage(t *testing.T) {
+	t.Helper()
+
+	const busyMsg = "another prompt is already running (this agent runs one turn at a time)"
+
+	h := newScriptedHandlers()
+	h.promptErr = acpport.NewSessionBusy(busyMsg)
+
+	_, err := acpport.NewAgent(h).Prompt(context.Background(), promptJoinProbe())
+	if err == nil {
+		t.Fatal("a session-busy refusal must fail the prompt, got success")
+	}
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("busy error must surface as a coded RequestError, got %T: %v", err, err)
+	}
+
+	if rerr.Code != -32003 {
+		t.Fatalf("busy code = %d, want -32003", rerr.Code)
+	}
+
+	if rerr.Message != busyMsg {
+		t.Fatalf("busy message = %q, want %q", rerr.Message, busyMsg)
+	}
+
+	var data map[string]string
+	if jsonErr := json.Unmarshal(rerr.Data, &data); jsonErr != nil {
+		t.Fatalf("decode busy data: %v (%s)", jsonErr, rerr.Data)
+	}
+
+	if len(data) != 1 || data["reason"] != "session_busy" {
+		t.Fatalf("busy data = %v, want exactly {reason: session_busy}", data)
+	}
+}
+
+// assertDetailsWireCarriage pins the pre-existing detail carriage: a
+// NewInternalWithData refusal still answers code -32603 with data decoding
+// to exactly {"details": text} — the busy addition must not widen or drop
+// it.
+func assertDetailsWireCarriage(t *testing.T) {
+	t.Helper()
+
+	const details = "No model selected."
+
+	h := newScriptedHandlers()
+	h.promptErr = acpport.NewInternalWithData(details)
+
+	_, err := acpport.NewAgent(h).Prompt(context.Background(), promptJoinProbe())
+	if err == nil {
+		t.Fatal("a detail-carrying refusal must fail the prompt, got success")
+	}
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("detail error must surface as a coded RequestError, got %T: %v", err, err)
+	}
+
+	if rerr.Code != -32603 {
+		t.Fatalf("detail code = %d, want -32603", rerr.Code)
+	}
+
+	var data map[string]string
+	if jsonErr := json.Unmarshal(rerr.Data, &data); jsonErr != nil {
+		t.Fatalf("decode detail data: %v (%s)", jsonErr, rerr.Data)
+	}
+
+	if len(data) != 1 || data["details"] != details {
+		t.Fatalf("detail data = %v, want exactly {details: %q}", data, details)
+	}
+}
+
+// assertInvalidRequestNoData pins the -32600 carriage: an invalid-request
+// refusal keeps code -32600 and no data payload at all.
+func assertInvalidRequestNoData(t *testing.T) {
+	t.Helper()
+
+	h := newScriptedHandlers()
+	h.promptErr = acpport.NewInvalidRequest("unknown session: sess_x")
+
+	_, err := acpport.NewAgent(h).Prompt(context.Background(), promptJoinProbe())
+	if err == nil {
+		t.Fatal("an invalid-request refusal must fail the prompt, got success")
+	}
+
+	var rerr *acp.RequestError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("invalid-request error must surface as a coded RequestError, got %T: %v", err, err)
+	}
+
+	if rerr.Code != -32600 {
+		t.Fatalf("invalid-request code = %d, want -32600", rerr.Code)
+	}
+
+	if len(rerr.Data) != 0 {
+		t.Fatalf("invalid-request data = %s, want no payload", rerr.Data)
 	}
 }
 

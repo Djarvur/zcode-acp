@@ -283,6 +283,31 @@ Ordering honesty: the startup order initialize → session/new is the observed c
 connection initializes before any session call can reference it) and is load-bearing; the order
 among per-turn methods is user-action driven, not fixed.
 
+### Agent-side busy contract (-32003 / session_busy)
+
+The wrapper runs one turn at a time front-wide — the app-server event stream routes by
+turnId only, so a second concurrent turn would make delta routing ambiguous — and the
+`/model` slash-command form is a prompt turn, so it passes the same guard. A
+`session/prompt` that arrives while a turn is active is **refused, never queued**: the
+answer is JSON-RPC error code `-32003` with the human-readable busy message and `data`
+exactly `{"reason":"session_busy"}`. The client matches only the code plus
+`data.reason`, never the message text (source precision in the per-turn
+`session/prompt` bullet above). This is the one shape the client's `retryBusyPrompts`
+gate retries (omp only; 1 s doubling to a 5 s cap; a client cancel during the wait
+resolves `cancelled`), so a busy refusal carried in any other code or field is
+surfaced to the user instead of engaging the queue.
+
+Every other card-side refusal keeps its established carriage: invalid-request `-32600`
+with no data payload (an unknown session id, or a prompt targeting a session that is
+closing or closed), or `-32603` with `data.details` for the string contracts (see
+String contracts). Only the concurrent-prompt refusal uses `-32003`.
+
+Implementation note: `internal/acpport.NewSessionBusy` builds the error (code
+`-32003`, `ReasonSessionBusy`), the same package's `wireError` translates it onto the
+wire (`data.reason`), and `internal/acpfront/front.go` routes all three
+concurrent-prompt rejection sites through it: the front-wide turn slot, the machine's
+`ErrTurnActive` (the backend `-32010` refusal), and the `/model` mid-turn busy gate.
+
 ## Full ACP method range the client sends
 
 Complete call-site inventory of this build's ACP client stack [V-SRC
@@ -357,8 +382,10 @@ src/main/acp/acp-dialects/omp-dialect.ts @v1.4.262 — prefixes #11,141,143, equ
 Wire detail all of the above depend on: these matchers read the error **detail** extracted only
 from JSON-RPC errors with **code -32603** whose `data.details` is a string — a refusal carried
 in any other code or field is invisible to them (repo
-src/main/acp/acp-dialects/omp-dialect.ts#126-130 @v1.4.262). The wrapper must emit its refusals
-as -32603 with `data.details` set.
+src/main/acp/acp-dialects/omp-dialect.ts#126-130 @v1.4.262). The wrapper must emit the
+string-contract refusals above as -32603 with `data.details` set; the concurrent-prompt
+refusal is the one exception — it uses -32003 with `data.reason` (see Agent-side busy
+contract).
 
 ## Client capabilities
 
@@ -385,7 +412,9 @@ src/main/acp/session/acp-structured-acquire.ts#112 @v1.4.262]:
   (`compaction failed …` → failed/skipped outcomes) (repo
   src/main/acp/launch/acp-launch-contract.ts#61-64 + src/main/acp/acp-dialects/omp-dialect.ts#96-108 @v1.4.262).
 - `retryBusyPrompts` is enabled for `omp` — the client retries `session/prompt` **only** on the
-  -32003 `session_busy` refusal, 1 s doubling to a 5 s cap (see Load-bearing method set).
+  -32003 `session_busy` refusal, 1 s doubling to a 5 s cap (see Load-bearing method set); the
+  wrapper therefore emits exactly that -32003 / `data.reason:"session_busy"` shape on a
+  concurrent prompt (see Agent-side busy contract).
 - Card-side capability set the client derives for `omp`: `rewind:false`, `fork:"tip"` (transcript
   import at the fork tip), `compact:true`, `compactInstructions:true`, `threadGoal:false`,
   `contextUsage:true`, `imagePrompts:true`, `steering:"queue"`,
