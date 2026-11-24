@@ -32,7 +32,9 @@ type dedupeKey struct {
 // dedupeEntry is one claimed (method, requestId): pending while the
 // primary's handler runs, then a resolved tombstone until its TTL elapses
 // (in-flight re-announce catch). The value-in-map is the entry's TTL
-// expiry — the bounded map's per-entry eviction clock (T-5-01).
+// expiry — the bounded map's per-entry eviction clock (T-5-01). A pending
+// entry's expiry is refreshed by every joined re-announce (claim), so the
+// clock measures silence from the server, not the human's answer latency.
 type dedupeEntry struct {
 	expires  time.Time
 	resolved bool
@@ -65,6 +67,13 @@ func newDedupeTable() *dedupeTable {
 // caller joined an existing entry (true — pending OR resolved tombstone:
 // both mean the set is already owned) or is the fresh primary (false).
 // Expired entries are swept first — the bounded map's TTL eviction.
+//
+// A join into a PENDING entry refreshes its TTL: the server re-announces a
+// set it still holds, so every join is proof the ask is alive and the human
+// dialog must not expire under it (the requestUserInput row has no policy
+// deadline, so ttl is only the wedged-primary backstop — see dedupeTTL).
+// A resolved tombstone is never refreshed: it is post-answer wire slack, and
+// extending it would delay its sweep indefinitely.
 func (t *dedupeTable) claim(method, requestID string, ttl time.Duration) bool {
 	now := t.now()
 
@@ -75,7 +84,11 @@ func (t *dedupeTable) claim(method, requestID string, ttl time.Duration) bool {
 
 	key := dedupeKey{method: method, requestID: requestID}
 
-	if _, joined := t.entries[key]; joined {
+	if ent, joined := t.entries[key]; joined {
+		if !ent.resolved {
+			t.entries[key] = dedupeEntry{expires: now.Add(ttl)}
+		}
+
 		return true
 	}
 
@@ -129,8 +142,10 @@ func (t *dedupeTable) len() int {
 }
 
 // dedupeTTL is a pending entry's time-to-live: the policy deadline plus
-// grace. A zero deadline (no deadline policy) uses the router default so
-// no entry is immortal.
+// grace. A zero deadline (no deadline policy) uses the router default so no
+// entry is immortal on its own — a human dialog outlives that window by the
+// join refresh in claim, not by an unbounded TTL, so an entry whose server
+// stopped re-announcing still evicts on schedule.
 func dedupeTTL(deadline time.Duration) time.Duration {
 	if deadline <= 0 {
 		deadline = zcode.RouterDefaultDeadline
