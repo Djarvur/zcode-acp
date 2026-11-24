@@ -4,10 +4,10 @@ milestone: v0.23.0
 milestone_name: Mount-First AppImage Backend
 status: completed
 stopped_at: Phase 10 complete — all phases complete
-last_updated: "2026-11-24T05:54:01.572Z"
+last_updated: "2026-11-24T18:21:48.000Z"
 last_activity: 2026-11-24
-last_activity_desc: Milestone v0.23.0 completed and archived
-state_head: 68faa1a773ce9a38c265b534a3594fe170d918fb
+last_activity_desc: "Quick task 261124-tj2 completed — ask-user dialog no longer repeats on re-announce"
+state_head: 81527f02382af88cbb5610b02287ff258f4bb251
 progress:
   total_phases: 1
   completed_phases: 1
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-24)
 Phase: Milestone v0.23.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-24 — Milestone v0.23.0 completed and archived
+Last activity: 2026-11-24 — Completed quick task 261124-tj2: refresh the re-announce dedupe entry so the ask-user dialog stops repeating every 20 s
 
 ## Performance Metrics
 
@@ -326,6 +326,7 @@ None yet.
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
+| 261124-tj2 | Refresh the re-announce dedupe entry while an ask is pending, so one requestUserInput ask renders ONE dialog for a slow human answer (the entry expired at 15 s + 5 s grace and re-opened the form every 20 s) | 2026-11-24 | 81527f0 | [261124-tj2-stop-askuser-dialog-repeat-on-reannounce](./quick/261124-tj2-stop-askuser-dialog-repeat-on-reannounce/) |
 
 ## Deferred Items
 
