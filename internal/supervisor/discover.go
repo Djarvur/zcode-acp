@@ -1188,11 +1188,18 @@ func defaultDpkgQuery(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("dpkg-query -W zcode: %w", err)
 	}
-	if !strings.Contains(string(state), " install ok installed") {
+
+	// The real output for an installed package is exactly
+	// "install ok installed" — no leading space — so a space-prefixed
+	// substring can never match (WR-01). Compare the status fields instead:
+	// the first word is the desired state and the last is the current one.
+	fields := strings.Fields(string(state))
+	if len(fields) < 3 || fields[0] != "install" || fields[2] != "installed" {
 		// rc-state remnant (deinstall ok config-files) or otherwise removed —
 		// the empty file list makes the probe fall through to opt-path (:30).
 		return "", nil
 	}
+
 	files, err := exec.CommandContext(ctx, "dpkg", "-L", "zcode").Output()
 	if err != nil {
 		return "", fmt.Errorf("dpkg -L zcode: %w", err)
