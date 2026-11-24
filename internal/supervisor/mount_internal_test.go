@@ -9,6 +9,9 @@
 package supervisor
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -16,6 +19,10 @@ import (
 // mountEnvPathFallback is the documented PATH the helper receives when the
 // parent carries none (the standard system binary dirs).
 const mountEnvPathFallback = "/usr/local/bin:/usr/bin:/bin"
+
+// errMountFailureUnrelated is the predicate test's non-sentinel error (err113:
+// static anywhere it is compared).
+var errMountFailureUnrelated = errors.New("unrelated")
 
 // TestMountEnv pins the helper environment: exactly the allowlist, with the
 // documented PATH fallback when the parent carries none.
@@ -74,5 +81,41 @@ func testMountEnvPathFallback(t *testing.T) {
 
 	if len(got) != 3 {
 		t.Fatalf("helperEnv = %v, want the 3-variable allowlist", got)
+	}
+}
+
+// TestMountFailure pins the cancellation-vs-structural predicate the wrapper
+// uses to decide whether a signal may mask a mount acquisition failure
+// (CR-01): only a readiness error whose sole failure is the caller's
+// cancellation is a clean shutdown; any structural sentinel — including a
+// teardown error joined into a cancelled readiness error — must surface.
+func TestMountFailure(t *testing.T) {
+	readinessCancelled := fmt.Errorf("%w: %w", errMountReady, context.Canceled)
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", errMountFailureUnrelated, false},
+		{"pure readiness cancellation", readinessCancelled, false},
+		{"readiness deadline", fmt.Errorf("%w: %w", errMountReady, context.DeadlineExceeded), false},
+		{"readiness failure", fmt.Errorf("%w: helper exited", errMountReady), true},
+		{"spawn failure", fmt.Errorf("%w: no such file", errMountSpawn), true},
+		{"tree failure", fmt.Errorf("%w: missing zcode", errMountTree), true},
+		{"base failure", fmt.Errorf("%w: unusable TMPDIR", errMountBase), true},
+		{"install failure", fmt.Errorf("%w: not a packed AppImage", errMountInstall), true},
+		{"teardown failure", fmt.Errorf("%w: helper not reaped", errMountTeardown), true},
+		{"cancelled readiness joined with a failed teardown", errors.Join(readinessCancelled,
+			fmt.Errorf("%w: mount still present", errMountTeardown)), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MountFailure(tc.err); got != tc.want {
+				t.Fatalf("MountFailure(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

@@ -126,6 +126,35 @@ var (
 	errMountTeardown = errors.New("zcode: mount: teardown incomplete")
 )
 
+// MountFailure reports whether err carries a structural mount failure rather
+// than a bare caller cancellation: an unusable install/private base, a helper
+// spawn failure, an unusable mounted tree, or an incomplete teardown. A
+// readiness error that wraps only the caller's cancellation is NOT a mount
+// failure — a signal during readiness may exit cleanly — but the same
+// cancellation joined with a failed teardown is, because errors.Is still sees
+// the teardown sentinel through the join. PrepareMount deliberately joins the
+// teardown error into the acquisition error; callers must not discard it just
+// because the signal context is cancelled (CR-01).
+func MountFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, errMountInstall) || errors.Is(err, errMountBase) ||
+		errors.Is(err, errMountSpawn) || errors.Is(err, errMountTree) ||
+		errors.Is(err, errMountTeardown) {
+		return true
+	}
+
+	if !errors.Is(err, errMountReady) {
+		return false
+	}
+
+	// A readiness failure that only reports the caller's cancellation is a
+	// clean signal shutdown, not a mount failure.
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
 // MountOpts tunes one mount lifecycle. Zero values take production defaults;
 // tests inject millisecond values so no test ever waits on the wall clock.
 type MountOpts struct {

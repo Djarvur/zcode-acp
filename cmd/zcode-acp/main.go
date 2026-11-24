@@ -706,13 +706,18 @@ func run(cfg config) error {
 	// shutdown (order is load-bearing: app-server first, helper second).
 	inst, mount, err := acquireMount(signalCtx, inst)
 	if err != nil {
-		if signalCtx.Err() != nil {
+		// A signal only excuses the failure when the acquisition failed FOR
+		// the cancellation: PrepareMount joins a failed teardown into the
+		// acquisition error so a live mount is never swallowed (MNT-03,
+		// T-10-04/T-10-09), and that error must surface here as exit 1 even
+		// though the signal context is cancelled (CR-01).
+		if signalCtx.Err() != nil && !supervisor.MountFailure(err) {
 			slog.Info("zcode-acp: signal received during mount acquisition; shutting down")
 
 			return nil
 		}
 
-		return err
+		return fmt.Errorf("mount acquisition: %w", err)
 	}
 
 	defer stopMountBackstop(mount)

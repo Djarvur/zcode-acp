@@ -271,6 +271,7 @@ const (
 	e2eFakeHelperPID    = "helper.pid"
 	e2eFakeAppServerPID = "app-server.pid"
 	e2eFakeTermRecord   = "term-record.txt"
+	e2eFakeLeakPID      = "leak.pid"
 
 	// e2eMountRecordWait bounds the wait for the helper's mount line; a
 	// wrapper that treats the AppImage as the app-server binary never mounts
@@ -551,6 +552,7 @@ const (
 	e2eFailureMissingTree = "missing-tree"
 	e2eFailureNoFuse      = "no-fuse"
 	e2eFailureNoLine      = "no-line"
+	e2eFailureIgnoreTerm  = "ignore-term"
 )
 
 // Binary-tier failure-want constants.
@@ -662,8 +664,10 @@ func TestAppImageMountFailures(t *testing.T) {
 func e2eWriteFakeAppImageFailure(t *testing.T, fixture, variant string) string {
 	t.Helper()
 
-	body := strings.ReplaceAll(e2eFakeAppImageFailureScript(variant), "@@PID@@",
-		filepath.Join(fixture, e2eFakeHelperPID))
+	body := strings.NewReplacer(
+		"@@PID@@", filepath.Join(fixture, e2eFakeHelperPID),
+		"@@LEAK_PID@@", filepath.Join(fixture, e2eFakeLeakPID),
+	).Replace(e2eFakeAppImageFailureScript(variant))
 
 	appImage := filepath.Join(fixture, e2eFakeAppImageName)
 	if err := os.WriteFile(appImage, []byte(body), 0o750); err != nil {
@@ -695,6 +699,21 @@ mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
 printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
 : > "$dir/resources/glm/zcode.cjs"
+while :; do sleep 0.05; done
+`
+	case e2eFailureIgnoreTerm:
+		// The readiness-teardown arm (CR-01): creates a tree but never prints
+		// the mount line, ignores TERM, and detaches a descendant into its own
+		// session. The descendant keeps the inherited stderr pipe open, so the
+		// helper's process tree can never be reaped within ReapDeadline and
+		// the signal-time teardown fails.
+		return preamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
+mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
+printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
+chmod 755 "$dir/zcode"
+: > "$dir/resources/glm/zcode.cjs"
+setsid sh -c 'echo $$ > "@@LEAK_PID@@"; exec sleep 30' &
+trap '' TERM
 while :; do sleep 0.05; done
 `
 	case e2eFailureBogusLine:
@@ -740,8 +759,9 @@ func e2eAssertNoMountBase(t *testing.T, root string) {
 // exit 0, leave zero orphans and zero stale mounts, and the fake transcript —
 // written only after the app-server's clean stdin-EOF drain — proves a
 // signal-derived spawn context never SIGKILLed the child. A signal during
-// mount readiness is a clean exit 0; a teardown that cannot prove the mount
-// gone exits 1 even when a signal was delivered.
+// mount readiness is a clean exit 0 when the teardown succeeds; a teardown
+// that cannot reap the helper or prove the mount gone exits 1 even when a
+// signal was delivered (CR-01).
 func TestAppImageMountSignal(t *testing.T) {
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
@@ -763,6 +783,10 @@ func TestAppImageMountSignal(t *testing.T) {
 
 	t.Run("signal during mount readiness", func(t *testing.T) {
 		e2eSignalDuringReadiness(t, agentBin)
+	})
+
+	t.Run("failed teardown during mount readiness outranks the signal", func(t *testing.T) {
+		e2eReadinessTeardownFailureBeatsSignal(t, agentBin)
 	})
 
 	t.Run("teardown failure outranks the signal", func(t *testing.T) {
@@ -872,6 +896,73 @@ func e2eSignalDuringReadiness(t *testing.T, agentBin string) {
 	e2eAssertPIDGone(t, filepath.Join(fixture, e2eFakeHelperPID), "mount helper")
 	e2eAssertNoMountBase(t, tmpRoot)
 	e2eAssertGonePath(t, filepath.Join(fixture, e2eFakeMountRecord), "the mount record")
+}
+
+// e2eReadinessTeardownFailureBeatsSignal proves the acquisition-failure
+// precedence (CR-01): the helper ignores TERM and detaches a descendant into
+// its own session, so the inherited stderr pipe never closes and the
+// readiness-time teardown cannot reap the helper within ReapDeadline. The
+// joined readiness+teardown failure must surface — exit 1 naming the AppImage,
+// the failing step, the remediation, and the incomplete teardown — even though
+// the signal context is cancelled; the teardown error is never swallowed.
+func e2eReadinessTeardownFailureBeatsSignal(t *testing.T, agentBin string) {
+	t.Helper()
+
+	fixture := t.TempDir()
+	tmpRoot := t.TempDir()
+	appImage := e2eWriteFakeAppImageFailure(t, fixture, e2eFailureIgnoreTerm)
+	leakPID := filepath.Join(fixture, e2eFakeLeakPID)
+
+	t.Cleanup(func() { e2eKillRecordedPID(leakPID) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), e2eCycleDeadline)
+	defer cancel()
+
+	wrapper := exec.CommandContext(ctx, agentBin, ompFlagAppServer, appImage)
+	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	wrapper.Env = append(os.Environ(), "TMPDIR="+tmpRoot)
+
+	stderrBuf := &e2eSyncBuffer{}
+	wrapper.Stderr = stderrBuf
+
+	t.Cleanup(e2eCleanupMountFixture(t, fixture))
+
+	_, _ = e2eStartWrapper(t, wrapper, stderrBuf)
+
+	e2eWaitPIDFile(t, filepath.Join(fixture, e2eFakeHelperPID), stderrBuf)
+	// The detached descendant must exist before the signal: it is what keeps
+	// the helper's stderr pipe open past the group SIGKILL.
+	e2eWaitPIDFile(t, leakPID, stderrBuf)
+
+	if sigErr := wrapper.Process.Signal(syscall.SIGTERM); sigErr != nil {
+		t.Fatalf("send SIGTERM during readiness: %v", sigErr)
+	}
+
+	e2eWaitExitCodeWithin(t, wrapper, e2eSignalExitWatchdog, 1)
+
+	stderr := stderrBuf.String()
+	for _, want := range []string{
+		appImage, e2eWantStepRead, "remediation:", "teardown incomplete",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q must carry %q (a failed readiness-time teardown must beat the signal)",
+				stderr, want)
+		}
+	}
+
+	e2eAssertNoMountBase(t, tmpRoot)
+}
+
+// e2eKillRecordedPID kills a PID the fixture recorded, when present. The
+// ignore-term fixture's detached descendant deliberately outlives the wrapper,
+// so its cleanup is unconditional (not only on test failure).
+func e2eKillRecordedPID(path string) {
+	pid := e2eReadPID(path)
+	if pid <= 0 {
+		return
+	}
+
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 // e2eTeardownFailureBeatsSignal proves the cause precedence: with SIGTERM
