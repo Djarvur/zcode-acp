@@ -1,0 +1,12 @@
+--- FAIL: TestConfigOptionUpdateWire (0.00s)
+    catalogupdate_test.go:65: sink(config options): acpport: unknown session note kind "config_options"
+2026/11/24 23:49:43 INFO connection closed cause="io: read/write on closed pipe"
+--- FAIL: TestAsyncSinkBinding (0.00s)
+    catalogupdate_test.go:85: construction returned without binding the asynchronous update sink
+2026/11/24 23:49:43 INFO connection closed cause="io: read/write on closed pipe"
+--- FAIL: TestAuthenticateRequestsCatalogRefresh (0.00s)
+    catalogupdate_test.go:110: refresh requests = 0, want 1 after successful authenticate
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpport	0.013s
+FAIL
+exitCode=1

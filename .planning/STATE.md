@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
 milestone: v0.23.0
-milestone_name: Mount-First AppImage Backend
 status: completed
 stopped_at: Phase 10 complete — all phases complete
-last_updated: "2026-11-24T18:21:48.000Z"
+last_updated: "2026-11-24T23:00:57.226Z"
 last_activity: 2026-11-24
-last_activity_desc: "Quick task 261124-tj2 completed — ask-user dialog no longer repeats on re-announce"
-state_head: 81527f02382af88cbb5610b02287ff258f4bb251
+last_activity_desc: Quick task 261124-tj2 completed — ask-user dialog no longer repeats on re-announce
+state_head: f79dc30f804472b6b641ba402d5511ece6dc13cf
 progress:
   total_phases: 1
   completed_phases: 1
   total_plans: 6
   completed_plans: 6
+milestone_name: Mount-First AppImage Backend
 current_phase: 10
 ---
 
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-24)
 Phase: Milestone v0.23.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-24 — Completed quick task 261124-tj2: refresh the re-announce dedupe entry so the ask-user dialog stops repeating every 20 s
+Last activity: 2026-11-25 — Completed quick task 261124-wlg: publish confirmed live ACP model catalogs through config_option_update
 
 ## Performance Metrics
 
@@ -327,6 +327,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 261124-tj2 | Refresh the re-announce dedupe entry while an ask is pending, so one requestUserInput ask renders ONE dialog for a slow human answer (the entry expired at 15 s + 5 s grace and re-opened the form every 20 s) | 2026-11-24 | 81527f0 | [261124-tj2-stop-askuser-dialog-repeat-on-reannounce](./quick/261124-tj2-stop-askuser-dialog-repeat-on-reannounce/) |
+| 261124-wlg | Publish confirmed live ACP model catalogs through config_option_update with bounded refresh, safe fallback, and transactional session lifecycle handling | 2026-11-25 | f79dc30 | [261124-wlg-implement-live-acp-model-catalog-refresh](./quick/261124-wlg-implement-live-acp-model-catalog-refresh/) |
 
 ## Deferred Items
 

@@ -1,0 +1,40 @@
+--- FAIL: TestRegistryCatalogPatchClassification (0.00s)
+    --- FAIL: TestRegistryCatalogPatchClassification/providers_registry (0.00s)
+        catalogrefresh_internal_test.go:31: registryCatalogPatch({"patch":{"providers":{"zai-api":{"models":["GLM-5.3"]}}}}) = false, want true
+--- FAIL: TestSnapshotForLiveCatalogSafety (0.00s)
+    --- FAIL: TestSnapshotForLiveCatalogSafety/preserve_listed_current (0.00s)
+        catalogrefresh_internal_test.go:75: snapshotForLiveCatalog ok = false, want true (merged=null)
+    --- FAIL: TestSnapshotForLiveCatalogSafety/confirmed_listed_fallback (0.00s)
+        catalogrefresh_internal_test.go:75: snapshotForLiveCatalog ok = false, want true (merged=null)
+    --- FAIL: TestSnapshotForLiveCatalogSafety/preserve_without_probe_current (0.00s)
+        catalogrefresh_internal_test.go:75: snapshotForLiveCatalog ok = false, want true (merged=null)
+2026/11/24 23:55:31 INFO acpfront: session closed session=sess_stress
+2026/11/24 23:55:31 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/24 23:55:33 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestCatalogPublicationCloseGate (2.01s)
+    --- FAIL: TestCatalogPublicationCloseGate/close_during_bounded_write (2.00s)
+        catalogrefresh_internal_test.go:140: publication never entered sink
+--- FAIL: TestCatalogPublicationFailureThenIdenticalRefresh (0.00s)
+    catalogrefresh_internal_test.go:196: identical refresh did not retry after failed write
+2026/11/24 23:55:33 INFO acpfront: session opened session=sess_a
+2026/11/24 23:55:33 INFO acpfront: session opened session=sess_b
+2026/11/24 23:55:33 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:34 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:34 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:34 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:35 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:35 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:36 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:36 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:36 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:37 WARN acpfront: no-delta reconcile poll failed session=sess_a err="zcode: wire error -32601: MethodNotFound"
+2026/11/24 23:55:37 WARN acpfront: no-delta reconcile window closed without the stored text; replying empty session=sess_a
+2026/11/24 23:55:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/24 23:55:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/24 23:55:42 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestLiveCatalogRefresh (9.02s)
+    catalogrefresh_test.go:119: missing exact catalog updates for sessions map[sess_a:{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_a","update":{"configOptions":[{"category":"model","currentValue":"zai-api/GLM-5.3","id":"model","name":"Model","options":[{"name":"5.3","value":"zai-api/GLM-5.3"},{"name":"5.4","value":"zai-api/GLM-5.4"}],"type":"select"}],"sessionUpdate":"config_option_update"}}} sess_b:{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_b","update":{"configOptions":[{"category":"model","currentValue":"zai-api/GLM-5.3","id":"model","name":"Model","options":[{"name":"5.3","value":"zai-api/GLM-5.3"},{"name":"5.4","value":"zai-api/GLM-5.4"}],"type":"select"}],"sessionUpdate":"config_option_update"}}}]; ACP lines: [{out {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientCapabilities":{"auth":{},"fs":{}},"protocolVersion":1}}} {in {"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},"sessionCapabilities":{"options":{}}},"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}}} {out {"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp/TestLiveCatalogRefresh2367020255/001","mcpServers":[]}}} {in {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_a","update":{"availableCommands":[{"description":"Switch the session model (provider/model, e.g. zai-api/GLM-5.3-Flash)","input":{"hint":"\u003cselector\u003e"},"name":"model"}],"sessionUpdate":"available_commands_update"}}}} {in {"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess_a"}}} {out {"jsonrpc":"2.0","id":3,"method":"session/new","params":{"cwd":"/tmp/TestLiveCatalogRefresh2367020255/002","mcpServers":[]}}} {in {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_b","update":{"availableCommands":[{"description":"Switch the session model (provider/model, e.g. zai-api/GLM-5.3-Flash)","input":{"hint":"\u003cselector\u003e"},"name":"model"}],"sessionUpdate":"available_commands_update"}}}} {in {"jsonrpc":"2.0","id":3,"result":{"sessionId":"sess_b"}}} {out {"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"prompt":[{"text":"change catalog","type":"text"}],"sessionId":"sess_a"}}} {in {"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn"}}}]
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	11.063s
+FAIL
+exitCode=1
