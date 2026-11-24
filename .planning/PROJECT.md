@@ -64,13 +64,20 @@ ACP-клиент может провести с ZCode полный ход end-to
 - ✓ Полный каталог моделей в `/model` и picker (v0.22.0 fix-set): 19 записей,
   provider labels на каждой, каталог сохраняется при switch и между ходами
   (create-snapshot несёт available, rebind — подтверждённый current)
+- ✓ Mount-first AppImage backend (Phase 10, v0.23.0): app-server запускается напрямую
+  из packed `.AppImage` через управляемый `--appimage-mount` helper — без распаковки и
+  дубликата на диске; discovery — единственная pure-read стадия, ранжирующая кандидатов
+  по версии (packed 4.0.0 побеждает stale unpacked 3.18.2), unversioned — miss, а не
+  last-resort; `--app-server`/env принимает directory/binary/packed с неизменным
+  flag-over-env приоритетом (MNT-01..06, DISC-01..04, VER-01..03; real-machine
+  mount→session/create acceptance, 30/30 must-haves)
 
 ### Active
 
-- [ ] Mount-first AppImage backend (v0.23.0): запуск app-server напрямую из packed
-  `.AppImage` через управляемый `--appimage-mount` helper — без распаковки и
-  дубликата на диске; discovery выбирает новейший backend по версии, чтобы старый
-  unpacked-слепок не пинил предыдущую версию (MNT-01..06, DISC-01..04, VER-01..03)
+- Нет активных требований — v0.23.0 закрыт; следующий milestone ещё не запланирован.
+  Кандидат на следующую работу (из `draft.txt`): очередь второго `session/prompt` и
+  отдача `-32003 session_busy` вместо invalid-request; quick task `261124-1ou` уже
+  стартовал в ветке `fix/acp-session-busy-32003`.
 
 (Вне milestone: пост-v1 пожелания живут в 07-REVIEW-DISPOSITION.md
 (IN-a..h, IN-02/03) и deferred-реестре STATE.md. Фазы 8–9 не имеют
@@ -158,6 +165,10 @@ wire-обоснованиями (nolint), 2 признанных deferred-пун
 | Слэш-каталог отдаётся на `session/new` одним `available_commands_update`, а не отдельным методом/по запросу | Клиент сканирует каталог при discovery в пределах 9 s; каталог — session-level nicety, не turn-update | ✓ Good — 139-item каталог в живой карточке (v0.21.0) |
 | `requestUserInput` бриджится в form-elicitation, ответ мапится в `{answers}` по тексту вопроса; deadline политики снят для bridged-ask | Orca нативно рендерит form-elicitation; merge-контракт диалекта ждёт answers по question text; человеческий диалог занимает минуты и не должен авто-отклоняться | ✓ Good — VM GUI + real-machine acceptance (v0.22.0) |
 | Полный каталог моделей собирается merge: create-snapshot несёт available, rebind — подтверждённый current | Backend сужает `settings.model.available` до текущего провайдера; без merge picker сжимается после switch | ✓ Good — 19 записей live-verified, сохраняется при переключении |
+| Mount helper env — allowlist by construction (PATH/HOME/TMPDIR); mount-строка принимается целиком только как absolute non-symlink `.mount_*` под private 0700 base; teardown: app-server → helper → mount-gone → base | Deny-list несостоятелен: ветка `APPIMAGE_EXTRACT_AND_RUN` в runtime предшествует mount-ветке; field-split пути ломает пробелы; порядок teardown — единственный без сирот | ✓ Good — Phase 10; fake-runtime e2e + real 4.0.0 mount, 0 survivors, sha256 unchanged |
+| Discovery — одна pure-read стадия с версионным ранжированием; unversioned packed/tree = miss, не last-resort; плохой новый кандидат не блокирует годный старый | Stale unpacked не должен пинить версию, но miss не должен превращаться в победителя; per-candidate miss-строки сохраняют диагностику | ✓ Good — packed 4.0.0 beats stale 3.18.2; tie-break documented and tested |
+| Packed override абсолютизируется (никогда PATH-resolve); volatile `/tmp/.mount_*` отвергается уже на probe; `desktopVersion` предпочитает `Install.Version`, basename — второй источник | Иначе `.AppImage` уйдёт в GUI-ветку, /tmp-мусор станет spawn root, а PAT-клиент отправит 0.0.0 | ✓ Good — Phase 10; real mount reports version=4.0.0 |
+| Real-machine acceptance ограничен mount→session/create (D-14); live prompt на 4.0.0 — отдельный milestone; extraction proof аддитивный (pre-existing extracts разрешены и сохраняются) | Protocol drift 4.0.0 — отдельная работа; blanket «parent clean» дал бы ложный fail на хосте с 3.18.2 extract | ✓ Good — real run PASS 5.45s, 0 added entries, 1 pre-existing retained |
 
 ## Evolution
 
@@ -177,4 +188,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-23 after v0.22.0 milestone*
+*Last updated: 2026-11-24 after Phase 10 (v0.23.0)*

@@ -5,9 +5,9 @@ milestone_name: Mount-First AppImage Backend
 current_phase: 10
 status: completed
 stopped_at: Phase 10 complete — all phases complete
-last_updated: "2026-11-24T01:25:46.569Z"
+last_updated: "2026-11-24T01:26:40.000Z"
 last_activity: 2026-11-24
-last_activity_desc: Phase 10 complete
+last_activity_desc: Phase 10 verified 30/30 must-haves; real-machine mount acceptance passed; v0.23.0 complete
 state_head: 555c475e9b46877b46824d2a8977ec3e9153015b
 progress:
   total_phases: 1
@@ -33,19 +33,19 @@ progress:[██████████] 100%
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-23)
+See: .planning/PROJECT.md (updated 2026-11-24)
 
 **Core value:** An ACP client can run a full turn end-to-end with ZCode — from `initialize` to streamed reply with tool-calls and permission requests — on a real z.ai account (api-key or OAuth coding plan), including client-rendered choice dialogs.
-**Current focus:** Phase 10 — Mount-First AppImage Backend
+**Current focus:** v0.23.0 complete — awaiting milestone close (or the next milestone)
 
 ## Current Position
 
-Phase: 10
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-11-24 — Phase 10 complete
+Phase: 10 (Mount-First AppImage Backend) — the only phase of v0.23.0
+Plan: 6/6 complete
+Status: Milestone v0.23.0 complete — verified passed (30/30 must-haves)
+Last activity: 2026-11-24 — Phase 10 verified; real 4.0.0 mount → session/create acceptance passed with zero leftovers; code review CR-01/WR-01 fixed
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -344,10 +344,12 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-24T00:27:21.855Z
-Stopped at: Phase 10 complete — all phases complete
+Last session: 2026-11-24T01:26:40.000Z
+Stopped at: Phase 10 complete — v0.23.0 all phases complete and verified passed
 Resume file: None
 
 ## Operator Next Steps
 
-- Execute Phase 10: `/gsd-execute-phase 10`
+- Close the milestone: `/gsd:complete-milestone` (archive v0.23.0, tag, retrospective)
+- Or start the next milestone: `/gsd:new-milestone`
+- Carry-over candidate: `261124-1ou` (concurrent-prompt → `-32003 session_busy`) already started in the `fix/acp-session-busy-32003` worktree
