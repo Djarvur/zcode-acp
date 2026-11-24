@@ -129,8 +129,8 @@ func TestConfigOptionsTranslator(t *testing.T) {
 		// thoughtLevel.available fallback list (with its off level) is NOT
 		// used while the bound model carries levels.
 		wantLevels := []acpport.SelectOptionDef{
-			{Value: corpusReasoningLevel, Name: "High", Description: "deep reasoning"},
-			{Value: reasoningLevelLow, Name: "Low"},
+			{Value: corpusReasoningLevel, Name: reasoningLabelHigh, Description: "deep reasoning"},
+			{Value: reasoningLevelLow, Name: reasoningLabelLow},
 		}
 		assertSelectOptions(t, thought.Options, wantLevels)
 	})
@@ -297,6 +297,39 @@ func TestConfigOptionsTranslator(t *testing.T) {
 				"(empty current omits the thought-level entry)", got)
 		}
 	})
+
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		current string
+	}{
+		{name: "thought-disabled alias snapshot still omits thought entirely", current: corpusReasoningLevel},
+		{name: "current-empty alias snapshot still omits thought entirely", enabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bound := acpfront.ModelRef{
+				ProviderID: reasoningSnapshotTargetProvider, ModelID: reasoningSnapshotTargetModel,
+			}
+			entry := cfgReasoningEntry(bound, reasoningLevelOff, corpusReasoningLevel)
+			entry.DefaultLevel = corpusReasoningLevel
+			raw := cfgReasoningCreateResult(t, &bound, nil, tc.current, tc.enabled, []acpfront.ModelEntry{entry},
+				[]acpfront.LevelEntry{
+					{Value: orcaThoughtEnabled, Label: orcaThoughtEnabled},
+					{Value: orcaThoughtDisabled, Label: orcaThoughtDisabled},
+				})
+
+			s, ok := acpfront.ParseSettings(json.RawMessage(raw))
+			if !ok {
+				t.Fatal("ParseSettings: the alias-era snapshot must parse ok")
+			}
+
+			got := acpfront.BuildConfigOptions(s)
+			if len(got) != 1 || got[0].ID != optionIDModel {
+				t.Fatalf("BuildConfigOptions = %+v, want the model entry only "+
+					"(no synthesized thought alias option)", got)
+			}
+		})
+	}
 
 	t.Run("a snapshot missing the thoughtLevel block omits the thought-level entry", func(t *testing.T) {
 		s, ok := acpfront.ParseSettings(json.RawMessage(`{

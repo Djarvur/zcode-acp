@@ -84,6 +84,18 @@ func newSetCfgFront(t *testing.T, sc *fake.Scenario) *FrontHarness {
 func openSetCfgSession(ctx context.Context, t *testing.T, h *FrontHarness) string {
 	t.Helper()
 
+	sid, _ := openSetCfgSessionWithOptions(ctx, t, h)
+
+	return sid
+}
+
+// openSetCfgSessionWithOptions also returns the initial advertised options so
+// omitted-select alias vectors can prove the translator hid thought_level.
+func openSetCfgSessionWithOptions(
+	ctx context.Context, t *testing.T, h *FrontHarness,
+) (string, []acp.SessionConfigOption) {
+	t.Helper()
+
 	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
@@ -97,7 +109,7 @@ func openSetCfgSession(ctx context.Context, t *testing.T, h *FrontHarness) strin
 		t.Fatal("session/new returned an empty session id")
 	}
 
-	return string(resp.SessionId)
+	return string(resp.SessionId), resp.ConfigOptions
 }
 
 // assertNoBackendMutation asserts the transcript carries NO
@@ -707,8 +719,17 @@ const (
 	reasoningSnapshotTarget         = reasoningSnapshotTargetProvider + "/" + reasoningSnapshotTargetModel
 	reasoningLevelMax               = "max"
 	reasoningLevelOff               = "off"
+	reasoningLabelMax               = "Max"
+	reasoningLabelHigh              = "High"
+	reasoningLabelLow               = "Low"
 	reasoningLabelOff               = "Off"
 	reasoningSnapshotLabelKey       = "label"
+	reasoningSnapshotCurrentKey     = "current"
+	reasoningSnapshotLastUsedKey    = "lastUsed"
+	reasoningBindingCurrent         = "current"
+	reasoningBindingLastUsed        = "lastUsed"
+	orcaThoughtEnabled              = "enabled"
+	orcaThoughtDisabled             = "disabled"
 )
 
 // cfgReasoningEntry builds one catalog entry without duplicating wire JSON.
@@ -779,11 +800,11 @@ func cfgReasoningCreateResult(
 
 	model := map[string]any{"available": cfgReasoningCatalogWire(available)}
 	if current != nil {
-		model["current"] = cfgReasoningRefWire(*current)
+		model[reasoningSnapshotCurrentKey] = cfgReasoningRefWire(*current)
 	}
 
 	if lastUsed != nil {
-		model["lastUsed"] = cfgReasoningRefWire(*lastUsed)
+		model[reasoningSnapshotLastUsedKey] = cfgReasoningRefWire(*lastUsed)
 	}
 
 	raw, err := json.Marshal(map[string]any{
@@ -791,7 +812,7 @@ func cfgReasoningCreateResult(
 		"settings": map[string]any{
 			"model": model,
 			"thoughtLevel": map[string]any{
-				"enabled": thoughtEnabled, "current": currentLevel,
+				"enabled": thoughtEnabled, reasoningSnapshotCurrentKey: currentLevel,
 				"defaultLevel": currentLevel, "available": cfgReasoningFallbackWire(globalLevels),
 			},
 		},
@@ -939,4 +960,324 @@ func TestModelSlashTargetReasoningResolution(t *testing.T) {
 	}
 
 	assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), target.ProviderID, target.ModelID, corpusReasoningLevel)
+}
+
+const unknownAliasConfigID = "unknown"
+
+type thoughtAliasSuccessCase struct {
+	name           string
+	alias          string
+	current        string
+	levels         []string
+	defaultLevel   string
+	thoughtEnabled bool
+	omitted        string
+	binding        string
+	want           string
+}
+
+func assertThoughtOptionOmitted(t *testing.T, options []acp.SessionConfigOption) {
+	t.Helper()
+
+	for _, option := range options {
+		if option.Select != nil && option.Select.Id == optionIDThoughtLevel {
+			t.Fatalf("thought_level must be omitted before alias normalization: %+v", option)
+		}
+
+		if option.Boolean != nil && option.Boolean.Id == optionIDThoughtLevel {
+			t.Fatalf("thought_level must not advertise a boolean variant: %+v", option)
+		}
+	}
+}
+
+func runThoughtAliasSuccess(t *testing.T, tc thoughtAliasSuccessCase) {
+	t.Helper()
+
+	bound := acpfront.ModelRef{ProviderID: reasoningSnapshotTargetProvider, ModelID: reasoningSnapshotTargetModel}
+	entry := cfgReasoningEntry(bound, tc.levels...)
+	entry.DefaultLevel = tc.defaultLevel
+
+	var current, lastUsed *acpfront.ModelRef
+	if tc.binding == reasoningBindingLastUsed {
+		lastUsed = &bound
+	} else {
+		current = &bound
+	}
+
+	create := cfgReasoningCreateResult(t, current, lastUsed, tc.current, tc.thoughtEnabled,
+		[]acpfront.ModelEntry{entry},
+		[]acpfront.LevelEntry{
+			{Value: reasoningLevelOff, Label: reasoningLabelOff},
+			{Value: reasoningLevelMax, Label: reasoningLabelMax},
+		})
+	reply := cfgReasoningCreateResult(t, &bound, nil, tc.want, true, []acpfront.ModelEntry{entry}, nil)
+	h := newSetCfgFront(t, cfgOptionScenario(create, fake.RequestRule{
+		Method: zcode.MethodSessionSetModel,
+		Reply:  &fake.Reply{Result: json.RawMessage(reply)},
+	}))
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	sid, options := openSetCfgSessionWithOptions(ctx, t, h)
+	if tc.omitted != "" {
+		assertThoughtOptionOmitted(t, options)
+	}
+
+	if _, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, optionIDThoughtLevel, tc.alias)); err != nil {
+		t.Fatalf("thought alias %q: %v", tc.alias, err)
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	assertSetCfgModelFrame(t, assertSingleSetModel(t, tr), bound.ProviderID, bound.ModelID, tc.want)
+	if closes := transcriptIndexes(tr, "in", `"method":"session/close"`); len(closes) != 0 {
+		t.Fatalf("a successful thought alias must not close the session: %+v", closes)
+	}
+}
+
+type thoughtAliasRefusalCase struct {
+	name           string
+	configID       string
+	value          string
+	current        string
+	thoughtEnabled bool
+	binding        string
+	available      []acpfront.ModelEntry
+	mustContain    []string
+	wantMessage    string
+}
+
+func runThoughtAliasRefusal(t *testing.T, tc thoughtAliasRefusalCase) {
+	t.Helper()
+
+	bound := acpfront.ModelRef{ProviderID: reasoningSnapshotTargetProvider, ModelID: reasoningSnapshotTargetModel}
+	var current, lastUsed *acpfront.ModelRef
+	switch tc.binding {
+	case reasoningBindingCurrent:
+		current = &bound
+	case reasoningBindingLastUsed:
+		lastUsed = &bound
+	}
+
+	create := cfgReasoningCreateResult(t, current, lastUsed, tc.current, tc.thoughtEnabled, tc.available,
+		[]acpfront.LevelEntry{
+			{Value: reasoningLevelOff, Label: reasoningLabelOff},
+			{Value: corpusReasoningLevel, Label: reasoningLabelHigh},
+		})
+	h := newSetCfgFront(t, cfgOptionScenario(create))
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	sid := openSetCfgSession(ctx, t, h)
+	_, err := h.client.SetSessionConfigOption(ctx, setCfgAsk(sid, tc.configID, tc.value))
+
+	assertInvalidParamsNaming(t, err, tc.mustContain...)
+	if tc.wantMessage != "" {
+		var requestErr *acp.RequestError
+		if !errors.As(err, &requestErr) {
+			t.Fatalf("refusal must remain a RequestError: %v", err)
+		}
+
+		if requestErr.Message != tc.wantMessage {
+			t.Fatalf("refusal message = %q, want existing shape %q", requestErr.Message, tc.wantMessage)
+		}
+	}
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	assertNoBackendMutation(t, tr)
+	if closes := transcriptIndexes(tr, "in", `"method":"session/close"`); len(closes) != 0 {
+		t.Fatalf("a pre-wire alias refusal must not close the session: %+v", closes)
+	}
+}
+
+// TestSetConfigOptionOrcaThoughtAliases locks exact enabled/disabled normalization
+// before option lookup and membership validation, including omitted selects and
+// fail-closed metadata/validation controls.
+//
+//nolint:funlen // the success/refusal matrices are one alias trust-boundary contract
+func TestSetConfigOptionOrcaThoughtAliases(t *testing.T) {
+	bound := acpfront.ModelRef{ProviderID: reasoningSnapshotTargetProvider, ModelID: reasoningSnapshotTargetModel}
+	lowHigh := cfgReasoningEntry(bound, reasoningLevelLow, corpusReasoningLevel)
+	lowHigh.DefaultLevel = corpusReasoningLevel
+	offHigh := cfgReasoningEntry(bound, reasoningLevelOff, corpusReasoningLevel)
+	offHigh.DefaultLevel = corpusReasoningLevel
+	levelLess := cfgReasoningEntry(bound)
+	otherRef := acpfront.ModelRef{ProviderID: reasoningSnapshotProvider, ModelID: reasoningSnapshotSource}
+	other := cfgReasoningEntry(otherRef, corpusReasoningLevel)
+
+	for _, tc := range []thoughtAliasSuccessCase{
+		{
+			name: "enabled preserves supported current low", alias: orcaThoughtEnabled, current: reasoningLevelLow,
+			levels: []string{reasoningLevelLow, corpusReasoningLevel}, defaultLevel: corpusReasoningLevel,
+			thoughtEnabled: true, want: reasoningLevelLow,
+		},
+		{
+			name: "enabled replaces stale max with advertised default", alias: orcaThoughtEnabled,
+			current: reasoningLevelMax,
+			levels:  []string{reasoningLevelLow, corpusReasoningLevel}, defaultLevel: corpusReasoningLevel,
+			thoughtEnabled: true, want: corpusReasoningLevel,
+		},
+		{
+			name: "enabled without default uses first low", alias: orcaThoughtEnabled, current: reasoningLevelMax,
+			levels: []string{reasoningLevelLow, corpusReasoningLevel}, thoughtEnabled: true, want: reasoningLevelLow,
+		},
+		{
+			name: "disabled maps to advertised off", alias: orcaThoughtDisabled, current: corpusReasoningLevel,
+			levels: []string{reasoningLevelOff, corpusReasoningLevel}, defaultLevel: corpusReasoningLevel,
+			thoughtEnabled: true, want: reasoningLevelOff,
+		},
+		{
+			name: "enabled works with thought-disabled omitted select", alias: orcaThoughtEnabled,
+			current: reasoningLevelMax,
+			levels:  []string{reasoningLevelOff, corpusReasoningLevel}, defaultLevel: corpusReasoningLevel,
+			omitted: "disabled", want: corpusReasoningLevel,
+		},
+		{
+			name: "disabled works with thought-disabled omitted select", alias: orcaThoughtDisabled,
+			current: reasoningLevelMax,
+			levels:  []string{reasoningLevelOff, corpusReasoningLevel}, defaultLevel: corpusReasoningLevel,
+			omitted: "disabled", want: reasoningLevelOff,
+		},
+		{
+			name: "enabled works with current-empty omitted select", alias: orcaThoughtEnabled,
+			levels: []string{reasoningLevelOff, corpusReasoningLevel}, defaultLevel: corpusReasoningLevel,
+			thoughtEnabled: true, omitted: "no-current", want: corpusReasoningLevel,
+		},
+		{
+			name: "disabled works with current-empty omitted select", alias: orcaThoughtDisabled,
+			levels: []string{reasoningLevelOff, corpusReasoningLevel}, defaultLevel: corpusReasoningLevel,
+			thoughtEnabled: true, omitted: "no-current", want: reasoningLevelOff,
+		},
+		{
+			name: "enabled resolves the lastUsed binding", alias: orcaThoughtEnabled, current: reasoningLevelLow,
+			levels: []string{reasoningLevelLow, corpusReasoningLevel}, defaultLevel: corpusReasoningLevel,
+			thoughtEnabled: true, binding: reasoningBindingLastUsed, want: reasoningLevelLow,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) { runThoughtAliasSuccess(t, tc) })
+	}
+
+	for _, tc := range []thoughtAliasRefusalCase{
+		{
+			name:     "disabled without advertised off keeps listed-value refusal",
+			configID: optionIDThoughtLevel, value: orcaThoughtDisabled, current: corpusReasoningLevel,
+			thoughtEnabled: true, binding: reasoningBindingCurrent, available: []acpfront.ModelEntry{lowHigh},
+			mustContain: []string{optionIDThoughtLevel, orcaThoughtDisabled, reasoningLevelLow, corpusReasoningLevel},
+			wantMessage: `session/set_config_option: configId "thought_level": value "disabled" ` +
+				`is not one of the listed values (low, high)`,
+		},
+		{
+			name:     "enabled missing bound catalog entry fails closed",
+			configID: optionIDThoughtLevel, value: orcaThoughtEnabled, current: reasoningLevelMax,
+			thoughtEnabled: true, binding: reasoningBindingCurrent, available: []acpfront.ModelEntry{other},
+			mustContain: []string{optionIDThoughtLevel, orcaThoughtEnabled, reasoningSnapshotTarget},
+		},
+		{
+			name:     "enabled bound entry without levels fails closed",
+			configID: optionIDThoughtLevel, value: orcaThoughtEnabled, current: reasoningLevelMax,
+			thoughtEnabled: true, binding: reasoningBindingCurrent, available: []acpfront.ModelEntry{levelLess},
+			mustContain: []string{optionIDThoughtLevel, orcaThoughtEnabled, reasoningSnapshotTarget},
+		},
+		{
+			name:     "enabled missing binding fails closed",
+			configID: optionIDThoughtLevel, value: orcaThoughtEnabled, current: reasoningLevelMax,
+			thoughtEnabled: true, available: []acpfront.ModelEntry{lowHigh},
+			mustContain: []string{optionIDThoughtLevel, orcaThoughtEnabled},
+		},
+		{
+			name:     "disabled missing bound catalog entry fails closed",
+			configID: optionIDThoughtLevel, value: orcaThoughtDisabled, current: corpusReasoningLevel,
+			thoughtEnabled: true, binding: reasoningBindingCurrent, available: []acpfront.ModelEntry{other},
+			mustContain: []string{optionIDThoughtLevel, orcaThoughtDisabled, reasoningSnapshotTarget},
+		},
+		{
+			name:     "disabled bound entry without levels fails closed",
+			configID: optionIDThoughtLevel, value: orcaThoughtDisabled, current: corpusReasoningLevel,
+			thoughtEnabled: true, binding: reasoningBindingCurrent, available: []acpfront.ModelEntry{levelLess},
+			mustContain: []string{optionIDThoughtLevel, orcaThoughtDisabled, reasoningSnapshotTarget},
+		},
+		{
+			name:     "disabled missing binding fails closed",
+			configID: optionIDThoughtLevel, value: orcaThoughtDisabled, current: corpusReasoningLevel,
+			thoughtEnabled: true, available: []acpfront.ModelEntry{offHigh},
+			mustContain: []string{optionIDThoughtLevel, orcaThoughtDisabled},
+		},
+		{
+			name:     "non-alias unlisted thought value keeps listed-value validation",
+			configID: optionIDThoughtLevel, value: reasoningLevelMax, current: reasoningLevelLow,
+			thoughtEnabled: true, binding: reasoningBindingCurrent, available: []acpfront.ModelEntry{lowHigh},
+			mustContain: []string{optionIDThoughtLevel, reasoningLevelMax, reasoningLevelLow, corpusReasoningLevel},
+			wantMessage: `session/set_config_option: configId "thought_level": value "max" ` +
+				`is not one of the listed values (low, high)`,
+		},
+		{
+			name:     "unknown config id with alias-looking value keeps unknown-id validation",
+			configID: unknownAliasConfigID, value: orcaThoughtEnabled, current: reasoningLevelLow,
+			thoughtEnabled: true, binding: reasoningBindingCurrent, available: []acpfront.ModelEntry{lowHigh},
+			mustContain: []string{unknownAliasConfigID, optionIDModel, optionIDThoughtLevel},
+			wantMessage: `session/set_config_option: unknown configId "unknown" (allowed: model, thought_level)`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) { runThoughtAliasRefusal(t, tc) })
+	}
+}
+
+// TestThoughtLevelAdvertisementRemainsVerbatimSelect proves the alias acceptance
+// path does not enrich the ACP option: backend values stay verbatim in a select,
+// with no aliases or boolean variant.
+func TestThoughtLevelAdvertisementRemainsVerbatimSelect(t *testing.T) {
+	bound := acpfront.ModelRef{ProviderID: reasoningSnapshotTargetProvider, ModelID: reasoningSnapshotTargetModel}
+	entry := cfgReasoningEntry(bound, reasoningLevelOff, corpusReasoningLevel)
+	entry.DefaultLevel = corpusReasoningLevel
+	create := cfgReasoningCreateResult(t, &bound, nil, corpusReasoningLevel, true, []acpfront.ModelEntry{entry},
+		[]acpfront.LevelEntry{
+			{Value: reasoningLevelLow, Label: reasoningLabelLow},
+			{Value: reasoningLevelMax, Label: reasoningLabelMax},
+		})
+	h := newSetCfgFront(t, cfgOptionScenario(create))
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	_, options := openSetCfgSessionWithOptions(ctx, t, h)
+
+	var thought *acp.SessionConfigOptionSelect
+	for _, option := range options {
+		if option.Boolean != nil && option.Boolean.Id == optionIDThoughtLevel {
+			t.Fatalf("thought_level must not advertise a boolean variant: %+v", option.Boolean)
+		}
+
+		if option.Select != nil && option.Select.Id == optionIDThoughtLevel {
+			thought = option.Select
+		}
+	}
+
+	if thought == nil {
+		t.Fatalf("thought_level select is missing: %+v", options)
+	}
+
+	var entries []acp.SessionConfigSelectOption
+	if thought.Options.Ungrouped != nil {
+		entries = *thought.Options.Ungrouped
+	}
+
+	want := []string{reasoningLevelOff, corpusReasoningLevel}
+	if len(entries) != len(want) {
+		t.Fatalf("thought select = %+v, want exactly %v", entries, want)
+	}
+
+	for i, value := range want {
+		if string(entries[i].Value) != value {
+			t.Fatalf("thought select[%d] = %q, want verbatim %q", i, entries[i].Value, value)
+		}
+	}
 }
