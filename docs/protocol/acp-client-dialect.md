@@ -571,6 +571,23 @@ Still unresolved, recorded as known-unknowns (never presented as verified):
 
 ---
 
+## Live config-option updates (2026-11-25)
+
+After a confirmed backend provider-catalog refresh, the wrapper sends each active
+ACP session its own `session/update` notification with
+`sessionUpdate:"config_option_update"` and the complete `configOptions` array.
+This replaces the previous session/new-only catalog surface; Orca 1.4.271 adopts
+the notification. Option order, names, descriptions, categories, and listed
+values come from the backend-confirmed snapshot, with no provenance tags added.
+
+Selection safety is deliberately conservative. A session keeps its confirmed
+current (or last-used) model while that model remains listed. If it disappears,
+the wrapper publishes a replacement only when the fresh backend read-back
+confirms a current/last-used fallback and that fallback is itself listed. With no
+safe fallback, malformed settings, or an unlisted rendered current value, the
+session receives no catalog update and keeps its prior client state. Closing or
+closed sessions never receive a late update.
+
 ## The slash-command catalog surface (2026-11-23, V-SRC + wire-truth read of the installed build)
 
 How the card's composer autocomplete gets its commands ("No matching commands" = the
