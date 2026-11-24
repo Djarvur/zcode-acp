@@ -242,7 +242,9 @@ func (r *Responder) Serve(ctx context.Context, env zcode.Envelope) (any, *zcode.
 
 	// Re-announce dedupe (05-RESEARCH.md Pattern 2): the first envelope of
 	// a (method, params.requestId) set claims the entry; re-announces carry
-	// NEW wire ids and the SAME requestId, so they join. Requests without a
+	// NEW wire ids and the SAME requestId, so they join — and the claim
+	// refreshes the pending entry's TTL, so an ask the server still holds
+	// never expires under a slow human answer. Requests without a
 	// requestId claim nothing — answered per envelope (empty-input probe).
 	if req.ReqID != "" {
 		if r.dedupe.claim(req.Method, req.ReqID, dedupeTTL(pol.Deadline)) {
@@ -314,7 +316,11 @@ func (r *Responder) defaultPolicyTable() map[string]MethodPolicy {
 			// No policy deadline when the bridge is wired: a human answering
 			// a dialog takes minutes (UIB-01); the legacy 15 s bound would
 			// decline mid-thought. The nil-asker arm declines immediately
-			// anyway, so the legacy posture loses nothing.
+			// anyway, so the legacy posture loses nothing. With no deadline
+			// to bound it, the ask stays ONE dialog only because each joined
+			// re-announce refreshes the dedupe entry (dedupe.go claim) — the
+			// 15 s router default + 5 s grace alone would re-open the form
+			// every 20 s until the human answered (quick task 261124-tj2).
 			Deadline: 0,
 			Handler:  r.handleUserInput,
 		},
