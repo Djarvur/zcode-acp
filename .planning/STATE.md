@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v0.22.0
 status: completed
 stopped_at: Phase 09 complete — all phases complete
-last_updated: "2026-11-23T22:37:32.769Z"
+last_updated: "2026-11-24T00:03:59.024Z"
 last_activity: 2026-11-24
 last_activity_desc: Milestone v0.22.0 completed and archived
-state_head: c1887e446c8e2184d48832d0a0a15beac1735e80
+state_head: b1d7470bfac4e482992b21c16cb177ae673cc7ea
 progress:
   total_phases: 1
   completed_phases: 1
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-23)
 Phase: Milestone v0.22.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-24 - Completed quick task 261124-1ou: Refuse concurrent ACP prompts as -32003 with data.reason session_busy so Orca's retryBusyPrompts queue engages
+Last activity: 2026-11-24 - Completed quick task 261124-154: OMP print mode — serve Orca non-interactive text tasks (chat/branch names, commit messages) via one-shot workspace/generateText
 
 ## Performance Metrics
 
@@ -298,6 +298,7 @@ None yet.
 | 261124-13n | Clear the 10 pre-existing acpfront golangci-lint findings so mise run lint / CI pr-sanity is green | 2026-11-24 | b6ab5bf | [261124-13n-fix-the-10-pre-existing-golangci-lint-fi](./quick/261124-13n-fix-the-10-pre-existing-golangci-lint-fi/) |
 | 4 | Make the keyring probe test arms host-independent (inject LookPath success so CI runners without libsecret-tools pass) | 2026-11-24 | b94fa1e | — |
 | 261124-1ou | Refuse concurrent ACP prompts as -32003 with data.reason session_busy so Orca's retryBusyPrompts queue engages (message, other codes, cancel/stop unchanged) | 2026-11-24 | c1887e4 | [261124-1ou-return-acp-concurrent-prompt-refusals-as](./quick/261124-1ou-return-acp-concurrent-prompt-refusals-as/) |
+| 261124-154 | OMP print mode: serve Orca non-interactive text tasks (chat/branch names, commit messages) via one-shot workspace/generateText | 2026-11-24 | b1d7470 | [261124-154-omp-print-mode-make-zcode-acp-omp-serve-](./quick/261124-154-omp-print-mode-make-zcode-acp-omp-serve-/) |
 
 ## Deferred Items
 

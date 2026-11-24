@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Djarvur/zcode-acp/internal/acpfront"
@@ -27,6 +28,7 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/hostsvc"
 	"github.com/Djarvur/zcode-acp/internal/interact"
 	"github.com/Djarvur/zcode-acp/internal/supervisor"
+	"github.com/Djarvur/zcode-acp/internal/texttask"
 	"github.com/Djarvur/zcode-acp/internal/zcode"
 )
 
@@ -71,6 +73,34 @@ const (
 	// binary's ExitUsage precedent: invalid input exits non-zero, naming
 	// the contract).
 	exitInvalidConfig = 2
+
+	// envWorkspaceIdentity optionally names the workspace identity for the
+	// text-task workspace ref (workspaceKey = its raw value when non-blank,
+	// the resolved path otherwise).
+	envWorkspaceIdentity = "ZCODE_WORKSPACE_IDENTITY"
+
+	// textRunBudget bounds one non-interactive text run end-to-end:
+	// discovery, pre-flight, spawn (spawnWait 10 s), auth (each PAT mint's
+	// 15 s request timeout sits inside it, as does the read-back deadline)
+	// and the generateText call. The 15 s shutdown watchdog runs after it,
+	// so the worst case is 55 s under Orca's 60 s client kill — and the
+	// run context is what keeps a kill from truncating the diagnostics.
+	textRunBudget = 40 * time.Second
+
+	// textGenerateBudget caps the one generateText call inside the run
+	// budget: auth or spawn overrun shortens the call instead of pushing the
+	// run past the client's kill.
+	textGenerateBudget = 35 * time.Second
+
+	// providerZaiAPI is the builtin personal-layer provider id the
+	// coding-plan entitlement check keys on.
+	providerZaiAPI = "zai-api"
+
+	// textAuthFamily/textAuthCodingPlanMode are the entitlement-gate keys for
+	// the coding-plan selection check (internal/interact/familysel.go:73: the
+	// production account family and the individual coding-plan kind).
+	textAuthFamily         = "zai"
+	textAuthCodingPlanMode = "individual-coding-plan"
 )
 
 // Configuration and lifecycle sentinels — wrapped with the dynamic context
@@ -205,6 +235,57 @@ type ompOptions struct {
 	pluginDirSet  bool
 	sessionDirSet bool
 	unknownCount  int
+
+	// The non-interactive text-task surface (--print / --mode text): the
+	// mode flags, the thinking level, the explicitly accepted no-* switches
+	// and the positional prompt tokens (@file chunks or a literal prompt).
+	printMode    bool
+	mode         string
+	thinking     string
+	noSession    bool
+	noTools      bool
+	noExtensions bool
+	noSkills     bool
+	noRules      bool
+	prompts      []string
+}
+
+// ompModeText is the only supported --mode value (the text-task arm):
+// anything else is a usage error, never a silent ACP fall-through.
+const ompModeText = "text"
+
+// ompCardToken is the card's own `acp` positional marker (the production
+// twin of the test-only ompCardMarker fixture constant — package main cannot
+// reference the test declaration from production code).
+const ompCardToken = "acp"
+
+// errUnsupportedMode is the usage-class sentinel for an unsupported --mode
+// value (wrapped with the got value at the validation site).
+var errUnsupportedMode = errors.New("omp: unsupported --mode (only \"text\" is supported)")
+
+// textMode reports whether the argv selects the non-interactive text-task
+// arm: --print alone and --mode text alone both activate it (Orca passes
+// both), so either flag is sufficient and their absence keeps the ACP path.
+func (o *ompOptions) textMode() bool {
+	return o.printMode || o.mode == ompModeText
+}
+
+// validateMode rejects a --mode value the wrapper cannot serve: an empty
+// mode is the ACP arm, "text" is the one supported non-interactive mode, and
+// anything else is a usage error (never a silent ACP fall-through).
+func (o *ompOptions) validateMode() error {
+	if o.mode == "" || o.mode == ompModeText {
+		return nil
+	}
+
+	return fmt.Errorf("%w, got %q", errUnsupportedMode, o.mode)
+}
+
+// textLevel returns the effective reasoning level for the text-task arm: the
+// client's --thinking value first, the wrapper's own --reasoning-level
+// fallback otherwise (both empty means the omit-shape).
+func textLevel(o ompOptions) string {
+	return firstNonEmpty(o.thinking, o.reasoningLevel)
 }
 
 // ompFlagValues holds the omp FlagSet's parsed value pointers so ompParse's
@@ -217,6 +298,15 @@ type ompFlagValues struct {
 	apiKey         *string
 	pluginDir      *string
 	sessionDir     *string
+
+	printMode    *bool
+	mode         *string
+	thinking     *string
+	noSession    *bool
+	noTools      *bool
+	noExtensions *bool
+	noSkills     *bool
+	noRules      *bool
 }
 
 // ompFlagSet is the omp arm's flag set over the card argv surface: the
@@ -238,6 +328,15 @@ func ompFlagSet() (*flag.FlagSet, *ompFlagValues) {
 		pluginDir:      fs.String("plugin-dir", "", "accepted and ignored (the omp card visuals contract)"),
 		sessionDir: fs.String("session-dir", "",
 			"accepted and ignored (the client's disposable discovery launches)"),
+		printMode: fs.Bool("print", false,
+			"non-interactive text mode: one model call, plain text on stdout"),
+		mode:         fs.String("mode", "", "text-task mode (only \"text\" is supported)"),
+		thinking:     fs.String("thinking", "", "reasoning level for the text task"),
+		noSession:    fs.Bool("no-session", false, "accepted (no session is created in text mode)"),
+		noTools:      fs.Bool("no-tools", false, "accepted (text mode sends no tools)"),
+		noExtensions: fs.Bool("no-extensions", false, "accepted and ignored (no agent loop in text mode)"),
+		noSkills:     fs.Bool("no-skills", false, "accepted and ignored (no agent loop in text mode)"),
+		noRules:      fs.Bool("no-rules", false, "accepted and ignored (no agent loop in text mode)"),
 	}
 }
 
@@ -259,28 +358,7 @@ func ompParse(args []string) (ompOptions, error) {
 
 		parseErr := fs.Parse(rest)
 
-		if *v.version {
-			opts.version = true
-		}
-
-		if *v.appServer != "" {
-			opts.appServer = *v.appServer
-		}
-
-		if *v.model != "" {
-			opts.model = *v.model
-		}
-
-		if *v.reasoningLevel != "" {
-			opts.reasoningLevel = *v.reasoningLevel
-		}
-
-		if *v.apiKey != "" {
-			opts.apiKey = *v.apiKey
-		}
-
-		opts.pluginDirSet = opts.pluginDirSet || *v.pluginDir != ""
-		opts.sessionDirSet = opts.sessionDirSet || *v.sessionDir != ""
+		opts.absorb(v)
 
 		rest = fs.Args()
 
@@ -300,12 +378,51 @@ func ompParse(args []string) (ompOptions, error) {
 			continue
 		}
 
-		if len(rest) > 0 { // the first positional — the card's `acp` marker; ignored
-			rest = rest[1:]
-		}
+		rest = opts.absorbPositional(rest)
 	}
 
 	return opts, nil
+}
+
+// absorb copies one parsed flag chunk into opts: strings keep the last
+// non-empty value arrived at across chunks, booleans accumulate with OR so a
+// later chunk can never reset an earlier one.
+func (o *ompOptions) absorb(v *ompFlagValues) {
+	if *v.version {
+		o.version = true
+	}
+
+	o.appServer = firstNonEmpty(*v.appServer, o.appServer)
+	o.model = firstNonEmpty(*v.model, o.model)
+	o.reasoningLevel = firstNonEmpty(*v.reasoningLevel, o.reasoningLevel)
+	o.apiKey = firstNonEmpty(*v.apiKey, o.apiKey)
+	o.mode = firstNonEmpty(*v.mode, o.mode)
+	o.thinking = firstNonEmpty(*v.thinking, o.thinking)
+
+	o.pluginDirSet = o.pluginDirSet || *v.pluginDir != ""
+	o.sessionDirSet = o.sessionDirSet || *v.sessionDir != ""
+	o.printMode = o.printMode || *v.printMode
+	o.noSession = o.noSession || *v.noSession
+	o.noTools = o.noTools || *v.noTools
+	o.noExtensions = o.noExtensions || *v.noExtensions
+	o.noSkills = o.noSkills || *v.noSkills
+	o.noRules = o.noRules || *v.noRules
+}
+
+// absorbPositional consumes ONE positional token of the current chunk: the
+// arm token / card marker is the marker (ignored), every other positional is
+// a prompt token collected in argv order.
+func (o *ompOptions) absorbPositional(rest []string) []string {
+	if len(rest) == 0 {
+		return rest
+	}
+
+	token := rest[0]
+	if token != ompSubcommand && token != ompCardToken {
+		o.prompts = append(o.prompts, token)
+	}
+
+	return rest[1:]
 }
 
 // isUnknownFlagError reports whether a FlagSet error is the undefined-flag
@@ -343,6 +460,12 @@ func runOmp(args []string) {
 		return
 	}
 
+	if err := opts.validateMode(); err != nil {
+		slog.Error("zcode-acp omp: unsupported mode", "err", err)
+
+		os.Exit(exitInvalidConfig)
+	}
+
 	// Accepted-and-ignored card flags: one debug line each naming the
 	// contract — the disposable discovery launch (--session-dir) and the
 	// visuals-configured chat launch (--plugin-dir) must never break
@@ -357,6 +480,12 @@ func runOmp(args []string) {
 
 	if opts.unknownCount > 0 {
 		slog.Debug("zcode-acp omp: unknown card flags tolerated and ignored", "count", opts.unknownCount)
+	}
+
+	// The non-interactive text-task arm (--print / --mode text): Orca's own
+	// generators launch the card this way and require plain text on stdout.
+	if opts.textMode() {
+		os.Exit(runOmpText(opts))
 	}
 
 	cfg, err := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
@@ -381,6 +510,197 @@ func runOmp(args []string) {
 
 		os.Exit(1)
 	}
+}
+
+// runOmpText is the non-interactive text-task arm (Orca's own generators):
+// read the prompt, resolve the selection (flag then the desktop default),
+// start the same supervised backend the ACP arm uses, authenticate only when
+// the provider needs it, make ONE workspace/generateText call under the run
+// budget, and write the generated text to stdout as the only stdout write.
+// Exit codes: 0 = text printed, 1 = runtime/auth/wire/empty-text failure,
+// 2 = invalid argv/config.
+func runOmpText(opts ompOptions) int {
+	ctx, cancel := context.WithTimeout(context.Background(), textRunBudget)
+	defer cancel()
+
+	prompt, cfg, sel, code := textResolve(opts)
+	if code != 0 {
+		return code
+	}
+
+	wsPath, wsKey, code := textWorkspace()
+	if code != 0 {
+		return code
+	}
+
+	b, err := startBackend(ctx, cfg)
+	if err != nil {
+		slog.Error("zcode-acp omp text: backend start failed", "err", err)
+
+		return 1
+	}
+
+	defer b.Close()
+
+	// No tools are sent, so a permission ask is already anomalous: the deny
+	// forwarder answers it (never a hang, never an allow), and the nil asker
+	// keeps the existing decline arm for user-input asks.
+	wireResponder(b.conn, b.front, b.keys, b.machinery, interact.DenyPermissionForwarder, nil)
+
+	method, err := authenticateText(ctx, b, sel, cfg.apiKey)
+	if err != nil {
+		slog.Error("zcode-acp omp text: authenticate failed", "err", err)
+
+		return 1
+	}
+
+	// Assembled AFTER authenticate: the recorded auth mode drives the
+	// coding-plan rebind, so the selection that authenticated is the
+	// selection the request carries.
+	return finishText(ctx, b, textRequest(sel, b.front.AuthMode(), prompt, wsPath, wsKey), method)
+}
+
+// finishText makes the one generateText call and prints the result: stdout
+// carries only the generated text (+ at most one newline), and the single
+// info line afterwards carries ids, finishReason and the byte count — never
+// the prompt.
+func finishText(ctx context.Context, b *backend, req texttask.Request, method string) int {
+	res, err := generateText(ctx, b.conn, req)
+	if err != nil {
+		// No retry against a different model: a wrong chat name, branch name
+		// or commit message is worse than an honest coded failure.
+		slog.Error("zcode-acp omp text: text generation failed", "err", err)
+
+		return 1
+	}
+
+	writeTextResult(res.Text)
+
+	slog.Info("zcode-acp omp text: text generated",
+		"provider", req.Selection.ProviderID,
+		"model", req.Selection.ModelID,
+		"finishReason", res.FinishReason,
+		"authMethod", method,
+		"bytes", len(res.Text))
+
+	return 0
+}
+
+// textResolve runs the pre-spawn gates: the prompt read, parseConfig (the
+// locked model-shape and level-without-model sentinels, env aliases
+// included), and the selection resolution (flag then the desktop default).
+// Prompt/config failures are usage-class (exit 2); a missing/invalid default
+// selection is the runtime class (exit 1).
+func textResolve(opts ompOptions) (prompt string, cfg config, sel acpfront.ModelSelection, code int) {
+	read, err := texttask.ReadPromptArg(opts.prompts)
+	if err != nil {
+		slog.Error("zcode-acp omp text: invalid prompt", "err", err)
+
+		return "", config{}, acpfront.ModelSelection{}, exitInvalidConfig
+	}
+
+	parsed, err := parseConfig(opts.appServer, opts.model, textLevel(opts), opts.apiKey)
+	if err != nil {
+		slog.Error("zcode-acp omp text: invalid configuration", "err", err)
+
+		return "", config{}, acpfront.ModelSelection{}, exitInvalidConfig
+	}
+
+	resolved, err := texttask.ResolveSelection(parsed.model, providerConfigPath())
+	if err != nil {
+		slog.Error("zcode-acp omp text: no model selection", "err", err)
+
+		return "", config{}, acpfront.ModelSelection{}, 1
+	}
+
+	// The front's read-back want list must name the model actually used.
+	parsed.model = &resolved
+
+	return read, parsed, resolved, 0
+}
+
+// textWorkspace resolves the working directory and its wire ref.
+func textWorkspace() (path, key string, code int) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		slog.Error("zcode-acp omp text: resolve the working directory", "err", err)
+
+		return "", "", 1
+	}
+
+	wsPath, wsKey, err := texttask.WorkspaceRef(cwd, os.Getenv(envWorkspaceIdentity))
+	if err != nil {
+		slog.Error("zcode-acp omp text: invalid workspace", "err", err)
+
+		return "", "", 1
+	}
+
+	return wsPath, wsKey, 0
+}
+
+// authenticateText runs the minimal auth decision for the resolved selection
+// and returns the method that ran ("" = none). The coding-plan entitlement
+// check runs only for the builtin zai-api selection without a wrapper key;
+// its keyring/read-back work stays inside the run budget.
+func authenticateText(
+	ctx context.Context, b *backend, sel acpfront.ModelSelection, wrapperKey string,
+) (string, error) {
+	codingPlan := false
+	if sel.ProviderID == providerZaiAPI && wrapperKey == "" {
+		codingPlan = b.machinery.gate.Entitled(ctx, textAuthFamily, textAuthCodingPlanMode)
+	}
+
+	method := texttask.AuthMethod(sel, wrapperKey, codingPlan)
+	if method == "" {
+		return "", nil
+	}
+
+	if err := b.front.Authenticate(ctx, method); err != nil {
+		return method, fmt.Errorf("authenticate %s: %w", method, err)
+	}
+
+	return method, nil
+}
+
+// generateText runs the one-shot call under its own cap inside the run
+// budget; the cancel fires immediately after Run returns.
+func generateText(
+	ctx context.Context, conn *zcode.Conn, req texttask.Request,
+) (texttask.Result, error) {
+	callCtx, callCancel := context.WithTimeout(ctx, textGenerateBudget)
+	defer callCancel()
+
+	res, err := texttask.Run(callCtx, conn, req)
+	if err != nil {
+		return texttask.Result{}, fmt.Errorf("text task: %w", err)
+	}
+
+	return res, nil
+}
+
+// textRequest is the single assembly point for the text-task request: the
+// selection is rebound through the RECORDED auth mode here, so the selection
+// that authenticated is the selection that is sent (T-261124-06).
+func textRequest(
+	sel acpfront.ModelSelection, authMode, prompt, workspacePath, workspaceKey string,
+) texttask.Request {
+	return texttask.Request{
+		Selection:     texttask.ApplyCodingPlanRebind(sel, authMode),
+		Prompt:        prompt,
+		WorkspacePath: workspacePath,
+		WorkspaceKey:  workspaceKey,
+	}
+}
+
+// writeTextResult writes the generated text to stdout as the only stdout
+// write, appending exactly one newline when the text does not already end
+// with one.
+func writeTextResult(text string) {
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+
+	_, _ = os.Stdout.WriteString(text)
 }
 
 // config is the resolved launch configuration: the app-server override path
@@ -491,6 +811,20 @@ func settingPath() string {
 	}
 
 	return filepath.Join(home, ".zcode", "v2", "setting.json")
+}
+
+// providerConfigPath is the desktop provider_config.json the text-task
+// selection resolver reads config.defaultModelSelection from (the same file
+// the spawned child reads for personal-provider credentials — the wrapper
+// reads ONLY the selection object). Missing home resolution yields an empty
+// path — ResolveSelection answers the actionable no-selection sentinel.
+func providerConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	return filepath.Join(home, ".zcode", "v2", "provider_config.json")
 }
 
 // patDesktopVersionFallback is the reference's documented desktop-version
@@ -617,8 +951,8 @@ func buildFront(
 // connection exists and before any traffic starts — the Conn hook contract
 // (frames flow only after the client speaks first; the app-server itself
 // sends nothing unprompted at boot). The policy table carries the whole
-// phase stack: the 05-02 permission bridge forwards
-// interaction/requestPermission to the ACP client, the mode-aware source
+// phase stack: the permission forwarder is the ACP bridge on the chat arm
+// and interact.DenyPermissionForwarder on the text arm, the mode-aware source
 // selects the recorded auth mode (D-11: api-key delegates to the static-key
 // handler byte-compatibly, coding-plan serves the PAT answer from the
 // in-process cache with the D-05 exactly-one re-mint and the scope
@@ -628,10 +962,10 @@ func buildFront(
 // machines degrade to the honest coded declines).
 func wireResponder(
 	conn *zcode.Conn, front *acpfront.Front, keys hostsvc.KeySource, machinery *codingPlanMachinery,
-	userInputAsk acpport.UserInputAsker,
+	permission interact.PermissionForwarder, userInputAsk acpport.UserInputAsker,
 ) {
 	responder := interact.NewResponder(
-		interact.WithPermissionForwarder(interact.NewPermissionBridge(front.PermissionForward()).Forward),
+		interact.WithPermissionForwarder(permission),
 		interact.WithUserInputAsker(userInputAsk),
 		interact.WithRuntimeHeadersKeySource(hostsvc.PatHeadersSource(hostsvc.PatHeadersSourceDeps{
 			Minter:         machinery.minter,
@@ -645,15 +979,34 @@ func wireResponder(
 	conn.OnRequest = responder.Serve
 }
 
-// run composes the minimal chat loop over the production lifecycle: discover,
-// supervise, connect the back leg, serve ACP over os.Stdin/os.Stdout, and
-// stage-shut-down when the client disconnects or the child exits.
-func run(cfg config) error {
-	ctx := context.Background()
+// backend is one started app-server lifecycle: the supervised child, the
+// codec Conn over its pipes, and the ACP front composed over both. Both arms
+// (the ACP chat server and the one-shot text run) share this construction
+// and the staged teardown.
+type backend struct {
+	conn      *zcode.Conn
+	front     *acpfront.Front
+	keys      hostsvc.KeySource
+	machinery *codingPlanMachinery
+	child     *supervisor.Child
 
+	startDone   <-chan error
+	supCancel   context.CancelFunc
+	spawnCancel context.CancelFunc
+
+	stopOnce sync.Once
+	stopErr  error
+}
+
+// startBackend resolves the install, starts the supervised child, connects
+// the codec back leg, and composes the front over it — the pre-existing
+// run() preamble in one place. The Conn and the Front (whose delta tap
+// registers on the conn's ordered fan-out BEFORE any machine exists) are
+// constructed before any frame flows — the Conn hook contract.
+func startBackend(ctx context.Context, cfg config) (*backend, error) {
 	inst, err := discoverInstall(ctx, cfg.appServer)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Two lifecycles, deliberately: the supervision ctx drives the
@@ -666,18 +1019,16 @@ func run(cfg config) error {
 	// never run, and the child would always die mid-flight.
 	supCtx, supCancel := context.WithCancel(ctx)
 	spawnCtx, spawnCancel := context.WithCancel(ctx)
-	defer spawnCancel()
 
 	child, startDone, err := startSupervised(supCtx, spawnCtx, supCancel, inst)
 	if err != nil {
-		return err
+		spawnCancel()
+
+		return nil, err
 	}
 
-	// The Conn and the Front (whose delta tap registers on the conn's
-	// ordered fan-out BEFORE any machine exists) are constructed before any
-	// frame flows — the Conn hook contract.
+	//nolint:contextcheck // NewConn owns its base context (ctx bounds the run's legs)
 	conn := zcode.NewConn(childDuplex{reader: child.Stdout, writer: child.Stdin})
-	defer func() { _ = conn.Close() }()
 
 	// One key, one source (AUTH-01): the resolved config binding feeds the
 	// authenticate machinery, the runtime-headers answer, and the snapshot
@@ -691,14 +1042,78 @@ func run(cfg config) error {
 
 	machinery := buildCodingPlanMachinery(inst)
 
+	//nolint:contextcheck // the Front owns its process-lifetime base context (front.New contract)
 	front := buildFront(conn, cfg, inst, keys, machinery)
+
+	return &backend{
+		conn:        conn,
+		front:       front,
+		keys:        keys,
+		machinery:   machinery,
+		child:       child,
+		startDone:   startDone,
+		supCancel:   supCancel,
+		spawnCancel: spawnCancel,
+	}, nil
+}
+
+// Close runs the staged shutdown (logging, never returning), then joins the
+// conn's read loop (Close unblocks a blocked Read) and fires the exec-level
+// kill backstop. The order mirrors the pre-existing LIFO defers: the conn
+// close joins the read loop before spawnCancel.
+func (b *backend) Close() {
+	if err := b.stop(); err != nil {
+		slog.Error("zcode-acp: staged shutdown failed", "err", err)
+	}
+
+	if err := b.conn.Close(); err != nil {
+		slog.Debug("zcode-acp: conn close", "err", err)
+	}
+
+	b.spawnCancel()
+}
+
+// stop runs the staged shutdown once: the supervision cancel drives the
+// supervisor's staged teardown (stdin end → grace → unconditional group
+// SIGKILL → bounded reap — stdin-EOF is never trusted, PITFALL 6), and the
+// wait is bounded by shutdownWatchdog. Idempotent: run and Close may both
+// call it, and the second call returns the first call's outcome.
+func (b *backend) stop() error {
+	b.stopOnce.Do(func() {
+		b.supCancel()
+
+		select {
+		case err := <-b.startDone:
+			if err != nil {
+				b.stopErr = fmt.Errorf("supervisor shutdown: %w", err)
+			}
+		case <-time.After(shutdownWatchdog):
+			b.stopErr = errShutdownWatchdog
+		}
+	})
+
+	return b.stopErr
+}
+
+// run composes the minimal chat loop over the production lifecycle: discover,
+// supervise, connect the back leg, serve ACP over os.Stdin/os.Stdout, and
+// stage-shut-down when the client disconnects or the child exits.
+func run(cfg config) error {
+	b, err := startBackend(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
+
+	defer b.Close()
 
 	// The ACP agent connection owns os.Stdin/os.Stdout from here: the SDK
 	// reads requests and writes every response frame — nothing else touches
 	// stdout.
-	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), os.Stdout, os.Stdin)
+	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(b.front), os.Stdout, os.Stdin)
 
-	wireResponder(conn, front, keys, machinery, acpport.NewUserInputAsker(agentConn.CreateElicitation))
+	wireResponder(b.conn, b.front, b.keys, b.machinery,
+		interact.NewPermissionBridge(b.front.PermissionForward()).Forward,
+		acpport.NewUserInputAsker(agentConn.CreateElicitation))
 
 	slog.Info("zcode-acp: serving ACP v1 over stdio", "version", version)
 
@@ -707,26 +1122,13 @@ func run(cfg config) error {
 	select {
 	case <-agentConn.Done():
 		slog.Info("zcode-acp: ACP client disconnected")
-	case <-child.Done:
+	case <-b.child.Done:
 		childLost = true
 	}
 
-	// Staged shutdown always: the supervision cancel drives the supervisor's
-	// staged teardown (stdin end → grace → unconditional group SIGKILL →
-	// bounded reap — stdin-EOF is never trusted, PITFALL 6); the conn's
-	// deferred Close joins the read loop after.
-	supCancel()
-
-	select {
-	case err := <-startDone:
-		if err != nil {
-			return fmt.Errorf("supervisor shutdown: %w", err)
-		}
-	case <-time.After(shutdownWatchdog):
-		return errShutdownWatchdog
+	if stopErr := b.stop(); stopErr != nil {
+		return stopErr
 	}
-
-	spawnCancel() // the teardown backstop: the group is long gone; ESRCH-quiet
 
 	if childLost {
 		return errChildLost

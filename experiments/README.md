@@ -186,6 +186,27 @@ config at run time; write the raw capture outside the repo; scrub into
 
 ## Quota ledger
 
+- **Quick task 261124-154 guarded text-task probe (TestTextTaskLive) — PASSED
+  2026-11-24 (model override), one tiny model call** — `ZCODE_ACP_REAL_E2E=1
+  ZCODE_ACP_REAL_MODEL=OpenCodeGo/deepseek-v4.1-flash
+  ZCODE_ACP_REAL_THINKING=max go test -tags realdesktop -count=1 -run
+  TestTextTaskLive -v ./test/realdesktop/` → exit 0, 3-byte stdout (`ok\n`),
+  3.95 s elapsed, no `-32601`, no protocol frame. The default-selection attempt
+  (no `--model`; `provider_config` `zai-api/GLM-5.3-Flash` with
+  `reasoningLevel=max`) passed wrapper and app-server option validation and
+  reached the provider, which refused with `-32603 [1310] Weekly/Monthly Limit
+  Exhausted` (resets 2026-11-27 18:05:02) — an account quota block, not a
+  wrapper failure. A `--model` attempt without `--thinking` was refused by the
+  app-server's selection validator (`Reasoning level is required for
+  OpenCodeGo/deepseek-v4.1-flash`); Orca's dynamic-model path supplies
+  `--thinking`, and its current OMP card offers only "Config default", so the
+  user's actual text-task argv is the default path. Tier: the guarded
+  `test/realdesktop/texttask_test.go` (`TestTextTaskLive`) — canonical command
+  in its file header; NEVER from CI: the realdesktop build tag +
+  `ZCODE_ACP_REAL_E2E=1` double guard is the contract, and the default suite
+  never builds the file. No capture file: a quick task runs no scrubbed
+  capture. Outcome recorded in
+  `.planning/quick/261124-154-omp-print-mode-make-zcode-acp-omp-serve-/261124-154-SUMMARY.md`.
 - **real turns spent: 3 tiny sends issued, 0 completed** (plan 01-02, E2, 2026-11-19)
   — three `session/send` calls with the fixed one-line prompt; none produced a
   completed model response (see the EXP-TURN-01 run notes for the failure reason:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/Djarvur/zcode-acp/internal/acpport"
@@ -271,7 +272,7 @@ func assertDenyResult(t *testing.T, name string, ans interact.Answer, err error)
 	}
 
 	decision, ok := ans.Result.(map[string]any)
-	if !ok || decision["decision"] != "deny" || decision["reason"] != "Permission denied by user" {
+	if !ok || decision["decision"] != permSelDeny || decision["reason"] != "Permission denied by user" {
 		t.Fatalf("%s: deny arm answer = %v, want {decision:deny, reason:denied-by-user}", name, ans.Result)
 	}
 }
@@ -295,6 +296,32 @@ func assertCancelledError(t *testing.T, ans interact.Answer, err error) {
 
 	if ans.Err.Message != "Client request cancelled: interaction/requestPermission" {
 		t.Fatalf("cancelled arm message = %q, want the stable constant", ans.Err.Message)
+	}
+}
+
+// TestDenyPermissionForwarder locks the text-mode permission posture: a
+// stray ask answers exactly the wrapper-synthesized deny — no option id, no
+// embedded response, no params content is echoed (the answer map IS the
+// whole reply payload).
+func TestDenyPermissionForwarder(t *testing.T) {
+	ans, err := interact.DenyPermissionForwarder(armCtx(), permissionRequest())
+	if err != nil {
+		t.Fatalf("DenyPermissionForwarder must answer a result, got error: %v", err)
+	}
+
+	if ans.Err != nil {
+		t.Fatalf("DenyPermissionForwarder must never answer a wire error, got %+v", ans.Err)
+	}
+
+	want := map[string]any{"decision": permSelDeny, "reason": "Permission denied by user"}
+
+	decision, ok := ans.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %T (%v), want the deny decision map", ans.Result, ans.Result)
+	}
+
+	if !reflect.DeepEqual(decision, want) {
+		t.Fatalf("deny result = %v, want exactly %v (no option id or params echo)", decision, want)
 	}
 }
 

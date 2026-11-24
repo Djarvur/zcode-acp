@@ -1,0 +1,42 @@
+{
+  "name": "omp-text-apikey-e2e",
+  "on_request": [
+    {
+      "method": "provider/updateAccountConfig",
+      "reply": {
+        "result": {
+          "status": "received",
+          "providerCount": 1,
+          "receivedRevision": "account-bridge:261124154"
+        }
+      }
+    },
+    {
+      "method": "provider/refreshRegistry",
+      "reply": {"result": {"refreshed": true}},
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {
+              "revision": 12,
+              "patch": {"providers": {"zai-api": {"models": ["GLM-5.3-Flash"]}}}
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "workspace/generateText",
+      "reply": {
+        "result": {
+          "text": "Answer: done",
+          "selection": {"providerId": "zai-api", "modelId": "GLM-5.3-Flash"},
+          "finishReason": "stop"
+        }
+      }
+    }
+  ],
+  "unknown_method": {"error": {"code": -32601, "message": "MethodNotFound"}},
+  "eof_drain_ms": 100
+}

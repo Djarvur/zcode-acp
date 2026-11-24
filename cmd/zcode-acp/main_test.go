@@ -1279,7 +1279,7 @@ func testOmpFlagSetEnvCompose(t *testing.T) {
 
 	cfg, cfgErr := parseConfig(opts.appServer, opts.model, opts.reasoningLevel, opts.apiKey)
 	if cfgErr != nil || cfg.model == nil ||
-		cfg.model.ProviderID != "zai-api" || cfg.model.ModelID != "GLM-5.3-Flash" {
+		cfg.model.ProviderID != providerZaiAPI || cfg.model.ModelID != e2eModel {
 		t.Fatalf("env fallback lost under the omp arm: cfg %+v err %v", cfg, cfgErr)
 	}
 }
@@ -1380,7 +1380,7 @@ func TestOmpLaunchBinding(t *testing.T) {
 
 		// The settings-less scenario's snapshot lists nothing and no
 		// explicit level rode: the omit-shape is the honest answer.
-		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, "zai-api", "glm-5.3", false, "")
+		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, providerZaiAPI, "glm-5.3", false, "")
 	})
 
 	t.Run("the reasoning default derives from the create-reply snapshot", func(t *testing.T) {
@@ -1393,7 +1393,7 @@ func TestOmpLaunchBinding(t *testing.T) {
 		}
 
 		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json,
-			"zai-api", "GLM-5.3-Flash", true, "high")
+			providerZaiAPI, e2eModel, true, "high")
 	})
 
 	t.Run("an explicit level wins over the snapshot default", func(t *testing.T) {
@@ -1407,7 +1407,7 @@ func TestOmpLaunchBinding(t *testing.T) {
 		}
 
 		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json,
-			"zai-api", "GLM-5.3-Flash", true, "low")
+			providerZaiAPI, e2eModel, true, "low")
 	})
 }
 
@@ -1521,7 +1521,7 @@ func TestOmpRootCoexistence(t *testing.T) {
 			t.Fatal("no session/setModel fired — the root --model path regressed")
 		}
 
-		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, "zai-api", "glm-5.3", false, "")
+		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, providerZaiAPI, "glm-5.3", false, "")
 
 		if strings.Contains(stderr, "zcode-acp omp:") {
 			t.Fatalf("root argv must not log omp-arm lines: %s", stderr)
@@ -1537,7 +1537,7 @@ func TestOmpRootCoexistence(t *testing.T) {
 			t.Fatal("no session/setModel fired — the omp arm's binding regressed")
 		}
 
-		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, "zai-api", "glm-5.3", false, "")
+		ompAssertBound(t, ompDecodeSetModel(t, line.json), line.json, providerZaiAPI, "glm-5.3", false, "")
 
 		if !strings.Contains(stderr, "zcode-acp omp: model selection bound at launch") {
 			t.Fatalf("the omp arm must announce the launch binding (ids/shapes only): %s", stderr)
@@ -1668,7 +1668,8 @@ func testWiringModeAwareServing(t *testing.T) {
 	keys := hostsvc.NewStaticKey("", "")
 
 	front := buildFront(conn, config{}, wiringFixtureInstall(), keys, machinery)
-	wireResponder(conn, front, keys, machinery, nil)
+	wireResponder(conn, front, keys, machinery,
+		interact.NewPermissionBridge(front.PermissionForward()).Forward, nil)
 
 	if conn.OnRequest == nil {
 		t.Fatal("wireResponder left conn.OnRequest unwired")

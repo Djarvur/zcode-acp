@@ -236,6 +236,19 @@ func denyAnswer() Answer {
 	return Answer{Result: map[string]any{"decision": decisionDeny, wireKeyReason: deniedByUserReason}}
 }
 
+// DenyPermissionForwarder is the text-mode PermissionForwarder (the one-shot
+// workspace/generateText path sends no tools, so any permission ask is
+// already anomalous): it logs one structural line (method, requestId, id key
+// only — never params, never an option's embedded response) and answers the
+// wrapper-synthesized deny. An ask can therefore never hang the text task and
+// can never claim an allow (T-261124-05).
+func DenyPermissionForwarder(_ context.Context, req Request) (Answer, error) {
+	slog.Warn("interact: permission ask in text mode — deny by default",
+		"method", req.Method, "requestId", req.ReqID, "id", idKey(req))
+
+	return denyAnswer(), nil
+}
+
 // cancelledWireError is the -32021 error reply for a cancelled permission
 // round-trip (the ACP cancelled outcome or a cancelled-classified
 // forwarder error): the backend maps the numeric code to ToolCancelled and
