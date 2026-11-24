@@ -13,7 +13,7 @@ selects the newest usable backend across layouts.
 ### Mount backend (MNT)
 
 - [ ] **MNT-01**: The wrapper starts the ZCode app-server from a packed AppImage through a managed `--appimage-mount` helper, with no extraction and no on-disk duplicate
-- [ ] **MNT-02**: `--app-server <path.AppImage>` and `ZCODE_ACP_APP_SERVER` accept a packed AppImage; the wrapper mounts it, validates `<mount>/zcode` and `<mount>/resources/glm/zcode.cjs`, and spawns the app-server from that mount
+- [x] **MNT-02**: `--app-server <path.AppImage>` and `ZCODE_ACP_APP_SERVER` accept a packed AppImage; the wrapper mounts it, validates `<mount>/zcode` and `<mount>/resources/glm/zcode.cjs`, and spawns the app-server from that mount
 - [x] **MNT-03**: The mount helper is a supervised child started before the app-server and torn down after it on every exit path (normal, error, signal, client disconnect) — zero orphan processes and zero stale mounts
 - [x] **MNT-04**: Mount failures (missing FUSE, helper exit before the mount line, readiness timeout, unspawnable tree in the mount) fail loud with a non-zero exit and an actionable message naming the AppImage, the failing step, and remediation; never a silent extraction fallback
 - [x] **MNT-05**: If the mount helper dies or the mount disappears while the app-server is alive, the supervisor terminates the session with an explicit cause instead of respawning against a vanished root
@@ -59,7 +59,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | MNT-01 | Phase 10 | Pending |
-| MNT-02 | Phase 10 | Pending |
+| MNT-02 | Phase 10 | Complete |
 | MNT-03 | Phase 10 | Complete |
 | MNT-04 | Phase 10 | Complete |
 | MNT-05 | Phase 10 | Complete |
