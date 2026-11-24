@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -39,6 +40,10 @@ const (
 	// pickerFlashValue is the picker target (the providerId/modelId
 	// serialization the snapshot's model option lists).
 	pickerFlashValue = "zai-api/GLM-5.3-Flash"
+
+	// pickerValidationMessage is the confirmed field-refusal shape used by
+	// the structured-data precedence and lifecycle locks.
+	pickerValidationMessage = `Reasoning effort "max" is not supported by OpenCodeGo/hungerg-free`
 )
 
 // pickerNoopSink returns the follow-up prompt's update sink — the prompt
@@ -66,6 +71,17 @@ func pickerSnapshot() json.RawMessage {
 	      ]
 	    }
 	  }
+	}`)
+}
+
+// pickerFlashSnapshot is a minimal successful setModel reply confirming the
+// picker target; recordMergedSettings retains the previous model catalog.
+func pickerFlashSnapshot() json.RawMessage {
+	return json.RawMessage(`{
+	  "session": {"sessionId": "` + pickerSID + `"},
+	  "settings": {"model": {"current": {
+	    "providerId": "zai-api", "modelId": "GLM-5.3-Flash"
+	  }}}
 	}`)
 }
 
@@ -202,7 +218,7 @@ func assertPickerCloseCount(t *testing.T, tr fake.Transcript, want int) {
 //
 //nolint:funlen // the full lifecycle/retry proof is one composed contract
 func TestPickerRecoverableSetModelValidationPreservesSession(t *testing.T) {
-	const message = `Reasoning effort "max" is not supported by OpenCodeGo/hungerg-free`
+	const message = pickerValidationMessage
 
 	for _, tc := range []struct {
 		name string
@@ -221,12 +237,7 @@ func TestPickerRecoverableSetModelValidationPreservesSession(t *testing.T) {
 			refusal := &zcode.WireError{Code: zcode.CodeInternalError, Message: message, Data: tc.data}
 			success := fake.RequestRule{
 				Method: zcode.MethodSessionSetModel,
-				Reply: &fake.Reply{Result: json.RawMessage(`{
-				  "session": {"sessionId": "` + pickerSID + `"},
-				  "settings": {"model": {"current": {
-				    "providerId": "zai-api", "modelId": "GLM-5.3-Flash"
-				  }}}
-				}`)},
+				Reply:  &fake.Reply{Result: pickerFlashSnapshot()},
 			}
 			f, closeLegs := newInterleaveFront(t, pickerRefusalScenario(
 				fake.RequestRule{Method: zcode.MethodSessionSetModel, Times: 1, Reply: &fake.Reply{Error: refusal}},
@@ -271,6 +282,219 @@ func TestPickerRecoverableSetModelValidationPreservesSession(t *testing.T) {
 			assertPickerCloseCount(t, closeLegs(), 0)
 		})
 	}
+}
+
+// TestIsRecoverableSetModelError locks the conservative trust-boundary
+// classifier, especially that present malformed/unrecognized -32603 data
+// can never fall through to the validation-shaped message compatibility arm.
+//
+//nolint:funlen // the classification matrix is one trust-boundary contract
+func TestIsRecoverableSetModelError(t *testing.T) {
+	wire := func(code int, message string, data json.RawMessage) error {
+		return &zcode.CallError{Err: &zcode.WireError{Code: code, Message: message, Data: data}}
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "wrapped invalid params ignores unrelated message and malformed data",
+			err:  fmt.Errorf("wrapped: %w", wire(zcode.CodeInvalidParams, "unrelated", json.RawMessage(`{`))),
+			want: true,
+		},
+		{
+			name: "structured invalid model request ignores non-validation message",
+			err: wire(zcode.CodeInternalError, "request refused", json.RawMessage(
+				`{"name":"ModelProtocolError","code":"invalid_model_request"}`)),
+			want: true,
+		},
+		{
+			name: "data-less unsupported effort",
+			err:  wire(zcode.CodeInternalError, pickerValidationMessage, nil),
+			want: true,
+		},
+		{
+			name: "data-less unsupported level",
+			err:  wire(zcode.CodeInternalError, `Reasoning level "max" is not supported by a model`, nil),
+			want: true,
+		},
+		{name: "nil", err: nil},
+		{name: "non-call error", err: errors.New("transport failed")},
+		{name: "call error with nil wire error", err: &zcode.CallError{}},
+		{name: "typed nil call error", err: (*zcode.CallError)(nil)},
+		{
+			name: "resource not found",
+			err:  wire(zcode.CodeResourceNotFound, pickerValidationMessage, nil),
+		},
+		{
+			name: "method not found",
+			err:  wire(zcode.CodeMethodNotFound, pickerValidationMessage, nil),
+		},
+		{
+			name: "generic internal error",
+			err:  wire(zcode.CodeInternalError, "unknown backend failure", nil),
+		},
+		{
+			name: "old reasoning-required message",
+			err:  wire(zcode.CodeInternalError, "Reasoning level is required for this model", nil),
+		},
+		{name: "connection closed", err: zcode.ErrConnClosed},
+		{name: "cancellation", err: context.Canceled},
+		{
+			name: "present invalid JSON never reaches message fallback",
+			err:  wire(zcode.CodeInternalError, pickerValidationMessage, json.RawMessage(`{`)),
+		},
+		{
+			name: "present JSON null never reaches message fallback",
+			err:  wire(zcode.CodeInternalError, pickerValidationMessage, json.RawMessage(`null`)),
+		},
+		{
+			name: "present empty object never reaches message fallback",
+			err:  wire(zcode.CodeInternalError, pickerValidationMessage, json.RawMessage(`{}`)),
+		},
+		{
+			name: "wrong code field type never reaches message fallback",
+			err: wire(zcode.CodeInternalError, pickerValidationMessage,
+				json.RawMessage(`{"name":"ModelProtocolError","code":17}`)),
+		},
+		{
+			name: "unknown name and code never reach message fallback",
+			err: wire(zcode.CodeInternalError, pickerValidationMessage,
+				json.RawMessage(`{"name":"OtherError","code":"other_code"}`)),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isRecoverableSetModelError(tc.err); got != tc.want {
+				t.Fatalf("isRecoverableSetModelError(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPickerMalformedOrUnrecognizedSetModelDataRunsFullTeardown proves the
+// same present-data boundary through the real picker lifecycle: a validation-
+// shaped message cannot rescue malformed or unrecognized structured data.
+func TestPickerMalformedOrUnrecognizedSetModelDataRunsFullTeardown(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data json.RawMessage
+	}{
+		{name: "JSON null", data: json.RawMessage(`null`)},
+		{
+			name: "wrong code field type",
+			data: json.RawMessage(`{"name":"ModelProtocolError","code":17}`),
+		},
+		{
+			name: "unknown name and code",
+			data: json.RawMessage(`{"name":"OtherError","code":"other_code"}`),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			ctx := context.Background()
+			f, closeLegs := newInterleaveFront(t, pickerRefusalScenario(fake.RequestRule{
+				Method: zcode.MethodSessionSetModel,
+				Reply: &fake.Reply{Error: &zcode.WireError{
+					Code: zcode.CodeInternalError, Message: pickerValidationMessage, Data: tc.data,
+				}},
+			}))
+			defer closeLegs()
+
+			sid := openPickerSession(ctx, t, f, cwd)
+
+			_, err := f.SetSessionConfigOption(ctx, sid, optionIDModel, pickerFlashValue)
+			var seamErr *acpport.Error
+			if !errors.As(err, &seamErr) || seamErr.Code != acpport.CodeInternal {
+				t.Fatalf("refusal error = %v, want the coded internal setModel refusal", err)
+			}
+
+			assertPickerZombieGone(t, f, "malformed or unrecognized structured setModel data")
+			assertPickerCloseCount(t, closeLegs(), 1)
+		})
+	}
+}
+
+// TestModelSlashRecoverableSetModelValidationPreservesSession drives the
+// direct /model intercept: recoverable validation preserves the live session,
+// and a later valid command succeeds with reply-confirmed settings and no
+// session/close frame.
+//
+//nolint:funlen // the full slash lifecycle/retry proof is one composed contract
+func TestModelSlashRecoverableSetModelValidationPreservesSession(t *testing.T) {
+	cwd := t.TempDir()
+	ctx := context.Background()
+	f, closeLegs := newInterleaveFront(t, pickerRefusalScenario(
+		fake.RequestRule{
+			Method: zcode.MethodSessionSetModel,
+			Times:  1,
+			Reply: &fake.Reply{Error: &zcode.WireError{
+				Code: zcode.CodeInternalError, Message: pickerValidationMessage,
+			}},
+		},
+		fake.RequestRule{
+			Method: zcode.MethodSessionSetModel,
+			Reply:  &fake.Reply{Result: pickerFlashSnapshot()},
+		},
+	))
+	defer closeLegs()
+
+	sid := openPickerSession(ctx, t, f, cwd)
+	before, ok := f.latestSettings(sid)
+	if !ok {
+		t.Fatal("the create reply must record the initial confirmed settings")
+	}
+
+	ask := acpport.PromptParams{SessionID: sid, Text: modelSlashSpace + pickerFlashValue}
+	_, handled, err := f.promptModelSlash(ctx, ask, pickerNoopSink())
+	if !handled {
+		t.Fatal("the /model selector must be handled by the slash intercept")
+	}
+
+	var seamErr *acpport.Error
+	if !errors.As(err, &seamErr) || seamErr.Code != acpport.CodeInternal {
+		t.Fatalf("refusal error = %v, want the coded internal setModel refusal", err)
+	}
+
+	wantMessage := "session/setModel: zcode: wire error -32603: " + pickerValidationMessage
+	if seamErr.Message != wantMessage {
+		t.Fatalf("refusal message = %q, want unchanged %q", seamErr.Message, wantMessage)
+	}
+
+	assertPickerSessionPreserved(t, f, sid, cwd, before)
+
+	stop, handled, err := f.promptModelSlash(ctx, ask, pickerNoopSink())
+	if !handled || err != nil || stop != acpport.StopEndTurn {
+		t.Fatalf("the later valid /model switch = (%q, %t, %v), want (end_turn, true, nil)",
+			stop, handled, err)
+	}
+
+	updated, ok := f.latestSettings(sid)
+	if !ok {
+		t.Fatal("the successful slash retry must record confirmed settings")
+	}
+
+	s, parsed := ParseSettings(updated)
+	if !parsed || s.Model.Current == nil || s.Model.Current.ModelID != "GLM-5.3-Flash" {
+		t.Fatalf("the successful slash retry did not record Flash as current: %s", updated)
+	}
+
+	assertPickerSessionPreserved(t, f, sid, cwd, updated)
+
+	tr := closeLegs()
+	setModels := 0
+	for _, line := range tr.Lines {
+		if string(line.Dir) == "in" && strings.Contains(line.JSON, `"method":"session/setModel"`) {
+			setModels++
+		}
+	}
+
+	if setModels != 2 {
+		t.Fatalf("back leg records %d session/setModel frames, want exactly 2", setModels)
+	}
+
+	assertPickerCloseCount(t, tr, 0)
 }
 
 // TestPickerSetModelRefusalRunsFullTeardown locks the WR-01 contract: the
