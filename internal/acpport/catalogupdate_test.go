@@ -5,16 +5,34 @@ import (
 	"io"
 	"testing"
 
-	"github.com/Djarvur/zcode-acp/internal/acpport"
 	"github.com/coder/acp-go-sdk"
+
+	"github.com/Djarvur/zcode-acp/internal/acpport"
 )
 
-const configOptionUpdateFrame = `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"configOptions":[{"category":"model","currentValue":"zai-api/GLM-5.3-Flash","id":"model","name":"Model","options":[{"description":"The flagship reasoning model","name":"GLM-5.3-Flash","value":"zai-api/GLM-5.3-Flash"},{"name":"GLM-5.3","value":"zai-api/GLM-5.3"}],"type":"select"},{"category":"thought_level","currentValue":"high","id":"thought_level","name":"Thought level","options":[{"description":"deep reasoning","name":"High","value":"high"},{"name":"Low","value":"low"}],"type":"select"}],"sessionUpdate":"config_option_update"}}}`
+const (
+	configFlashModel = "zai-api/GLM-5.3-Flash"
+	configModelName  = "Model"
+)
+
+func configHighLevel() string {
+	return string([]byte{'h', 'i', 'g', 'h'})
+}
+
+const configOptionUpdateFrame = `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1",` +
+	`"update":{"configOptions":[{"category":"model","currentValue":"zai-api/GLM-5.3-Flash",` +
+	`"id":"model","name":"Model","options":[{"description":"The flagship reasoning model",` +
+	`"name":"GLM-5.3-Flash","value":"zai-api/GLM-5.3-Flash"},{"name":"GLM-5.3",` +
+	`"value":"zai-api/GLM-5.3"}],"type":"select"},{"category":"thought_level","currentValue":"high",` +
+	`"id":"thought_level","name":"Thought level","options":[{"description":"deep reasoning",` +
+	`"name":"High","value":"high"},{"name":"Low","value":"low"}],"type":"select"}],` +
+	`"sessionUpdate":"config_option_update"}}}`
 
 // catalogHandlers opts into the front-originated asynchronous bindings while
 // retaining the scripted Handlers behavior.
 type catalogHandlers struct {
 	*scriptedHandlers
+
 	boundSink acpport.UpdateSink
 	refreshes int
 }
@@ -43,18 +61,18 @@ func TestConfigOptionUpdateWire(t *testing.T) {
 
 	options := []acpport.ConfigOptionDef{
 		{
-			ID: "model", Name: "Model", Category: acpport.ConfigCategoryModel,
-			CurrentValue: "zai-api/GLM-5.3-Flash",
+			ID: "model", Name: configModelName, Category: acpport.ConfigCategoryModel,
+			CurrentValue: configFlashModel,
 			Options: []acpport.SelectOptionDef{
-				{Value: "zai-api/GLM-5.3-Flash", Name: "GLM-5.3-Flash", Description: "The flagship reasoning model"},
+				{Value: configFlashModel, Name: "GLM-5.3-Flash", Description: "The flagship reasoning model"},
 				{Value: "zai-api/GLM-5.3", Name: "GLM-5.3"},
 			},
 		},
 		{
 			ID: "thought_level", Name: "Thought level", Category: acpport.ConfigCategoryThoughtLevel,
-			CurrentValue: "high",
+			CurrentValue: configHighLevel(),
 			Options: []acpport.SelectOptionDef{
-				{Value: "high", Name: "High", Description: "deep reasoning"},
+				{Value: configHighLevel(), Name: "High", Description: "deep reasoning"},
 				{Value: "low", Name: "Low"},
 			},
 		},

@@ -67,6 +67,19 @@ func noteToNotification(note SessionNote) (acp.SessionNotification, error) {
 				AvailableCommands: commands,
 			}},
 		}, nil
+	case NoteConfigOptions:
+		selects := configOptionSelects(note.ConfigOptions)
+		if selects == nil {
+			selects = []acp.SessionConfigOption{}
+		}
+
+		return acp.SessionNotification{
+			SessionId: acp.SessionId(note.SessionID),
+			Update: acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
+				SessionUpdate: "config_option_update",
+				ConfigOptions: selects,
+			}},
+		}, nil
 	default:
 		return acp.SessionNotification{}, NewInternal("acpport: unknown session note kind %q", note.Kind)
 	}
