@@ -12,7 +12,7 @@ selects the newest usable backend across layouts.
 
 ### Mount backend (MNT)
 
-- [ ] **MNT-01**: The wrapper starts the ZCode app-server from a packed AppImage through a managed `--appimage-mount` helper, with no extraction and no on-disk duplicate
+- [x] **MNT-01**: The wrapper starts the ZCode app-server from a packed AppImage through a managed `--appimage-mount` helper, with no extraction and no on-disk duplicate
 - [x] **MNT-02**: `--app-server <path.AppImage>` and `ZCODE_ACP_APP_SERVER` accept a packed AppImage; the wrapper mounts it, validates `<mount>/zcode` and `<mount>/resources/glm/zcode.cjs`, and spawns the app-server from that mount
 - [x] **MNT-03**: The mount helper is a supervised child started before the app-server and torn down after it on every exit path (normal, error, signal, client disconnect) — zero orphan processes and zero stale mounts
 - [x] **MNT-04**: Mount failures (missing FUSE, helper exit before the mount line, readiness timeout, unspawnable tree in the mount) fail loud with a non-zero exit and an actionable message naming the AppImage, the failing step, and remediation; never a silent extraction fallback
@@ -29,7 +29,7 @@ selects the newest usable backend across layouts.
 ### Verification & docs (VER)
 
 - [x] **VER-01**: CI-safe unit tests drive mount lifecycle via a scripted fake AppImage runtime (mount line, readiness, teardown, early death, missing FUSE) without requiring FUSE
-- [ ] **VER-02**: A guarded real-machine test (env-gated, never CI) mounts a real AppImage, spawns the app-server, performs `session/create`, and shuts down with zero leftovers
+- [x] **VER-02**: A guarded real-machine test (env-gated, never CI) mounts a real AppImage, spawns the app-server, performs `session/create`, and shuts down with zero leftovers
 - [ ] **VER-03**: Docs updated coherently: `docs/protocol/install-discovery.md` (managed mount is a first-class layout; volatile-mount rule revised), README (AppImage override and behavior), and the provenance note; no documented claim contradicts behavior
 
 ## v2 Requirements
@@ -58,7 +58,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| MNT-01 | Phase 10 | Pending |
+| MNT-01 | Phase 10 | Complete |
 | MNT-02 | Phase 10 | Complete |
 | MNT-03 | Phase 10 | Complete |
 | MNT-04 | Phase 10 | Complete |
@@ -69,7 +69,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISC-03 | Phase 10 | Complete |
 | DISC-04 | Phase 10 | Complete |
 | VER-01 | Phase 10 | Complete |
-| VER-02 | Phase 10 | Pending |
+| VER-02 | Phase 10 | Complete |
 | VER-03 | Phase 10 | Pending |
 
 **Coverage:**
