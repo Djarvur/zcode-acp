@@ -23,8 +23,8 @@ actuals:
   tokens: 32078     # chars/4 over the realized diff (git diff 68b360c..HEAD, 128310 chars)
   tasks: 3
   commits: 3
-  plan_head_before: 68b360c5df9b49a41e99bd1d7030a6511488ca8c
-  plan_head_after: a5d3f34b72d1162afc561d2af4d0d80b77cd878e
+  plan_head_before: c716b7869cdbfd6201f500f37e929d3fc97e0b1d
+  plan_head_after: adf9b671de1c7cec210c6bb587cd1f8dbb2890a1
 
 tech-stack:
   added: []
@@ -164,18 +164,27 @@ status: complete
 
 - **Duration:** ~40 min (20:44–21:23 local commit span + summary/review)
 - **Tasks:** 3 / 3 complete
-- **Commits:** 3 code commits (docs committed separately by the orchestrator)
-- **Files:** 12 changed (5 created, 7 modified)
-- **Diff:** 2940 insertions / 133 deletions (chars/4 ≈ 32,078 tokens)
+- **Commits:** 3 code commits + 1 post-rebase test reconciliation (docs committed separately by the orchestrator)
+- **Files:** 13 changed (5 created, 8 modified); the extra file is the post-rebase `fullcycle_test.go` coalescing tolerance
+- **Diff:** see `git diff --shortstat c716b78..adf9b67` (rebased tip; includes the post-rebase reconciliation)
 - **Final gate:** `go build ./...` OK, `go vet ./...` OK, `go test -race -count=1 ./...` all packages OK, `golangci-lint run` 0 issues
 
 ## Task Commits
 
-| Task | Commit | Scope |
+| Task | Commit (rebased) | Scope |
 |------|--------|-------|
-| 1 — Bind terminal/idle completion to the live turn | `4e9a427` | turn machine retired-turn binder, revision-ordered idle gate, structural logs, binding tests |
-| 2 — No-progress stall watchdog + coded front error | `84a03a6` | watchdog/backend progress scope/join, Front stall seam + shared machine constructor, machine/front/resumed tests |
-| 3 — Orphan recovery with one stop and one retry | `a5d3f34` | ErrOrphanedBackend path + clear wait + retirement, Front orphan flag/mapping, superseded obsolete lock, machine/front/resumed tests |
+| 1 — Bind terminal/idle completion to the live turn | `e3fa8de` | turn machine retired-turn binder, revision-ordered idle gate, structural logs, binding tests |
+| 2 — No-progress stall watchdog + coded front error | `858879f` | watchdog/backend progress scope/join, Front stall seam + shared machine constructor, machine/front/resumed tests; includes the post-rebase `fullcycle_test.go` coalescing tolerance |
+| 3 — Orphan recovery with one stop and one retry | `91d25cf` | ErrOrphanedBackend path + clear wait + retirement, Front orphan flag/mapping, superseded obsolete lock, machine/front/resumed tests |
+
+## Post-rebase reconciliation (2026-11-26)
+
+Rebased from `68b360c` onto `c716b78` (master with #13 resume capability and #14 session/cancel steer).
+
+- **Conflicts resolved:** `internal/turn/machine.go` (master's cancel-grace fields/timer + the stall watchdog fields), `internal/acpfront/front.go` (master's cancel-grace `MachineOption` + the stall/orphan config in the shared `newSessionMachine`), `internal/acpfront/lifecycle.go` (comment only). The shared constructor now carries BOTH seams into every prompt machine (session/new and session/resume).
+- **Flake reconciliation:** `internal/acpfront/fullcycle_test.go`'s permission-placement assertion now accepts the pump's documented keep-latest coalescing: the intermediate `in_progress` patch is not guaranteed under drain backpressure (locked by `tool_stream_test.go`'s parked-drain case). The causal contract is unchanged — the ask still lands after the started patch and before the terminal completed patch. This was a latent flake exposed by the rebase timing.
+- **Const reconciliation:** `internal/turn/machine_test.go` drops the duplicate `wireKeyStatus`/`wireKeyEventSeq` consts that master's new `cancel_outcome_test.go` declares in the same package (`adf9b67`).
+- **Gates rerun on the rebased tip:** `gofmt` clean; `go build ./...` OK; `go vet ./...` OK; `go test -race -count=1 ./...` all packages OK; `golangci-lint run` 0 issues.
 
 ## TDD Evidence
 

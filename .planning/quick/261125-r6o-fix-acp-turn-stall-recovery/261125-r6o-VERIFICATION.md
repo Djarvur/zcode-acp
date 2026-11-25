@@ -28,8 +28,8 @@ overrides_applied: 0
 **Goal:** fix ACP turn stall recovery — bind completion to the live turn, add a no-progress watchdog, recover orphaned backend turns.
 **Verified:** 2026-11-25T18:34:18Z
 **Status:** passed
-**HEAD:** `a5d3f34b72d1162afc561d2af4d0d80b77cd878e` on `fix/acp-turn-stall-recovery`
-**Re-verification:** No — initial verification (no prior VERIFICATION.md in the task directory)
+**HEAD (initial):** `a5d3f34b72d1162afc561d2af4d0d80b77cd878e` on `fix/acp-turn-stall-recovery`
+**Re-verification:** Yes — post-rebase re-verification (see "Post-Rebase Re-Verification" below)
 
 ## Goal Achievement
 
@@ -176,7 +176,17 @@ None. All must-have truths and residual requirements are covered by passing beha
 
 None. All three scoped outcomes are implemented and test-locked: (P0) completion is bound to the live turn by a surface-level binder that retires resolved turn ids and a strictly-ordered idle gate; (P1) silent running turns are bounded by a configurable 15/30-minute no-progress watchdog that stops over the bypass lane before resolving and surfaces a coded -32603, with the goroutine joined on every return path; (P2) a slot-free -32010 heals through one stop, a bounded session-scoped clear wait, and one retry, with a second refusal mapped to a non-retryable -32603 on both session/new and session/resume machines. Build, vet, the focused tests, both full packages under `-race`, and lint are green; dependencies, corpus/goldens, and the wire vocabulary are untouched; the three commits contain no planning docs.
 
+## Post-Rebase Re-Verification (2026-11-26)
+
+Rebased from `68b360c` onto `c716b78` (master with #13 resume capability and #14 session/cancel steer).
+
+- **Conflicts resolved:** `internal/turn/machine.go` (master's cancel-grace fields/timer + the stall watchdog fields), `internal/acpfront/front.go` (master's cancel-grace `MachineOption` + the stall/orphan config in the shared `newSessionMachine`), `internal/acpfront/lifecycle.go` (comment only). The shared constructor now carries BOTH seams into every prompt machine (session/new and session/resume).
+- **Test artifact reconciliation:** `internal/acpfront/fullcycle_test.go`'s permission-placement assertion now accepts the pump's documented keep-latest coalescing — the intermediate `in_progress` patch is not guaranteed under drain backpressure (locked by `tool_stream_test.go`'s parked-drain case). The causal contract is unchanged: the ask lands after the started patch and before the terminal completed patch. This was a latent flake exposed by rebase timing, not a behavior change. `internal/turn/machine_test.go` drops the duplicate `wireKeyStatus`/`wireKeyEventSeq` consts that master's new `cancel_outcome_test.go` declares in the same package (`adf9b67`).
+- **Rebased commits:** `e3fa8de` (P0), `858879f` (P1), `91d25cf` (P2); post-rebase reconciliation `adf9b67`; docs `5e87ba5`.
+- **Re-ran on the rebased tip:** `gofmt` clean; `go build ./...` OK; `go vet ./...` OK; `go test -race -count=1 ./...` all packages OK (acpfront 115.5s, turn 7.7s, cmd 41.3s); `golangci-lint run` 0 issues. All 9 must-haves remain satisfied.
+
 ---
 
 _Verified: 2026-11-25T18:34:18Z_
+_Re-verified: 2026-11-26 (post-rebase)_
 _Verifier: Claude (gsd-verifier)_
