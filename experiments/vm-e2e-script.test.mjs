@@ -2,7 +2,7 @@
 // scripts/vm-e2e.sh (QA-02 / D-05, plan 07-07 task 2). The script's client-
 // facing no-keyring contract is the four coded sentinels of
 // internal/interact/keyringprobe.go:44-60 — asserted VERBATIM, never
-// paraphrased. Run: node --test experiments/
+// paraphrased. Run: node --test experiments/*.test.mjs
 //
 // Static tests read the script and assert its contract without running the
 // wrapper (they hold on any machine, CI included). The live stripped-PATH arm

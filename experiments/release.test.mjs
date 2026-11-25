@@ -157,6 +157,19 @@ function namedStep(job, name) {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
+function assertHomebrewBashBootstrap(job) {
+  const install = namedStep(job, "Install Bash 5 via Homebrew");
+  const prepend = namedStep(job, "Prepend Homebrew Bash to PATH");
+
+  assert.match(install, /^        run: brew install bash$/m);
+  assert.match(prepend, /^        run: echo "\$\(brew --prefix\)\/bin" >> "\$GITHUB_PATH"$/m);
+  assertOrdered(job, [
+    "name: Install Bash 5 via Homebrew",
+    "name: Prepend Homebrew Bash to PATH",
+    "name: Install tools from mise.toml",
+  ]);
+}
+
 function assertDependencyGate(job) {
   const version = namedStep(job, "Validate tool versions");
   const download = namedStep(job, "Download frozen Go modules");
@@ -212,6 +225,7 @@ test("release workflow runs the proven snapshot with read-only rights", () => {
   assert.match(snapshot, /fetch-depth: 0/);
   assert.match(snapshot, /run: curl https:\/\/mise\.run \| sh/);
   assert.match(snapshot, /run: mise install/);
+  assertHomebrewBashBootstrap(snapshot);
   assert.doesNotMatch(snapshot, /GITHUB_TOKEN|secrets\.|contents:\s*write/);
   assert.doesNotMatch(snapshot, /^\s+if:/m);
   assertDependencyGate(snapshot);
@@ -254,6 +268,7 @@ test("release workflow scopes snapshot and tag publication", () => {
   assert.match(release, /fetch-depth: 0/);
   assert.match(release, /run: curl https:\/\/mise\.run \| sh/);
   assert.match(release, /run: mise install/);
+  assertHomebrewBashBootstrap(release);
   assertDependencyGate(release);
 
   const publish = namedStep(release, "goreleaser release");

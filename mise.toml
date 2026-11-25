@@ -17,10 +17,11 @@ golangci-lint = "2.15.0"
 goreleaser = "2.20.2"
 # experiments/ scripts + the `node --test` suite (D-02): Active LTS major.
 node = "26"
-# macOS ships Bash 3.2; the docs gate requires Bash 4+ associative arrays.
-bash = "5.3"
 
 [env]
+# Bash requirement for the shell gates. mise has no Bash tool plugin, so this
+# is a PATH-level line pin checked by scripts/check-mise-tool-versions.mjs.
+ZCODE_ACP_REQUIRED_BASH = "5"
 # Deterministic build/test paths
 GOFLAGS = "-trimpath"
 
@@ -42,7 +43,7 @@ run = "go test -race -count=1 ./..."
 
 [tasks.test-experiments]
 description = "Run the Phase-1 experiments suite (node --test)"
-run = "node --test experiments/"
+run = "node --test experiments/*.test.mjs"
 
 [tasks.tidy-diff]
 description = "go mod tidy and fail on any go.mod/go.sum drift"

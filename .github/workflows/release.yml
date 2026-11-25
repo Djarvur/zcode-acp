@@ -28,6 +28,14 @@ jobs:
       - name: Add mise to PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # mise has no Bash tool plugin. Install and prepend Homebrew Bash 5
+      # before mise install and the version gate.
+      - name: Install Bash 5 via Homebrew
+        run: brew install bash
+
+      - name: Prepend Homebrew Bash to PATH
+        run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+
       - name: Install tools from mise.toml
         run: mise install
 
@@ -90,6 +98,14 @@ jobs:
 
       - name: Add mise to PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # mise has no Bash tool plugin. Install and prepend Homebrew Bash 5
+      # before mise install and the version gate.
+      - name: Install Bash 5 via Homebrew
+        run: brew install bash
+
+      - name: Prepend Homebrew Bash to PATH
+        run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
       - name: Install tools from mise.toml
         run: mise install

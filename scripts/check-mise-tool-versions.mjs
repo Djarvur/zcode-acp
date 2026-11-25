@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// scripts/check-mise-tool-versions.mjs — compare mise-resolved tool versions
-// with the single-source pins in mise.toml. This gate never installs, trusts,
-// or falls back to a bare PATH command.
+// scripts/check-mise-tool-versions.mjs — compare the four mise-managed tool
+// pins plus the PATH-level Bash requirement with mise.toml. This gate never
+// installs or trusts tools.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -12,13 +12,14 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
 const VERSION_PATTERN = /^\d+(?:\.\d+){0,2}$/;
 const PROBE_TIMEOUT_MS = 30_000;
-const REQUIRED_TOOLS = ["go", "golangci-lint", "goreleaser", "node", "bash"];
+const MISE_TOOLS = ["go", "golangci-lint", "goreleaser", "node"];
+const REQUIRED_TOOLS = [...MISE_TOOLS, "bash"];
+const BASH_REQUIREMENT_ENV = "ZCODE_ACP_REQUIRED_BASH";
 const VERSION_ARGS = {
   go: ["version"],
   "golangci-lint": ["--version"],
   goreleaser: ["--version"],
   node: ["--version"],
-  bash: ["--version"],
 };
 
 export function resolvedVersionFromOutput(output) {
@@ -47,10 +48,10 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function readRequiredToolPins(document) {
+function readTomlTable(document, tableName) {
   const lines = document.split(/\r?\n/);
-  const start = lines.findIndex((line) => /^\[tools\]\s*$/.test(line));
-  if (start === -1) throw new Error("mise.toml is missing the [tools] table");
+  const start = lines.findIndex((line) => line.trim() === `[${tableName}]`);
+  if (start === -1) throw new Error(`mise.toml is missing the [${tableName}] table`);
 
   let end = lines.length;
   for (let index = start + 1; index < lines.length; index += 1) {
@@ -59,26 +60,40 @@ function readRequiredToolPins(document) {
       break;
     }
   }
-  const toolsTable = lines.slice(start + 1, end).join("\n");
-  const pins = new Map();
+  return lines.slice(start + 1, end).join("\n");
+}
 
-  for (const tool of REQUIRED_TOOLS) {
-    const entryPattern = new RegExp(
-      `^[\\t ]*${escapeRegExp(tool)}[\\t ]*=[\\t ]*(.*?)[\\t ]*$`,
-      "gm",
-    );
-    const entries = [...toolsTable.matchAll(entryPattern)];
-    if (entries.length !== 1) {
-      throw new Error(`mise.toml [tools] must define ${tool} exactly once`);
-    }
-
-    const value = /^"([^"]+)"$/.exec(entries[0][1])?.[1];
-    if (!value || !VERSION_PATTERN.test(value)) {
-      throw new Error(`mise.toml [tools].${tool} must be a quoted numeric version`);
-    }
-    pins.set(tool, value);
+function readRequiredPin(document, tableName, key) {
+  const table = readTomlTable(document, tableName);
+  const entryPattern = new RegExp(
+    `^[\\t ]*${escapeRegExp(key)}[\\t ]*=[\\t ]*(.*?)[\\t ]*$`,
+    "gm",
+  );
+  const entries = [...table.matchAll(entryPattern)];
+  if (entries.length !== 1) {
+    throw new Error(`mise.toml [${tableName}] must define ${key} exactly once`);
   }
 
+  const value = /^"([^"]+)"$/.exec(entries[0][1])?.[1];
+  if (!value || !VERSION_PATTERN.test(value)) {
+    throw new Error(`mise.toml [${tableName}].${key} must be a quoted numeric version`);
+  }
+  return value;
+}
+
+function readRequiredPins(document) {
+  const pins = new Map();
+  for (const tool of MISE_TOOLS) {
+    pins.set(tool, readRequiredPin(document, "tools", tool));
+  }
+
+  const bashPin = readRequiredPin(document, "env", BASH_REQUIREMENT_ENV);
+  if (bashPin.split(".").length === 3) {
+    throw new Error(
+      `mise.toml [env].${BASH_REQUIREMENT_ENV} must be a major or major.minor line`,
+    );
+  }
+  pins.set("bash", bashPin);
   return pins;
 }
 
@@ -86,8 +101,8 @@ function writeOutput(stream, text) {
   stream.write(text.endsWith("\n") ? text : `${text}\n`);
 }
 
-function probeTool(tool, required) {
-  const result = spawnSync("mise", ["exec", "--", tool, ...VERSION_ARGS[tool]], {
+function probeVersion(label, command, args, required, source) {
+  const result = spawnSync(command, args, {
     cwd: REPO_ROOT,
     encoding: "utf8",
     timeout: PROBE_TIMEOUT_MS,
@@ -97,25 +112,33 @@ function probeTool(tool, required) {
   const resolved = resolvedVersionFromOutput(rawOutput);
 
   if (rawOutput) writeOutput(process.stdout, rawOutput);
-  writeOutput(process.stdout, `${tool}: required=${required} resolved=${resolved ?? "<missing>"}`);
+  writeOutput(process.stdout, `${label}: required=${required} resolved=${resolved ?? "<missing>"}`);
 
   if (result.error) {
-    writeOutput(process.stderr, `${tool}: mise probe failed: ${result.error.message}`);
+    writeOutput(process.stderr, `${label}: ${source} probe failed: ${result.error.message}`);
     return false;
   }
   if (result.status !== 0) {
-    writeOutput(process.stderr, `${tool}: mise probe exited with status ${result.status}`);
+    writeOutput(process.stderr, `${label}: ${source} probe exited with status ${result.status}`);
     return false;
   }
   if (!resolved) {
-    writeOutput(process.stderr, `${tool}: mise probe did not report a dotted version`);
+    writeOutput(process.stderr, `${label}: ${source} probe did not report a dotted version`);
     return false;
   }
   if (!requiredVersionMatches(required, resolved)) {
-    writeOutput(process.stderr, `${tool}: resolved ${resolved} does not match required ${required}`);
+    writeOutput(process.stderr, `${label}: resolved ${resolved} does not match required ${required}`);
     return false;
   }
   return true;
+}
+
+function probeMiseTool(tool, required) {
+  return probeVersion(tool, "mise", ["exec", "--", tool, ...VERSION_ARGS[tool]], required, "mise");
+}
+
+function probeBash(required) {
+  return probeVersion("bash", "bash", ["--version"], required, "PATH");
 }
 
 function main() {
@@ -129,7 +152,7 @@ function main() {
 
   let pins;
   try {
-    pins = readRequiredToolPins(readFileSync(path.join(REPO_ROOT, "mise.toml"), "utf8"));
+    pins = readRequiredPins(readFileSync(path.join(REPO_ROOT, "mise.toml"), "utf8"));
   } catch (error) {
     writeOutput(process.stderr, `tool-version gate: ${error.message}`);
     process.exitCode = 1;
@@ -139,7 +162,9 @@ function main() {
   const selected = requested.length > 0 ? requested : REQUIRED_TOOLS;
   let passed = true;
   for (const tool of selected) {
-    if (!probeTool(tool, pins.get(tool))) passed = false;
+    const required = pins.get(tool);
+    const ok = tool === "bash" ? probeBash(required) : probeMiseTool(tool, required);
+    if (!ok) passed = false;
   }
   if (!passed) process.exitCode = 1;
 }

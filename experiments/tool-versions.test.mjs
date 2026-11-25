@@ -35,9 +35,11 @@ test("requiredVersionMatches accepts exact three-component pins", () => {
 
 test("requiredVersionMatches accepts only the pinned one- or two-component line", () => {
   assert.equal(requiredVersionMatches("1.27", "1.27.4"), true);
+  assert.equal(requiredVersionMatches("5", "5.3.20"), true);
   assert.equal(requiredVersionMatches("5.3", "5.3.20"), true);
   assert.equal(requiredVersionMatches("26", "26.13.1"), true);
   assert.equal(requiredVersionMatches("1.27", "1.28.4"), false);
+  assert.equal(requiredVersionMatches("5", "4.4.0"), false);
   assert.equal(requiredVersionMatches("26", "27.13.1"), false);
 });
 

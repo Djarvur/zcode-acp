@@ -1,6 +1,6 @@
 // experiments/scrub-capture.test.mjs — unit tests for every canonical scrub rule
 // (D-02; the scrubber experiments/scrub-capture.mjs is the only path into
-// experiments/captures/). Run: node --test experiments/
+// experiments/captures/). Run: node --test experiments/*.test.mjs
 //
 // IMPORTANT: forbidden shapes (JWT values, credential-blob payloads, long token
 // values, UUIDs) are constructed here by STRING CONCATENATION so that no forbidden
