@@ -15,28 +15,28 @@ Requirements for the macOS support milestone. Each maps to exactly one roadmap p
 
 ### Discovery & Backend Launch
 
-- [ ] **MDISC-01**: Discovery finds `/Applications/ZCode.app` and `$HOME/Applications/ZCode.app`, validates the bundle, and reads its version from `Info.plist`.
-- [ ] **MDISC-02**: `--app-server` accepts a macOS `.app`, its `Contents` directory, its `Contents/MacOS/<executable>`, and existing Linux layouts without regression.
-- [ ] **MDISC-03**: A discovered macOS bundle launches the desktop app-server with the correct executable, `Contents/Resources/glm/zcode.cjs` entrypoint, `ELECTRON_RUN_AS_NODE=1`, and bundled provider table.
-- [ ] **MDISC-04**: Runtime-provider discovery selects the macOS OS/architecture cache instead of `linux-x86_64`, and the builtin revision matches the path used by the backend.
-- [ ] **MDISC-05**: A GUI-launched Orca process gives the backend the user's tool `PATH` through a bounded, non-interactive login-shell union while preserving secret/proxy scrubbing.
+- [x] **MDISC-01**: Discovery finds `/Applications/ZCode.app` and `$HOME/Applications/ZCode.app`, validates the bundle, and reads its version from `Info.plist`.
+- [x] **MDISC-02**: `--app-server` accepts a macOS `.app`, its `Contents` directory, its `Contents/MacOS/<executable>`, and existing Linux layouts without regression.
+- [x] **MDISC-03**: A discovered macOS bundle launches the desktop app-server with the correct executable, `Contents/Resources/glm/zcode.cjs` entrypoint, `ELECTRON_RUN_AS_NODE=1`, and bundled provider table.
+- [x] **MDISC-04**: Runtime-provider discovery selects the macOS OS/architecture cache instead of `linux-x86_64`, and the builtin revision matches the path used by the backend.
+- [x] **MDISC-05**: A GUI-launched Orca process gives the backend the user's tool `PATH` through a bounded, non-interactive login-shell union while preserving secret/proxy scrubbing.
 
 ### Authentication
 
-- [ ] **MAUTH-01**: The existing api-key authentication path completes on macOS without requiring Keychain.
-- [ ] **MAUTH-02**: OAuth coding-plan authentication decrypts `enc:v2:os` credentials through macOS Keychain using the existing service/account identity and bounded `/usr/bin/security` invocation.
-- [ ] **MAUTH-03**: Missing or locked Keychain items produce actionable coded errors, and key material is never written to logs or stdout.
+- [x] **MAUTH-01**: The existing api-key authentication path completes on macOS without requiring Keychain.
+- [x] **MAUTH-02**: OAuth coding-plan authentication decrypts `enc:v2:os` credentials through macOS Keychain using the existing service/account identity and bounded `/usr/bin/security` invocation.
+- [x] **MAUTH-03**: Missing or locked Keychain items produce actionable coded errors, and key material is never written to logs or stdout.
 
 ### Tests & Orca Acceptance
 
 - [x] **MTEST-01**: The full default test suite passes on macOS arm64 without an external `setsid` dependency.
-- [ ] **MTEST-02**: Automated fixtures cover macOS `.app` discovery/override, exact app-server argv, provider-cache selection, and the Keychain command contract without touching a real desktop or keychain in CI.
-- [ ] **MORCA-01**: `zcode-acp omp --print --mode text @file` completes through a fake macOS `.app` backend with correct stdout and exit status.
+- [x] **MTEST-02**: Automated fixtures cover macOS `.app` discovery/override, exact app-server argv, provider-cache selection, and the Keychain command contract without touching a real desktop or keychain in CI.
+- [x] **MORCA-01**: `zcode-acp omp --print --mode text @file` completes through a fake macOS `.app` backend with correct stdout and exit status.
 - [ ] **MORCA-02**: A live Orca card run on the current macOS machine completes the existing ACP flow against real ZCode with an available real account, and the evidence is recorded.
 
 ### Documentation
 
-- [ ] **MDOC-01**: README documents macOS build, ZCode discovery, Keychain prerequisites, Orca launch, and explicit platform limitations in English.
+- [x] **MDOC-01**: README documents macOS build, ZCode discovery, Keychain prerequisites, Orca launch, and explicit platform limitations in English.
 
 ## Future Requirements
 
@@ -67,19 +67,19 @@ Populated during roadmap creation for v0.24.0.
 | MBLD-01 | Phase 11 | Complete |
 | MBLD-02 | Phase 11 | Complete |
 | MBLD-03 | Phase 11 | Complete |
-| MDISC-01 | Phase 12 | Pending |
-| MDISC-02 | Phase 12 | Pending |
-| MDISC-03 | Phase 13 | Pending |
-| MDISC-04 | Phase 13 | Pending |
-| MDISC-05 | Phase 13 | Pending |
-| MAUTH-01 | Phase 14 | Pending |
-| MAUTH-02 | Phase 14 | Pending |
-| MAUTH-03 | Phase 14 | Pending |
+| MDISC-01 | Phase 12 | Complete |
+| MDISC-02 | Phase 12 | Complete |
+| MDISC-03 | Phase 13 | Complete |
+| MDISC-04 | Phase 13 | Complete |
+| MDISC-05 | Phase 13 | Complete |
+| MAUTH-01 | Phase 14 | Complete |
+| MAUTH-02 | Phase 14 | Complete |
+| MAUTH-03 | Phase 14 | Complete |
 | MTEST-01 | Phase 11 | Complete |
-| MTEST-02 | Phase 15 | Pending |
-| MORCA-01 | Phase 15 | Pending |
-| MORCA-02 | Phase 16 | Pending |
-| MDOC-01 | Phase 15 | Pending |
+| MTEST-02 | Phase 15 | Complete |
+| MORCA-01 | Phase 15 | Complete |
+| MORCA-02 | Phase 16 | Blocked — ZCode account quota reset 2026-11-27 18:05:02 |
+| MDOC-01 | Phase 15 | Complete |
 
 **Coverage:**
 
