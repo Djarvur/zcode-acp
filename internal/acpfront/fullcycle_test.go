@@ -179,11 +179,15 @@ func fullCyclePrompt(ctx context.Context, t *testing.T, h *FrontHarness, sid str
 }
 
 // assertFullCyclePermissionPlacement pins the composition's ordering truth
-// on the raw ACP tee: the request_permission frame lands BETWEEN the
-// started and progress tool frames — after the tc1 start card and its
-// started patch, before the progress patch and the terminal completed
-// patch (the completed patch is causally locked after the ask: the fake
-// emits it only after the client's answer came back through the bridge).
+// on the raw ACP tee: the request_permission frame lands AFTER the tc1 start
+// card and its started patch and BEFORE the terminal completed patch (the
+// completed patch is causally locked after the ask: the fake emits it only
+// after the client's answer came back through the bridge). The intermediate
+// in_progress progress patch is NOT required: the pump coalesces
+// same-toolCallId patches keep-latest under drain backpressure (the
+// documented patch semantics, locked by tool_stream_test.go's parked-drain
+// case), so the first post-ask patch may already be the coalesced completed
+// one.
 func assertFullCyclePermissionPlacement(t *testing.T, h *FrontHarness) {
 	t.Helper()
 
@@ -194,37 +198,47 @@ func assertFullCyclePermissionPlacement(t *testing.T, h *FrontHarness) {
 
 	patchIdxs := teeLineIndexes(lines, "in", teeToolPatch)
 	if len(patchIdxs) < 2 {
-		t.Fatalf("tee records %d tool_call_update frames, want the started and progress patches at least: %s",
+		t.Fatalf("tee records %d tool_call_update frames, want the started and terminal patches at least: %s",
 			len(patchIdxs), updateKinds(h.Updates()))
 	}
 
 	if permIdx < startIdx || permIdx < patchIdxs[0] {
 		t.Fatalf("request_permission frame (line %d) not after the tool stream's start "+
-			"(start card %d, first patch %d) — the ask must land between the started and progress frames",
+			"(start card %d, first patch %d) — the ask must land after the started frame",
 			permIdx, startIdx, patchIdxs[0])
 	}
 
-	progressIdx := -1
+	postAskIdx := -1
 	for _, idx := range patchIdxs {
 		if idx > permIdx {
-			progressIdx = idx
+			postAskIdx = idx
 
 			break
 		}
 	}
 
-	if progressIdx < 0 {
+	if postAskIdx < 0 {
 		t.Fatalf("no tool patch lands after the request_permission frame (line %d) — "+
-			"the progress patch must follow the bridged decision; patches at %v", permIdx, patchIdxs)
+			"a post-decision patch must follow the bridged answer; patches at %v", permIdx, patchIdxs)
 	}
 
-	if !strings.Contains(lines[progressIdx].JSON, teeInProgress) {
-		t.Fatalf("first post-ask patch (line %d) is not in_progress: %s", progressIdx, lines[progressIdx].JSON)
+	// The post-ask patch may be the progress frame or the coalesced
+	// completed frame (keep-latest under drain backpressure); either proves
+	// the ask did not overtake the decision's result. A pending status here
+	// would mean the ask landed before the started patch's successor.
+	postAsk := lines[postAskIdx].JSON
+	if !strings.Contains(postAsk, teeInProgress) && !strings.Contains(postAsk, `"status":"completed"`) {
+		t.Fatalf("first post-ask patch (line %d) is neither in_progress nor completed: %s", postAskIdx, postAsk)
 	}
 
 	completedIdx := patchIdxs[len(patchIdxs)-1]
 	if completedIdx <= permIdx {
 		t.Fatalf("terminal completed patch (line %d) not after the ask (line %d)", completedIdx, permIdx)
+	}
+
+	if !strings.Contains(lines[completedIdx].JSON, `"status":"completed"`) {
+		t.Fatalf("last tool patch (line %d) is not the terminal completed patch: %s",
+			completedIdx, lines[completedIdx].JSON)
 	}
 }
 

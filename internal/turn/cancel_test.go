@@ -73,7 +73,7 @@ func cancelScenario(t *testing.T) *fake.Scenario {
 			{
 				Method:      zcode.MethodSessionStop,
 				Reply:       &fake.Reply{Result: rawOf(t, map[string]any{})},
-				SideEffects: []fake.SideEffect{statePatch(t, statusCancelled, reasonSessionStopped)},
+				SideEffects: []fake.SideEffect{statePatchRev(t, statusCancelled, reasonSessionStopped, 2)},
 			},
 			messagesRule(t),
 		},
@@ -394,7 +394,7 @@ func racingTerminalScenario(t *testing.T) *fake.Scenario {
 	sc := cancelScenario(t)
 	sc.OnRequest[1].SideEffects = []fake.SideEffect{
 		sessionEvent(t, turn.KindTurnCompleted, fixTurnID),
-		statePatch(t, statusCancelled, reasonSessionStopped),
+		statePatchRev(t, statusCancelled, reasonSessionStopped, 2),
 	}
 
 	return sc

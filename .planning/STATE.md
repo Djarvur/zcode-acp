@@ -343,6 +343,9 @@ None yet.
 | 261124-wlg | Publish confirmed live ACP model catalogs through config_option_update with bounded refresh, safe fallback, and transactional session lifecycle handling | 2026-11-25 | f79dc30 | [261124-wlg-implement-live-acp-model-catalog-refresh](./quick/261124-wlg-implement-live-acp-model-catalog-refresh/) |
 | 261124-w84 | Preserve ACP sessions after recoverable setModel validation errors such as unsupported reasoning effort, with regression coverage for picker and /model retries. | 2026-11-24 | b680da3 | [261124-w84-preserve-acp-session-on-recoverable-setm](./quick/261124-w84-preserve-acp-session-on-recoverable-setm/) |
 | 261125-0vv | Resolve reasoning against the target model and normalize Orca enabled/disabled thought aliases before validation. | 2026-11-25 | 5dc1621 | [261125-0vv-prevent-stale-reasoning-levels-from-bein](./quick/261125-0vv-prevent-stale-reasoning-levels-from-bein/) |
+| 261125-n0j | Advertise ACP sessionCapabilities.resume so Orca restores the same backend session through resume/subscribe without history replay. | 2026-11-25 | 89e4c07 | [261125-n0j-advertise-acp-sessioncapabilities-resume](./quick/261125-n0j-advertise-acp-sessioncapabilities-resume/) |
+| 261125-s7k | Answer session/cancel deterministically — failed-terminal mapping and a bounded grace — so an Orca steer stops waiting and dispatches its new prompt (session/new and session/resume). | 2026-11-25 | dcf69c9 | [261125-s7k-fix-acp-steer-after-cancel](./quick/261125-s7k-fix-acp-steer-after-cancel/) |
+| 261125-r6o | fix ACP turn stall recovery | 2026-11-25 | 91d25cf | [261125-r6o-fix-acp-turn-stall-recovery](./quick/261125-r6o-fix-acp-turn-stall-recovery/) |
 
 ## Deferred Items
 
@@ -355,9 +358,9 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-24T01:26:40.000Z
-Stopped at: Phase 11 complete, ready to plan Phase 12
-Resume file: None
+Last session: 2026-11-26T00:46:00.000Z
+Stopped at: Phase 16 blocked by ZCode quota reset 2026-11-27 18:05:02; all port work complete
+Resume file: .planning/phases/16-live-orca-acceptance/16-LIVE-EVIDENCE.md
 
 ## Operator Next Steps
 
