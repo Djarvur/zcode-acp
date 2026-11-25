@@ -49,9 +49,9 @@ Phase 11 is a gate-and-portability phase, not a runtime-feature phase. The produ
 
 The test portability work is confined to two scripted fixtures that call external `setsid`: the stubborn mount cleaner and the ignore-TERM leaked descendant. Replace both with re-exec of the current Go test binary, selected by a dedicated test name and an environment marker; set `SysProcAttr.Setsid` in the helper. Darwin supports that field natively, so this preserves the detached-session behavior without a host utility. Keep ordinary wrapper children on `Setpgid`. [VERIFIED: internal/supervisor/mount_test.go:195-206 quotes `setsid sh -c 'sleep 0.5; rm -rf "$1"' _ "$dir"`; cmd/zcode-acp/main_test.go:704-717 quotes `setsid sh -c 'echo $$ > "@@LEAK_PID@@"; exec sleep 30' &`; Go 1.27.4 `src/syscall/exec_libc2.go:5-22` is tagged `darwin || openbsd` and quotes `Setsid bool // Create session.` and `Setpgid bool`]
 
-CI and release need structural changes. The current sanity workflow is Ubuntu-only, and the release workflow runs GoReleaser on Ubuntu even though no GoReleaser config exists. Build/test Linux and both macOS architectures on native runners, cross-build both Darwin targets with CGO disabled, and run the release snapshot on macOS so GoReleaser can use the platform's universal-binary tooling. Publish one universal archive containing a fat `zcode-acp`, with SHA-256 checksums, then verify both checksum and architecture slices. [VERIFIED: .github/workflows/pr-sanity.yml:47-54; .github/workflows/release.yml:39-67; release.yml:15-19 states no `.goreleaser.yaml` exists]
+CI and release need structural changes. The current sanity workflow is Ubuntu-only, and the release workflow runs GoReleaser on Ubuntu even though no GoReleaser config exists. Build/test Linux and both macOS architectures on native runners, cross-build both Darwin targets with CGO disabled, and run the release snapshot on macOS so GoReleaser can use the platform's universal-binary tooling. Replace the docs gate's GNU-only include filters with portable `find` plus `grep`. Publish thin arm64, thin amd64, and universal archives, each containing only the regular `zcode-acp` binary, with SHA-256 checksums; independently verify checksums, exact member/type lists, and architecture slices before extraction. [VERIFIED: .github/workflows/pr-sanity.yml:47-54; .github/workflows/release.yml:39-67; release.yml:15-19 states no `.goreleaser.yaml` exists]
 
-**Primary recommendation:** Fix the `Statfs` conversion, replace both `setsid` fixture calls with Go re-exec helpers, add a mise-managed Bash for shell gates, extend CI with native macOS arm64/amd64 jobs plus exact Darwin cross-builds, and add a macOS GoReleaser snapshot that produces and verifies a universal archive plus SHA-256 checksums.
+**Primary recommendation:** Fix the `Statfs` conversion, replace both `setsid` fixture calls with Go re-exec helpers, make docs scans portable, add mise-managed Bash plus a five-tool mise-resolved version gate, extend CI with native macOS arm64/amd64 jobs and exact Darwin cross-builds, then prove a binary-only three-archive macOS snapshot before workflow expansion.
 
 ## Architectural Responsibility Map
 
@@ -239,7 +239,7 @@ The existing default test task is verbatim `go test -race -count=1 ./...`. [VERI
 
 ### Pattern 5: Build the universal artifact on macOS
 
-**What:** Configure two CGO-free Darwin builds, combine their IDs through GoReleaser's top-level `universal_binaries`, archive only the universal result, and emit SHA-256 checksums.
+**What:** Configure two CGO-free Darwin builds, combine their IDs through GoReleaser's top-level `universal_binaries` with `replace: false`, emit thin and universal archives with `files: [zcode-acp]`, and generate SHA-256 checksums for all three.
 **When to use:** Both tag releases and dispatch-only snapshots.
 **Example skeleton [ASSUMED: target GoReleaser 2.20.2 compatibility and chosen artifact IDs require execution verification]:**
 
@@ -270,12 +270,18 @@ universal_binaries:
   - id: darwin-universal
     ids: [darwin-arm64, darwin-amd64]
     name_template: zcode-acp
-    replace: true
+    replace: false
 
 archives:
+  - id: darwin-thin
+    builds: [darwin-arm64, darwin-amd64]
+    formats: [tar.gz]
+    files: [zcode-acp]
+    name_template: "zcode-acp_{{ .Version }}_darwin_{{ .Arch }}"
   - id: darwin-universal
     builds: [darwin-universal]
     formats: [tar.gz]
+    files: [zcode-acp]
     name_template: "zcode-acp_{{ .Version }}_darwin_universal"
 
 checksum:
@@ -374,14 +380,14 @@ The binary path `./cmd/zcode-acp` corresponds to the package already built by te
 
 **What goes wrong:** The manifest verifies thin binaries but not the universal archive, or vice versa.
 **Why it happens:** Archive `builds` does not reference the universal ID, or `replace` semantics are misunderstood.
-**How to avoid:** Archive only `darwin-universal`, inspect the manifest, extract the archive, and verify the contained binary's slices.
+**How to avoid:** Emit both thin archives and the universal archive, each with only `zcode-acp`; inspect all manifest entries, validate exact member/type lists before extraction, and verify every contained binary's slices.
 **Warning signs:** `checksums.txt` lacks the universal archive or `lipo -archs` shows only one architecture. [ASSUMED: chosen GoReleaser configuration]
 
 ### Pitfall 10: First build needs an uncached module
 
-**What goes wrong:** Build/test stops before compiling project code.
-**Why it happens:** `acp-go-sdk v0.20.0` is pinned and present in `go.sum`, but absent from the local module cache.
-**How to avoid:** Treat module acquisition as an explicit execution checkpoint: approved network fetch or an approved vendoring path. Never invent a replacement dependency.
+**What goes wrong:** Build/test stops before compiling project code, or a hosted release job assumes a module cache that a fresh runner does not have.
+**Why it happens:** `acp-go-sdk v0.20.0` is pinned and present in `go.sum`, but absent from a cold runner's module cache; `mise install` installs tools only.
+**How to avoid:** The local tracer keeps its explicit cached-module precondition. Each hosted release job instead runs the mise version gate, then a five-minute online `mise exec -- go mod download` against `GOPROXY=https://proxy.golang.org`, rejects any go.mod/go.sum drift, and runs `GOPROXY=off mise exec -- go mod verify` plus `GOPROXY=off mise run tidy-diff` before any offline GoReleaser command. This module-proxy download is the only release-build network dependency; do not vendor, substitute, or change the dependency, and do not contact a product or paid service.
 **Warning signs:** `module lookup disabled by GOPROXY=off` or a download error for `github.com/coder/acp-go-sdk`. [VERIFIED: go.sum:1-2; local module-cache inspection found no `github.com/coder/acp-go-sdk@v0.20.0` directory]
 
 ### Pitfall 11: Branch protection rejects the new workflow shape
@@ -452,31 +458,35 @@ The architecture assertion must contain both `arm64` and `x86_64`; the checksum 
 | A4 | GoReleaser's universal-binary creation must run on macOS and can use `lipo` there. | Pattern 5; Pitfall 8 | Snapshot cannot create a fat binary on Ubuntu; move the job or install equivalent tooling. |
 | A5 | `-X main.version={{ .Version }}` is the desired release stamp and snapshot versions need not meet Orca's floor. | Pattern 5; Pitfall 9 | Release advertises the wrong version; add a tag-release version assertion. |
 | A6 | Proposed helper test name `TestDetachedFixtureHelper` and marker `ZCODE_ACP_TEST_DETACHED_HELPER` are acceptable. | Pattern 2 | Names collide or leak into other tests; finalize unique names in the plan. |
-| A7 | One universal tar.gz plus `checksums.txt` satisfies “universal macOS binary artifacts”. | Alternatives; Pattern 5 | Stakeholder expects separate thin downloads; add them without removing the universal artifact. |
+| A7 | Thin arm64/amd64 archives plus one universal archive satisfy the strict artifact reading. | Alternatives; Pattern 5 | Resolved by publishing all three; verifier accepts only their configured binary-only member set. |
 | A8 | Native `go test -race` requires CGO enabled on the selected platforms. | Pattern 3; Pitfall 6 | Race jobs fail or skip; verify with the pinned Go toolchain. |
 | A9 | `shasum -a 256` and `lipo -archs` are available on the chosen macOS runner. | Code Examples | Verification step fails; use runner-provided alternatives after checking tool availability. |
 
 ## Open Questions
 
-1. **Which exact macOS Intel runner label should the amd64 job use?**
+1. **Which exact macOS Intel runner label should the amd64 job use? (RESOLVED)**
    - What we know: GitHub's macOS labels have changed architecture defaults. [ASSUMED]
    - What's unclear: The current public label mapping for this repository's GitHub settings.
    - Recommendation: Use an explicit Intel label, then assert `go env GOARCH == amd64` before tests.
+   - **Resolution (implemented by Plan 04, Task 2):** Use `macos-15-intel`; require both `mise exec -- go env GOARCH` to equal `amd64` and `uname -m` to equal `x86_64` before any gate, and record the observed runner architecture in the CI evidence.
 
-2. **Does MBLD-03 require separate thin downloads as well as one universal archive?**
+2. **Does MBLD-03 require separate thin downloads as well as one universal archive? (RESOLVED)**
    - What we know: The requirement says “universal macOS binary artifacts”; the success criteria mention arm64 and amd64 artifacts. [VERIFIED: .planning/REQUIREMENTS.md:16; .planning/ROADMAP.md:108]
    - What's unclear: Whether one fat archive is sufficient.
    - Recommendation: Ship the universal archive as the primary artifact; keep thin binaries as build intermediates unless separate downloads are explicitly requested.
+   - **Resolution (implemented by Plan 05, Tasks 1-3):** Publish all three archives — thin darwin/arm64, thin darwin/amd64, and darwin/universal — with `replace: false` so the thin binaries remain available; checksum and independently verify every archive. This satisfies the stricter reading without removing the universal artifact.
 
-3. **How should the uncached SDK be acquired?**
+3. **How should the uncached SDK be acquired? (RESOLVED)**
    - What we know: `v0.20.0` is pinned and missing locally. [VERIFIED: go.mod:5; go.sum:1-2; local cache inspection]
    - What's unclear: Whether network fetch or vendoring is approved.
    - Recommendation: Make module acquisition a human-approved execution checkpoint; do not change the dependency.
+   - **Resolution (implemented by Plan 05, Tasks 2-3):** The local tracer retains a declared cached-module precondition. Each hosted release job independently runs a five-minute online `mise exec -- go mod download` against `https://proxy.golang.org` using the frozen `go.mod`/`go.sum`, fails on drift in those files, then runs `GOPROXY=off mise exec -- go mod verify` and `GOPROXY=off mise run tidy-diff` before any offline GoReleaser command. Do not vendor, substitute, or change the dependency; no product or paid service is contacted.
 
-4. **Should shell portability be solved by managed Bash or by rewriting the docs gate?**
+4. **Should shell portability be solved by managed Bash or by rewriting the docs gate? (RESOLVED)**
    - What we know: `check-docs.sh` uses `declare -A`; stock macOS Bash is 3.2. [VERIFIED: experiments/check-docs.sh:58; local Bash version]
    - What's unclear: Whether adding another managed tool is preferred.
    - Recommendation: Use mise-managed Bash for Phase 11 to minimize gate churn; revisit POSIX conversion separately.
+   - **Resolution (implemented by Plan 03, Tasks 1-2):** Pin `bash = "5.3"` in `mise.toml`, expose both scripts as named mise tasks, replace the docs script's four GNU-only include-filter scans with portable find-plus-grep while preserving output/exit contracts, and enforce all five mise-resolved tool versions with the shared non-zero-on-mismatch gate.
 
 ## Environment Availability
 
@@ -515,7 +525,7 @@ The architecture assertion must contain both `arm64` and `x86_64`; the checksum 
 | Quick run command | `go test ./internal/supervisor -run 'TestMountStop|TestMountHappyPath' -count=1` |
 | Full suite command | `go test -race -count=1 ./... && node --test experiments/` |
 | Cross-build command | The two exact commands from MBLD-01 |
-| Release verification | `goreleaser release --snapshot --clean --skip=publish`, then checksum and `lipo -archs` checks |
+| Release verification | In each macOS job: bounded `mise exec -- go mod download`, unchanged go.mod/go.sum check, offline `go mod verify` and `tidy-diff`; then `goreleaser release --snapshot --clean --skip=publish`, checksum, and `lipo -archs` checks |
 
 ### Phase Requirements → Test Map
 
@@ -525,7 +535,7 @@ The architecture assertion must contain both `arm64` and `x86_64`; the checksum 
 | MBLD-02 | No fixture invokes external `setsid`; shell gates use managed Bash | static unit | `node --test experiments/portability.test.mjs` | ❌ Wave 0 |
 | MBLD-02 | `defaultStatfs` preserves the `int64` seam on both OS widths | unit | `go test ./internal/supervisor -run 'TestMount|TestStatfs' -count=1` | ✅ Existing mount suite; add a direct seam test if absent |
 | MBLD-03 | Linux and both macOS architectures build/test | CI matrix | `mise run build`, `mise run vet`, `mise run lint`, `mise run test`, `mise run test-experiments`, `mise run tidy-diff` | ❌ Wave 0: macOS jobs |
-| MBLD-03 | Snapshot emits a universal archive and valid SHA-256 manifest | release smoke | `goreleaser release --snapshot --clean --skip=publish` + `shasum -a 256 -c checksums.txt` + `lipo -archs` | ❌ Wave 0: config and snapshot job |
+| MBLD-03 | Snapshot emits binary-only arm64/amd64/universal archives and a valid SHA-256 manifest | release smoke | `GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish` + `mise exec -- bash scripts/verify-darwin-release.sh dist` | ❌ Plan 05 tracer: config, verifier, and real snapshot |
 | MTEST-01 | Full default suite passes on macOS arm64 without `setsid` | native integration | `go test -race -count=1 ./...` on arm64 macOS | ✅ Suite exists; ❌ macOS runner gate |
 
 ### Sampling Rate
@@ -581,7 +591,7 @@ The architecture assertion must contain both `arm64` and `x86_64`; the checksum 
 - Go 1.27.4 `src/syscall/exec_libc2.go:5-22` — Darwin `Setsid` and `Setpgid` fields.
 - `internal/supervisor/mount_test.go:195-206` and `cmd/zcode-acp/main_test.go:704-717` — the two external `setsid` fixtures.
 - `.github/workflows/pr-sanity.yml:47-92` and `.github/workflows/release.yml:39-69` — current Ubuntu-only gates and inert release flow.
-- `experiments/check-docs.sh:37-64,123-131` — Bash 4 associative-array dependency.
+- `experiments/check-docs.sh:37-64,82,112,115,123-131,145` — Bash 4 associative-array dependency and four GNU-only include-filter scans targeted for portable replacement.
 - `scripts/vm-e2e.sh:91-95,598-609` — Linux-only GNU utility usage.
 - Local GoReleaser `2.17.1` `jsonschema` output — universal binary, archive, and checksum field names for that installed version only.
 

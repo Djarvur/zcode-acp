@@ -98,6 +98,7 @@ Full details: `.planning/milestones/v0.23.0-phases/`, `v0.23.0-ROADMAP.md`, `v0.
 feature set. Orca's existing `omp` parsing/stdout contract is retained, not redesigned.
 
 ### Phase 11: Darwin Build, Test & Release Gates
+
 **Goal**: Developers can build, test, and package the existing bridge for both macOS architectures without Linux-only tool assumptions.
 **Depends on**: Phase 10 (shipped v0.23.0)
 **Requirements**: MBLD-01, MBLD-02, MBLD-03, MTEST-01
@@ -106,9 +107,25 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
   2. The default test suite passes on macOS arm64 without external `setsid`, GNU-only utilities, or system Bash 3.2, using a Go re-exec helper where process setup is needed.
   3. CI reports passing build and test gates for Linux and for macOS arm64/amd64 with explicit required tool versions.
   4. A release snapshot produces checksummed macOS arm64 and amd64 binary artifacts whose checksums verify.
-**Plans**: TBD
+
+**Plans**: 5 plans
+
+Plans:
+**Wave 1**
+- [ ] 11-01-PLAN.md — Normalize the Statfs width and prove both CGO-free Darwin builds.
+- [ ] 11-02-PLAN.md — Replace both detached shell fixtures with Go re-exec helpers.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 11-03-PLAN.md — Make docs scans portable, pin managed Bash, and enforce all five mise-resolved tool versions.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 11-04-PLAN.md — Add Linux/macOS native CI gates and both Darwin cross-builds.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 11-05-PLAN.md — Produce and verify checksummed thin and universal macOS archives.
 
 ### Phase 12: macOS Bundle Discovery & Overrides
+
 **Goal**: Users can point the bridge at a standard or explicit ZCode Desktop `.app` installation and receive a validated, versioned backend selection.
 **Depends on**: Phase 11
 **Requirements**: MDISC-01, MDISC-02
@@ -117,9 +134,11 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
   2. Invalid or incomplete bundles are rejected with actionable diagnostics rather than selected for launch.
   3. `--app-server` accepts a `.app`, its `Contents` directory, its `Contents/MacOS/<executable>`, and the existing Linux layouts without changing Linux override behavior.
   4. A macOS `.app` selection never invokes AppImage mounting or requires FUSE.
+
 **Plans**: TBD
 
 ### Phase 13: Desktop Launch & Runtime Environment
+
 **Goal**: A selected macOS bundle runs the desktop app-server with the correct host inputs, provider cache, and user tool environment.
 **Depends on**: Phase 12
 **Requirements**: MDISC-03, MDISC-04, MDISC-05
@@ -128,9 +147,11 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
   2. Runtime-provider discovery selects the macOS OS/architecture cache and the backend receives a builtin revision derived from the same provider path used at launch.
   3. A backend launched by GUI-started Orca can find the user's toolchain even when Orca inherits a launchd-minimal PATH.
   4. PATH completion is bounded and non-interactive, unions login-shell and caller paths, and preserves secret/proxy scrubbing in the child environment.
+
 **Plans**: TBD
 
 ### Phase 14: macOS Authentication
+
 **Goal**: Users can authenticate through either existing path on macOS, with OAuth secrets handled by Keychain and failures kept actionable and private.
 **Depends on**: Phase 13
 **Requirements**: MAUTH-01, MAUTH-02, MAUTH-03
@@ -139,9 +160,11 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
   2. OAuth coding-plan authentication decrypts `enc:v2:os` values through macOS Keychain using the existing service/account identity and a bounded `/usr/bin/security` invocation.
   3. Missing or locked Keychain items return actionable coded errors that distinguish the failure without exposing key material.
   4. Authentication runs write no key material to logs or stdout.
+
 **Plans**: TBD
 
 ### Phase 15: Automated Orca Acceptance & Documentation
+
 **Goal**: Users can validate the macOS port safely in CI and follow an English guide to build, configure, and launch it with Orca.
 **Depends on**: Phase 14
 **Requirements**: MTEST-02, MORCA-01, MDOC-01
@@ -150,9 +173,11 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
   2. `zcode-acp omp --print --mode text @file` completes against a fake macOS `.app` backend with the existing stdout contract and correct exit status.
   3. Linux AppImage/FUSE regression coverage remains green while macOS `.app` runs bypass that path, and all automated acceptance remains zero-spend with no real credentials.
   4. The English README documents macOS builds, ZCode discovery, Keychain prerequisites, Orca launch, and explicit platform limitations.
+
 **Plans**: TBD
 
 ### Phase 16: Live Orca Acceptance
+
 **Goal**: A human confirms the shipped ACP experience works in a real Orca card on the current macOS machine with an available real account.
 **Depends on**: Phase 15
 **Requirements**: MORCA-02
@@ -160,6 +185,7 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
   1. A human-run Orca card completes the existing `initialize` → `session/new` → prompt flow against real ZCode, including streamed output, tool-calls, and permission requests.
   2. The run uses an available real account through an existing authentication path and introduces no new ACP capability.
   3. Scrubbed evidence records the macOS environment, ZCode version, launch command, authentication path, observed flow, and outcome.
+
 **Plans**: TBD
 **Acceptance gate**: Human-run only on the current Mac; this phase may use real credentials and account quota. Automated phases must remain zero-spend and must not touch the real desktop, credentials, or Keychain in CI.
 
@@ -169,7 +195,7 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 11. Darwin Build, Test & Release Gates | 0/TBD | Not started | - |
+| 11. Darwin Build, Test & Release Gates | 0/5 | Not started | - |
 | 12. macOS Bundle Discovery & Overrides | 0/TBD | Not started | - |
 | 13. Desktop Launch & Runtime Environment | 0/TBD | Not started | - |
 | 14. macOS Authentication | 0/TBD | Not started | - |

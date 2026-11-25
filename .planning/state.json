@@ -1,12 +1,43 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v0.24.0",
-  "phases": [],
+  "milestone": "v0.24.0 — macOS Support (Planned)",
+  "phases": [
+    {
+      "number": "11",
+      "name": "Darwin Build, Test & Release Gates",
+      "status": "pending"
+    },
+    {
+      "number": "12",
+      "name": "macOS Bundle Discovery & Overrides",
+      "status": "pending"
+    },
+    {
+      "number": "13",
+      "name": "Desktop Launch & Runtime Environment",
+      "status": "pending"
+    },
+    {
+      "number": "14",
+      "name": "macOS Authentication",
+      "status": "pending"
+    },
+    {
+      "number": "15",
+      "name": "Automated Orca Acceptance & Documentation",
+      "status": "pending"
+    },
+    {
+      "number": "16",
+      "name": "Live Orca Acceptance",
+      "status": "pending"
+    }
+  ],
   "next": {
-    "command": "/gsd-discuss-phase",
-    "label": "Discuss the first phase",
-    "reason": "Project initialized — plan your first phase"
+    "command": "/gsd-progress",
+    "label": "Show progress",
+    "reason": "Unsure of state — showing progress"
   },
-  "updated_at": "2026-11-25T09:13:49.344Z"
+  "updated_at": "2026-11-25T12:28:41.651Z"
 }
