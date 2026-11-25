@@ -60,34 +60,35 @@ Deferred unless a later milestone explicitly adds them.
 
 ## Traceability
 
-Populated during roadmap creation.
+Populated during roadmap creation for v0.24.0.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| MBLD-01 | — | Pending |
-| MBLD-02 | — | Pending |
-| MBLD-03 | — | Pending |
-| MDISC-01 | — | Pending |
-| MDISC-02 | — | Pending |
-| MDISC-03 | — | Pending |
-| MDISC-04 | — | Pending |
-| MDISC-05 | — | Pending |
-| MAUTH-01 | — | Pending |
-| MAUTH-02 | — | Pending |
-| MAUTH-03 | — | Pending |
-| MTEST-01 | — | Pending |
-| MTEST-02 | — | Pending |
-| MORCA-01 | — | Pending |
-| MORCA-02 | — | Pending |
-| MDOC-01 | — | Pending |
+| MBLD-01 | Phase 11 | Pending |
+| MBLD-02 | Phase 11 | Pending |
+| MBLD-03 | Phase 11 | Pending |
+| MDISC-01 | Phase 12 | Pending |
+| MDISC-02 | Phase 12 | Pending |
+| MDISC-03 | Phase 13 | Pending |
+| MDISC-04 | Phase 13 | Pending |
+| MDISC-05 | Phase 13 | Pending |
+| MAUTH-01 | Phase 14 | Pending |
+| MAUTH-02 | Phase 14 | Pending |
+| MAUTH-03 | Phase 14 | Pending |
+| MTEST-01 | Phase 11 | Pending |
+| MTEST-02 | Phase 15 | Pending |
+| MORCA-01 | Phase 15 | Pending |
+| MORCA-02 | Phase 16 | Pending |
+| MDOC-01 | Phase 15 | Pending |
 
 **Coverage:**
 
 - v0.24.0 requirements: 16 total
-- Mapped to phases: 0
-- Unmapped: 16
+- Mapped to phases: 16
+- Unmapped: 0
+- Duplicate mappings: 0
 
 ---
 
 *Requirements defined: 2026-11-25*
-*Last updated: 2026-11-25 after initial definition*
+*Last updated: 2026-11-25 after v0.24.0 roadmap creation*
