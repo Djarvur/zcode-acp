@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v0.23.0
 status: completed
 stopped_at: Phase 10 complete — all phases complete
-last_updated: "2026-11-25T06:51:08Z"
+last_updated: "2026-11-25T15:50:46.093Z"
 last_activity: 2026-11-25
-last_activity_desc: Quick task 261125-0vv rebased and re-verified — target-aware reasoning resolution and Orca alias normalization
-state_head: 5dc162188e587bf8cb2e9022b5fe7702cf9c2ec0
+last_activity_desc: Completed quick task 261125-n0j — ACP sessionCapabilities.resume advertised; full gates green in the isolated worktree
+state_head: 89e4c0726c99a7340991d18caf1d549e6a9309d4
 progress:
   total_phases: 1
   completed_phases: 1
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-24)
 Phase: Milestone v0.23.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-25 — Rebased and re-verified quick task 261125-0vv on master b550646: target-aware reasoning and Orca alias normalization remain green
+Last activity: 2026-11-25 — Completed quick task 261125-n0j: initialize now advertises `sessionCapabilities.resume`, so Orca restores the same backend session through resume/subscribe without history replay; whole-tree build, vet, lint, race, docs, and experiments gates are green in the isolated worktree.
 
 ## Performance Metrics
 
@@ -330,6 +330,7 @@ None yet.
 | 261124-wlg | Publish confirmed live ACP model catalogs through config_option_update with bounded refresh, safe fallback, and transactional session lifecycle handling | 2026-11-25 | f79dc30 | [261124-wlg-implement-live-acp-model-catalog-refresh](./quick/261124-wlg-implement-live-acp-model-catalog-refresh/) |
 | 261124-w84 | Preserve ACP sessions after recoverable setModel validation errors such as unsupported reasoning effort, with regression coverage for picker and /model retries. | 2026-11-24 | b680da3 | [261124-w84-preserve-acp-session-on-recoverable-setm](./quick/261124-w84-preserve-acp-session-on-recoverable-setm/) |
 | 261125-0vv | Resolve reasoning against the target model and normalize Orca enabled/disabled thought aliases before validation. | 2026-11-25 | 5dc1621 | [261125-0vv-prevent-stale-reasoning-levels-from-bein](./quick/261125-0vv-prevent-stale-reasoning-levels-from-bein/) |
+| 261125-n0j | Advertise ACP sessionCapabilities.resume so Orca restores the same backend session through resume/subscribe without history replay. | 2026-11-25 | 89e4c07 | [261125-n0j-advertise-acp-sessioncapabilities-resume](./quick/261125-n0j-advertise-acp-sessioncapabilities-resume/) |
 
 ## Deferred Items
 

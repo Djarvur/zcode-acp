@@ -1,0 +1,38 @@
+--- FAIL: TestInitCapabilities (0.00s)
+    agent_test.go:222: initialize must advertise sessionCapabilities.resume (the empty-struct opt-in): {Meta:map[] AdditionalDirectories:<nil> Archive:<nil> Close:<nil> Delete:<nil> Fork:<nil> List:<nil> Options:0xc000102088 Resume:<nil> Status:<nil> SystemPrompt:<nil> Title:<nil>}
+--- FAIL: TestInitializeAssemblesHonestReport (0.00s)
+    agent_test.go:339: initialize frame drift:
+         got: {"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},"sessionCapabilities":{"options":{}}},"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}
+        want: {"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},"sessionCapabilities":{"options":{},"resume":{}}},"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpport	0.011s
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 17:05:42 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestConformanceV1Arc (0.01s)
+    conformance_test.go:84: initialize response carries no options-plus-resume sessionCapabilities opt-ins: {"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},"sessionCapabilities":{"options":{}}},"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}}
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 17:05:42 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+--- FAIL: TestInitializeHonestCapabilities (0.00s)
+    initialize_test.go:52: initialize response is not the executed-probe honest shape:
+         got: {"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},"sessionCapabilities":{"options":{}}},"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}}
+        want result: {"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},"sessionCapabilities":{"options":{},"resume":{}}},"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}
+2026/11/25 17:05:42 INFO acpfront: session opened session=sess_fix1
+2026/11/25 17:05:42 INFO acpfront: session resumed session=sess_fix1
+2026/11/25 17:05:42 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 17:05:42 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestOrcaCapabilityGateUsesResume (0.00s)
+    lifecycle_test.go:184: Orca capability gate: sessionCapabilities.resume is not advertised
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 17:05:42 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 17:05:42 INFO connection closed cause="io: read/write on closed pipe"
+--- FAIL: TestSessionCapabilitiesAdvertisementStayedHonest (0.00s)
+    sesscompat_test.go:596: sessionCapabilities["resume"] = "null" (present: false), want the empty-struct opt-in: {"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},"sessionCapabilities":{"options":{}}},"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}}
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	0.143s
+FAIL

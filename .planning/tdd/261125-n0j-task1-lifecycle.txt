@@ -1,0 +1,1 @@
+ok  	github.com/Djarvur/zcode-acp/internal/acpfront	1.967s

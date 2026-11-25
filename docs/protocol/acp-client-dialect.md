@@ -244,9 +244,11 @@ At card startup (per launched card process), in order:
    src/main/acp/protocol/acp-session-setup.ts#93-119 @v1.4.262].
 4. `session/load` / `session/resume` — **only** when the card advertised `loadSession` or a
    resume capability at initialize; otherwise the client throws
-   `-32601 "ACP agent cannot load or resume this session"` (see Open items) [V-SRC
+   `-32601 "ACP agent cannot load or resume this session"`. Orca v1.4.271 checks
+   `loadSession` first and then `sessionCapabilities.resume`; this wrapper advertises resume,
+   so restoration takes the `session/resume` branch (see Session restoration) [V-SRC
    agent-session-attachment-store-registry-CR_MCAgP.js#session-establishment; repo
-   src/main/acp/protocol/acp-session-setup.ts#64-91 @v1.4.262].
+   src/main/acp/protocol/acp-session-setup.ts#64-91 @v1.4.271].
 
 Per turn / per user action, on the same process:
 
@@ -475,11 +477,12 @@ corrected — see below):
      `<scope>-<readable>-<sha256(canonical cwd)>` — so a writer emitting the documented legacy
      `--<slug>--` form stays resolvable (repo
      src/main/omp/omp-session-cwd-lookup.ts#11-48 @v1.4.262).
-   - **Verdict: Yes** — a Go agent can write omp-compatible history files. Scope honesty:
-     our v1 does **not** advertise `loadSession`, so the client cannot load these sessions
-     interactively (it throws `-32601 "ACP agent cannot load or resume this session"` on the
-     resume path [V-SRC agent-session-attachment-store-registry-CR_MCAgP.js#session-establishment]);
-     compatible files are a Phase 7 nicety (history listing / fork import), not a v1 gate.
+   - **Verdict: Yes, with a strict scope split** — a Go agent can write
+     omp-compatible history files, and this wrapper advertises
+     `sessionCapabilities.resume:{}` so Orca restores an existing desktop session
+     through `session/resume`. Top-level `loadSession` stays false: `session/load`,
+     history import, and history replay remain unsupported. Compatible files are
+     therefore not a v1 history-loading surface; see Session restoration.
 2. **`modelDiscovery` kind `session`.** The omp card block is
    `modelDiscovery:{kind:"session",listingNamesConfiguredModel:false,sessionFolderArgs:["--session-dir", …]}`.
    > **CORRECTED against source (2026-11-19; supersedes the chunk-only interpretation):**
@@ -570,6 +573,30 @@ Still unresolved, recorded as known-unknowns (never presented as verified):
 *Verified against the installed client build on 2026-11-19*
 
 ---
+
+## Session restoration (2026-11-25)
+
+Initialize advertises exactly `sessionCapabilities.options:{}` and
+`sessionCapabilities.resume:{}`; top-level `loadSession` remains false. The
+session capability map does not advertise `list`, `fork`, `delete`, or `close`.
+
+Orca v1.4.271 checks `loadSession` first and then whether
+`sessionCapabilities.resume` is non-null in
+[`src/main/acp/protocol/acp-session-setup.ts`](https://github.com/stablyai/orca/blob/v1.4.271/src/main/acp/protocol/acp-session-setup.ts#L64-L91).
+With this wrapper it selects `session/resume`, sending the original session id.
+The wrapper delegates to the existing SESS-01 lifecycle: backend `session/resume`
+first, then `session/subscribe` with `deliveryKind:"desktop-continuous"` for the
+same id. It records the client cwd and backend-confirmed settings, registers the
+turn machine, and returns `{}` without `session/setModel` or history replay.
+
+This matches the official ACP
+[session-setup resume contract](https://agentclientprotocol.com/protocol/v1/session-setup#resuming-sessions):
+clients MUST verify `sessionCapabilities.resume`, and `session/resume` MUST NOT
+replay prior messages. The clarification in
+[agent-client-protocol#1378](https://github.com/agentclientprotocol/agent-client-protocol/issues/1378)
+confirms the split: both load and resume restore context, while load also
+replays events. Accordingly, `session/load`, history import, and history replay
+remain unsupported here.
 
 ## Live config-option updates (2026-11-25)
 

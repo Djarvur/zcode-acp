@@ -1,0 +1,60 @@
+COMMAND: build
+EXIT_CODE[build]=0
+COMMAND: vet
+EXIT_CODE[vet]=0
+COMMAND: lint
+level=warning msg="The linter 'exhaustruct' is deprecated (since v2.13.0) due to: new major version. Replaced by exhaustruct_v5."
+0 issues.
+EXIT_CODE[lint]=0
+COMMAND: race
+?   	github.com/Djarvur/zcode-acp/cmd/fake-app-server	[no test files]
+ok  	github.com/Djarvur/zcode-acp/cmd/zcode-acp	41.110s
+ok  	github.com/Djarvur/zcode-acp/internal/acpfront	110.988s
+ok  	github.com/Djarvur/zcode-acp/internal/acpport	5.062s
+ok  	github.com/Djarvur/zcode-acp/internal/core	1.011s
+ok  	github.com/Djarvur/zcode-acp/internal/hostsvc	1.403s
+ok  	github.com/Djarvur/zcode-acp/internal/interact	2.416s
+ok  	github.com/Djarvur/zcode-acp/internal/supervisor	3.592s
+ok  	github.com/Djarvur/zcode-acp/internal/texttask	1.326s
+ok  	github.com/Djarvur/zcode-acp/internal/turn	4.004s
+ok  	github.com/Djarvur/zcode-acp/internal/zcode	3.202s
+ok  	github.com/Djarvur/zcode-acp/internal/zcode/fake	23.819s
+?   	github.com/Djarvur/zcode-acp/test/realdesktop	[no test files]
+EXIT_CODE[race]=0
+COMMAND: docs
+EXIT_CODE[docs]=0
+COMMAND: experiments
+✔ JWT-shaped token values are redacted and the line stays parseable JSON (44.440667ms)
+✔ credential blobs with the enc:v2:os: prefix are fully redacted including the prefix (35.642705ms)
+✔ legacy enc:v1: credential blobs are fully redacted including the prefix (38.83142ms)
+✔ credential blob bodies containing dots/colons are redacted WHOLE (no residue after the placeholder) (33.583951ms)
+✔ long token values under credential keys are redacted (37.225506ms)
+✔ UUID-shaped identifiers become stable per-file placeholders (nth distinct -> nth) (37.723872ms)
+✔ absolute paths under the user home directory become tilde-relative (36.691506ms)
+✔ the header line (line 1) passes through byte-identical (40.554773ms)
+✔ scrubbing is idempotent: scrubbing already-scrubbed output changes nothing (85.64492ms)
+✔ empty input produces empty output and exit 0 (36.310033ms)
+✔ user_info payload objects are redacted wholesale (39.455418ms)
+✔ CR-01: two user_info objects on ONE line are both redacted in a single pass (34.520023ms)
+✔ CR-01: scrubbing a multi-user_info line is a fixed point (re-scrub is byte-identical) (71.208337ms)
+✔ CR-01 wrapped: a user_info payload inside the probe envelope form is redacted wholesale (49.706256ms)
+✔ CR-01 wrapped: scrubbing wrapped-form output is a fixed point (re-scrub is byte-identical) (86.972802ms)
+✔ path prefixes passed via --redact-path become the <path> placeholder (41.297081ms)
+✔ WR-03: a sibling path sharing only the home prefix survives verbatim (home + name + /segment) (36.448562ms)
+✔ WR-03: a bare sibling of the home directory survives verbatim (home + name) (36.715219ms)
+✔ WR-03: the boundary rewrite is idempotent — scrubbing scrubbed sibling output is a fixed point (75.689414ms)
+✔ IN-04: a first line that is not JSON fails loudly (non-zero exit, message names the problem) (33.729376ms)
+✔ IN-04: a JSON first line without a capture key fails loudly (35.814904ms)
+✔ IN-04: --no-header scrubs line 1 like a data line and exits 0 (34.595462ms)
+✔ no-keyring stage asserts the four coded keyring sentinels verbatim (4.700155ms)
+✔ no-keyring stage wraps the attempt in a bounded timeout(1) (0.313927ms)
+﹣ live stripped-PATH arm surfaces the binary-missing sentinel (guarded) (0.091753ms) # SKIP
+ℹ tests 25
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 1089.262631
+EXIT_CODE[experiments]=0

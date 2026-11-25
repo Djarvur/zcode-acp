@@ -1,0 +1,77 @@
+COMMAND: bash experiments/check-docs.sh
+COMMAND: documentation literal gates
+documentation literal gates: PASS
+COMMAND: pre-existing checksum regeneration and comparison
+pre-existing files rehashed: 38
+pre-existing checksum comparison: PASS
+
+COMMAND: go build ./...
+EXIT_CODE[go build ./...]=0
+
+COMMAND: go vet ./...
+EXIT_CODE[go vet ./...]=0
+
+COMMAND: golangci-lint run
+level=warning msg="The linter 'exhaustruct' is deprecated (since v2.13.0) due to: new major version. Replaced by exhaustruct_v5."
+internal/supervisor/spawn.go:81:9: interface method assign must have all named params (inamedparam)
+	assign(*os.Process) error
+	       ^
+internal/supervisor/process_unix.go:22:1: newProcessTree returns interface (github.com/Djarvur/zcode-acp/internal/supervisor.processTree) (ireturn)
+func newProcessTree() (processTree, error) {
+^
+2 issues:
+* inamedparam: 1
+* ireturn: 1
+EXIT_CODE[golangci-lint run]=1
+
+COMMAND: go test -race -count=1 ./...
+?   	github.com/Djarvur/zcode-acp/cmd/fake-app-server	[no test files]
+ok  	github.com/Djarvur/zcode-acp/cmd/zcode-acp	41.296s
+ok  	github.com/Djarvur/zcode-acp/internal/acpfront	110.956s
+ok  	github.com/Djarvur/zcode-acp/internal/acpport	5.058s
+ok  	github.com/Djarvur/zcode-acp/internal/core	1.014s
+ok  	github.com/Djarvur/zcode-acp/internal/hostsvc	1.410s
+ok  	github.com/Djarvur/zcode-acp/internal/interact	2.412s
+ok  	github.com/Djarvur/zcode-acp/internal/supervisor	3.641s
+ok  	github.com/Djarvur/zcode-acp/internal/texttask	1.328s
+ok  	github.com/Djarvur/zcode-acp/internal/turn	3.999s
+ok  	github.com/Djarvur/zcode-acp/internal/zcode	3.200s
+ok  	github.com/Djarvur/zcode-acp/internal/zcode/fake	23.830s
+?   	github.com/Djarvur/zcode-acp/test/realdesktop	[no test files]
+EXIT_CODE[go test -race -count=1 ./...]=0
+
+COMMAND: node --test experiments/
+✔ JWT-shaped token values are redacted and the line stays parseable JSON (43.26148ms)
+✔ credential blobs with the enc:v2:os: prefix are fully redacted including the prefix (41.372741ms)
+✔ legacy enc:v1: credential blobs are fully redacted including the prefix (36.55379ms)
+✔ credential blob bodies containing dots/colons are redacted WHOLE (no residue after the placeholder) (38.010404ms)
+✔ long token values under credential keys are redacted (38.961339ms)
+✔ UUID-shaped identifiers become stable per-file placeholders (nth distinct -> nth) (38.835801ms)
+✔ absolute paths under the user home directory become tilde-relative (35.071585ms)
+✔ the header line (line 1) passes through byte-identical (39.92202ms)
+✔ scrubbing is idempotent: scrubbing already-scrubbed output changes nothing (79.50998ms)
+✔ empty input produces empty output and exit 0 (43.825915ms)
+✔ user_info payload objects are redacted wholesale (42.150566ms)
+✔ CR-01: two user_info objects on ONE line are both redacted in a single pass (42.002753ms)
+✔ CR-01: scrubbing a multi-user_info line is a fixed point (re-scrub is byte-identical) (87.320807ms)
+✔ CR-01 wrapped: a user_info payload inside the probe envelope form is redacted wholesale (41.75474ms)
+✔ CR-01 wrapped: scrubbing wrapped-form output is a fixed point (re-scrub is byte-identical) (78.55339ms)
+✔ path prefixes passed via --redact-path become the <path> placeholder (42.635502ms)
+✔ WR-03: a sibling path sharing only the home prefix survives verbatim (home + name + /segment) (38.589984ms)
+✔ WR-03: a bare sibling of the home directory survives verbatim (home + name) (37.350217ms)
+✔ WR-03: the boundary rewrite is idempotent — scrubbing scrubbed sibling output is a fixed point (74.190739ms)
+✔ IN-04: a first line that is not JSON fails loudly (non-zero exit, message names the problem) (39.199477ms)
+✔ IN-04: a JSON first line without a capture key fails loudly (42.442871ms)
+✔ IN-04: --no-header scrubs line 1 like a data line and exits 0 (39.493095ms)
+✔ no-keyring stage asserts the four coded keyring sentinels verbatim (2.710046ms)
+✔ no-keyring stage wraps the attempt in a bounded timeout(1) (0.364809ms)
+﹣ live stripped-PATH arm surfaces the binary-missing sentinel (guarded) (0.182958ms) # SKIP
+ℹ tests 25
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 1136.363136
+EXIT_CODE[node --test experiments/]=0

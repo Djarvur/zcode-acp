@@ -1,0 +1,41 @@
+internal/supervisor/supervise_test.go: OK
+internal/supervisor/discover_test.go: OK
+scripts/windows-vm/configure-guest.ps1: OK
+internal/supervisor/mount_test.go: OK
+internal/supervisor/discovery_unix.go: OK
+internal/supervisor/process_windows.go: OK
+.planning/tdd/261125-n0j-preexisting-paths.txt: OK
+scripts/windows-vm/create-vm.sh: FAILED
+go.mod: OK
+scripts/windows-vm/attach-iso.sh: OK
+internal/supervisor/env_windows.go: OK
+cmd/zcode-acp/text_test.go: OK
+go.sum: OK
+scripts/windows-vm/sync-source.sh: OK
+draft.txt: OK
+sha256sum: scripts/windows-vm/Autounattend.xml.in: No such file or directory
+scripts/windows-vm/Autounattend.xml.in: FAILED open or read
+.planning/quick/261125-n0j-advertise-acp-sessioncapabilities-resume/261125-n0j-PLAN.md: OK
+native-chat-agent-support.js: OK
+package.json: OK
+internal/supervisor/discover.go: OK
+internal/supervisor/spawn_test.go: OK
+scripts/windows-vm/configure-ssh.ps1.in: OK
+internal/supervisor/env_unix.go: OK
+internal/supervisor/mount_windows.go: OK
+internal/supervisor/e2e_test.go: OK
+internal/supervisor/supervise.go: OK
+cmd/zcode-acp/main_test.go: OK
+internal/supervisor/mount_internal_test.go: OK
+internal/supervisor/windows_internal_test.go: OK
+internal/supervisor/mount.go: OK
+internal/supervisor/discovery_windows.go: OK
+scripts/windows-vm/make-unattend.sh: FAILED
+scripts/windows-vm/network.xml: OK
+internal/supervisor/process_unix.go: OK
+scripts/windows-vm/smoke-server.ps1: OK
+internal/supervisor/spawn.go: OK
+internal/zcode/fake/binary_test.go: OK
+.gitignore: OK
+sha256sum: WARNING: 1 listed file could not be read
+sha256sum: WARNING: 2 computed checksums did NOT match
