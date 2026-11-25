@@ -26,6 +26,35 @@ function tomlSection(document, name) {
   return body.join("\n");
 }
 
+function workflowJob(jobId) {
+  const lines = source(".github/workflows/pr-sanity.yml").split(/\r?\n/);
+  const start = lines.indexOf(`  ${jobId}:`);
+  assert.notEqual(start, -1, `pr-sanity.yml must define the ${jobId} job`);
+  const nextJob = lines.findIndex(
+    (line, index) => index > start && /^  [a-z0-9-]+:\s*$/.test(line),
+  );
+  return lines.slice(start + 1, nextJob === -1 ? lines.length : nextJob).join("\n");
+}
+
+function workflowStep(job, stepName) {
+  const lines = job.split(/\r?\n/);
+  const start = lines.indexOf(`      - name: ${stepName}`);
+  assert.notEqual(start, -1, `workflow job must define the ${stepName} step`);
+  const nextStep = lines.findIndex(
+    (line, index) => index > start && /^      - /.test(line),
+  );
+  return lines.slice(start, nextStep === -1 ? lines.length : nextStep).join("\n");
+}
+
+function assertWorkflowOrder(document, orderedNeedles) {
+  let previousIndex = -1;
+  for (const needle of orderedNeedles) {
+    const index = document.indexOf(needle);
+    assert.ok(index > previousIndex, `workflow step is missing or out of order: ${needle}`);
+    previousIndex = index;
+  }
+}
+
 function assertPortableDetachedFixture(source, fixture, selectors) {
   assert.equal(
     legacyDetachedCommand.test(source),
@@ -165,4 +194,47 @@ test("tool-version gate exports comparators and fails non-zero on drift", () => 
     gateSource.includes("if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) main();"),
     "importing the comparators must not execute mise",
   );
+});
+
+test("Linux sanity preserves its protected required-check name and runner", () => {
+  const sanity = workflowJob("sanity");
+
+  assert.match(sanity, /^    name: build \/ vet \/ lint \/ test \/ tidy$/m);
+  assert.match(sanity, /^    runs-on: ubuntu-latest$/m);
+});
+
+test("macOS arm64 runs architecture and version preflights before canonical gates", () => {
+  const arm64 = workflowJob("macos-arm64");
+
+  assert.match(arm64, /^    name: build \/ vet \/ lint \/ test \/ tidy \(macOS arm64\)$/m);
+  assert.match(arm64, /^    runs-on: macos-latest$/m);
+  assert.match(arm64, /^    timeout-minutes: 30$/m);
+  assert.ok(arm64.includes("      - uses: actions/checkout@v4"));
+  assert.ok(arm64.includes("        run: curl https://mise.run | sh"));
+  assert.ok(arm64.includes('        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"'));
+  assert.ok(arm64.includes("        run: mise install"));
+
+  const architecture = workflowStep(arm64, "Verify native architecture");
+  assert.match(architecture, /^          EXPECTED_GOARCH: arm64$/m);
+  assert.match(architecture, /^          EXPECTED_UNAME_M: arm64$/m);
+  assert.ok(architecture.includes("mise exec -- go env GOARCH"));
+  assert.ok(architecture.includes("uname -m"));
+  assert.ok(architecture.includes('test "$(mise exec -- go env GOARCH)" = "$EXPECTED_GOARCH"'));
+  assert.ok(architecture.includes('test "$(uname -m)" = "$EXPECTED_UNAME_M"'));
+
+  const versions = workflowStep(arm64, "Verify mise tool versions");
+  assert.match(
+    versions,
+    /^        run: mise exec -- node scripts\/check-mise-tool-versions\.mjs$/m,
+  );
+  assert.ok(arm64.includes("        run: mise run ci"));
+  assert.ok(arm64.includes("        run: mise run tidy-diff"));
+  assertWorkflowOrder(arm64, [
+    "      - name: Install tools from mise.toml",
+    "      - name: Verify native architecture",
+    "      - name: Verify mise tool versions",
+    "        run: mise run ci",
+    "        run: mise run tidy-diff",
+  ]);
+  assert.doesNotMatch(arm64, /CGO_ENABLED\s*=\s*0/, "native race tests must keep CGO enabled");
 });
