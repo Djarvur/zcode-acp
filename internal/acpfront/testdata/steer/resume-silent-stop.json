@@ -1,0 +1,130 @@
+{
+  "name": "resume-silent-stop",
+  "on_request": [
+    {
+      "method": "session/resume",
+      "reply": {
+        "result": {
+          "session": {
+            "sessionId": "sess_resumed1"
+          },
+          "protocol": {
+            "name": "ZCode Protocol",
+            "version": 1
+          }
+        }
+      }
+    },
+    {
+      "method": "session/subscribe",
+      "reply": {
+        "result": {
+          "sessionId": "sess_resumed1",
+          "eventSeq": 0,
+          "events": []
+        }
+      }
+    },
+    {
+      "method": "session/send",
+      "reply": {
+        "result": {
+          "accepted": true,
+          "sessionId": "sess_resumed1",
+          "stateRevision": 1
+        }
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {
+              "patch": {
+                "status": "running"
+              },
+              "reason": "prompt_started",
+              "revision": 1,
+              "scope": "session",
+              "sessionId": "sess_resumed1",
+              "type": "state.updated"
+            }
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {
+              "type": "turn.started",
+              "seq": 4,
+              "turnId": "turn_resumed1",
+              "deliveryKind": "desktop-continuous"
+            }
+          }
+        }
+      ],
+      "times": 1
+    },
+    {
+      "method": "session/send",
+      "reply": {
+        "result": {
+          "accepted": true,
+          "sessionId": "sess_resumed1",
+          "stateRevision": 2
+        }
+      },
+      "side_effects": [
+        {
+          "emit": {
+            "method": "state.updated",
+            "params": {
+              "patch": {
+                "status": "running"
+              },
+              "reason": "prompt_started",
+              "revision": 2,
+              "scope": "session",
+              "sessionId": "sess_resumed1",
+              "type": "state.updated"
+            }
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {
+              "type": "turn.started",
+              "seq": 6,
+              "turnId": "turn_resumed2",
+              "deliveryKind": "desktop-continuous"
+            }
+          }
+        },
+        {
+          "emit": {
+            "method": "session/event",
+            "params": {
+              "type": "turn.completed",
+              "seq": 7,
+              "turnId": "turn_resumed2",
+              "deliveryKind": "desktop-continuous"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "session/stop",
+      "reply": {
+        "result": {}
+      }
+    }
+  ],
+  "unknown_method": {
+    "error": {
+      "code": -32601,
+      "message": "MethodNotFound"
+    }
+  },
+  "eof_drain_ms": 100
+}

@@ -207,6 +207,16 @@ type Machine struct {
 	// Assign before any turn runs, like OnResolve.
 	MaxQuietVetoes int
 
+	// cancelGrace is how long a cancelled turn may stay unresolved before
+	// the client-requested cancellation is answered anyway (the ACP cancel
+	// contract; DefaultCancelGrace when zero).
+	cancelGrace time.Duration
+
+	// cancelTimer is the armed cancel grace (guarded by mu): Cancel arms it
+	// on the running→cancelling transition, resolveLocked stops it, and
+	// finishTurn clears it between turns.
+	cancelTimer *time.Timer
+
 	mu          sync.Mutex
 	state       machineState
 	turnID      string
@@ -226,6 +236,22 @@ type Machine struct {
 	removeRouterObserver       func()
 }
 
+// DefaultCancelGrace is the production bound on a cancelled turn's answer:
+// long enough to let the live stop→terminal latency (~300 ms in the field
+// log, 2026-11-25 17:20:28.882 → 17:20:29.181) resolve the turn through its
+// own signal, short enough that a client block on the prompt answer (Orca
+// holds a steer until the active prompt settles) never sees a stall.
+const DefaultCancelGrace = 2 * time.Second
+
+// MachineOption configures a Machine at construction, before any turn runs.
+type MachineOption func(*Machine)
+
+// WithCancelGrace overrides DefaultCancelGrace. Zero keeps the default; tests
+// inject milliseconds so no test waits on the production bound.
+func WithCancelGrace(d time.Duration) MachineOption {
+	return func(m *Machine) { m.cancelGrace = d }
+}
+
 // NewMachine returns a machine bound to sessionID on conn with the given
 // watcher, and wires the machine's one observation surface: every inbound
 // notification envelope funnels into it via conn.AddObserver and
@@ -235,13 +261,17 @@ type Machine struct {
 // 05-05's session/close teardown calls them (WR-07: teardown can finally
 // release observers). Registration happens before any frame flows (the
 // Conn hook contract).
-func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher) *Machine {
+func NewMachine(conn *zcode.Conn, sessionID string, watcher TurnWatcher, opts ...MachineOption) *Machine {
 	m := &Machine{
 		conn:       conn,
 		sessID:     sessionID,
 		watcher:    watcher,
 		state:      stateIdle,
 		resolvedCh: make(chan struct{}),
+	}
+
+	for _, opt := range opts {
+		opt(m)
 	}
 
 	if conn != nil {
@@ -372,6 +402,24 @@ func (m *Machine) Cancel() {
 	}
 
 	m.state = stateCancelling
+
+	// The ACP cancel contract (quick task 261125-s7k): the active
+	// session/prompt MUST answer the client's cancel. The backend's own
+	// stop outcome stays the primary signal (terminal, cancelled patch, or
+	// quiet settle); the grace is the bound that keeps a silent or
+	// chattering backend from holding the client's prompt — and, for Orca,
+	// its steer queue, which waits for exactly this answer — open. Armed
+	// under the same lock section as the state transition, so no resolution
+	// can slip between them.
+	grace := m.cancelGrace
+	if grace <= 0 {
+		grace = DefaultCancelGrace
+	}
+
+	if m.cancelTimer == nil {
+		m.cancelTimer = time.AfterFunc(grace, m.resolveCancelGrace)
+	}
+
 	m.mu.Unlock()
 
 	if err := m.conn.Stop(m.sessID); err != nil {
@@ -426,6 +474,21 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 
 	reason, terminal := m.classifyTerminalLocked(env)
 	if terminal {
+		// The stop's observed outcome (quick task 261125-s7k): once the
+		// client asked for cancellation, a FAILED terminal — turn.failed, or
+		// turn.terminal with a failed status, which is exactly what the live
+		// desktop emits after session/stop — resolves the turn CANCELLED,
+		// not failed. Answering failed would surface -32603 to a client that
+		// expects the ACP cancelled stopReason. A genuinely COMPLETED
+		// terminal keeps its completed outcome: the turn really did finish,
+		// and the machine must not claim a cancellation that never
+		// happened (PITFALL 4 holds in both directions).
+		if m.state == stateCancelling && reason == StopFailed {
+			m.resolveLocked(Resolution{Reason: StopCancelled, Signal: SignalCancel, At: time.Now()})
+
+			return
+		}
+
 		m.resolveLocked(Resolution{Reason: reason, Signal: SignalTerminalEvent, At: time.Now()})
 
 		return
@@ -481,6 +544,14 @@ func (m *Machine) beginTurnLocked() {
 func (m *Machine) finishTurn() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Between turns there is nothing for the cancel grace to answer: a turn
+	// that ended without resolving (a ctx-cancelled wait) must not have its
+	// timer resolve a later turn on this machine.
+	if m.cancelTimer != nil {
+		m.cancelTimer.Stop()
+		m.cancelTimer = nil
+	}
 
 	m.state = stateDone
 }
@@ -728,6 +799,25 @@ func (m *Machine) turnIDMatchesLocked(turnID string) bool {
 	return turnID == m.turnID
 }
 
+// resolveCancelGrace is the cancel grace's callback (quick task 261125-s7k):
+// when the client's cancel is still unanswered past the configured bound, the
+// turn resolves with the client-requested outcome. This is not a synthesized
+// completion — the client demanded the cancellation and the stop was already
+// written; the grace only guarantees the active session/prompt ANSWERS. Every
+// backend signal that lands first still wins (exactly-once, resolveLocked).
+// The state guard keeps a timer that outlived its turn (a resolved turn or a
+// fresh turn on the same machine) from ever resolving anything.
+func (m *Machine) resolveCancelGrace() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.resolved || m.state != stateCancelling {
+		return
+	}
+
+	m.resolveLocked(Resolution{Reason: StopCancelled, Signal: SignalCancel, At: time.Now()})
+}
+
 // resolveLocked resolves the turn exactly once (sync.Once semantics: the
 // per-turn resolved flag under the machine mutex), closes the wait channel,
 // and fires the OnResolve hook — the observable face of exactly-once. The
@@ -735,6 +825,11 @@ func (m *Machine) turnIDMatchesLocked(turnID string) bool {
 func (m *Machine) resolveLocked(res Resolution) {
 	if m.resolved {
 		return
+	}
+
+	// The turn is answered: the cancel grace must never fire for it.
+	if m.cancelTimer != nil {
+		m.cancelTimer.Stop()
 	}
 
 	m.resolved = true
