@@ -84,6 +84,13 @@ Stated plainly, so nobody discovers them as failures:
 - **v1 supports Ubuntu GNOME only.** The credential paths need the Secret
   Service keyring (`secret-tool` from `libsecret-tools`, plus gnome-keyring).
   Other environments are accepted-post-v1 work.
+- **Session restoration reuses the existing backend session.** The wrapper's
+  ACP v1 initialize response advertises exactly
+  `sessionCapabilities.options:{}` and `sessionCapabilities.resume:{}`.
+  Orca therefore calls `session/resume` with the original session id; the wrapper
+  reattaches that desktop session and re-subscribes without creating a replacement,
+  rebinding the model, or replaying history. Top-level `loadSession`, `session/load`,
+  history import, and history replay remain unsupported.
 - **Session list/load/fork real support is v2.** Today `session/delete` is
   answered as a graceful no-op and `session/fork` is declined with the
   standard method-not-found frame — spec-loose clients keep working, and the
