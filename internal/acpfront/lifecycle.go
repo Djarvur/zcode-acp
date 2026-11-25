@@ -150,7 +150,7 @@ func (f *Front) resumeSessionLocked(ctx context.Context, sessionID, cwd string) 
 	// flush-before-stopReason registration order NewSession relies on. The
 	// construction stays OUTSIDE the close gate (its observer registrations
 	// are conn-mutex work; only the close-gate section below is atomic).
-	machine := turn.NewMachine(f.conn, sid, turn.NewPollWatcher(f.conn, turn.PollConfig{}))
+	machine := f.newSessionMachine(sid)
 
 	// WR-05 (plan 07-01): the mandatory WR-03 re-check, the reattach
 	// release, and the Register are ONE closingMu-guarded section — a

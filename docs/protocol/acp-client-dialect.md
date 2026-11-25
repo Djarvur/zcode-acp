@@ -263,6 +263,17 @@ Per turn / per user action, on the same process:
 - `session/cancel` — user interrupt, sent as a JSON-RPC **notification** with the sessionId
   [V-SRC agent-session-attachment-store-registry-CR_MCAgP.js#cancel; repo
   src/main/acp/protocol/acp-session-runtime.ts#180-190 @v1.4.262].
+  The wrapper's cancel answer is deterministic (implementation note, quick task
+  `261125-s7k`): the active `session/prompt` **always** answers with the success result
+  `stopReason:"cancelled"` — never `-32603`/`-32800`. When the backend reports the stop as a
+  failed terminal (`turn.failed`, or `turn.terminal` with a failed status — the live desktop's
+  cancel outcome), that terminal resolves cancelled rather than failed; a genuinely completed
+  turn keeps `end_turn`; and when the backend acknowledges the `session/stop` with no outcome
+  at all, a cancel grace (2 s default, internal — no client-visible knob) resolves the turn
+  cancelled anyway. This is what dispatches the client's steer queue: a steer holds the new
+  message until the active prompt answers cancellation, so an unanswered cancel leaves the
+  current answer interrupted and the new one never sent
+  [V-SRC src/main/acp/turns/acp-structured-turns.ts#dispatch,#cancelForSteer,#finish @v1.4.274].
 - `session/set_model` — the client's model-change call; for `omp` the picker itself is
   in-session (see Open items; the write priority is config option → `session/set_model` →
   `/model` slash prompt) [V-SRC agent-session-attachment-store-registry-CR_MCAgP.js#set-model; repo

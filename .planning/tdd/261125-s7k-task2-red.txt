@@ -1,0 +1,16 @@
+2026/11/25 20:47:26 INFO acpfront: session opened session=sess_fix1
+2026/11/25 20:47:26 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 20:47:26 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 20:47:26 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 20:47:26 INFO acpfront: session resumed session=sess_resumed1
+2026/11/25 20:47:26 WARN turn: poll watcher poll failed session=sess_resumed1 err="turn: poll session/messages: zcode: wire error -32601: MethodNotFound"
+2026/11/25 20:47:27 WARN turn: poll watcher poll failed session=sess_resumed1 err="turn: poll session/messages: zcode: wire error -32601: MethodNotFound"
+2026/11/25 20:47:27 WARN turn: poll watcher poll failed session=sess_resumed1 err="turn: poll session/messages: zcode: wire error -32601: MethodNotFound"
+2026/11/25 20:47:28 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 20:47:28 INFO connection closed cause="io: read/write on closed pipe"
+2026/11/25 20:47:28 INFO connection closed cause="io: read/write on closed pipe"
+--- FAIL: TestSteerAfterCancelOnResumedSession (2.01s)
+    steer_test.go:203: the resumed session's cancelled prompt never answered inside the grace bound
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	2.134s
+FAIL
