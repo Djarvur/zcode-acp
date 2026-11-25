@@ -7,41 +7,45 @@ requires:
   - phase: 11-01
     provides: CGO-free darwin/arm64 and darwin/amd64 build compatibility
   - phase: 11-03
-    provides: Managed Bash and the mise-resolved tool-version gate
+    provides: Go docs/secret gates and the four-tool mise-resolved version gate
   - phase: 11-04
     provides: Native macOS CI gates and exact Darwin cross-build jobs
 provides:
   - GoReleaser 2.20.2 config for thin arm64/amd64 and universal binary-only archives
-  - Independent checksum, exact-member, safe-extraction, and exact-architecture verifier
-  - Offline static release contracts and guarded adversarial archive fixtures
+  - Go verifier for checksum, exact-member, safe-extraction, and exact-architecture checks
+  - Offline static release contracts and Go adversarial archive coverage
   - Read-only macOS snapshot workflow and tag-only write-scoped publication
 affects: [11-darwin-build-test-release-gates, MBLD-03]
 actuals:
-  tokens: 7860
+  tokens: 18638
   tasks: 3
-  commits: 3
+  commits: 4
 plan_head_before: fbc0dbe648b013d5d618332eac8738625b3b12e7
-plan_head_after: 84a2812cf1730cbbd01071f0815faeb43571b962
+plan_head_after: 16516c5
 tech-stack:
   added: []
   patterns:
     - GoReleaser archive ids select binaries while a non-matching extra-file glob suppresses default documentation members
     - Validate checksums and archive structure on private copies before fresh-directory extraction
+    - Go archive/tar + compress/gzip + crypto/sha256 verification with lipo as the only external tool
     - Read-only snapshot job gates tag-only publication and owns no release token
 key-files:
   created:
     - .goreleaser.yaml
-    - scripts/verify-darwin-release.sh
+    - cmd/verify-darwin-release/main.go
+    - cmd/verify-darwin-release/main_test.go
     - experiments/release.test.mjs
     - .planning/phases/11-darwin-build-test-release-gates/11-05-SUMMARY.md
   modified:
     - .github/workflows/release.yml
+    - mise.toml
     - .gitignore
     - .planning/WINDOWS.md
 key-decisions:
   - Use GoReleaser 2.20.2's current archives.ids field; builds is deprecated in the exact schema.
   - Use a non-matching archives.files sentinel because files adds extra filesystem members and does not select built binaries.
   - Stage private archive copies and repeat checksum verification before validating or extracting them.
+  - Implement the verifier in Go; lipo remains the only external command.
   - Keep snapshot permissions read-only and confine contents: write plus GITHUB_TOKEN to the tag-only release job.
 patterns-established:
   - Release artifact trust chain: exact tool pin, frozen modules, offline build, SHA-256, exact tar member/type, fresh extraction, lipo.
@@ -56,15 +60,15 @@ coverage:
         ref: /tmp/zcode-acp-release-tools.DrrlmY/bin/goreleaser release --snapshot --clean --skip=publish
         status: pass
       - kind: other
-        ref: /opt/homebrew/bin/bash scripts/verify-darwin-release.sh dist
+        ref: go run ./cmd/verify-darwin-release dist
         status: pass
     human_judgment: false
   - id: D2
-    description: Verifier rejects traversal, absolute paths, symlinks, extra members, and missing binaries before extraction or lipo
+    description: Go verifier rejects traversal, absolute paths, symlinks, extra members, missing binaries, and malformed checksums
     requirement: MBLD-03
     verification:
       - kind: unit
-        ref: experiments/release.test.mjs#artifact verifier rejects adversarial archives before extraction
+        ref: go test ./cmd/verify-darwin-release
         status: pass
     human_judgment: false
   - id: D3
@@ -102,7 +106,7 @@ status: complete
 
 # Phase 11 Plan 05: Darwin Release Artifacts Summary
 
-**GoReleaser 2.20.2 now produces independently verified binary-only Darwin arm64, amd64, and universal archives, with read-only snapshot automation and tag-only publication rights.**
+**GoReleaser 2.20.2 produces independently verified binary-only Darwin arm64, amd64, and universal archives; the verifier is now a Go command with no Bash dependency.**
 
 ## Performance
 
@@ -115,10 +119,11 @@ status: complete
 ## Accomplishments
 
 - Added two CGO-free Darwin builds, one universal binary, thin/universal tar.gz archives, and SHA-256 `checksums.txt`.
-- Added an independent verifier that requires exactly one regular `zcode-acp` member, rejects unsafe member sets/types before extraction, stages private copies, and compares exact `lipo -archs` sets without executing a binary.
-- Added offline static release contracts and guarded traversal, absolute-path, symlink, extra-member, and missing-binary fixtures.
+- Added a Go verifier that requires exactly one regular `zcode-acp` member, rejects unsafe member sets/types before extraction, stages private copies, and compares exact `lipo -archs` sets without executing a binary.
+- Added Go unit fixtures for valid archives plus traversal, absolute-path, symlink, extra-member, missing-binary, directory, malformed-checksum, and wrong-architecture cases.
 - Reworked `release.yml` into a read-only macOS snapshot job plus a tag-only publish job with independent frozen-module and offline gates.
 - Kept `contents: write` and `GITHUB_TOKEN` confined to the publish job; the snapshot job uploads all three archives and checksums without a token.
+- Replaced the shell verifier and `mise exec -- bash` call with `mise run verify-darwin-release`.
 - Added `/dist/` to `.gitignore`.
 
 ## Verification Evidence
@@ -130,24 +135,22 @@ Direct tools used:
 ```text
 /Users/nil/.local/share/mise/installs/go/1.27.4/bin/go -> go1.27.4 darwin/arm64
 /opt/homebrew/bin/node -> v26.13.1
-/opt/homebrew/bin/bash -> GNU bash 5.3.20
 /tmp/zcode-acp-release-tools.DrrlmY/bin/goreleaser -> GitVersion v2.20.2, GoVersion go1.27.4
 ```
 
-The exact GoReleaser binary was installed through `GOPROXY=https://proxy.golang.org` into a fresh temporary GOBIN. No mise trust setting was changed.
+The exact GoReleaser binary was installed through `GOPROXY=https://proxy.golang.org` into a fresh temporary GOBIN.
 
 | Command / check | Result |
 |-----------------|--------|
-| `/opt/homebrew/bin/node --test experiments/release.test.mjs` | PASS — 4 pass, 1 intentional guarded skip |
-| `ZCODE_ACP_RELEASE_FIXTURES=1 ZCODE_ACP_RELEASE_BASH=/opt/homebrew/bin/bash node --test --test-name-pattern='artifact verifier' experiments/release.test.mjs` | PASS — 7/7, including all five unsafe fixtures |
-| `/opt/homebrew/bin/node --test experiments/` | PASS — 46 pass, 2 intentional guarded skips, 0 fail |
-| `/opt/homebrew/bin/bash -n scripts/verify-darwin-release.sh` | PASS |
-| Direct Go/Node/Bash/GoReleaser pin comparisons | PASS — 1.27 / 26 / 5.3 / exact 2.20.2 |
-| `GOPROXY=off goreleaser check` with exact 2.20.2 | PASS |
+| `node --test experiments/release.test.mjs` | PASS — 4/4 |
+| `go test ./cmd/verify-darwin-release` | PASS — valid and adversarial archive coverage |
+| `go run ./cmd/verify-darwin-release dist` | PASS — checksums, exact members/types, and all architecture sets |
+| `mise run verify-darwin-release` | PASS — same real `dist` snapshot |
+| `mise run ci` | PASS — 110.97 s, lint 0 issues |
+| `GOPROXY=off mise exec -- goreleaser check` with exact 2.20.2 | PASS |
 | `GOPROXY=https://proxy.golang.org go mod download` + `git diff --exit-code HEAD -- go.mod go.sum` | PASS |
 | `GOPROXY=off go mod verify` + offline `go mod tidy` + frozen-pin assertions | PASS |
 | `GOPROXY=off goreleaser release --snapshot --clean --skip=publish` on final commit `84a2812` | PASS |
-| `/opt/homebrew/bin/bash scripts/verify-darwin-release.sh dist` | PASS — checksums, exact members/types, and all architecture sets |
 | `git diff --check` | PASS |
 
 Final snapshot artifacts:
@@ -158,36 +161,35 @@ Final snapshot artifacts:
 | `zcode-acp_0.23.0-SNAPSHOT-84a2812_darwin_amd64.tar.gz` | `87a9ad043fa1d48ba3c68802ae04e80918b7c8173e6cebd87c8b5c58a17c2ab0` | one regular `zcode-acp` | `x86_64` |
 | `zcode-acp_0.23.0-SNAPSHOT-84a2812_darwin_universal.tar.gz` | `bfa6f6954529663187428fffb399660230d2ee79c53f39934d141c22eeff2248` | one regular `zcode-acp` | `x86_64 arm64` |
 
-`shasum -a 256 -c checksums.txt` reported `OK` for all three archives, both against `dist/` and the verifier's private staged copies.
+The Go verifier independently recomputed SHA-256 over `dist/` and private staged copies for all three archives.
 
 ### Pending checks — not claimed as passed
 
 | Check | Status / reason |
 |-------|-----------------|
-| Release commands through `mise exec` / `mise run` | NOT RUN — repository `mise.toml` is explicitly untrusted. Exact absolute-tool equivalents above passed. Recorded as WINDOWS entry 28. |
 | Hosted `workflow_dispatch` snapshot observation | NOT RUN — no branch was pushed. Confirm read-only rights, bounded module hydration, offline checksum/tidy, three archives plus checksums, verifier success, and publish-job skip. Recorded as WINDOWS entry 29. |
 
-No exact-tool or local snapshot check remains blocked. No tag was created or pushed, and no release was published.
+No local snapshot or exact-tool check remains blocked. No tag was created or pushed, and no release was published.
 
 ## Task Commits
 
 1. **Task 1: Build and verify one complete binary-only Darwin release slice** — `968305a` (`feat(11-05)`)
-   - `.goreleaser.yaml`, `scripts/verify-darwin-release.sh`, `experiments/release.test.mjs`, `.gitignore`
 2. **Task 2: Automate the proven snapshot as a read-only macOS job** — `e02a266` (`feat(11-05)`)
-   - `.github/workflows/release.yml`, `experiments/release.test.mjs`
-3. **Task 3: Gate tag publication on the verified snapshot and write-scoped rights** — `84a2812` (`feat(11-05)`)
-   - `.github/workflows/release.yml`, `experiments/release.test.mjs`
+3. **Task 3: Gate tag publication on the verified snapshot** — `84a2812` (`feat(11-05)`)
+4. **User-directed Go verifier migration** — `16516c5` (`feat(11)`)
 
 **Plan metadata:** committed separately with this summary and `.planning/WINDOWS.md`.
 
 ## Files Created/Modified
 
 - `.goreleaser.yaml` — exact-version two-target/universal build, binary-only archives, and SHA-256 config.
-- `scripts/verify-darwin-release.sh` — checksum, exact-member/type, private-copy, extraction, and `lipo` verification.
-- `experiments/release.test.mjs` — offline config/verifier/workflow contracts and guarded unsafe archive fixtures.
-- `.github/workflows/release.yml` — read-only snapshot and tag-only write-scoped publication.
+- `cmd/verify-darwin-release/main.go` — Go checksum, exact-member/type, private-copy, extraction, and `lipo` verification.
+- `cmd/verify-darwin-release/main_test.go` — valid and adversarial archive fixtures.
+- `experiments/release.test.mjs` — offline config and workflow contracts; shell fixture arm deleted.
+- `.github/workflows/release.yml` — read-only snapshot and tag-only write-scoped publication with the Go verifier task.
+- `mise.toml` — `verify-darwin-release` task calls `go run ./cmd/verify-darwin-release dist`.
 - `.gitignore` — ignores GoReleaser `/dist/` output.
-- `.planning/WINDOWS.md` — records the resolved schema adaptation and pending external observations.
+- `.planning/WINDOWS.md` — records resolved schema adaptation and hosted-run observation.
 
 ## Decisions Made
 
@@ -195,6 +197,8 @@ No exact-tool or local snapshot check remains blocked. No tag was created or pus
 - Used a non-matching extra-file sentinel glob so default README/LICENSE members are suppressed while archive IDs select the built binary.
 - Added a second checksum pass over private staged copies to close the dist-to-extraction race.
 - Made publication depend on the verified snapshot and required `github.event_name == 'push'` plus a `refs/tags/v*` ref.
+- Replaced the Bash verifier with a Go command; only `lipo` remains an external executable.
+- Verified archive contents from private staged copies with Go SHA-256 before `archive/tar` extraction.
 
 ## Deviations from Plan
 
@@ -218,12 +222,23 @@ No exact-tool or local snapshot check remains blocked. No tag was created or pus
 
 ---
 
-**Total deviations:** 2 auto-fixed Rule 1 bugs.
-**Impact on plan:** Both fixes were required for correct release behavior and test precision. No architectural change, new dependency, ACP method, client feature, Linux behavior change, or live-service access was introduced.
+### User-directed Architectural Correction
+
+**3. [User-directed] Replace the shell release verifier with Go**
+- **Found during:** User review after the trusted mise runtime correction
+- **Issue:** Bash remained a managed/installed dependency for release verification.
+- **Fix:** Added `cmd/verify-darwin-release` using archive/tar, compress/gzip, crypto/sha256, and lipo; deleted the shell verifier and moved workflows/tests to the Go command.
+- **Verification:** Go unit tests cover valid and adversarial archives; the command passes the real `dist` snapshot and `mise run verify-darwin-release`.
+- **Committed in:** `16516c5`
+
+---
+
+**Total deviations:** 2 auto-fixed Rule 1 bugs and 1 user-directed architectural correction.
+**Impact on plan:** All release guarantees remain intact while removing the Bash toolchain dependency.
 
 ## Issues Encountered
 
-- The repository mise config remains untrusted by explicit constraint. The implementation uses mise in CI as planned, while local certification used the required absolute Go/Node/Bash paths and an isolated exact GoReleaser 2.20.2 binary.
+- The verifier now relies only on Go stdlib plus Apple's `lipo`, so archive parsing and checksum verification have no shell-tool prerequisites.
 - Hosted Actions observation is pending a branch push. This is recorded as an open `unrun-verify`, not represented as green.
 
 ## Authentication Gates
@@ -236,7 +251,7 @@ None for implementation. No account, credential, Keychain, desktop, paid service
 
 ## Known Stubs
 
-None. The guarded fixture test is intentionally skipped by default and was explicitly executed with `ZCODE_ACP_RELEASE_FIXTURES=1`.
+None. Adversarial archive coverage moved to `go test ./cmd/verify-darwin-release` and runs by default.
 
 ## Threat Flags
 
@@ -245,14 +260,15 @@ None beyond the plan's existing trust boundaries. The verifier never executes ar
 ## Next Phase Readiness
 
 - The local release slice is complete and proven with the exact pinned GoReleaser version.
+- Release verification has no Bash or shell-script dependency; it uses the Go verifier plus Apple `lipo`.
 - The workflow is ready for a hosted `workflow_dispatch` observation after the phase branch is pushed.
 - `.planning/STATE.md` and `.planning/ROADMAP.md` were intentionally not updated, per the execution request.
 
 ## Self-Check: PASSED
 
-- All five implementation/test files, the broken-windows ledger, and this summary exist on disk.
-- Task commits `968305a`, `e02a266`, and `84a2812` are ancestors of HEAD; the measured task range contains exactly three commits.
-- The final exact-version snapshot, all three checksums, exact archive member/type checks, all `lipo` architecture sets, static tests, and adversarial fixtures passed.
-- Summary and ledger edits pass `git diff --check`.
-- `.planning/STATE.md` and `.planning/ROADMAP.md` retain their pre-execution SHA-256 hashes and are absent from the plan commit range.
+- Go verifier implementation/tests, release config, workflow contracts, ledger, and this summary exist on disk.
+- Commits `968305a`, `e02a266`, `84a2812`, and `16516c5` are ancestors of HEAD.
+- The real snapshot, `go run ./cmd/verify-darwin-release dist`, `mise run verify-darwin-release`, Go adversarial tests, static release tests, and `mise run ci` pass.
+- The verifier uses Go stdlib for checksums and archives; `lipo` is the only external executable.
+- `.planning/STATE.md` and `.planning/ROADMAP.md` are untouched by the migration.
 - The pre-existing untracked `.planning/milestone.lock` was left untouched.

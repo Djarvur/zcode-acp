@@ -2,82 +2,86 @@
 phase: 11-darwin-build-test-release-gates
 plan: "03"
 subsystem: infra
-tags: [bash, mise, shell-portability, node, tool-versions, github-actions, ci]
+tags: [go, docs-gate, secret-scan, mise, tool-versions, github-actions, ci]
 requires:
   - phase: 11-02
     provides: Portable detached-process fixtures and the static portability test seam
 provides:
-  - Portable find-plus-grep documentation scans with unchanged diagnostics and exit behavior
-  - A PATH-level Bash 5 requirement plus named docs and secret-scan mise tasks
-  - A bounded gate for four mise-managed tools and the PATH Bash line
-  - Homebrew Bash bootstrap on every macOS CI and release job
+  - Go documentation conformance command with phase-gate behavior
+  - Go tracked-file secret scanner with redacted diagnostics
+  - Four-tool mise-resolved version gate with no Bash dependency
+  - Go-backed named gates in the canonical CI graph
 affects: [11-04, 11-05, MBLD-02]
 actuals:
-  tokens: 10256
+  tokens: 24523
   tasks: 2
-  commits: 3
+  commits: 4
   plan_head_before: ae80f8bd615f3214745b719d9fb3aba9438dc4c8
-  plan_head_after: 3017d64e9f1c7bc816183dec3167d3205e695c3a
+  plan_head_after: 16516c5
 tech-stack:
-  added:
-    - Homebrew Bash 5 bootstrap in macOS CI
+  added: []
   patterns:
-    - Four mise-managed tool pins plus one PATH-level Bash line requirement
-    - mise-only probes for registry tools and a direct PATH probe for non-registry Bash
-    - Explicit test-file globs across the supported Node version line
-    - Static workflow contracts for bootstrap order and platform-specific Bash setup
+    - Go commands own standard gates through portable filesystem and process APIs
+    - Four mise-managed tool pins with no Bash tool or environment requirement
+    - Secret findings redact matched values while preserving file and line diagnostics
 key-files:
   created:
+    - cmd/check-docs/main.go
+    - cmd/check-docs/main_test.go
+    - cmd/scan-secrets/main.go
+    - cmd/scan-secrets/main_test.go
     - scripts/check-mise-tool-versions.mjs
     - experiments/tool-versions.test.mjs
     - .planning/phases/11-darwin-build-test-release-gates/11-03-SUMMARY.md
   modified:
     - mise.toml
-    - experiments/check-docs.sh
     - experiments/portability.test.mjs
-    - experiments/release.test.mjs
     - experiments/scrub-capture.test.mjs
-    - experiments/vm-e2e-script.test.mjs
     - .github/workflows/pr-sanity.yml
-    - .github/workflows/release.yml
+    - docs/protocol/app-server-dialect.md
+    - docs/protocol/install-discovery.md
+    - experiments/README.md
+    - scripts/vm-e2e.sh
     - .planning/WINDOWS.md
+  removed:
+    - experiments/check-docs.sh
+    - experiments/scan-secrets.sh
 key-decisions:
-  - Bash is not a mise tool-registry entry; the major line is declared in [env] and probed directly from PATH.
-  - macOS CI installs Homebrew Bash and prepends its bin directory before mise install and the version gate.
-  - Go, golangci-lint, GoReleaser, and Node pins remain in [tools] and probe only through mise exec.
-  - Preserve the docs gate's diagnostics and semantics while changing only its four GNU-only file selectors.
-  - Treat exact three-component pins as exact and one/two-component pins as version lines.
-  - Use an explicit experiment test-file glob because the pinned Node line rejects a directory argument.
+  - Replace the docs and secret shell gates with Go commands instead of retaining compatibility wrappers.
+  - Keep the docs gate's CHECK FAIL / PENDING output and accumulated exit behavior.
+  - Preserve the three credential regexes and tracked-file scope, but redact matched values from reports.
+  - Keep only Go, golangci-lint, GoReleaser, and Node in the mise tool gate.
+  - Run check-docs and secret-scan through `go run` from named mise tasks.
 patterns-established:
-  - Shell portability gate: portable find selection plus grep, statically locked against GNU include/exclude options.
-  - Tool drift gate: parse mise-managed pins plus the PATH Bash line, probe each through its owning resolver, and accumulate failure.
-  - Platform bootstrap gate: macOS workflows install and prepend Homebrew Bash before reading the PATH requirement.
+  - Standard gate commands use Go stdlib filesystem APIs and project-level `go test` coverage.
+  - Secret scanning uses `git ls-files` for tracked scope and never emits credential material.
+  - Tool-version enforcement covers only tools the mise registry actually manages.
 requirements-completed: [MBLD-02]
 coverage:
   - id: D1
-    description: Portable documentation scans preserve diagnostics, phase-gate behavior, and exit status
+    description: Go documentation gate preserves conformance, phase-gate, path, tag, capture-header, and key-minting checks
     requirement: MBLD-02
     verification:
       - kind: unit
-        ref: node --test experiments/portability.test.mjs
+        ref: go test ./cmd/check-docs
         status: pass
       - kind: other
         ref: mise run check-docs
         status: pass
     human_judgment: false
   - id: D2
-    description: PATH Bash line and named docs/secret tasks are wired into the canonical CI graph
+    description: Go secret gate preserves credential patterns and tracked scope while redacting findings
     requirement: MBLD-02
     verification:
       - kind: unit
-        ref: experiments/portability.test.mjs#mise declares a PATH Bash line and exposes both shell gates
+        ref: go test ./cmd/scan-secrets
         status: pass
       - kind: other
-        ref: mise run check-docs && mise run secret-scan
+        ref: mise run secret-scan
         status: pass
     human_judgment: false
   - id: D3
-    description: Offline comparators reject wrong exact versions, wrong version lines, malformed output, and missing versions
+    description: Offline comparators reject wrong exact versions and wrong version lines
     requirement: MBLD-02
     verification:
       - kind: unit
@@ -88,7 +92,7 @@ coverage:
         status: pass
     human_judgment: false
   - id: D4
-    description: Runnable gate checks four mise-resolved tools and the PATH Bash line, and exits non-zero on drift
+    description: Four-tool runtime gate and Go-backed CI tasks execute successfully
     requirement: MBLD-02
     verification:
       - kind: other
@@ -98,144 +102,111 @@ coverage:
         ref: mise run ci
         status: pass
     human_judgment: false
-duration: 6min plus trusted runtime correction
+duration: 6min plus trusted runtime corrections
 completed: 2026-11-25
 status: complete
 ---
 
-# Phase 11 Plan 03: Portable Shell Gates and Tool-Version Enforcement Summary
+# Phase 11 Plan 03: Go Documentation and Secret Gates Summary
 
-**Portable docs scans run through PATH Bash 5.3 after real mise execution exposed that Bash has no tool plugin; four tool pins remain mise-resolved, and macOS CI installs Homebrew Bash before every version check.**
+**The documentation and secret gates now run as Go commands with unit coverage, and the managed toolchain contains only Go, golangci-lint, GoReleaser, and Node.**
 
 ## Performance
 
 - **Initial duration:** 6 minutes
 - **Started:** 2026-11-25T13:26:50Z
 - **Initial completion:** 2026-11-25T13:32:38Z
-- **Runtime correction completed:** 2026-11-25T17:58:32Z
+- **Go-gate migration completed:** 2026-11-25T18:29:50Z
 - **Tasks:** 2/2
-- **Files modified:** 9 implementation, test, and workflow files, plus the summary and broken-windows ledger
+- **Files modified:** 21 implementation, test, workflow, and documentation files across the final migration
 
 ## Accomplishments
 
-- Replaced all four GNU-only docs/security scan selectors with portable `find` plus `grep` pipelines while leaving diagnostics, PENDING/phase-gate behavior, hit limits, path scanning, and accumulated exit status unchanged.
-- Added `ZCODE_ACP_REQUIRED_BASH = "5"` under `[env]`, exposed `secret-scan` and `check-docs` as named tasks, and appended both after `test-experiments` in `tasks.ci`.
-- Kept Go, golangci-lint, GoReleaser, and Node in `[tools]` and probing through bounded `mise exec --` calls.
-- Probed Bash directly from PATH because mise has no Bash tool plugin; the gate accepts the 5.x line and rejects other majors.
-- Added Homebrew Bash installation and PATH prepending to both macOS PR jobs and both macOS release jobs, before `mise install`.
-- Kept native `go test -race -count=1 ./...` unchanged, added no global CGO setting, and kept `scripts/vm-e2e.sh` outside the default task graph.
-- Switched the experiment task to `node --test experiments/*.test.mjs` because the mise-pinned Node 26.2.0 rejects a directory argument.
+- Ported all documentation checks to `cmd/check-docs`: legend uniqueness, deliverable presence, provenance tags and grammar, capture-header continuity, exact phase-gate headings, user-home path scan, and key-minting scan.
+- Ported the tracked-file secret gate to `cmd/scan-secrets` with the same JWT, encrypted-credential, and token-value regexes.
+- Kept the reviewer-safe contract: findings report `path:line:[REDACTED]` or `Binary file <path> matches`, never the credential value.
+- Removed `experiments/check-docs.sh` and `experiments/scan-secrets.sh`; no compatibility wrappers remain.
+- Removed the Bash tool/environment requirement and reduced `REQUIRED_TOOLS` to Go, golangci-lint, GoReleaser, and Node.
+- Routed `check-docs` and `secret-scan` through `go run` in `mise.toml`; `mise run ci` now executes the Go commands.
+- Removed every Homebrew Bash install/prepend step and all `mise exec -- bash` calls from the workflows.
 
 ## Verification Evidence
 
-Trusted runtime tools:
-
 ```text
-mise 2026.11.13 macos-arm64
-go 1.27.4 darwin/arm64 via mise
-golangci-lint 2.15.0 via mise
-goreleaser 2.20.2 via mise
+go version go1.27.4 darwin/arm64
+golangci-lint 2.15.0
+goreleaser 2.20.2
 node 26.2.0 via mise
-GNU bash 5.3.20 from PATH
 ```
 
 | Command | Result |
 |---------|--------|
-| `mise install` | PASS — four tools installed; no Bash registry entry |
-| `mise exec -- node scripts/check-mise-tool-versions.mjs` | PASS — four mise probes plus PATH Bash line |
-| `mise run ci` | PASS — 123.03 s; lint 0 issues; race suite green; shell gates green |
-| `mise run check-docs && mise run secret-scan` | PASS |
-| `mise run test-experiments` | PASS — 47 pass, 2 guarded skips, 0 fail |
-| `/opt/homebrew/bin/node --test experiments/` | PASS — 47 pass, 2 guarded skips, 0 fail |
-| `node --test experiments/tool-versions.test.mjs` | PASS — 5/5 |
-| `node --test experiments/portability.test.mjs` | PASS — 14/14 |
-| `node --test experiments/release.test.mjs` | PASS — 4 pass, 1 guarded skip |
-| TOML parse and Node syntax checks | PASS |
+| `go test ./...` | PASS |
+| `go test ./cmd/check-docs ./cmd/scan-secrets` | PASS |
+| `mise install` | PASS — four tools |
+| `mise exec -- node scripts/check-mise-tool-versions.mjs` | PASS — four mise pins |
+| `mise run check-docs` | PASS |
+| `mise run secret-scan` | PASS |
+| `mise run ci` | PASS — lint 0 issues, Go race suite green, Node suite green |
+| `node --test experiments/*.test.mjs` | PASS — 47 pass, 1 guarded skip |
 | `git diff --check` | PASS |
 
-The initial blocked checks were executed after explicit user trust was provided. Their `.planning/WINDOWS.md` entries 22–24 are now marked fixed. No real ZCode desktop, Keychain, credential, paid API, or product service was accessed.
+No Bash installation, Bash tool pin, Bash environment requirement, or standard-gate Bash invocation remains. No real ZCode desktop, Keychain, credential, paid API, or product service was accessed.
 
 ## Task Commits
 
-1. **Task 1: Run both shell gates with portable docs scans** — `aa9930c` (`feat(11-03)`)
-   - `experiments/check-docs.sh`
-   - `mise.toml`
-   - `experiments/portability.test.mjs`
-2. **Task 2: Enforce the tool and shell version requirements** — `3630083` (`feat(11-03)`)
-   - `scripts/check-mise-tool-versions.mjs`
-   - `experiments/tool-versions.test.mjs`
-   - `experiments/portability.test.mjs`
+1. **Task 1: Portable shell gates** — `aa9930c` (`feat(11-03)`)
+2. **Task 2: Tool and shell version requirements** — `3630083` (`feat(11-03)`)
 3. **Trusted-runtime correction** — `3017d64` (`fix(11-03)`)
-   - PATH Bash requirement, direct Bash probe, macOS Homebrew bootstrap
-   - explicit Node experiment file glob
-   - updated static workflow and comparator contracts
+4. **User-directed Go gate migration** — `16516c5` (`feat(11)`)
 
 **Plan metadata:** committed separately with this summary and the broken-windows ledger.
 
 ## Files Created/Modified
 
-- `mise.toml` — defines four tool pins, the PATH Bash line, task glob, and CI dependency order.
-- `experiments/check-docs.sh` — replaces four GNU-only selectors with portable find-plus-grep scans.
-- `experiments/portability.test.mjs` — locks shell semantics, version-gate shape, macOS Bash bootstrap, Linux separation, and task graph.
-- `experiments/release.test.mjs` — locks Homebrew Bash bootstrap in both release jobs.
-- `scripts/check-mise-tool-versions.mjs` — parses four `[tools]` pins plus `[env].ZCODE_ACP_REQUIRED_BASH`, using mise for registry tools and PATH for Bash.
-- `experiments/tool-versions.test.mjs` — offline tests for extraction and exact/line matching.
-- `.github/workflows/pr-sanity.yml` — installs and prepends Homebrew Bash in both macOS jobs.
-- `.github/workflows/release.yml` — installs and prepends Homebrew Bash in snapshot and publish jobs.
-- `.planning/WINDOWS.md` — closes the three formerly blocked runtime gates.
+- `cmd/check-docs/main.go` and `main_test.go` — full documentation gate plus fixtures for every check.
+- `cmd/scan-secrets/main.go` and `main_test.go` — tracked-file scanner with redaction and adversarial fixtures.
+- `mise.toml` — Go-backed gate tasks, four tool pins, and no Bash requirement.
+- `scripts/check-mise-tool-versions.mjs` — four-tool mise-resolved comparator and runtime gate.
+- `experiments/portability.test.mjs` — static absence of shell gates/Bash and Go task contracts.
+- `experiments/tool-versions.test.mjs` — offline comparator coverage.
+- `.github/workflows/pr-sanity.yml` — Go-backed tasks with no Bash setup.
+- `experiments/README.md`, protocol docs, and `scripts/vm-e2e.sh` — updated gate commands.
+- `.planning/WINDOWS.md` — updated stale gate references and fixed the executed runtime-gate entry.
 
 ## Decisions Made
 
-- Keep the four real mise tool pins in `[tools]`; represent Bash as `[env].ZCODE_ACP_REQUIRED_BASH = "5"` because the mise registry has no Bash plugin.
-- Probe Bash with `bash --version` directly from PATH; probing it through `mise exec` is invalid.
-- Install Homebrew Bash only on macOS jobs and prepend `$(brew --prefix)/bin` via `GITHUB_PATH`; Linux runners already provide Bash 5.
-- Use an explicit test-file glob so the task works on the whole supported Node line, including 26.2.0.
-- Compare three-component pins exactly and compare one/two-component pins by their required leading version line.
+- Go commands, not wrappers, are the only production gate implementations.
+- The docs gate may inspect repository files only through Go stdlib filesystem APIs; it must not spawn grep or find.
+- The secret gate uses `git ls-files` for tracked scope and redacts matched values unconditionally.
+- Bash is not part of the managed toolchain; the version gate checks only registry-managed tools.
 
 ## Deviations from Plan
 
 ### Auto-fixed Issues
 
-**1. [Rule 1 - Bug] Removed a self-scan collision from the new portability test**
-- **Found during:** Task 1 direct docs gate
-- **Issue:** The static test embedded the endpoint literal that `check-docs.sh` intentionally forbids in experiment scripts.
-- **Fix:** Constructed the asserted pattern at runtime while preserving the scan-shape assertion.
-- **Files modified:** `experiments/portability.test.mjs`
-- **Verification:** Portability tests and both shell gates pass.
-- **Committed in:** `aa9930c`
+**1. [Rule 1 - Bug] Removed a self-scan collision from the portability test** — `aa9930c`
+**2. [Rule 1 - Bug] Rejected four-component version tokens** — `3630083`
+**3. [Rule 1 - Bug] Replaced the unsupported mise Bash tool pin** — `3017d64` (superseded by the Go migration)
+**4. [Rule 1 - Bug] Fixed the Node experiment task for the pinned line** — `3017d64`
 
-**2. [Rule 1 - Bug] Rejected four-component tokens in version extraction**
-- **Found during:** Task 2 comparator tests
-- **Issue:** The extractor could accept the final three components of a malformed four-component token.
-- **Fix:** Excluded a preceding dot from the token boundary and retained trailing dotted-component rejection.
-- **Files modified:** `scripts/check-mise-tool-versions.mjs`
-- **Verification:** All comparator and portability tests pass.
-- **Committed in:** `3630083`
+### User-directed Architectural Correction
 
-**3. [Rule 1 - Bug] Replaced the unsupported mise Bash tool pin**
-- **Found during:** Real `mise install` after explicit trust
-- **Issue:** mise answered `bash not found in mise tool registry`; the original design could never install or probe Bash.
-- **Fix:** Removed `bash` from `[tools]`, added the `[env]` major-line requirement, probed Bash directly from PATH, and added Homebrew Bash bootstrap to every macOS job.
-- **Files modified:** `mise.toml`, `scripts/check-mise-tool-versions.mjs`, both workflows, and static tests.
-- **Verification:** `mise install`, the five-requirement gate, mac workflow contracts, and `mise run ci` pass.
-- **Committed in:** `3017d64`
-
-**4. [Rule 1 - Bug] Fixed the Node experiment task for the pinned line**
-- **Found during:** First trusted `mise run ci`
-- **Issue:** Node 26.2.0 treated `experiments/` as a module path and failed before running tests.
-- **Fix:** Use `node --test experiments/*.test.mjs` and lock the glob in the portability contract.
-- **Files modified:** `mise.toml`, `experiments/portability.test.mjs`, test header comments.
-- **Verification:** The mise task and full suite pass with 47 tests and 2 guarded skips.
-- **Committed in:** `3017d64`
+**5. [User-directed] Remove Bash from the standard dev/CI toolchain**
+- **Found during:** User review after trusted runtime verification
+- **Issue:** Bash was a managed/installed dependency even after the PATH workaround; the user rejected it as a toolchain dependency.
+- **Fix:** Ported docs, secret, and release verification to Go commands, deleted all three shell scripts, removed Bash from mise/workflows, and updated static contracts and documentation.
+- **Verification:** Go unit tests, full `go test ./...`, `mise run ci`, Node suite, and real release verification pass.
+- **Committed in:** `16516c5`
 
 ---
 
-**Total deviations:** 4 auto-fixed Rule 1 bugs.
-**Impact on plan:** The first two corrected the original implementation; the last two were required for the approved real mise runtime gates. No new dependency, ACP method, client feature, Linux VM behavior, or live-service access was added.
+**Total deviations:** 4 auto-fixed Rule 1 bugs and 1 user-directed architectural correction.
+**Impact on plan:** The final migration removes the entire Bash dependency while preserving output, exit, security, and release-verification contracts.
 
 ## Issues Encountered
 
-The first trusted `mise install` invalidated the original Bash-in-`[tools]` design, and the first `mise run ci` exposed the Node directory-argument incompatibility. Both were corrected and re-run from scratch. The final full CI task passed in 123.03 seconds.
+The original Bash design failed real execution twice before being superseded: mise had no Bash registry plugin, and the mise-selected Node line rejected a directory argument. The final Go migration eliminates both classes of toolchain assumption.
 
 ## Authentication Gates
 
@@ -243,7 +214,7 @@ None.
 
 ## User Setup Required
 
-None remaining. Repository trust was explicitly provided for the runtime correction. macOS CI jobs self-install Homebrew Bash; Linux jobs use the runner Bash 5 line.
+None. Repository trust was provided for verification; no Bash installation or environment variable is required.
 
 ## Known Stubs
 
@@ -251,17 +222,15 @@ None.
 
 ## Next Phase Readiness
 
-- Plan 04 can consume the four-pin mise source, PATH Bash line, version gate, task glob, and canonical CI dependency order.
-- Native race testing remains CGO-enabled and separate from release cross-build settings.
-- The Linux-only VM script remains outside the portable default gate.
-- All three previously blocked runtime gates are executed and their `.planning/WINDOWS.md` entries are fixed.
+- Standard gates consume only Go, Node, and mise-managed registry tools.
+- The four-tool version gate, Go docs/secret commands, and canonical CI graph are green.
+- Release verification is owned by `/Users/nil/DiskD/W/Djarvur/zcode-acp-go/cmd/verify-darwin-release`; Plan 05 evidence is updated separately.
 - No real desktop, Keychain, credential, paid API, or product service was accessed.
 
 ## Self-Check: PASSED
 
-- All nine implementation/test/workflow files, this summary, and `.planning/WINDOWS.md` exist on disk.
-- Commits `aa9930c`, `3630083`, and `3017d64` are ancestors of HEAD.
-- `mise install`, the five-requirement version gate, `mise run ci`, both named shell tasks, both Node suite forms, and `git diff --check` pass.
-- `.planning/WINDOWS.md` entries 22–24 are marked fixed.
-- `.planning/STATE.md` and `.planning/ROADMAP.md` are absent from the correction commit and working tree.
-- The pre-existing untracked `.planning/milestone.lock` was left untouched.
+- Go implementation and test files, summary, and ledger exist.
+- Commits `aa9930c`, `3630083`, `3017d64`, and `16516c5` are ancestors of HEAD.
+- Full Go tests, `mise install`, four-tool gate, `mise run ci`, and Node suite pass.
+- No Bash tool/environment pin, Homebrew Bash step, shell gate script, or standard-gate Bash invocation remains.
+- `.planning/STATE.md` and `.planning/ROADMAP.md` are untouched by this correction.
