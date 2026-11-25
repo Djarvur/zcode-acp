@@ -1,0 +1,9 @@
+2026/11/25 01:09:16 INFO acpfront: session opened session=sess_wr01
+2026/11/25 01:09:16 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestPickerCrossModelRetryResolvesTargetReasoning (0.01s)
+    pickerrefusal_internal_test.go:796: setModel options = &{ReasoningLevel:max}, want reasoningLevel "high": {"id":3,"method":"session/setModel","params":{"model":{"modelId":"hungerg-free","options":{"reasoningLevel":"max"},"providerId":"OpenCodeGo"},"persistAsWorkspaceLastUsed":false,"sessionId":"sess_wr01"}}
+--- FAIL: TestSetConfigMutationMissingTargetFailsClosed (0.00s)
+    pickerrefusal_internal_test.go:813: a target absent from settings.model.available must fail closed
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	0.015s
+FAIL

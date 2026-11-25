@@ -1827,13 +1827,12 @@ func configOptionCorpusModelSelection() acpfront.ModelSelection {
 
 // driveConfigOptionSetModel: the MODEL-02 model-switch corpus row (plan
 // 06-06) — the full front composition, the standard preamble, then the SDK
-// client's session/set_config_option with a LISTED model value: the
-// picker's setModel carries the CURRENT confirmed level (Pitfall 2 — a
-// switch must never silently drop it) and the reply confirms the new
+// client's session/set_config_option with a LISTED model value: the picker
+// resolves reasoning against the exact target and the reply confirms the new
 // current. The golden byte-locks both setModel payloads (the follow-up's
-// and the picker's — model object + the carried options.reasoningLevel +
-// explicit persistAsWorkspaceLastUsed:false) and the reply-triggered
-// sequencing.
+// target-advertised level, the picker's target default, and the level-less
+// return target's options omit-shape) plus explicit
+// persistAsWorkspaceLastUsed:false and reply-triggered sequencing.
 func driveConfigOptionSetModel(ctx context.Context, d *exchangeDriver) {
 	driveConfigOptionCorpus(ctx, d, corpusCfgOptionModel, "zai-api/GLM-5.3")
 }

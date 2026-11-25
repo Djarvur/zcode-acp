@@ -15,8 +15,7 @@ import (
 	"github.com/Djarvur/zcode-acp/internal/zcode/fake"
 )
 
-func catalogLabelKey() string { return "label" }
-func catalogValueKey() string { return "value" }
+func catalogLabelKey() string { return reasoningSnapshotLabelKey }
 func catalogHighName() string { return string([]byte{'H', 'i', 'g', 'h'}) }
 func catalogLowName() string  { return string([]byte{'L', 'o', 'w'}) }
 
@@ -25,18 +24,21 @@ func liveCatalogCreate(sid, current string, entries ...string) json.RawMessage {
 	for _, id := range entries {
 		parts := strings.SplitN(id, "/", 2)
 		available = append(available, map[string]any{
-			"ref":             map[string]any{"providerId": parts[0], "modelId": parts[1]},
+			"ref": map[string]any{
+				reasoningSnapshotProviderIDKey: parts[0],
+				reasoningSnapshotModelIDKey:    parts[1],
+			},
 			catalogLabelKey(): strings.TrimPrefix(parts[1], "GLM-"),
 		})
 	}
 	ref := func(id string) any {
 		parts := strings.SplitN(id, "/", 2)
 
-		return map[string]any{"providerId": parts[0], "modelId": parts[1]}
+		return map[string]any{reasoningSnapshotProviderIDKey: parts[0], reasoningSnapshotModelIDKey: parts[1]}
 	}
 	raw, err := json.Marshal(map[string]any{"session": map[string]any{"sessionId": sid},
 		"settings": map[string]any{"model": map[string]any{
-			"current": ref(current), "available": available,
+			"current": ref(current), reasoningSnapshotAvailableKey: available,
 		}}})
 	if err != nil {
 		panic(err) // fixture contains only JSON-safe scalar/map/slice values
@@ -57,7 +59,7 @@ func liveCatalogCreateLevel(sid, current, level string, entries ...string) json.
 	if !ok {
 		panic("fixture model missing")
 	}
-	available, ok := model["available"].([]any)
+	available, ok := model[reasoningSnapshotAvailableKey].([]any)
 	if !ok {
 		panic("fixture available list missing")
 	}
@@ -66,15 +68,15 @@ func liveCatalogCreateLevel(sid, current, level string, entries ...string) json.
 		if !ok {
 			panic("fixture model entry missing")
 		}
-		entry["reasoning"] = map[string]any{"defaultLevel": reasoningLevelLow, "levels": []any{
-			map[string]any{catalogValueKey(): corpusReasoningLevel, catalogLabelKey(): catalogHighName()},
-			map[string]any{catalogValueKey(): reasoningLevelLow, catalogLabelKey(): catalogLowName()},
+		entry["reasoning"] = map[string]any{reasoningSnapshotDefaultLevelKey: reasoningLevelLow, "levels": []any{
+			map[string]any{reasoningSnapshotValueKey: corpusReasoningLevel, catalogLabelKey(): catalogHighName()},
+			map[string]any{reasoningSnapshotValueKey: reasoningLevelLow, catalogLabelKey(): catalogLowName()},
 		}}
 	}
 	settings["thoughtLevel"] = map[string]any{
-		"enabled": true, "current": level, "available": []any{
-			map[string]any{catalogValueKey(): corpusReasoningLevel, catalogLabelKey(): catalogHighName()},
-			map[string]any{catalogValueKey(): reasoningLevelLow, catalogLabelKey(): catalogLowName()},
+		"enabled": true, "current": level, reasoningSnapshotAvailableKey: []any{
+			map[string]any{reasoningSnapshotValueKey: corpusReasoningLevel, catalogLabelKey(): catalogHighName()},
+			map[string]any{reasoningSnapshotValueKey: reasoningLevelLow, catalogLabelKey(): catalogLowName()},
 		},
 	}
 	out, err := json.Marshal(root)

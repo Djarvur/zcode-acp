@@ -1,0 +1,17 @@
+2026/11/24 23:30:16 INFO acpfront: session opened session=sess_wr01
+2026/11/24 23:30:16 INFO acpfront: session closed session=sess_wr01
+2026/11/24 23:30:16 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/24 23:30:16 INFO acpfront: session opened session=sess_wr01
+2026/11/24 23:30:16 INFO acpfront: session closed session=sess_wr01
+2026/11/24 23:30:16 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/24 23:30:16 INFO acpfront: session opened session=sess_wr01
+2026/11/24 23:30:16 INFO acpfront: session closed session=sess_wr01
+2026/11/24 23:30:16 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/24 23:30:16 INFO acpfront: session opened session=sess_wr01
+2026/11/24 23:30:16 INFO acpfront: session closed session=sess_wr01
+2026/11/24 23:30:16 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestModelSlashRecoverableSetModelValidationPreservesSession (0.00s)
+    pickerrefusal_internal_test.go:465: a recoverable setModel refusal dropped the registered session: core: no session registered under id
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/acpfront	0.029s
+FAIL

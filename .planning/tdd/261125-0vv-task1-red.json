@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run '^(TestPickerCrossModelRetryResolvesTargetReasoning|TestSetConfigMutationMissingTargetFailsClosed)$' ./internal/acpfront",
+  "exitCode": 1,
+  "output": "2026/11/25 01:09:16 INFO acpfront: session opened session=sess_wr01\n2026/11/25 01:09:16 WARN zcode: read loop ended err=\"io: read/write on closed pipe\"\n--- FAIL: TestPickerCrossModelRetryResolvesTargetReasoning (0.01s)\n    pickerrefusal_internal_test.go:796: setModel options = &{ReasoningLevel:max}, want reasoningLevel \"high\": {\"id\":3,\"method\":\"session/setModel\",\"params\":{\"model\":{\"modelId\":\"hungerg-free\",\"options\":{\"reasoningLevel\":\"max\"},\"providerId\":\"OpenCodeGo\"},\"persistAsWorkspaceLastUsed\":false,\"sessionId\":\"sess_wr01\"}}\n--- FAIL: TestSetConfigMutationMissingTargetFailsClosed (0.00s)\n    pickerrefusal_internal_test.go:813: a target absent from settings.model.available must fail closed\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpfront\t0.015s\nFAIL\n",
+  "targetTest": "TestPickerCrossModelRetryResolvesTargetReasoning",
+  "targetFile": "internal/acpfront/pickerrefusal_internal_test.go",
+  "expected": "The sole post-preservation retry targets OpenCodeGo/hungerg-free with its advertised default high, confirms target-current/high, preserves registry and cwd, and emits no close frame; a missing target returns coded invalid params and no payload.",
+  "actual": "The composed retry reached its sole session/setModel payload assertion with the unmodified shared mutation path resending source DeepSeek's max instead of target-advertised high. The independent missing-target regression also returned success instead of failing closed.",
+  "semanticAssessment": "VALID_RED: TestPickerCrossModelRetryResolvesTargetReasoning executed and failed specifically on the decoded sole inbound setModel options assertion because the existing shared mutation resent max. It did not fail on setup, compilation, fixture decoding, session opening, or backend success. TestSetConfigMutationMissingTargetFailsClosed also failed on the planned behavior. Both failures authorize the target-aware resolver implementation."
+}

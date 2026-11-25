@@ -601,8 +601,11 @@ func (f *Front) Cancel(ctx context.Context, sessionID string) error {
 // id's string doubles as the setModel params' wire key (the dialect spells
 // both the same).
 const (
-	optionIDModel   = "model"
-	optionIDThought = "thought_level"
+	optionIDModel        = "model"
+	optionIDThought      = "thought_level"
+	thoughtAliasEnabled  = "enabled"
+	thoughtAliasDisabled = "disabled"
+	reasoningLevelOff    = "off"
 )
 
 // The omp dialect's /model slash-prompt command form (SESS-03, plan 07-05,
@@ -688,30 +691,24 @@ func (f *Front) SetSessionConfigOption(
 			"session/set_config_option: %s: the confirmed settings snapshot does not decode", sessionID)
 	}
 
-	options := BuildConfigOptions(s)
-
-	def := configOptionByID(options, configID)
-	if def == nil {
-		return nil, acpport.NewInvalidParams(
-			"session/set_config_option: unknown configId %q (allowed: %s)", configID, allowedOptionIDs(options))
+	normalized, err := validateConfigOptionSelection(s, configID, value)
+	if err != nil {
+		return nil, err
 	}
 
-	if !configOptionListed(def, value) {
-		return nil, acpport.NewInvalidParams(
-			"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
-			configID, value, listedOptionValues(def))
-	}
-
-	params, err := setConfigMutation(sessionID, s, configID, value)
+	params, err := setConfigMutation(sessionID, s, configID, normalized)
 	if err != nil {
 		return nil, err
 	}
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, params)
 	if err != nil {
-		// WR-01 (plan 07-01): the full SESS-01 teardown — never a zombie
-		// front session against a dead mutation target.
-		f.teardownAfterPickerRefusal(ctx, sessionID, err)
+		// Recoverable selection validation leaves the established session and
+		// its confirmed snapshot intact. Fatal/dead-target refusals retain the
+		// WR-01 full SESS-01 teardown — never a zombie against a dead target.
+		if !isRecoverableSetModelError(err) {
+			f.teardownAfterPickerRefusal(ctx, sessionID, err)
+		}
 
 		return nil, acpport.NewInternal("session/setModel: %v", err)
 	}
@@ -745,6 +742,32 @@ func (f *Front) SetSessionConfigOption(
 	}
 
 	return BuildConfigOptions(cs), nil
+}
+
+// validateConfigOptionSelection normalizes Orca's closed thought aliases
+// before rendered-option lookup; every other value keeps the advertised select
+// membership check. The helper keeps the session mutation flow linear without
+// weakening either validation boundary.
+func validateConfigOptionSelection(s Settings, configID, value string) (string, error) {
+	normalized, handled, err := normalizeThoughtAlias(s, configID, value)
+	if err != nil || handled {
+		return normalized, err
+	}
+
+	options := BuildConfigOptions(s)
+	def := configOptionByID(options, configID)
+	if def == nil {
+		return "", acpport.NewInvalidParams(
+			"session/set_config_option: unknown configId %q (allowed: %s)", configID, allowedOptionIDs(options))
+	}
+
+	if !configOptionListed(def, value) {
+		return "", acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
+			configID, value, listedOptionValues(def))
+	}
+
+	return value, nil
 }
 
 // DeleteSession answers the dialect's session/delete (SESS-02, plan 07-03,
@@ -882,19 +905,8 @@ func (f *Front) promptModelSlash(
 			"session/prompt /model: %s: the confirmed settings snapshot does not decode", params.SessionID)
 	}
 
-	def := configOptionByID(BuildConfigOptions(s), optionIDModel)
-	if def == nil {
-		// The snapshot binds no model (D-10: an unbound session renders no
-		// model option) — the pinned no-model sentence rides the detail
-		// carriage.
-		return "", true, acpport.NewInternalWithData(noModelSelectedDetail)
-	}
-
-	if !configOptionListed(def, selector) {
-		// The validate-first refusal: never a backend call — the pinned
-		// unknown-selector detail rides the detail carriage (the Hb
-		// matchers read ONLY -32603 + data.details, Pitfall 1).
-		return "", true, acpport.NewInternalWithData(unknownACPModelFormat, selector)
+	if err := validateModelSlashSelector(s, selector); err != nil {
+		return "", true, err
 	}
 
 	mutation, err := setConfigMutation(params.SessionID, s, optionIDModel, selector)
@@ -904,10 +916,11 @@ func (f *Front) promptModelSlash(
 
 	res, err := f.conn.Call(ctx, zcode.MethodSessionSetModel, mutation)
 	if err != nil {
-		// WR-01 parity (plan 07-01): a refused slash setModel runs the same
-		// full SESS-01 teardown as the picker refusal — never a zombie front
-		// session against a dead mutation target.
-		f.teardownAfterPickerRefusal(ctx, params.SessionID, err)
+		// Picker parity: recoverable selection validation preserves the live
+		// session; fatal/dead-target refusals retain the full SESS-01 teardown.
+		if !isRecoverableSetModelError(err) {
+			f.teardownAfterPickerRefusal(ctx, params.SessionID, err)
+		}
 
 		return "", true, acpport.NewInternal("session/setModel: %v", err)
 	}
@@ -937,8 +950,71 @@ func (f *Front) promptModelSlash(
 	return acpport.StopEndTurn, true, nil
 }
 
+// validateModelSlashSelector keeps the slash command's validate-first contract
+// while separating picker rendering from the session mutation flow.
+func validateModelSlashSelector(s Settings, selector string) error {
+	def := configOptionByID(BuildConfigOptions(s), optionIDModel)
+	if def == nil {
+		// The snapshot binds no model (D-10: an unbound session renders no
+		// model option) — the pinned no-model sentence rides the detail
+		// carriage.
+		return acpport.NewInternalWithData(noModelSelectedDetail)
+	}
+
+	if !configOptionListed(def, selector) {
+		// The validate-first refusal: never a backend call — the pinned
+		// unknown-selector detail rides the detail carriage (the Hb
+		// matchers read ONLY -32603 + data.details, Pitfall 1).
+		return acpport.NewInternalWithData(unknownACPModelFormat, selector)
+	}
+
+	return nil
+}
+
+// isRecoverableSetModelError recognizes only model-selection validation
+// failures that leave the backend session usable. Invalid-params is
+// authoritative on its numeric code alone. Internal errors require the exact
+// structured ModelProtocolError pair whenever data is present; malformed,
+// null, or unknown data is fatal and never falls through to message matching.
+// The narrow unsupported-reasoning message compatibility arm applies ONLY
+// when data is omitted. Every other failure, including transport and
+// cancellation, remains fatal so the caller runs the full teardown.
+func isRecoverableSetModelError(err error) bool {
+	var callErr *zcode.CallError
+	if !errors.As(err, &callErr) || callErr == nil || callErr.Err == nil {
+		return false
+	}
+
+	wireErr := callErr.Err
+	if wireErr.Code == zcode.CodeInvalidParams {
+		return true
+	}
+
+	if wireErr.Code != zcode.CodeInternalError {
+		return false
+	}
+
+	if len(wireErr.Data) > 0 {
+		var data struct {
+			Name string `json:"name"`
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(wireErr.Data, &data); err != nil {
+			return false
+		}
+
+		return data.Name == "ModelProtocolError" && data.Code == "invalid_model_request"
+	}
+
+	validationPrefix := strings.HasPrefix(wireErr.Message, `Reasoning effort "`) ||
+		strings.HasPrefix(wireErr.Message, `Reasoning level "`)
+
+	return validationPrefix && strings.Contains(wireErr.Message, `" is not supported by `)
+}
+
 // teardownAfterPickerRefusal runs the WR-01 full SESS-01 teardown after a
-// refused picker setModel on an ESTABLISHED session (the wire-only orphan
+// fatal or dead-target picker setModel refusal on an ESTABLISHED session
+// (the wire-only orphan
 // close left the front session registered against a dead mutation target —
 // the zombie: later prompts sent to a dead backend, later picker asks
 // re-failed). The teardown's own failure logs structurally — never a
@@ -950,17 +1026,100 @@ func (f *Front) teardownAfterPickerRefusal(ctx context.Context, sessionID string
 	}
 }
 
+// normalizeThoughtAlias accepts Orca's exact enabled/disabled spellings for
+// thought_level before rendered-option lookup and listed-value validation.
+// Enabled uses the shared exact-target resolver; disabled maps only to an
+// advertised off. Every other config id or value keeps the existing validation
+// path unchanged, and missing model metadata fails closed before mutation.
+func normalizeThoughtAlias(
+	s Settings, configID, value string,
+) (normalized string, handled bool, err error) {
+	if configID != optionIDThought || (value != thoughtAliasEnabled && value != thoughtAliasDisabled) {
+		return value, false, nil
+	}
+
+	bound := s.Model.Current
+	if bound == nil {
+		bound = s.Model.LastUsed
+	}
+
+	if bound == nil {
+		return "", true, acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q: no confirmed model binding", configID, value)
+	}
+
+	var entry *ModelEntry
+	for i := range s.Model.Available {
+		if s.Model.Available[i].Ref == *bound {
+			entry = &s.Model.Available[i]
+
+			break
+		}
+	}
+
+	if entry == nil {
+		return "", true, acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q: target model %s/%s "+
+				"is not listed in settings.model.available",
+			configID, value, bound.ProviderID, bound.ModelID)
+	}
+
+	if value == thoughtAliasEnabled {
+		level, emitOptions, err := resolveTargetReasoningLevel(s, *bound, confirmedLevel(s))
+		if err != nil {
+			return "", true, err
+		}
+
+		if !emitOptions {
+			return "", true, acpport.NewInvalidParams(
+				"session/set_config_option: configId %q: value %q: target model %s/%s advertises no reasoning levels",
+				configID, value, bound.ProviderID, bound.ModelID)
+		}
+
+		return level, true, nil
+	}
+
+	normalized, err = normalizeDisabledThoughtAlias(configID, value, *bound, *entry)
+
+	return normalized, true, err
+}
+
+// normalizeDisabledThoughtAlias maps disabled only to an advertised off and
+// otherwise retains the existing listed-value invalid-params shape.
+func normalizeDisabledThoughtAlias(
+	configID, value string, bound ModelRef, entry ModelEntry,
+) (string, error) {
+	if len(entry.ReasoningLevels) == 0 {
+		return "", acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q: target model %s/%s advertises no reasoning levels",
+			configID, value, bound.ProviderID, bound.ModelID)
+	}
+
+	values := make([]string, 0, len(entry.ReasoningLevels))
+	for _, level := range entry.ReasoningLevels {
+		if level.Value == reasoningLevelOff {
+			return reasoningLevelOff, nil
+		}
+
+		values = append(values, level.Value)
+	}
+
+	return "", acpport.NewInvalidParams(
+		"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
+		configID, value, strings.Join(values, ", "))
+}
+
 // setConfigMutation maps a VALIDATED config-option ask onto the locked OQ1
 // wire path: BOTH switch kinds ride session/setModel. A model switch parses
 // the value with strings.Cut on the FIRST slash only (no composite forms —
 // the backend's display-only $ separator stays out of the wire contract)
-// and carries options.reasoningLevel = the CURRENT confirmed level unless
-// the ask changes it (Pitfall 2: a switch must never silently drop the
-// level — the field-proven binding path per EXP-TURN-01); a thought-level
-// switch carries the CONFIRMED current model unchanged with the requested
-// level. persistAsWorkspaceLastUsed stays false on both paths (the Open
-// Question 3 posture), and the options object emits the documented
-// omit-shape whenever no confirmed level exists (IN-04).
+// and resolves reasoning against the exact target: preserve the confirmed
+// level only when that target advertises it, else use its advertised default
+// or first level. A level-less target retains the documented options
+// omit-shape (IN-04), and a missing target fails before payload construction.
+// A thought-level switch carries the CONFIRMED current model unchanged with
+// the requested level. persistAsWorkspaceLastUsed stays false on both paths
+// (the Open Question 3 posture).
 func setConfigMutation(
 	sessionID string, s Settings, configID, value string,
 ) (map[string]any, error) {
@@ -976,9 +1135,14 @@ func setConfigMutation(
 				configID, value)
 		}
 
-		model := map[string]any{wireKeyProviderID: providerID, wireKeyModelID: modelID}
+		target := ModelRef{ProviderID: providerID, ModelID: modelID}
+		level, emitOptions, err := resolveTargetReasoningLevel(s, target, confirmedLevel(s))
+		if err != nil {
+			return nil, err
+		}
 
-		if level := confirmedLevel(s); level != "" {
+		model := map[string]any{wireKeyProviderID: providerID, wireKeyModelID: modelID}
+		if emitOptions {
 			model["options"] = map[string]any{wireKeyReasoningLevel: level}
 		}
 
