@@ -14,13 +14,19 @@ engineering surface.
 
 ## Install
 
-**Platform support.** Linux is the supported platform (v1 targets Ubuntu GNOME).
-Windows is not supported: the wrapper does not currently build there — the
-process-management and AppImage-mount layers use POSIX/Linux primitives, so
-`GOOS=windows go build ./...` fails. A Windows port is very welcome: if you make
-it build and work there, send a pull request and we will review and merge it with
-gratitude. macOS is not supported by this tree yet; its port is being adapted
-separately.
+**Platform support.** Linux and macOS are supported (this tree adds the macOS
+port; Linux remains the reference platform). Windows is not supported: the
+wrapper does not currently build there — the process-management and
+AppImage-mount layers use POSIX/Linux primitives, so `GOOS=windows go build
+./...` fails. A Windows port is very welcome: if you make it build and work
+there, send a pull request and we will review and merge it with gratitude.
+
+On macOS the wrapper discovers `ZCode.app` in `/Applications` and
+`$HOME/Applications`, validates `Contents/Info.plist`, and reads the version
+from the bundle. It launches `Contents/MacOS/ZCode` with
+`Contents/Resources/glm/zcode.cjs` and `ELECTRON_RUN_AS_NODE=1` — the same
+Electron-as-Node contract the Linux layouts use. macOS never enters the
+AppImage/FUSE path.
 
 Build from source with a Go toolchain pinned via
 [mise](https://mise.jdx.dev) (`mise.toml` carries the exact versions CI runs):
@@ -34,14 +40,30 @@ static binary with no runtime dependencies of its own; the backend it drives is
 the ZCode desktop install. Alternatively, fetch a release artifact and verify
 its checksum against the publisher's sidecar.
 
+The desktop app's architecture must match the wrapper: `darwin-aarch64` for
+Apple silicon, `darwin-x86_64` for Intel. The wrapper selects the matching
+runtime-provider cache (`~/.zcode/v2/runtime/provider/<platform>/<version>/`).
+
+macOS limitations in this release: Start Plan is not part of the macOS port;
+the wrapper is shipped as a standalone binary (no `.app` packaging, code
+signing, or notarization); and AppImage/FUSE plus deb/rpm discovery are
+Linux-only. The Linux behavior remains the regression reference.
+
 On the target machine the binary needs:
 
-- a ZCode desktop install — the wrapper discovers it at startup
+- a ZCode desktop install — on Linux the wrapper discovers it at startup
   (env/flag override → desktop entry → version-ranked AppImage paths → package
-  paths; `--app-server` overrides the search), and
-- `secret-tool` (the `libsecret-tools` package) plus an unlocked
+  paths; `--app-server` overrides the search); on macOS the standard `.app`
+  locations are the primary probe, and
+- **Linux:** `secret-tool` (the `libsecret-tools` package) plus an unlocked
   gnome-keyring **only for the coding-plan auth path** — the api-key path
   needs neither.
+- **macOS:** no extra CLI for the api-key path. The coding-plan/OAuth path
+  reads the desktop's `enc:v2:os` key from the login Keychain through the
+  system `/usr/bin/security` tool; the login Keychain must be unlocked and the
+  ZCode desktop must have written the credential. The first access may show
+  the standard macOS "allow access" dialog — approve it once for the
+  `security` tool.
 
 **Packed-AppImage backend.** When the selected install is a packed `.AppImage`,
 the wrapper mounts it read-only at startup through the AppImage's own
@@ -67,7 +89,7 @@ Check the build: `./zcode-acp --version` prints `zcode-acp 18.1.9+zacp.0`.
 | Flag | Env fallback | Meaning |
 |------|--------------|---------|
 | `--api-key` | `ZCODE_ACP_API_KEY` | z.ai API key for the `authenticate{zai-api-key}` path — prefer the env var: the flag's value rides the process argv (world-readable via `ps`/`/proc` for the wrapper's lifetime) |
-| `--app-server` | `ZCODE_ACP_APP_SERVER` | path to a ZCode install root, app-server binary, or packed AppImage overriding discovery |
+| `--app-server` | `ZCODE_ACP_APP_SERVER` | path to a ZCode install root, app-server binary, packed AppImage, macOS `.app`, its `Contents` directory, or its `Contents/MacOS/<executable>` overriding discovery |
 | `--model` | `ZCODE_ACP_MODEL` | backend model selection as `providerId/modelId` |
 | `--reasoning-level` | `ZCODE_ACP_REASONING_LEVEL` | reasoning level accompanying `--model` |
 | `--version` | — | print the version and exit |
@@ -95,9 +117,10 @@ back to reading the desktop's own config store.
 
 **Coding plan** — the desktop login IS the credential: nothing to export, no
 env var. Requirements: the ZCode desktop installed and logged in to the
-individual coding plan, and an unlocked session keyring. The account's model
-catalog is read back from the account providers at session creation; the
-wrapper keeps the app-server's private dialect off the ACP wire.
+individual coding plan, and an unlocked session keyring — gnome-keyring on
+Linux, the login Keychain on macOS. The account's model catalog is read back
+from the account providers at session creation; the wrapper keeps the
+app-server's private dialect off the ACP wire.
 
 ## Troubleshooting
 
@@ -111,6 +134,21 @@ fix:
 | `keyring probe: no desktop session available (the keyring bus cannot autolaunch headless — run inside your desktop session)` | the wrapper runs outside a desktop session; the keyring bus cannot autolaunch |
 | `keyring probe: no ZCode desktop login found in the keyring (log in via the ZCode desktop first)` | no matching ZCode credential in the keyring — log in via the desktop first |
 | `keyring probe: keyring lookup did not answer within its bound` | the bounded lookup (5 s ceiling) outlived its bound |
+
+**macOS Keychain sentinels** (the coding-plan path). The wrapper uses
+`/usr/bin/security` with the desktop's `ZCode Credential Encryption` service
+and a sha256 account derived from the resolved `credentials.json` path:
+
+| Message | Meaning |
+|---------|---------|
+| `keychain probe: /usr/bin/security not found (macOS system security tool missing)` | the system security tool is missing (unusual macOS install) |
+| `keychain probe: no ZCode desktop credential found in the macOS Keychain (log in to the ZCode desktop and retry)` | no matching item — sign in to the ZCode desktop first |
+| `keychain probe: the macOS Keychain is locked or cannot prompt (unlock the login keychain and retry)` | the login Keychain is locked or its access prompt cannot be shown |
+| `keychain probe: keychain lookup did not answer within its bound` | the bounded lookup (5 s ceiling) outlived its bound |
+
+The first successful read may require a one-time macOS dialog allowing
+`security` access to the item. Approve it (Always Allow) while the login
+Keychain is unlocked.
 
 **FUSE / packed-AppImage mount** (the packed-AppImage backend). The AppImage
 runtime reports these exact messages; they may arrive on stdout after a leading
@@ -184,6 +222,15 @@ agent to (adjust the path to where you put the binary):
 ```
 /path/to/zcode-acp omp
 ```
+
+**macOS.** The same override works with a binary built on macOS. Put the binary
+somewhere stable (for example `~/bin/zcode-acp`), install ZCode Desktop in
+`/Applications`, and leave `--app-server` unset — discovery selects
+`/Applications/ZCode.app` and reads its version automatically. If Orca was
+started from the GUI, the wrapper unions the login-shell `PATH` (mise,
+Homebrew, Go, cargo, orbstack, and the bundled ZCode tools) into the backend's
+environment, so tools resolve inside turns even though launchd's base PATH is
+minimal. Only `PATH` is unioned; proxy/secret variables remain scrubbed.
 
 Mechanics worth knowing before you type it:
 

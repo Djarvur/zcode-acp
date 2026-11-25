@@ -58,11 +58,6 @@ const (
 	// optDir is the package-family discovery root (the deb layout, /opt/ZCode).
 	optDir = "/opt/ZCode"
 
-	// secretToolBin is the libsecret CLI the D-06 credential loader shells
-	// (a system binary on the guarded real tier — never a Go module, the
-	// T-5-SC zero-new-dependency posture).
-	secretToolBin = "secret-tool"
-
 	// spawnWait bounds the wait for the supervisor's first spawned child.
 	spawnWait = 10 * time.Second
 
@@ -103,6 +98,12 @@ const (
 	// production account family and the individual coding-plan kind).
 	textAuthFamily         = "zai"
 	textAuthCodingPlanMode = "individual-coding-plan"
+
+	// accountProviderPrefix marks the level-strict account providers; an
+	// account text-task selection without a level gets the safe default
+	// (the backend refuses the omit-shape with "Reasoning level is required").
+	accountProviderPrefix        = "account:"
+	defaultAccountReasoningLevel = "low"
 )
 
 // Configuration and lifecycle sentinels — wrapped with the dynamic context
@@ -696,8 +697,16 @@ func generateText(
 func textRequest(
 	sel acpfront.ModelSelection, authMode, prompt, workspacePath, workspaceKey string,
 ) texttask.Request {
+	selection := texttask.ApplyCodingPlanRebind(sel, authMode)
+	if selection.ReasoningLevel == "" && strings.HasPrefix(selection.ProviderID, accountProviderPrefix) {
+		// Account providers are level-strict; the desktop default selection
+		// may omit the level. A generated chat/branch name does not need a
+		// particular effort, so the lowest advertised level is the safe fill.
+		selection.ReasoningLevel = defaultAccountReasoningLevel
+	}
+
 	return texttask.Request{
-		Selection:     texttask.ApplyCodingPlanRebind(sel, authMode),
+		Selection:     selection,
 		Prompt:        prompt,
 		WorkspacePath: workspacePath,
 		WorkspaceKey:  workspaceKey,
@@ -925,11 +934,11 @@ func buildCodingPlanMachinery(inst supervisor.Install) *codingPlanMachinery {
 	env := interact.ScrubbedEnv(os.Environ())
 
 	creds := interact.NewCredentialStore(credentialsPath(),
-		interact.NewSecretToolKeyLoader(secretToolBin, credentialsPath(), env))
+		interact.NewDesktopKeyLoader(credentialsPath(), env))
 
 	return &codingPlanMachinery{
 		creds:  creds,
-		prober: interact.NewKeyringProber(secretToolBin, credentialsPath(), env),
+		prober: interact.NewDesktopKeyringProber(credentialsPath(), env),
 		gate:   interact.NewEntitlementGate(settingPath(), creds),
 		minter: hostsvc.NewPatMinter(
 			hostsvc.WithPatClientVersion(patClientVersion(inst)),
@@ -1001,7 +1010,7 @@ func wireResponder(
 			APIKeyFallback: hostsvc.RuntimeHeadersHandler(keys),
 		})),
 		interact.WithCredentialDecrypt(interact.NewCredentialDecrypt(
-			interact.NewSecretToolKeyLoader(secretToolBin, credentialsPath(), interact.ScrubbedEnv(os.Environ())))),
+			interact.NewDesktopKeyLoader(credentialsPath(), interact.ScrubbedEnv(os.Environ())))),
 	)
 
 	conn.OnRequest = responder.Serve
@@ -1363,6 +1372,7 @@ func discoverInstall(ctx context.Context, appServer string) (supervisor.Install,
 
 	probers := supervisor.DefaultProbers(home, optDir)
 	if appServer != "" {
+		//nolint:contextcheck // OverrideInstall has no ctx; plutil is bounded internally
 		probers.Override = func() (supervisor.Install, bool) {
 			return supervisor.OverrideInstall(appServer)
 		}
@@ -1399,6 +1409,11 @@ func startSupervised(
 	spawnCh := make(chan *supervisor.Child, 1)
 	startDone := make(chan error, 1)
 
+	// A GUI-launched Orca inherits launchd's minimal PATH; the login-shell
+	// union restores the user's toolchain before the allowlist child env is
+	// built (PATH only; proxies and arbitrary vars stay scrubbed).
+	childEnv := supervisor.ChildEnv(inst, supervisor.EnrichParentPATH(spawnCtx, os.Environ()))
+
 	sup := supervisor.NewSupervisor(func(_ context.Context) (*supervisor.Child, error) {
 		// The mount guard runs before EVERY spawn (the first one included): a
 		// vanished root must fail loud, never respawn against it (MNT-05,
@@ -1409,7 +1424,7 @@ func startSupervised(
 
 		child, spawnErr := supervisor.SpawnChild(spawnCtx,
 			supervisor.SpawnArgv(inst),
-			supervisor.ChildEnv(inst, os.Environ()),
+			childEnv,
 			supervisor.SpawnOpts{})
 		if spawnErr == nil {
 			spawnCh <- child

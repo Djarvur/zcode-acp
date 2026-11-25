@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -40,6 +41,19 @@ const (
 // canonicalTestPath matches production's EvalSymlinks-resolved expectations.
 // macOS exposes t.TempDir under /var/folders while its real path is
 // /private/var/folders; missing fixture paths retain their absolute spelling.
+// hostRuntimePlatform is the runtime-provider cache directory for this test
+// host (darwin-aarch64 on this Mac, linux-x86_64 on CI).
+func hostRuntimePlatform(t *testing.T) string {
+	t.Helper()
+
+	platform := supervisor.ProviderPlatformDir(runtime.GOOS, runtime.GOARCH)
+	if platform == "" {
+		t.Fatalf("no runtime-provider platform mapping for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+
+	return platform
+}
+
 func canonicalTestPath(t *testing.T, path string) string {
 	t.Helper()
 
@@ -60,11 +74,11 @@ func canonicalTestPath(t *testing.T, path string) string {
 // (install-discovery.md :93-97) extended with the runtime-provider-tree row
 // the spawn line needs and its install-side bundled fallback (the QA-02
 // fresh-machine completion, EXP-VM-QA02); diagnostics preserve this order.
-// The appimage-candidate rows are variable and live between appimage-rank and
-// dpkg, so they are excluded here.
+// The appimage-candidate and mac-app-candidate rows are variable, so they are
+// excluded here.
 func documentedProbeNames() []string {
 	return []string{
-		"override", "xdg-entry", "appimage-rank",
+		"override", "mac-app", "xdg-entry", "appimage-rank",
 		"dpkg", "opt-path", "rpm", "builtin-runtime", "builtin-bundled",
 	}
 }
@@ -129,7 +143,7 @@ func writeDesktopEntry(t *testing.T, applicationsDir, entryName, execBinary stri
 // (install-discovery.md :77). Returns the provider root.
 func writeRuntimeTree(t *testing.T, home string, versions []string, revs []int) string {
 	t.Helper()
-	provider := filepath.Join(home, ".zcode", "v2", "runtime", "provider", "linux-x86_64")
+	provider := filepath.Join(home, ".zcode", "v2", "runtime", "provider", hostRuntimePlatform(t))
 	for i, ver := range versions {
 		dir := filepath.Join(provider, ver, fixtureEndpointDir)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -996,7 +1010,7 @@ func TestDiscoverBuiltinDeferredForPacked(t *testing.T) {
 		}
 
 		wantBuiltin := filepath.Join(home, ".zcode", "v2", "runtime", "provider",
-			"linux-x86_64", fakeAppImageVer, fixtureEndpointDir, "zcode-builtin.json")
+			hostRuntimePlatform(t), fakeAppImageVer, fixtureEndpointDir, "zcode-builtin.json")
 		if install.BuiltinFile != wantBuiltin {
 			t.Fatalf("the runtime-cache copy must win:\n got %q\nwant %q", install.BuiltinFile, wantBuiltin)
 		}
@@ -1127,7 +1141,7 @@ func TestDiscoverFindsNewestBuiltin(t *testing.T) {
 	}
 
 	wantBuiltin := filepath.Join(home, ".zcode", "v2", "runtime", "provider",
-		"linux-x86_64", fixtureUnpackedVer, fixtureEndpointDir, "zcode-builtin.json")
+		hostRuntimePlatform(t), fixtureUnpackedVer, fixtureEndpointDir, "zcode-builtin.json")
 	if install.BuiltinFile != wantBuiltin {
 		t.Fatalf("builtin file under the highest version dir must win:\n got %q\nwant %q",
 			install.BuiltinFile, wantBuiltin)
@@ -1213,7 +1227,7 @@ func TestDiscoverRuntimeCacheWinsOverBundled(t *testing.T) {
 	}
 
 	wantBuiltin := filepath.Join(home, ".zcode", "v2", "runtime", "provider",
-		"linux-x86_64", fixtureUnpackedVer, fixtureEndpointDir, "zcode-builtin.json")
+		hostRuntimePlatform(t), fixtureUnpackedVer, fixtureEndpointDir, "zcode-builtin.json")
 	if install.BuiltinFile != wantBuiltin {
 		t.Fatalf("the runtime-cache copy must win over the bundled copy:\n got %q\nwant %q",
 			install.BuiltinFile, wantBuiltin)

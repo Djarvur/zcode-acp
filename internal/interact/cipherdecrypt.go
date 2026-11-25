@@ -73,12 +73,12 @@ const (
 // the AES-256-GCM primitive itself cannot be constructed (goconst).
 const cipherCannotConstruct = "credential cipher cannot be constructed"
 
-// secretToolService is the field-verified Secret Service attribute value
+// credentialKeyService is the field-verified Secret Service attribute value
 // the login-keyring credential entry is keyed under (a lookup key, never a
 // credential — gosec's hardcoded-credentials shape match is a false hit).
 //
 //nolint:gosec // a Secret Service lookup key string, not a credential value
-const secretToolService = "ZCode Credential Encryption"
+const credentialKeyService = "ZCode Credential Encryption"
 
 // loaderKeyLen is the keyring key's decoded length: the field-verified
 // 43-char base64url form decodes to exactly 32 AES-256 bytes.
@@ -364,7 +364,7 @@ func (l *SecretToolKeyLoader) LookupCommand() (argv, env []string, err error) {
 	sum := sha256.Sum256([]byte(link))
 	username := hex.EncodeToString(sum[:])
 
-	argv = []string{l.bin, "lookup", "service", secretToolService, "username", username}
+	argv = []string{l.bin, "lookup", "service", credentialKeyService, "username", username}
 
 	return argv, l.env, nil
 }

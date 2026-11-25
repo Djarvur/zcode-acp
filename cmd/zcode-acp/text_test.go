@@ -732,6 +732,22 @@ func TestOmpTextSelectionRebind(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("level-less coding-plan selection gets the account default", func(t *testing.T) {
+		levelLess := acpfront.ModelSelection{ProviderID: providerZaiAPI, ModelID: e2eModel}
+		req := textRequest(levelLess, acpfront.AuthModeCodingPlan, "prompt", "/ws", "/key")
+
+		if req.Selection.ProviderID != "account:zai-individual-coding-plan" ||
+			req.Selection.ReasoningLevel != defaultAccountReasoningLevel {
+			t.Fatalf("account fallback = %+v, want provider account:… and level %q",
+				req.Selection, defaultAccountReasoningLevel)
+		}
+
+		apiKey := textRequest(levelLess, acpfront.AuthModeAPIKey, "prompt", "/ws", "/key")
+		if apiKey.Selection.ProviderID != providerZaiAPI || apiKey.Selection.ReasoningLevel != "" {
+			t.Fatalf("api-key level-less selection = %+v, want no fabricated level", apiKey.Selection)
+		}
+	})
 }
 
 // TestOmpTextAuth proves the minimal-auth contract on the wire: the personal

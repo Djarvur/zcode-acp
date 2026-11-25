@@ -86,14 +86,63 @@ type KeyringProber func(ctx context.Context) error
 // with capture buffers; tests script verdicts.
 type KeyringProbeExec func(ctx context.Context, argv, env []string) (stdout, stderr []byte, err error)
 
+// keyLookupCommander is the one argv source both desktop loaders expose.
+type keyLookupCommander interface {
+	LookupCommand() (argv, env []string, err error)
+}
+
+// keyringProbeMessages carries the coded sentinels for one platform family.
+type keyringProbeMessages struct {
+	binaryMissing    error
+	noDesktopSession error
+	noEntry          error
+	timeout          error
+	locked           error
+}
+
+func linuxProbeMessages() keyringProbeMessages {
+	return keyringProbeMessages{
+		binaryMissing:    ErrKeyringBinaryMissing,
+		noDesktopSession: ErrKeyringNoDesktopSession,
+		noEntry:          ErrKeyringNoEntry,
+		timeout:          ErrKeyringLookupTimeout,
+	}
+}
+
+// macOS Keychain sentinels: missing/locked items are distinct actionable
+// errors, and no key material is ever named.
+var (
+	ErrKeychainBinaryMissing = errors.New(
+		"keychain probe: /usr/bin/security not found (macOS system security tool missing)")
+	ErrKeychainNoEntry = errors.New(
+		"keychain probe: no ZCode desktop credential found in the macOS Keychain " +
+			"(log in to the ZCode desktop and retry)")
+	ErrKeychainLocked = errors.New(
+		"keychain probe: the macOS Keychain is locked or cannot prompt " +
+			"(unlock the login keychain and retry)")
+	ErrKeychainLookupTimeout = errors.New(
+		"keychain probe: keychain lookup did not answer within its bound")
+)
+
+func keychainProbeMessages() keyringProbeMessages {
+	return keyringProbeMessages{
+		binaryMissing: ErrKeychainBinaryMissing,
+		noEntry:       ErrKeychainNoEntry,
+		timeout:       ErrKeychainLookupTimeout,
+		locked:        ErrKeychainLocked,
+	}
+}
+
 // keyringProber carries the probe's injectable pieces. Constructed via
 // NewKeyringProber; the seams default to production behavior.
 type keyringProber struct {
-	bin      string
-	loader   *SecretToolKeyLoader
-	lookPath func(string) (string, error)
-	exec     KeyringProbeExec
-	timeout  time.Duration
+	bin           string
+	loader        keyLookupCommander
+	lookPath      func(string) (string, error)
+	exec          KeyringProbeExec
+	timeout       time.Duration
+	messages      keyringProbeMessages
+	lockedMarkers []string
 }
 
 // KeyringProbeOption configures a KeyringProber at construction (tests
@@ -129,6 +178,35 @@ func NewKeyringProber(bin, credentialsPath string, env []string, opts ...Keyring
 		lookPath: exec.LookPath,
 		exec:     defaultKeyringProbeExec,
 		timeout:  KeyringProbeTimeout,
+		messages: linuxProbeMessages(),
+	}
+
+	for _, opt := range opts {
+		opt(p)
+	}
+
+	return p.probe
+}
+
+// NewKeychainProber returns the macOS probe over /usr/bin/security and the
+// desktop credentials path. The lookup argv is SecurityKeyLoader's contract;
+// locked and missing items classify to distinct coded errors.
+func NewKeychainProber(bin, credentialsPath string, env []string,
+	opts ...KeyringProbeOption,
+) KeyringProber {
+	p := &keyringProber{
+		bin:      bin,
+		loader:   NewSecurityKeyLoader(bin, credentialsPath, env),
+		lookPath: exec.LookPath,
+		exec:     defaultKeyringProbeExec,
+		timeout:  KeyringProbeTimeout,
+		messages: keychainProbeMessages(),
+		lockedMarkers: []string{
+			"User interaction is not allowed",
+			"passphrase you entered is not correct",
+			"could not be unlocked",
+			"keychain is locked",
+		},
 	}
 
 	for _, opt := range opts {
@@ -164,6 +242,7 @@ const (
 	probeClassBinaryMissing    = "binary-missing"
 	probeClassNoDesktopSession = "no-desktop-session"
 	probeClassNoEntry          = "no-entry"
+	probeClassLocked           = "locked"
 	probeClassTimeout          = "timeout"
 	probeClassCancelled        = "cancelled"
 )
@@ -189,10 +268,17 @@ func (p *keyringProber) probe(ctx context.Context) error {
 // one of the exported sentinels — the authenticate arm's client-facing
 // actionable text.
 func (p *keyringProber) classify(ctx context.Context) (string, error) {
+	// Tests construct the struct directly and may omit the message set;
+	// production constructors always fill it. Default to the Linux family.
+	msgs := p.messages
+	if msgs.binaryMissing == nil {
+		msgs = linuxProbeMessages()
+	}
+
 	// 1. LookPath FIRST (D-02): an absent binary is the cheapest honest
 	// verdict and never spawns a subprocess.
 	if _, err := p.lookPath(p.bin); err != nil {
-		return probeClassBinaryMissing, fmt.Errorf("%w: %w", ErrKeyringBinaryMissing, err)
+		return probeClassBinaryMissing, fmt.Errorf("%w: %w", msgs.binaryMissing, err)
 	}
 
 	// 2. The loader's exact argv — one argv source (the probe never
@@ -202,7 +288,7 @@ func (p *keyringProber) classify(ctx context.Context) (string, error) {
 	argv, env, err := p.loader.LookupCommand()
 	if err != nil {
 		return probeClassNoEntry,
-			fmt.Errorf("%w: no readable desktop credentials (%w)", ErrKeyringNoEntry, err)
+			fmt.Errorf("%w: no readable desktop credentials (%w)", msgs.noEntry, err)
 	}
 
 	// 3. The bounded exec: the ≤5s ceiling contains any prompt path nobody
@@ -233,13 +319,29 @@ func (p *keyringProber) classify(ctx context.Context) (string, error) {
 		return probeClassOK, nil
 
 	case errors.Is(pctx.Err(), context.DeadlineExceeded):
-		return probeClassTimeout, fmt.Errorf("%w (%s ceiling)", ErrKeyringLookupTimeout, p.timeout)
+		return probeClassTimeout, fmt.Errorf("%w (%s ceiling)", msgs.timeout, p.timeout)
 
-	case execErr != nil && bytes.Contains(stderr, []byte(autolaunchMarker)):
-		return probeClassNoDesktopSession, fmt.Errorf("%w: %w", ErrKeyringNoDesktopSession, execErr)
+	case execErr != nil && msgs.noDesktopSession != nil &&
+		bytes.Contains(stderr, []byte(autolaunchMarker)):
+		return probeClassNoDesktopSession,
+			fmt.Errorf("%w: %w", msgs.noDesktopSession, execErr)
+
+	case execErr != nil && containsAny(stderr, p.lockedMarkers):
+		return probeClassLocked, fmt.Errorf("%w: %w", msgs.locked, execErr)
 
 	default:
 		return probeClassNoEntry,
-			fmt.Errorf("%w (keyring lookup answered empty or rc≠0)", ErrKeyringNoEntry)
+			fmt.Errorf("%w (keyring lookup answered empty or rc≠0)", msgs.noEntry)
 	}
+}
+
+// containsAny reports whether stderr contains one of the coarse markers.
+func containsAny(stderr []byte, markers []string) bool {
+	for _, marker := range markers {
+		if bytes.Contains(stderr, []byte(marker)) {
+			return true
+		}
+	}
+
+	return false
 }

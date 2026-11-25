@@ -35,12 +35,12 @@ const (
 
 // Matrix path facts (docs/protocol/install-discovery.md).
 const (
-	appImageSuffix     = ".AppImage"
-	unpackedDirName    = "squashfs-root"
-	binaryName         = "zcode"
-	entrypointRel      = "resources/glm/zcode.cjs"
-	builtinFileName    = "zcode-builtin.json"
-	builtinProviderRel = ".zcode/v2/runtime/provider/linux-x86_64"
+	appImageSuffix      = ".AppImage"
+	unpackedDirName     = "squashfs-root"
+	binaryName          = "zcode"
+	entrypointRel       = "resources/glm/zcode.cjs"
+	builtinFileName     = "zcode-builtin.json"
+	builtinProviderRoot = ".zcode/v2/runtime/provider"
 
 	// bundledProviderRel is the bundled builtin copy's directory under the
 	// install root — <root>/resources/config/provider/zcode-builtin.json, the
@@ -50,10 +50,11 @@ const (
 
 	// probeCount is the documented fixed probe set (install-discovery.md
 	// :93-97) with the two extraction-era AppImage probes replaced by the
-	// single ranked AppImage stage, plus the runtime-provider-tree row and
-	// its install-side bundled fallback row. The variable
-	// appimage-candidate rows add one row per evaluated candidate.
-	probeCount = 8
+	// single ranked AppImage stage, plus the macOS .app probe, the
+	// runtime-provider-tree row, and its install-side bundled fallback row.
+	// The variable appimage-candidate and mac-app-candidate rows add one row
+	// per evaluated candidate.
+	probeCount = 9
 
 	// appExecMask is the executable-bit mask a packed candidate must carry
 	// before discovery adopts it (D-12's file-level usability checks).
@@ -82,7 +83,7 @@ type Install struct {
 	Binary      string // <root>/zcode
 	Entrypoint  string // <root>/resources/glm/zcode.cjs (invariant relative path)
 	BuiltinFile string // ZCODE_BUILTIN_PROVIDER_CONFIG_FILE value
-	Layout      string // "unpacked-appimage" | "appimage" | "deb" | "rpm" | "explicit"
+	Layout      string // "unpacked-appimage" | "appimage" | "deb" | "rpm" | "explicit" | "mac-app"
 	// AppImage is the resolved packed AppImage path; non-empty means this
 	// backend is mount-first (D-01/D-04): discovery is a pure read, so the
 	// mount happens only after selection, and PrepareMount replaces the
@@ -126,6 +127,9 @@ type Probers struct {
 	// ZCode*.AppImage files (incl. the user-facing symlink) and unpacked
 	// zcode-*/squashfs-root dirs (matrix rows 1-2).
 	AppDirs func() []string
+	// MacApps returns the macOS ZCode*.app candidates from
+	// /Applications and $HOME/Applications.
+	MacApps func() []string
 	// DpkgQuery returns the deb file list for zcode (empty = rc remnant).
 	DpkgQuery func(ctx context.Context) (string, error)
 	// RpmQuery returns the rpm package identity for zcode (where applicable).
@@ -135,15 +139,19 @@ type Probers struct {
 	Home string
 	// OptDir is the package-family root (the deb's /opt/ZCode).
 	OptDir string
+	// RuntimeProviderPlatform overrides the runtime-provider cache platform
+	// directory. Empty selects the current GOOS/GOARCH mapping.
+	RuntimeProviderPlatform string
 }
 
 // Discover resolves the ZCode desktop install in the documented probe order
-// (install-discovery.md §Recommended discovery order): override, desktop
-// entry, AppImage paths, package paths, runtime provider tree. The first
-// probe that yields a spawnable install wins and probes never merge; every
-// probe appends a Probe row whether it hits or misses, and an empty result
-// errors with ErrNoInstall carrying every row as diagnostics. Volatile
-// /tmp/.mount_* decoys are recorded-and-rejected, never resolved (row 5).
+// (install-discovery.md §Recommended discovery order), with the macOS .app
+// stage before the Linux probes: override, macOS app bundle, desktop entry,
+// AppImage paths, package paths, runtime provider tree. The first probe that
+// yields a spawnable install wins and probes never merge; every probe appends
+// a Probe row whether it hits or misses, and an empty result errors with
+// ErrNoInstall carrying every row as diagnostics. Volatile /tmp/.mount_*
+// decoys are recorded-and-rejected, never resolved (row 5).
 func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 	probes := make([]Probe, 0, probeCount)
 	var winner Install
@@ -157,6 +165,12 @@ func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 	}
 
 	add(p.probeOverride())
+
+	macRows, macInstall, macOK := p.probeMacApp(ctx, found)
+	probes = append(probes, macRows...)
+	if macOK && !found {
+		winner, found = macInstall, true
+	}
 
 	xdgRow, xdgInstall, xdgSeeds, xdgOK := p.probeXDGEntry(ctx)
 	add(xdgRow, xdgInstall, xdgOK)
@@ -173,7 +187,7 @@ func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 	add(p.probeDpkg(ctx))
 	add(p.probeOptPath())
 	add(p.probeRpm(ctx))
-	row, builtin := p.probeBuiltinRuntime()
+	row, builtin := p.probeBuiltinRuntime(winner, found)
 	probes = append(probes, row)
 	if found && winner.BuiltinFile == "" {
 		winner.BuiltinFile = builtin
@@ -281,13 +295,14 @@ func ExplicitRootInstall(root string) (Install, bool) {
 }
 
 // OverrideInstall maps an --app-server / ZCODE_ACP_APP_SERVER value into the
-// discovery Install shape (D-04, precedence unchanged): a directory keeps the
-// existing explicit-root behavior (validated when the invariant tree is
-// present, the same unvalidated shape otherwise); a path whose literal
-// basename or EvalSymlinks target ends in .AppImage is a packed install that
-// goes through the managed mount; any other regular file keeps the existing
-// app-server-binary shape. An empty path reports false so the override row
-// stays an honest "no override configured".
+// discovery Install shape (D-04, precedence unchanged): a macOS .app bundle,
+// its Contents directory, or its Contents/MacOS executable resolves through
+// macAppInstall; a directory keeps the existing explicit-root behavior
+// (validated when the invariant tree is present, the same unvalidated shape
+// otherwise); a path whose literal basename or EvalSymlinks target ends in
+// .AppImage is a packed install that goes through the managed mount; any other
+// regular file keeps the existing app-server-binary shape. An empty path
+// reports false so the override row stays an honest "no override configured".
 //
 // The stored AppImage is always absolute: exec.CommandContext would otherwise
 // PATH-resolve a bare basename (a relative literal is absolutized with
@@ -297,6 +312,15 @@ func ExplicitRootInstall(root string) (Install, bool) {
 func OverrideInstall(path string) (Install, bool) {
 	if path == "" {
 		return Install{}, false
+	}
+
+	if appPath, ok := macAppOverridePath(path); ok {
+		inst, reason := macAppInstall(context.Background(), appPath)
+		if reason != "" {
+			return Install{}, false
+		}
+
+		return inst, true
 	}
 
 	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
@@ -342,7 +366,10 @@ func OverrideInstall(path string) (Install, bool) {
 // probeOverride is order step 1: the explicit override wins over any on-disk
 // discovery (install-discovery.md :93).
 func (p Probers) probeOverride() (Probe, Install, bool) {
-	row := Probe{Name: "override", Query: "wrapper config: explicit root or ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"}
+	row := Probe{
+		Name:  "override",
+		Query: "wrapper config: explicit root, macOS .app/Contents/executable, or ZCODE_BUILTIN_PROVIDER_CONFIG_FILE",
+	}
 	if p.Override == nil {
 		row.Result = "no override configured"
 
@@ -364,9 +391,83 @@ func (p Probers) probeOverride() (Probe, Install, bool) {
 
 		return row, inst, true
 	}
+	if inst.Layout == layoutMacApp {
+		row.Result = "found: mac-app " + inst.Root + describeVersion(inst.Version)
+
+		return row, inst, true
+	}
 	row.Result = "found: explicit root " + inst.Root
 
 	return row, inst, true
+}
+
+// probeMacApp is the macOS order step before every Linux probe: evaluate
+// /Applications and $HOME/Applications candidates, keep one diagnostics row
+// per candidate, and select the newest valid bundle. An earlier override
+// wins and the stage records that it was not consulted.
+func (p Probers) probeMacApp(ctx context.Context, found bool) ([]Probe, Install, bool) {
+	row := Probe{Name: "mac-app", Query: "/Applications/ZCode*.app + $HOME/Applications/ZCode*.app"}
+	if found {
+		row.Result = "not consulted; an earlier probe resolved the install"
+
+		return []Probe{row}, Install{}, false
+	}
+	if p.MacApps == nil {
+		row.Result = "macOS app seam not configured (or not a macOS host)"
+
+		return []Probe{row}, Install{}, false
+	}
+
+	apps := dedupeStrings(p.MacApps())
+	rows := make([]Probe, 0, len(apps)+1)
+	rows = append(rows, row)
+
+	var winner Install
+	for _, app := range apps {
+		inst, reason := macAppInstall(ctx, app)
+		if reason != "" {
+			rows = append(rows, Probe{Name: "mac-app-candidate", Query: app,
+				Result: "miss: " + app + ": " + reason})
+
+			continue
+		}
+
+		rows = append(rows, Probe{Name: "mac-app-candidate", Query: app,
+			Result: "hit: mac-app version " + inst.Version + " " + inst.Root})
+		if winner.Root == "" || compareVersions(inst.Version, winner.Version) > 0 {
+			winner = inst
+		}
+	}
+
+	if winner.Root == "" {
+		if len(apps) == 0 {
+			rows[0].Result = "no ZCode*.app in the standard application dirs"
+		} else {
+			rows[0].Result = "no valid ZCode*.app; see mac-app-candidate rows"
+		}
+
+		return rows, Install{}, false
+	}
+
+	rows[0].Result = "selected: mac-app version " + winner.Version + " " + winner.Root
+
+	return rows, winner, true
+}
+
+// dedupeStrings preserves first-seen order.
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+
+	return out
 }
 
 // xdgEntryDirs lists the desktop-entry search order: user-level entries win
@@ -894,17 +995,32 @@ func (p Probers) packageTreeInstall() (Install, bool) {
 	return bundleInstall(p.OptDir, layoutDeb)
 }
 
-// probeBuiltinRuntime is order step 5's data row: the newest zcode-builtin.json
-// under the runtime-provider tree feeds ZCODE_BUILTIN_PROVIDER_CONFIG_FILE
+// probeBuiltinRuntime is order step 5's data row: the zcode-builtin.json under
+// the host's runtime-provider cache feeds ZCODE_BUILTIN_PROVIDER_CONFIG_FILE
 // (the spawn line, install-discovery.md :50). It never yields a root install.
 // On a fresh machine the tree does not exist yet and this probe honestly
 // misses — the winner's BuiltinFile would stay empty and the child would boot
 // on the unpaired personal-only env (the QA-02 field failure, EXP-VM-QA02);
 // probeBuiltinBundled is the install-side completion of the same step.
-func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
+//
+// The platform directory is the host GOOS/GOARCH mapping (darwin-aarch64 on
+// this Mac), never the Linux literal. An exact version match with the selected
+// install wins over a newer cache entry, so the builtin revision the bridge
+// pushes is derived from the same provider path the backend was launched with.
+func (p Probers) probeBuiltinRuntime(winner Install, found bool) (row Probe, builtinFile string) {
+	platform := p.RuntimeProviderPlatform
+	if platform == "" {
+		platform = hostProviderPlatform()
+	}
 	row = Probe{Name: "builtin-runtime", Query: "newest " + builtinFileName +
-		" under ~/.zcode/v2/runtime/provider/linux-x86_64/<ver>/endpoint-*/"}
-	provider := filepath.Join(p.Home, builtinProviderRel)
+		" under " + builtinProviderRoot + "/" + platform + "/<ver>/endpoint-*/"}
+	if platform == "" {
+		row.Result = "no runtime-provider platform mapping for this host"
+
+		return row, ""
+	}
+
+	provider := filepath.Join(p.Home, filepath.FromSlash(builtinProviderRoot), platform)
 	versions, err := versionDirs(provider)
 	if err != nil {
 		row.Result = "no runtime provider tree under " + provider
@@ -913,6 +1029,9 @@ func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
 	}
 
 	slices.SortFunc(versions, func(a, b string) int { return compareVersions(b, a) })
+	if found && winner.Version != "" {
+		versions = preferVersion(versions, winner.Version)
+	}
 	for _, ver := range versions {
 		file, ok := newestEndpointBuiltin(filepath.Join(provider, ver))
 		if !ok {
@@ -927,6 +1046,23 @@ func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
 	return row, ""
 }
 
+// preferVersion moves preferred to the front when present.
+func preferVersion(versions []string, preferred string) []string {
+	for i, ver := range versions {
+		if ver != preferred {
+			continue
+		}
+		ordered := make([]string, 0, len(versions))
+		ordered = append(ordered, ver)
+		ordered = append(ordered, versions[:i]...)
+		ordered = append(ordered, versions[i+1:]...)
+
+		return ordered
+	}
+
+	return versions
+}
+
 // probeBuiltinBundled is the install-side completion of order step 5: when the
 // resolved install carries no BuiltinFile from the runtime-provider tree — a
 // fresh machine has no ~/.zcode/v2/runtime/provider cache — discovery falls
@@ -939,9 +1075,13 @@ func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
 // :91's active-cache rule); with neither source present BuiltinFile honestly
 // stays empty (:34).
 func (p Probers) probeBuiltinBundled(winner Install, found bool) (row Probe, bundledFile string) {
+	query := "<root>/" + bundledProviderRel + "/" + builtinFileName
+	if found && winner.Layout == layoutMacApp {
+		query = "<app>/Contents/Resources/" + appProviderDir + "/" + builtinFileName
+	}
 	row = Probe{
 		Name:  "builtin-bundled",
-		Query: "<root>/" + bundledProviderRel + "/" + builtinFileName,
+		Query: query,
 	}
 	if !found {
 		row.Result = "no install resolved; no bundled builtin to check"
@@ -962,10 +1102,14 @@ func (p Probers) probeBuiltinBundled(winner Install, found bool) (row Probe, bun
 
 		return row, ""
 	}
+
 	bundled := filepath.Join(winner.Root, filepath.FromSlash(bundledProviderRel), builtinFileName)
+	if winner.Layout == layoutMacApp {
+		bundled = macBundledBuiltinPath(winner.Root)
+	}
 	if _, err := os.Stat(bundled); err != nil {
 		row.Result = "no bundled " + builtinFileName + " under " + winner.Root +
-			" (" + bundledProviderRel + "/" + builtinFileName + " missing)"
+			" (" + query + " missing)"
 
 		return row, ""
 	}
@@ -1141,6 +1285,7 @@ func DefaultProbers(home, optDir string) Probers {
 		Override:  defaultOverride,
 		XDGQuery:  defaultXDGQuery,
 		AppDirs:   defaultAppDirs(home),
+		MacApps:   defaultMacApps(home),
 		DpkgQuery: defaultDpkgQuery,
 		RpmQuery:  defaultRpmQuery,
 		Home:      home,
