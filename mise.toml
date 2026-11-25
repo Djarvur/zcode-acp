@@ -17,6 +17,8 @@ golangci-lint = "2.15.0"
 goreleaser = "2.20.2"
 # experiments/ scripts + the `node --test` suite (D-02): Active LTS major.
 node = "26"
+# macOS ships Bash 3.2; the docs gate requires Bash 4+ associative arrays.
+bash = "5.3"
 
 [env]
 # Deterministic build/test paths
@@ -50,6 +52,14 @@ description = "go mod tidy and fail on any go.mod/go.sum drift"
 # expectation when the godbus dependency lands (a second require line).
 run = "go mod tidy && git diff --exit-code -- go.mod go.sum && [ \"$(grep -c '^require' go.mod)\" = \"1\" ] && grep -Fq 'require github.com/coder/acp-go-sdk v0.20.0' go.mod"
 
+[tasks.secret-scan]
+description = "Scan tracked files for credential-shaped values"
+run = "bash experiments/scan-secrets.sh"
+
+[tasks.check-docs]
+description = "Check documentation structure and provenance tags"
+run = "bash experiments/check-docs.sh"
+
 [tasks.ci]
-description = "Full CI gate: build + vet + lint + test + test-experiments (D-02)"
-depends = ["build", "vet", "lint", "test", "test-experiments"]
+description = "Full CI gate: build + vet + lint + test + experiments + shell gates (D-02)"
+depends = ["build", "vet", "lint", "test", "test-experiments", "secret-scan", "check-docs"]

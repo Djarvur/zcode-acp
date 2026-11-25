@@ -79,7 +79,7 @@ legend_file=""
 while IFS=: read -r f c; do
   legend_total=$((legend_total + c))
   legend_file="$f"
-done < <(grep -rc --include='*.md' '^## Provenance legend' docs/ 2>/dev/null | grep -v ':0$' || true)
+done < <(find docs -type f -name '*.md' -exec grep -cE '^## Provenance legend' {} + 2>/dev/null | grep -v ':0$' || true)
 
 if [ "$legend_total" -eq 0 ]; then
   fail "provenance legend missing: expected exactly one '## Provenance legend' heading, in docs/protocol/README.md"
@@ -109,10 +109,10 @@ while IFS= read -r tag; do
       fi
     done
   fi
-done < <(grep -rhoE '\[V-EXP [^]]+\]' --include='*.md' docs/ 2>/dev/null | sort -u)
+done < <(find docs -type f -name '*.md' -exec grep -hoE '\[V-EXP [^]]+\]' {} + 2>/dev/null | sort -u)
 
 # --- (c) tag grammar ----------------------------------------------------------
-bad_tags=$(grep -rhoE '\[V-[A-Za-z]+[^]]*\]' --include='*.md' docs/ 2>/dev/null \
+bad_tags=$(find docs -type f -name '*.md' -exec grep -hoE '\[V-[A-Za-z]+[^]]*\]' {} + 2>/dev/null \
   | grep -vE '^\[V-(SRC|EXP|RPT) [^]]+\]$' | sort -u)
 if [ -n "$bad_tags" ]; then
   while IFS= read -r t; do
@@ -142,7 +142,7 @@ fi
 # --- (g) no key-minting endpoint in experiments/ scripts (T-1-03) -------------
 # This script is excluded from its own scan: it necessarily names the pattern it
 # enforces. Every other experiments/ script (*.mjs, *.sh) is scanned verbatim.
-mint_hits=$(grep -rniE 'api_keys' experiments/ --include='*.mjs' --include='*.sh' --exclude=check-docs.sh 2>/dev/null || true)
+mint_hits=$(find experiments -type f \( -name '*.mjs' -o -name '*.sh' \) ! -name 'check-docs.sh' -exec grep -nHiE 'api_keys' {} + 2>/dev/null || true)
 if [ -n "$mint_hits" ]; then
   printf '%s\n' "$mint_hits" | head -5
   fail "key-minting endpoint reference (api_keys) in experiments/ scripts (T-1-03: no flow may mint credentials)"
