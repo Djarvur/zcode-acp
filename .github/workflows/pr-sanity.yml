@@ -11,17 +11,26 @@
 #   - the docs conformance gate (`check-docs.sh`) runs as a second step inside
 #     that same job (RESEARCH Open Question 1, resolved: the docs gate shares
 #     the secret-scan job's required context instead of adding a fourth name).
+#   - a fourth job `build / vet / test (windows)` (261126-2s8): a native
+#     windows-latest leg that installs mise with its PowerShell installer,
+#     installs only the Go pin from mise.toml with `mise install go`, and runs
+#     the same build, vet, and test mise tasks; it is advisory (not a
+#     branch-protection required context) and leaves the Linux `sanity` job
+#     untouched.
 #
-# Gates: build + vet + golangci-lint + test -race + experiments suite +
-# tidy-diff in the sanity job, plus separate govulncheck and secret-scan jobs.
-# All gates are mise tasks from mise.toml — CI calls exactly the same tasks as
-# the local `mise run ci` (D-02).
+# Gates: the Linux gate set (build, vet, golangci-lint, test -race,
+# experiments suite, tidy-diff) runs in the sanity job; the Windows job runs
+# its own set (build, vet, test -race). Separate govulncheck and secret-scan
+# jobs follow. All gates are mise tasks from mise.toml — CI calls exactly the
+# same tasks as the local `mise run ci` (D-02).
 #
 # Tool source: `mise install` reads mise.toml — the single place where tool
 # versions live. setup-go / golangci-lint-action are rejected on purpose (the
 # goswitch rationale, carried over): their `version:` inputs would pin a tool a
 # SECOND time and drift from mise.toml; mise gives exact parity with the local
-# dev loop.
+# dev loop. The Windows job follows the same single-source rule with
+# `mise install go` because only the Go pin is needed there, while setup-go
+# and golangci-lint-action remain rejected for both jobs.
 #
 # CI exercises only the offline tiers (go suite, node experiments suite,
 # static gates) — no workflow here ever calls api.z.ai or spawns the real
@@ -89,6 +98,53 @@ jobs:
       # go mod tidy + git diff --exit-code — go.mod/go.sum drift fails the job.
       - name: modules are tidy
         run: mise run tidy-diff
+
+  windows:
+    # Native Windows gate. The job name is NOT a branch-protection required
+    # context: the Linux sanity job above keeps its name and required set.
+    name: build / vet / test (windows)
+    runs-on: windows-latest
+    # Watchdog only: the same race suite runs ~2 min on this machine; Windows
+    # runners compile cgo/race code more slowly.
+    timeout-minutes: 25
+    # The Linux job's POSIX installer/PATH steps cannot run on Windows.
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # Windows checkouts default to Git for Windows' core.autocrlf=true; the
+      # checked-in .gitattributes forces LF for testdata, so the byte-exact
+      # golden fixtures match what the Go tests construct. Do not remove it.
+      - uses: actions/checkout@v4
+
+      # Native Windows installer (mise.run is the canonical distribution
+      # point; `curl https://mise.run | sh` does not run on Windows).
+      - name: Install mise
+        run: |
+          irm https://mise.run/powershell | iex
+
+      # The installer writes %USERPROFILE%\.local\bin and updates the user
+      # Path; GitHub steps only see paths exported through GITHUB_PATH.
+      - name: Add mise to PATH
+        run: |
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # Only the Go pin is needed: build, vet and test. The version still
+      # comes from mise.toml [tools] go — never a second pin (D-02).
+      - name: Install Go from mise.toml
+        run: mise install go
+
+      - name: build
+        run: mise run build
+
+      - name: vet
+        run: mise run vet
+
+      # Same task the Linux job runs: go test -race -count=1 ./... . The
+      # Windows race runtime needs cgo; windows-latest ships mingw-w64 gcc
+      # at C:\mingw64\bin on PATH (Install-Mingw64.ps1).
+      - name: test (go)
+        run: mise run test
 
   govulncheck:
     # Required check name (plan 02-05).
