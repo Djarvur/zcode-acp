@@ -187,10 +187,9 @@ func DefaultMountOpts() MountOpts {
 	}
 }
 
-// defaultStatfs is the production filesystem-type predicate. The supervisor
-// package already depends on Linux/Unix process primitives (syscall.Kill,
-// Setpgid in spawn.go) and D-10 scopes the phase to Linux, so no portable
-// build-tagged variant is added.
+// defaultStatfs is the production filesystem-type predicate. The explicit
+// conversion normalizes Darwin's uint32 and Linux's int64 Type fields at the
+// MountOpts.Statfs int64 seam.
 func defaultStatfs(path string) (int64, error) {
 	var st syscall.Statfs_t
 
@@ -198,7 +197,7 @@ func defaultStatfs(path string) (int64, error) {
 		return 0, fmt.Errorf("zcode: statfs %s: %w", path, err)
 	}
 
-	return st.Type, nil
+	return int64(st.Type), nil
 }
 
 // withDefaults resolves zero fields to the production defaults.
