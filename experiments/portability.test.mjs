@@ -238,3 +238,104 @@ test("macOS arm64 runs architecture and version preflights before canonical gate
   ]);
   assert.doesNotMatch(arm64, /CGO_ENABLED\s*=\s*0/, "native race tests must keep CGO enabled");
 });
+
+test("macOS amd64 mirrors the native preflights and canonical gates", () => {
+  const amd64 = workflowJob("macos-amd64");
+
+  assert.match(amd64, /^    name: build \/ vet \/ lint \/ test \/ tidy \(macOS amd64\)$/m);
+  assert.match(amd64, /^    runs-on: macos-15-intel$/m);
+  assert.match(amd64, /^    timeout-minutes: 30$/m);
+  assert.ok(amd64.includes("      - uses: actions/checkout@v4"));
+  assert.ok(amd64.includes("        run: curl https://mise.run | sh"));
+  assert.ok(amd64.includes('        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"'));
+  assert.ok(amd64.includes("        run: mise install"));
+
+  const architecture = workflowStep(amd64, "Verify native architecture");
+  assert.match(architecture, /^          EXPECTED_GOARCH: amd64$/m);
+  assert.match(architecture, /^          EXPECTED_UNAME_M: x86_64$/m);
+  assert.ok(architecture.includes("mise exec -- go env GOARCH"));
+  assert.ok(architecture.includes("uname -m"));
+  assert.ok(architecture.includes('test "$(mise exec -- go env GOARCH)" = "$EXPECTED_GOARCH"'));
+  assert.ok(architecture.includes('test "$(uname -m)" = "$EXPECTED_UNAME_M"'));
+
+  const versions = workflowStep(amd64, "Verify mise tool versions");
+  assert.match(
+    versions,
+    /^        run: mise exec -- node scripts\/check-mise-tool-versions\.mjs$/m,
+  );
+  assert.ok(amd64.includes("        run: mise run ci"));
+  assert.ok(amd64.includes("        run: mise run tidy-diff"));
+  assertWorkflowOrder(amd64, [
+    "      - name: Install tools from mise.toml",
+    "      - name: Verify native architecture",
+    "      - name: Verify mise tool versions",
+    "        run: mise run ci",
+    "        run: mise run tidy-diff",
+  ]);
+  assert.doesNotMatch(amd64, /CGO_ENABLED\s*=\s*0/, "native race tests must keep CGO enabled");
+});
+
+test("Darwin cross-build checks tool pins before both literal CGO-free targets", () => {
+  const crossBuild = workflowJob("darwin-cross-build");
+  const arm64Command =
+    "mise exec -- env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...";
+  const amd64Command =
+    "mise exec -- env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./...";
+
+  assert.match(crossBuild, /^    runs-on: ubuntu-latest$/m);
+  assert.ok(crossBuild.includes("      - uses: actions/checkout@v4"));
+  assert.ok(crossBuild.includes("        run: curl https://mise.run | sh"));
+  assert.ok(crossBuild.includes('        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"'));
+  assert.ok(crossBuild.includes("        run: mise install"));
+  assert.ok(
+    workflowStep(crossBuild, "Verify mise tool versions").includes(
+      "        run: mise exec -- node scripts/check-mise-tool-versions.mjs",
+    ),
+  );
+  assert.ok(workflowStep(crossBuild, "Cross-build darwin/arm64").includes(arm64Command));
+  assert.ok(workflowStep(crossBuild, "Cross-build darwin/amd64").includes(amd64Command));
+  assertWorkflowOrder(crossBuild, [
+    "      - name: Install tools from mise.toml",
+    "      - name: Verify mise tool versions",
+    "      - name: Cross-build darwin/arm64",
+    "      - name: Cross-build darwin/amd64",
+  ]);
+});
+
+test("secret-scan runs both shell gates through mise-managed Bash tasks", () => {
+  const secretScan = workflowJob("secret-scan");
+
+  assert.match(secretScan, /^    name: secret-scan$/m);
+  assert.match(secretScan, /^    runs-on: ubuntu-latest$/m);
+  assert.ok(secretScan.includes("      - uses: actions/checkout@v4"));
+  assert.ok(secretScan.includes("        run: curl https://mise.run | sh"));
+  assert.ok(secretScan.includes('        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"'));
+  assert.ok(secretScan.includes("        run: mise install"));
+  assert.ok(workflowStep(secretScan, "secret scan").includes("        run: mise run secret-scan"));
+  assert.ok(
+    workflowStep(secretScan, "docs conformance gate").includes("        run: mise run check-docs"),
+  );
+  assert.doesNotMatch(secretScan, /run: bash experiments\//, "shell gates must use managed mise tasks");
+  assertWorkflowOrder(secretScan, [
+    "      - name: Install tools from mise.toml",
+    "      - name: secret scan",
+    "      - name: docs conformance gate",
+  ]);
+});
+
+test("PR sanity preserves required security contexts and read-only concurrency", () => {
+  const workflow = source(".github/workflows/pr-sanity.yml");
+  const govulncheck = workflowJob("govulncheck");
+
+  assert.match(workflow, /^permissions:\n  contents: read$/m);
+  assert.match(workflow, /^  group: pr-sanity-\$\{\{ github\.event_name \}\}-\$\{\{ github\.ref \}\}$/m);
+  assert.match(workflow, /^  cancel-in-progress: true$/m);
+  assert.match(govulncheck, /^    name: govulncheck$/m);
+  assert.match(govulncheck, /^    runs-on: ubuntu-latest$/m);
+  assert.ok(govulncheck.includes("      - uses: actions/checkout@v4"));
+  assert.ok(
+    govulncheck.includes(
+      "        run: mise exec -- go run golang.org/x/vuln/cmd/govulncheck@latest ./...",
+    ),
+  );
+});

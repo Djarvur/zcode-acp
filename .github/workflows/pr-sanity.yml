@@ -10,12 +10,15 @@
 #     script runs over the whole tree on every push/PR;
 #   - the docs conformance gate (`check-docs.sh`) runs as a second step inside
 #     that same job (RESEARCH Open Question 1, resolved: the docs gate shares
-#     the secret-scan job's required context instead of adding a fourth name).
+#     the secret-scan job's required context instead of adding a fourth name);
+#   - native macOS arm64/amd64 jobs run the canonical CI graph after explicit
+#     architecture and tool-version preflights;
+#   - a separate Linux job runs both literal CGO-free Darwin cross-builds.
 #
-# Gates: build + vet + golangci-lint + test -race + experiments suite +
-# tidy-diff in the sanity job, plus separate govulncheck and secret-scan jobs.
-# All gates are mise tasks from mise.toml — CI calls exactly the same tasks as
-# the local `mise run ci` (D-02).
+# Gates: build + vet + golangci-lint + test -race + experiments suite + managed
+# shell gates + tidy-diff on Linux and both native macOS architectures, plus
+# separate Darwin cross-build, govulncheck, and secret-scan jobs. Native jobs
+# call exactly the same tasks as the local `mise run ci` (D-02).
 #
 # Tool source: `mise install` reads mise.toml — the single place where tool
 # versions live. setup-go / golangci-lint-action are rejected on purpose (the
@@ -130,6 +133,70 @@ jobs:
       - name: Modules are tidy
         run: mise run tidy-diff
 
+  macos-amd64:
+    name: build / vet / lint / test / tidy (macOS amd64)
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise
+        run: curl https://mise.run | sh
+
+      - name: Add mise to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install tools from mise.toml
+        run: mise install
+
+      # Fail before any build/test gate unless both the Go toolchain and host
+      # report Intel's amd64 / x86_64 architecture.
+      - name: Verify native architecture
+        env:
+          EXPECTED_GOARCH: amd64
+          EXPECTED_UNAME_M: x86_64
+        run: |
+          printf 'GOARCH=%s\n' "$(mise exec -- go env GOARCH)"
+          printf 'uname -m=%s\n' "$(uname -m)"
+          test "$(mise exec -- go env GOARCH)" = "$EXPECTED_GOARCH"
+          test "$(uname -m)" = "$EXPECTED_UNAME_M"
+
+      - name: Verify mise tool versions
+        run: mise exec -- node scripts/check-mise-tool-versions.mjs
+
+      - name: Canonical CI gate
+        run: mise run ci
+
+      - name: Modules are tidy
+        run: mise run tidy-diff
+
+  darwin-cross-build:
+    name: darwin-cross-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise
+        run: curl https://mise.run | sh
+
+      - name: Add mise to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install tools from mise.toml
+        run: mise install
+
+      - name: Verify mise tool versions
+        run: mise exec -- node scripts/check-mise-tool-versions.mjs
+
+      # Compile-only portability gate: keep both literal required target
+      # commands separate from the native CGO-enabled race-test jobs.
+      - name: Cross-build darwin/arm64
+        run: mise exec -- env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
+
+      - name: Cross-build darwin/amd64
+        run: mise exec -- env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./...
+
   govulncheck:
     # Required check name (plan 02-05).
     name: govulncheck
@@ -166,12 +233,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install mise
+        run: curl https://mise.run | sh
+
+      - name: Add mise to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install tools from mise.toml
+        run: mise install
+
       # Fixed gate script (WR-01/IN-03 corrected in plan 02-03): fails on any
       # tracked file outside .planning matching a live-credential value shape.
+      # The named task selects mise-managed Bash instead of the system shell.
       - name: secret scan
-        run: bash experiments/scan-secrets.sh
+        run: mise run secret-scan
 
       # Docs conformance gate shares this job (resolved Open Question 1):
       # protected via this job's required context, no fourth check name.
       - name: docs conformance gate
-        run: bash experiments/check-docs.sh
+        run: mise run check-docs
