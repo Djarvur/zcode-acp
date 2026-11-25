@@ -1,0 +1,12 @@
+<network>
+  <name>zcode-acp-dev</name>
+  <forward mode="nat"/>
+  <bridge name="virbr123" stp="on" delay="0"/>
+  <domain name="zcode-acp.local"/>
+  <ip address="192.168.123.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="192.168.123.100" end="192.168.123.200"/>
+      <host mac="52:54:00:ac:01:10" name="zcode-acp-win11" ip="192.168.123.10"/>
+    </dhcp>
+  </ip>
+</network>
