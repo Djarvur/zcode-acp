@@ -335,8 +335,8 @@ func goldenNormalizers() map[string]func([]byte) []byte {
 // The fixture tokens the normalizer substitutes (the ack's scripted echo
 // pairs with the substituted push revision — the golden then SHOWS the
 // receipt pairing). cpCorpusProbeDirToken substitutes the probe sessions'
-// os.MkdirTemp random suffix (the round-3 poke rows' only other
-// machine-derived byte run).
+// os.MkdirTemp path (the round-3 poke rows' only other machine-derived byte
+// run), including the platform temp root so macOS /var/folders stays portable.
 const (
 	cpCorpusRevisionToken = "account-bridge:cp-fix1"
 	cpCorpusBuiltinToken  = "zcode-builtin:44:cp-corpus-fixture-hash"
@@ -346,13 +346,32 @@ const (
 var (
 	cpCorpusRevPattern     = regexp.MustCompile(`account-bridge:\d+`)
 	cpCorpusBuiltinPattern = regexp.MustCompile(`zcode-builtin:44:[0-9a-f]{64}`)
-	cpCorpusProbeDir       = regexp.MustCompile(`zcode-acp-auth-probe-\d+`)
+	cpCorpusProbeDir       = codingPlanProbeDirPattern()
 )
+
+// codingPlanProbeDirPattern accepts both the platform temp-root spelling and
+// its EvalSymlinks-resolved form (/var/folders ↔ /private/var/folders on macOS).
+func codingPlanProbeDirPattern() *regexp.Regexp {
+	root := filepath.ToSlash(filepath.Clean(os.TempDir()))
+	roots := []string{root}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		if canonical := filepath.ToSlash(filepath.Clean(resolved)); canonical != root {
+			roots = append(roots, canonical)
+		}
+	}
+
+	quoted := make([]string, 0, len(roots))
+	for _, candidate := range roots {
+		quoted = append(quoted, regexp.QuoteMeta(candidate))
+	}
+
+	return regexp.MustCompile(`(?:` + strings.Join(quoted, "|") + `)/zcode-acp-auth-probe-\d+`)
+}
 
 // normalizeCodingPlanCorpus substitutes the machine-derived tokens.
 func normalizeCodingPlanCorpus(b []byte) []byte {
 	b = cpCorpusRevPattern.ReplaceAll(b, []byte(cpCorpusRevisionToken))
-	b = cpCorpusProbeDir.ReplaceAll(b, []byte(cpCorpusProbeDirToken))
+	b = cpCorpusProbeDir.ReplaceAll(b, []byte("/tmp/"+cpCorpusProbeDirToken))
 
 	return cpCorpusBuiltinPattern.ReplaceAll(b, []byte(cpCorpusBuiltinToken))
 }

@@ -10,7 +10,7 @@ provides:
   - Nested Go readiness helpers preserving inherited wrapper stderr
 affects: [11-04, 11-05, MTEST-01, MBLD-02]
 actuals:
-  tokens: 2641
+  tokens: 5230
   tasks: 3
   commits: 3
 plan_head_before: 3279f44056e47c175e72ae391bc4eaa560f673cf
@@ -20,17 +20,21 @@ tech-stack:
   patterns:
     - Re-exec the current Go test binary with anchored selectors and dedicated environment markers
     - Use Setsid only for detached fixture descendants; retain Setpgid for ordinary wrappers
+    - Canonicalize expected test paths with Abs/EvalSymlinks before comparing production-resolved paths
 key-files:
   created:
     - experiments/portability.test.mjs
     - .planning/tdd/11-02-task1-red.json
   modified:
     - internal/supervisor/mount_test.go
+    - internal/supervisor/discover_test.go
     - cmd/zcode-acp/main_test.go
+    - internal/zcode/fake/golden_test.go
 key-decisions:
   - Use os.Executable for the fake runtime's absolute test-binary path
   - Keep the readiness launcher in the wrapper group and detach only the sleeping inner helper
   - Reap the mount cleaner by recorded PID because its new session escapes process-group cleanup
+  - Canonicalize only expected test paths; production path resolution remains unchanged
 patterns-established:
   - Detached test fixture: marker-gated helper plus bounded lifetime plus unconditional PID cleanup
   - Static source contract: reject executable host setsid and require anchored Go helpers with Setsid
@@ -66,7 +70,18 @@ coverage:
         ref: experiments/portability.test.mjs#readiness fixture creates its detached leak through Go
         status: pass
     human_judgment: false
-duration: 8min
+  - id: D4
+    description: Discovery, AppImage, and golden expectations canonicalize macOS temporary-path aliases without production changes
+    requirement: MTEST-01
+    verification:
+      - kind: integration
+        ref: go test -race -count=1 ./...
+        status: pass
+      - kind: unit
+        ref: node --test experiments/
+        status: pass
+    human_judgment: false
+duration: 39min
 completed: 2026-11-25
 status: complete
 ---
@@ -77,11 +92,11 @@ status: complete
 
 ## Performance
 
-- **Duration:** 8 min
+- **Duration:** 39 min
 - **Started:** 2026-11-25T12:45:13Z
-- **Completed:** 2026-11-25T12:52:59Z
+- **Completed:** 2026-11-25T13:23:53Z
 - **Tasks:** 3/3
-- **Files modified:** 4
+- **Files modified:** 7
 
 ## Accomplishments
 
@@ -89,12 +104,15 @@ status: complete
 - Replaced the stubborn mount fixture's shell cleaner with a marker-gated, 500 ms Go helper that removes only the validated mount root; the parent kills and reaps its recorded PID unconditionally.
 - Replaced the readiness fixture's shell descendant with a group-owned launcher and a detached 30-second sleeping helper that records its PID and inherits the wrapper stderr pipe.
 - Preserved every existing behavioral assertion: mount grace escalation, helper reap, mount/base removal, idempotent Stop, leaked stderr pipe, and teardown-error precedence over the signal.
+- Canonicalized expected discovery/AppImage paths and coding-plan golden probe paths for macOS `/var/folders` ↔ `/private/var/folders`, leaving production behavior unchanged.
 
 ## Task Commits
 
 1. **Task 1: RED — lock both detached fixtures to Go re-exec helpers** — `6374c14` (`test`)
 2. **Task 2: GREEN — move the stubborn mount cleaner into a Go helper** — `078bc3b` (`feat`)
 3. **Task 3: GREEN — preserve the inherited-stderr leak with nested Go helpers** — `c9586f6` (`feat`)
+
+**Post-wave deviation:** committed separately as `fix(11-02): canonicalize macOS temp paths in tests`.
 
 ## TDD Gate Compliance
 
@@ -111,7 +129,9 @@ status: complete
 - `experiments/portability.test.mjs` — static, offline portability contract for both detached fixtures.
 - `.planning/tdd/11-02-task1-red.json` — complete unmodified TAP output, exit status, expected/actual result, and semantic RED assessment.
 - `internal/supervisor/mount_test.go` — Go re-exec mount cleaner, bounded delay, `Setsid`, direct PID kill/reap cleanup, and retained Stop assertions.
-- `cmd/zcode-acp/main_test.go` — absolute test-binary token substitution, nested leak launcher/helper, inherited stderr, bounded lifetime, and retained unconditional recorded-PID cleanup.
+- `cmd/zcode-acp/main_test.go` — absolute test-binary token substitution, nested leak launcher/helper, inherited stderr, bounded lifetime, retained unconditional recorded-PID cleanup, and canonical expected AppImage diagnostics.
+- `internal/supervisor/discover_test.go` — canonical expected paths for discovery/AppImage assertions via `Abs`/`EvalSymlinks`.
+- `internal/zcode/fake/golden_test.go` — portable coding-plan probe-path normalization across raw and canonical macOS temp roots.
 
 ## Verification
 
@@ -121,10 +141,14 @@ status: complete
 | `node --test experiments/` | PASS — 26 pass, 1 guarded skip, 0 fail |
 | `go test -race -count=1 ./internal/supervisor -run '^TestMountStop$'` | PASS |
 | `go test -race -count=1 ./cmd/zcode-acp -run '^TestAppImageMountSignal$'` | PASS |
+| `go test -race -count=1 ./internal/supervisor -run '^(TestDiscoverFixtureTree|TestDiscoverRankPackedOverStaleUnpacked|TestDiscoverPerCandidateMisses|TestDiscoverUnpackedOnly|TestDiscoverTieBreak|TestDiscoverPureRead|TestDiscoverOrderFirstMatchWins|TestDiscoverDiagnostics|TestDiscoverXDGAppImageSeed|TestDiscoverFindsNewestBuiltin|TestDiscoverBundledBuiltinFallback|TestOverrideInstall)$'` | PASS |
+| `go test -race -count=1 ./cmd/zcode-acp -run '^TestAppImageOverride$'` | PASS |
+| `go test -race -count=1 ./internal/zcode/fake -run '^TestGolden$/(coding-plan-probe-setmodel|coding-plan-probe-setmodel-refused)$'` | PASS |
+| `go test -race -count=1 ./...` | PASS — 11 packages, 0 failed tests |
 | `go vet ./internal/supervisor ./cmd/zcode-acp` | PASS |
 | `gsd_run check tdd-red-evidence .planning/tdd/11-02-task1-red.json --raw` | PASS — `RED_EVIDENCE_OK` |
 
-No detached fixture helper remained after verification. The full native Linux/macOS matrix remains owned by Plan 04, as specified in this plan.
+No detached fixture helper remained after verification. The full `go test -race -count=1 ./...` suite passes on this macOS arm64 host; the Linux/macOS CI matrix remains owned by Plan 04, as specified in this plan.
 
 ## Decisions Made
 
@@ -135,11 +159,28 @@ No detached fixture helper remained after verification. The full native Linux/ma
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+### Auto-fixed Issues
+
+**1. [Rule 1 - Bug] Canonicalized expected discovery and AppImage paths on macOS**
+- **Found during:** Post-wave full `go test -race ./...` run
+- **Issue:** Production correctly returned `EvalSymlinks`-resolved `/private/var/folders/...`, while discovery/AppImage assertions compared against raw `t.TempDir()` `/var/folders/...`.
+- **Fix:** Added test-only `Abs`/`EvalSymlinks` expectation helpers and applied them only where assertions compare production-resolved paths; display-path and missing-path expectations remain unchanged.
+- **Files modified:** `internal/supervisor/discover_test.go`, `cmd/zcode-acp/main_test.go`
+- **Verification:** Focused discovery/AppImage tests and the full race suite pass.
+
+**2. [Rule 1 - Bug] Normalized raw and canonical macOS temp roots in coding-plan goldens**
+- **Found during:** Full-suite follow-up after the discovery fix
+- **Issue:** The golden normalizer replaced only the `zcode-acp-auth-probe-<suffix>` basename, leaving the platform temp root (`/var/folders/...` versus the recorded `/tmp`) in two coding-plan probe goldens.
+- **Fix:** Match the complete probe path under both `os.TempDir()` and its `EvalSymlinks`-resolved root, then emit the existing deterministic `/tmp/zcode-acp-auth-probe-<probe-dir>` token.
+- **Files modified:** `internal/zcode/fake/golden_test.go`
+- **Verification:** Both focused probe goldens, the complete fake package, and the final captured full race suite pass.
+
+**Total deviations:** 2 auto-fixed Rule 1 bugs.
+**Impact on plan:** Both fixes are test-side portability corrections required by MTEST-01. No production behavior changed; no new dependencies, ACP methods, tools, or client features were added.
 
 ## Issues Encountered
 
-None.
+The first full-suite run exposed the additional golden temp-root mismatch documented above. One intermediate full run failed without retained per-test output; isolated `internal/acpfront` and `internal/zcode/fake` runs passed, and the final JSON-captured full run completed with exit 0 and zero failed tests.
 
 ## Authentication Gates
 
@@ -151,11 +192,12 @@ None - no external service configuration required.
 
 ## Next Phase Readiness
 
-Both default-suite host `setsid` dependencies are removed and statically guarded. The two process-behavior oracles pass under `-race` on this macOS arm64 host. Native Linux and both macOS CI architecture gates remain ready for Plan 04; shared `STATE.md` and `ROADMAP.md` updates are intentionally left to the orchestrator.
+Both default-suite host `setsid` dependencies are removed and statically guarded. The process-behavior oracles and the full `go test -race -count=1 ./...` suite pass on this macOS arm64 host. Native Linux and both macOS CI architecture gates remain ready for Plan 04; shared `STATE.md` and `ROADMAP.md` updates are intentionally left to the orchestrator.
 
 ## Self-Check: PASSED
 
-- All four implementation/evidence files and this summary exist on disk.
-- All three task commits are ancestors of the current HEAD.
+- All seven implementation/evidence files and this summary exist on disk.
+- All three original task commits are ancestors of the current HEAD.
 - The RED classifier still returns `RED_EVIDENCE_OK`.
+- The final captured `go test -race -count=1 ./...` run passed all 11 packages with zero failed tests.
 - `STATE.md` and `ROADMAP.md` are unchanged in both the plan commit range and the working tree.

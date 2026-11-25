@@ -37,6 +37,25 @@ const (
 	fixtureExplicitLayout = "explicit"
 )
 
+// canonicalTestPath matches production's EvalSymlinks-resolved expectations.
+// macOS exposes t.TempDir under /var/folders while its real path is
+// /private/var/folders; missing fixture paths retain their absolute spelling.
+func canonicalTestPath(t *testing.T, path string) string {
+	t.Helper()
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("abs %s: %v", path, err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+
+	return resolved
+}
+
 // documentedProbeNames returns the fixed probe set in the documented order
 // (install-discovery.md :93-97) extended with the runtime-provider-tree row
 // the spawn line needs and its install-side bundled fallback (the QA-02
@@ -303,10 +322,11 @@ func discoverUnpackedFixture(t *testing.T) {
 		t.Fatalf("unpacked squashfs-root tree must resolve: %v", err)
 	}
 
+	wantRoot := canonicalTestPath(t, root)
 	want := supervisor.Install{
-		Root:       root,
-		Binary:     filepath.Join(root, "zcode"),
-		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		Root:       wantRoot,
+		Binary:     filepath.Join(wantRoot, "zcode"),
+		Entrypoint: filepath.Join(wantRoot, "resources", "glm", "zcode.cjs"),
 		Layout:     fixtureUnpackedLayout,
 		Version:    fixtureUnpackedVer,
 	}
@@ -315,7 +335,7 @@ func discoverUnpackedFixture(t *testing.T) {
 	}
 
 	row, ok := probeRow(probes, "appimage-rank")
-	if !ok || !strings.Contains(row.Result, root) || !strings.Contains(row.Result, fixtureUnpackedVer) {
+	if !ok || !strings.Contains(row.Result, wantRoot) || !strings.Contains(row.Result, fixtureUnpackedVer) {
 		t.Errorf("appimage-rank row must name the resolved root and version: %+v", row)
 	}
 }
@@ -339,7 +359,7 @@ func discoverAppImageFixture(t *testing.T) {
 	}
 
 	want := supervisor.Install{
-		AppImage: versioned,
+		AppImage: canonicalTestPath(t, versioned),
 		Version:  fixtureUnpackedVer,
 		Layout:   testAppImageLayout,
 	}
@@ -419,7 +439,8 @@ func TestDiscoverRankPackedOverStaleUnpacked(t *testing.T) {
 		t.Fatalf("both AppImage-layout candidates must resolve: %v", err)
 	}
 
-	want := supervisor.Install{AppImage: packed, Version: fakeAppImageVer, Layout: testAppImageLayout}
+	wantPacked := canonicalTestPath(t, packed)
+	want := supervisor.Install{AppImage: wantPacked, Version: fakeAppImageVer, Layout: testAppImageLayout}
 	if install != want {
 		t.Fatalf("the newer packed candidate must win:\n got %+v\nwant %+v", install, want)
 	}
@@ -429,7 +450,7 @@ func TestDiscoverRankPackedOverStaleUnpacked(t *testing.T) {
 
 	row, ok := probeRow(probes, "appimage-rank")
 	if !ok || !strings.Contains(row.Result, "selected: appimage version 4.0.0") ||
-		!strings.Contains(row.Result, packed) {
+		!strings.Contains(row.Result, wantPacked) {
 		t.Fatalf("appimage-rank must name the selected layout, version, and resolved path: %+v", row)
 	}
 }
@@ -449,7 +470,7 @@ func TestDiscoverPerCandidateMisses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a dangling candidate must not abort discovery: %v", err)
 		}
-		if install.AppImage != packed || install.Version != fakeAppImageVer {
+		if install.AppImage != canonicalTestPath(t, packed) || install.Version != fakeAppImageVer {
 			t.Fatalf("the versioned 4.0.0 file must win: %+v", install)
 		}
 		assertCandidateMiss(t, probes, dangling, "unresolvable")
@@ -468,7 +489,7 @@ func TestDiscoverPerCandidateMisses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("an invalid tree must not abort discovery: %v", err)
 		}
-		if install.AppImage != packed || install.Version != fakeAppImageVer {
+		if install.AppImage != canonicalTestPath(t, packed) || install.Version != fakeAppImageVer {
 			t.Fatalf("the packed 4.0.0 file must win: %+v", install)
 		}
 		assertCandidateMiss(t, probes, invalidRoot, "spawnable tree")
@@ -486,10 +507,11 @@ func TestDiscoverUnpackedOnly(t *testing.T) {
 		t.Fatalf("an unpacked-only fixture must resolve: %v", err)
 	}
 
+	wantRoot := canonicalTestPath(t, root)
 	want := supervisor.Install{
-		Root:       root,
-		Binary:     filepath.Join(root, "zcode"),
-		Entrypoint: filepath.Join(root, "resources", "glm", "zcode.cjs"),
+		Root:       wantRoot,
+		Binary:     filepath.Join(wantRoot, "zcode"),
+		Entrypoint: filepath.Join(wantRoot, "resources", "glm", "zcode.cjs"),
 		Layout:     fixtureUnpackedLayout,
 		Version:    fakeAppImageVer,
 	}
@@ -527,7 +549,7 @@ func tieBreakUnpacked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("equal-version candidates must resolve: %v", err)
 	}
-	if install.Root != unpacked || install.Layout != fixtureUnpackedLayout {
+	if install.Root != canonicalTestPath(t, unpacked) || install.Layout != fixtureUnpackedLayout {
 		t.Fatalf("the unpacked tree must win at equal versions: %+v", install)
 	}
 }
@@ -549,7 +571,7 @@ func tieBreakSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("equal-version packed candidates must resolve: %v", err)
 	}
-	if install.AppImage != x64 {
+	if install.AppImage != canonicalTestPath(t, x64) {
 		t.Fatalf("the symlink's resolved target must win over the regular arm64 file: %+v", install)
 	}
 
@@ -578,9 +600,9 @@ func tieBreakLexicographic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("equal-version regular files must resolve: %v", err)
 	}
-	if install.AppImage != arm64 {
+	if install.AppImage != canonicalTestPath(t, arm64) {
 		t.Fatalf("the lexicographically smaller display must win: got %q, want %q",
-			install.AppImage, arm64)
+			install.AppImage, canonicalTestPath(t, arm64))
 	}
 }
 
@@ -599,7 +621,7 @@ func tieBreakDedupe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a symlink plus its target must resolve: %v", err)
 	}
-	if install.AppImage != target {
+	if install.AppImage != canonicalTestPath(t, target) {
 		t.Fatalf("the symlink and target are one backend: %+v", install)
 	}
 	if rows := probeRows(probes, "appimage-candidate"); len(rows) != 1 {
@@ -656,7 +678,7 @@ func TestDiscoverPureRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pure-read fixture must resolve: %v", err)
 	}
-	if install.AppImage != packed {
+	if install.AppImage != canonicalTestPath(t, packed) {
 		t.Fatalf("the packed 4.0.0 winner must resolve: %+v", install)
 	}
 
@@ -717,11 +739,12 @@ func TestDiscoverOrderFirstMatchWins(t *testing.T) {
 	}
 	// The earlier probe in the documented order wins — xdg-entry is probe 2,
 	// opt-path probe 6 — and adjacency never merges the two yields.
-	if install.Root != entryTree {
-		t.Fatalf("xdg-entry must win over opt-path: got root %q, want %q", install.Root, entryTree)
+	wantRoot := canonicalTestPath(t, entryTree)
+	if install.Root != wantRoot {
+		t.Fatalf("xdg-entry must win over opt-path: got root %q, want %q", install.Root, wantRoot)
 	}
-	wantBinary := filepath.Join(entryTree, "zcode")
-	wantEntrypoint := filepath.Join(entryTree, "resources", "glm", "zcode.cjs")
+	wantBinary := filepath.Join(wantRoot, "zcode")
+	wantEntrypoint := filepath.Join(wantRoot, "resources", "glm", "zcode.cjs")
 	if install.Binary != wantBinary || install.Entrypoint != wantEntrypoint || install.Layout != fixtureLayout {
 		t.Fatalf("winner must be the entry-pointed tree:\n got %+v", install)
 	}
@@ -815,15 +838,16 @@ func TestDiscoverDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the mixed fixture must still resolve the packed hit: %v", err)
 	}
-	if install.AppImage != packed || install.Version != fakeAppImageVer {
+	if install.AppImage != canonicalTestPath(t, packed) || install.Version != fakeAppImageVer {
 		t.Fatalf("the packed 4.0.0 file must win: %+v", install)
 	}
 
+	wantPacked := canonicalTestPath(t, packed)
 	rank, ok := probeRow(probes, "appimage-rank")
 	if !ok {
 		t.Fatal("the appimage-rank row must exist")
 	}
-	for _, want := range []string{"selected:", testAppImageLayout, fakeAppImageVer, packed} {
+	for _, want := range []string{"selected:", testAppImageLayout, fakeAppImageVer, wantPacked} {
 		if !strings.Contains(rank.Result, want) {
 			t.Errorf("appimage-rank row must carry %q: %+v", want, rank)
 		}
@@ -833,7 +857,7 @@ func TestDiscoverDiagnostics(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("one candidate row per evaluated candidate, got %d: %+v", len(rows), rows)
 	}
-	if !strings.HasPrefix(rows[0].Result, "hit:") || !strings.Contains(rows[0].Result, packed) ||
+	if !strings.HasPrefix(rows[0].Result, "hit:") || !strings.Contains(rows[0].Result, wantPacked) ||
 		!strings.Contains(rows[0].Result, fakeAppImageVer) {
 		t.Fatalf("the first row must be the winning hit with version: %+v", rows[0])
 	}
@@ -870,7 +894,7 @@ func xdgSeedPacked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an XDG AppImage target must be a ranked candidate: %v", err)
 	}
-	if install.AppImage != packed || install.Version != fakeAppImageVer || install.Layout != testAppImageLayout {
+	if install.AppImage != canonicalTestPath(t, packed) || install.Version != fakeAppImageVer || install.Layout != testAppImageLayout {
 		t.Fatalf("the seeded packed target must win: %+v", install)
 	}
 
@@ -896,7 +920,7 @@ func xdgSeedPackagePrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the package-tree entry must resolve at step 2: %v", err)
 	}
-	if install.Root != optDir || install.Layout != fixtureLayout || install.AppImage != "" {
+	if install.Root != canonicalTestPath(t, optDir) || install.Layout != fixtureLayout || install.AppImage != "" {
 		t.Fatalf("the package tree must beat the newer packed candidate: %+v", install)
 	}
 
@@ -923,7 +947,7 @@ func xdgSeedUnpacked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an XDG squashfs-root target must be a ranked candidate: %v", err)
 	}
-	if install.Root != unpacked || install.Layout != fixtureUnpackedLayout || install.Version != fixtureUnpackedVer {
+	if install.Root != canonicalTestPath(t, unpacked) || install.Layout != fixtureUnpackedLayout || install.Version != fixtureUnpackedVer {
 		t.Fatalf("the seeded unpacked tree must win: %+v", install)
 	}
 
@@ -949,7 +973,7 @@ func xdgSeedLosesToVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("both candidates must resolve: %v", err)
 	}
-	if install.AppImage != packed || install.Version != fakeAppImageVer {
+	if install.AppImage != canonicalTestPath(t, packed) || install.Version != fakeAppImageVer {
 		t.Fatalf("version ranking must beat the entry's older unpacked seed: %+v", install)
 	}
 }
@@ -1106,7 +1130,7 @@ func TestDiscoverFindsNewestBuiltin(t *testing.T) {
 		t.Fatalf("builtin file under the highest version dir must win:\n got %q\nwant %q",
 			install.BuiltinFile, wantBuiltin)
 	}
-	if install.Root != root || install.Layout != fixtureUnpackedLayout {
+	if install.Root != canonicalTestPath(t, root) || install.Layout != fixtureUnpackedLayout {
 		t.Fatalf("root install must still resolve alongside the runtime tree: %+v", install)
 	}
 
@@ -1134,13 +1158,14 @@ func TestDiscoverBundledBuiltinFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unpacked tree with bundled builtin must resolve: %v", err)
 	}
-	if install.BuiltinFile != bundled {
+	wantBundled := canonicalTestPath(t, bundled)
+	if install.BuiltinFile != wantBundled {
 		t.Fatalf("fresh machine (no runtime cache) must fall back to the bundled builtin:\n got %q\nwant %q",
-			install.BuiltinFile, bundled)
+			install.BuiltinFile, wantBundled)
 	}
 
 	row, ok := probeRow(probes, "builtin-bundled")
-	if !ok || !strings.Contains(row.Result, "found") || !strings.Contains(row.Result, bundled) {
+	if !ok || !strings.Contains(row.Result, "found") || !strings.Contains(row.Result, wantBundled) {
 		t.Errorf("builtin-bundled row must record the bundled hit naming the path: %+v", row)
 	}
 }
@@ -1401,6 +1426,7 @@ func testOverrideProbeVolatile(t *testing.T) {
 func assertPackedOverride(t *testing.T, inst supervisor.Install, wantPath string) {
 	t.Helper()
 
+	wantPath = canonicalTestPath(t, wantPath)
 	if inst.Layout != testAppImageLayout || inst.AppImage != wantPath || inst.Version != fakeAppImageVer {
 		t.Fatalf("packed override = %+v, want AppImage %s version %s layout %s",
 			inst, wantPath, fakeAppImageVer, testAppImageLayout)

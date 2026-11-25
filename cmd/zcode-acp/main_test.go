@@ -536,12 +536,35 @@ func e2eRideOverride(t *testing.T, agentBin string, argv, extraEnv []string) str
 	return stderrBuf.String()
 }
 
+// e2eCanonicalPath matches production's EvalSymlinks-resolved diagnostics.
+// macOS exposes t.TempDir under /var/folders while its real path is
+// /private/var/folders; missing fixture paths retain their absolute spelling.
+func e2eCanonicalPath(t *testing.T, path string) string {
+	t.Helper()
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("abs %s: %v", path, err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+
+	return resolved
+}
+
 // e2eAssertPackedSelection asserts the startup diagnostics name the packed
 // layout, its version, and the resolved AppImage path.
 func e2eAssertPackedSelection(t *testing.T, stderr, appImage string) {
 	t.Helper()
 
-	for _, want := range []string{"layout=appimage", "version=" + mountedFixtureVersion, "appimage=" + appImage} {
+	for _, want := range []string{
+		"layout=appimage",
+		"version=" + mountedFixtureVersion,
+		"appimage=" + e2eCanonicalPath(t, appImage),
+	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("the packed-override startup diagnostics must carry %q: %s", want, stderr)
 		}
