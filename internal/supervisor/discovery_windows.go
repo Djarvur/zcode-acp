@@ -176,6 +176,13 @@ func readUninstallHive(source uninstallHive) ([]UninstallEntry, error) {
 			continue
 		}
 
+		// Legacy uninstall keys can carry no name, path, or icon at all
+		// (AddressBook, Connection Manager, …). They have no discovery
+		// value, so the enumeration's contract exposes only usable records.
+		if entry.DisplayName == "" && entry.InstallLocation == "" && entry.DisplayIcon == "" {
+			continue
+		}
+
 		entries = append(entries, entry)
 	}
 
