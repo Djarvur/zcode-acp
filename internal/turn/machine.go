@@ -28,6 +28,7 @@
 package turn
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -91,6 +92,27 @@ const (
 	// degraded state — never completed/failed (the BRIDGE-04 prohibition:
 	// no resolution without a supporting completion signal).
 	SignalDegraded SignalKind = "degraded"
+
+	// SignalStall — the no-progress watchdog resolved the turn: a RUNNING
+	// turn made no real model/tool progress past the configured threshold,
+	// the bypass-lane session/stop was sent first, and the turn resolved
+	// StopError carrying the recorded stall cause. A cancelling turn is
+	// outside the watchdog's scope.
+	SignalStall SignalKind = "stall"
+)
+
+// Watchdog budget defaults (the 2026-11-25 field incident: a 429 retry
+// backoff kept one turn silent ~50 minutes and the wrapper had no progress
+// bound). Base is the no-model-progress allowance; the larger tool allowance
+// applies while a tool is active.
+const (
+	DefaultStallTimeout     = 15 * time.Minute
+	DefaultStallToolTimeout = 30 * time.Minute
+
+	// stallToolBudgetMultiple scales the tool allowance to an explicit base
+	// override when no explicit tool override is configured (test
+	// ergonomics: the tool budget stays a deterministic multiple of base).
+	stallToolBudgetMultiple = 2
 )
 
 // Resolution is the exactly-once completion record: the StopReason, the
@@ -141,10 +163,17 @@ const (
 	MethodComputerUseOperation = "computer-use/operation-event"
 )
 
-// stateRunningPatch is the state.updated patch.status value the idle-patch
-// latch consumes (dialect §5: only "running" was ever observed live — the
-// recorded A4 assumption; "leaving running" implies running was seen).
-const statusRunningPatch = "running"
+// state.updated patch values the idle-patch latch consumes (dialect §5:
+// only "running" was ever observed live — the recorded A4 assumption;
+// "leaving running" implies running was seen). A cancelled status and a
+// session_stopped reason are another turn's stop outcome: the stop was
+// explicit, so the patch is the outcome of the turn the stop interrupted,
+// never this running turn's completion.
+const (
+	statusRunningPatch        = "running"
+	statusCancelledPatch      = "cancelled"
+	reasonSessionStoppedPatch = "session_stopped"
+)
 
 // DefaultMaxQuietVetoes is the quiet-settle veto budget for start-announced
 // turns (QA-03): how many consecutive quiet-window settlements — with NO
@@ -177,6 +206,19 @@ const (
 // message text is never compared (dialect §6: messages are not a stable
 // contract).
 var ErrTurnActive = errors.New("turn: a prompt is already running for this session")
+
+// ErrOrphanedBackend is the distinct non-retryable sentinel for a backend
+// that still reports an active prompt AFTER the orphan-recovery stop and
+// single retry: the front-wide slot proves no local turn was active, so the
+// backend is stuck on an orphan and the client must not keep retrying the
+// retryable -32003 session_busy class.
+var ErrOrphanedBackend = errors.New(
+	"turn: the backend still reports an active prompt after stop and retry")
+
+// DefaultOrphanClearTimeout bounds the orphan-recovery wait for
+// session-scoped clear evidence (a terminal or an idle state.updated patch)
+// before the single retry proceeds.
+const DefaultOrphanClearTimeout = 5 * time.Second
 
 // errObligationExpired is the static degradation sentinel wrapped into a
 // degraded Resolution.Err (D-05 record-honesty): a tracked-no-answer
@@ -217,10 +259,66 @@ type Machine struct {
 	// finishTurn clears it between turns.
 	cancelTimer *time.Timer
 
+	// StallTimeout bounds a RUNNING turn's total no-progress silence
+	// (DefaultStallTimeout when zero). Assign before any turn runs. The
+	// watchdog fires only while the turn is running — a cancelling turn
+	// keeps the existing quiet/cancel contract.
+	StallTimeout time.Duration
+
+	// StallToolTimeout is the larger allowance applied while a tool is
+	// active (DefaultStallToolTimeout when zero). An explicit StallTimeout
+	// with no StallToolTimeout scales the tool allowance to 2x base.
+	StallToolTimeout time.Duration
+
+	// OrphanRecovery enables the bounded orphan-recovery path: a numeric
+	// -32010 session/send rejection triggers ONE bypass-lane stop, a bounded
+	// wait for session-scoped clear evidence, and ONE retry. It is an opt-in
+	// flag because a direct machine embedding cannot prove no LOCAL turn is
+	// active; the front enables it on every machine it registers for prompts
+	// (its front-wide slot is that proof). Default false keeps the -32010 ->
+	// ErrTurnActive -> -32003 mapping.
+	OrphanRecovery bool
+
+	// OrphanClearTimeout bounds the orphan-recovery clear wait
+	// (DefaultOrphanClearTimeout when zero). Assign before any turn runs.
+	OrphanClearTimeout time.Duration
+
 	mu          sync.Mutex
 	state       machineState
 	turnID      string
 	runningSeen bool
+	// retiredTurnID remembers the turnId the last turn resolved with (or a
+	// late duplicate terminal observed after resolution). It PERSISTS across
+	// turns: beginTurnLocked never clears it, so a prompt accepted after a
+	// prior turn resolved cannot be bound by that turn's late terminal — the
+	// 2026-11-25 field incident's false completion.
+	retiredTurnID string
+	// runningRevision/runningRevisionSeen/runningReason record the running
+	// state.updated patch that armed the idle latch: an idle patch completes
+	// the turn only when both revisions are present and the idle revision is
+	// strictly greater (dialect §5: idle patches are not reliably
+	// turn-scoped, so ordering must be proven by the session-scoped revision).
+	runningRevision     int64
+	runningRevisionSeen bool
+	runningReason       string
+
+	// The no-progress watchdog state (per turn): lastProgress is the last
+	// real model/tool progress instant, toolActive the tool-allowance
+	// selector, stallWake the capacity-1 poke channel, and the messages
+	// pair the poll-surface content baseline (a stable echo is not
+	// progress).
+	lastProgress    time.Time
+	toolActive      bool
+	stallWake       chan struct{}
+	messagesSeen    bool
+	lastMessagesRaw json.RawMessage
+
+	// The orphan-recovery wait state (per turn): while orphanWaiting, the
+	// one observe path inspects inbound envelopes ONLY for explicitly
+	// session-scoped clear evidence and signals orphanClear (capacity 1).
+	orphanWaiting bool
+	orphanClear   chan struct{}
+
 	startProven bool
 	quietVetoes int
 	resolved    bool
@@ -319,27 +417,21 @@ func (m *Machine) Run(ctx context.Context, content string) (StopReason, error) {
 	m.beginTurnLocked()
 	m.mu.Unlock()
 
-	if _, err := m.conn.Call(ctx, zcode.MethodSessionSend, map[string]any{
-		"sessionId": m.sessID,
-		"content":   content,
-	}); err != nil {
-		m.finishTurn()
-
-		// The server-side -32010 rejection (PITFALL 5): when the send
-		// reached the wire and the server refused it with dialect §6
-		// CodeConcurrency, surface the same mapped clean error the
-		// wrapper-side guard uses — matched by the numeric code, never the
-		// message text.
-		var callErr *zcode.CallError
-		if errors.As(err, &callErr) && callErr.Err.Code == zcode.CodeConcurrency {
-			return "", fmt.Errorf("turn: session/send: %w: %w", callErr, ErrTurnActive)
+	if sendErr := m.sendTurn(ctx, content); sendErr != nil {
+		if retried, retryErr := m.recoverOrphanedSend(ctx, content, sendErr); retried {
+			sendErr = retryErr
 		}
 
-		return "", fmt.Errorf("turn: session/send: %w", err)
+		if sendErr != nil {
+			m.finishTurn()
+
+			return "", m.mapSendError(sendErr)
+		}
 	}
 
 	m.mu.Lock()
 	m.ackAt = time.Now()
+	m.lastProgress = m.ackAt
 	m.mu.Unlock()
 
 	stop, err := m.watcher.Watch(ctx, m.sessID, m.onWatcherObservation)
@@ -350,6 +442,8 @@ func (m *Machine) Run(ctx context.Context, content string) (StopReason, error) {
 	}
 
 	defer stop()
+
+	defer m.startStallWatchdog(ctx)()
 
 	reason, waitErr := m.Wait(ctx)
 	m.finishTurn()
@@ -439,6 +533,16 @@ func (m *Machine) AckAt() time.Time {
 	return m.ackAt
 }
 
+// Resolution returns the current turn's exactly-once completion record (the
+// zero Resolution before the first turn resolves). The front reads it to
+// surface a recorded stall cause as the coded client error.
+func (m *Machine) Resolution() Resolution {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.resolution
+}
+
 // ObserveEnvelope is the ONE classification path for every inbound envelope
 // (the T-3-06 mitigation): the ordered D-02 signal union — terminal kinds
 // with turnId match across the known carriers first, then the idle patch
@@ -451,6 +555,15 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	defer m.mu.Unlock()
 
 	if m.state != stateRunning && m.state != stateCancelling {
+		return
+	}
+
+	// While the orphan-recovery wait is active, the envelope is inspected
+	// ONLY for explicitly session-scoped clear evidence; nothing classifies
+	// or resolves until the single retry starts a fresh turn.
+	if m.orphanWaiting {
+		m.observeOrphanEvidenceLocked(env)
+
 		return
 	}
 
@@ -471,6 +584,10 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	if env.Method != zcode.MethodSessionMessages {
 		m.quietVetoes = 0
 	}
+
+	// The no-progress watchdog's clock: real model/tool progress resets it,
+	// telemetry and stable poll echoes do not (the narrow scope list).
+	m.noteProgressLocked(env)
 
 	reason, terminal := m.classifyTerminalLocked(env)
 	if terminal {
@@ -509,6 +626,208 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	}
 }
 
+// startStallWatchdog starts the no-progress watchdog goroutine on a derived
+// context and returns the join function: cancelling the derived context
+// unblocks the loop and the join waits until it exits, so Run never returns
+// with the goroutine still running (the single-stop-after-resolution
+// guarantee).
+func (m *Machine) startStallWatchdog(ctx context.Context) func() {
+	stallCtx, stallCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		m.stallLoop(stallCtx)
+	}()
+
+	return func() {
+		stallCancel()
+		<-done
+	}
+}
+
+// sendTurn issues one fire-and-forget session/send and returns the wire
+// failure verbatim (the caller maps it).
+func (m *Machine) sendTurn(ctx context.Context, content string) error {
+	_, err := m.conn.Call(ctx, zcode.MethodSessionSend, map[string]any{
+		"sessionId": m.sessID,
+		"content":   content,
+	})
+
+	return err //nolint:wrapcheck // the caller maps the wire failure and wraps it in context
+}
+
+// recoverOrphanedSend handles a session/send rejection. The numeric -32010
+// concurrency refusal is mapped to ErrTurnActive by default; when the
+// machine's front-slot orphan recovery is enabled, it instead sends ONE
+// bypass-lane stop, waits a bounded interval for explicitly session-scoped
+// clear evidence, resets the per-turn signal state, and retries the send
+// exactly once. A second -32010 returns ErrOrphanedBackend; any other retry
+// failure returns the normal transport error. retried reports whether the
+// recovery path owned the failure (so the caller maps accordingly).
+func (m *Machine) recoverOrphanedSend(ctx context.Context, content string, sendErr error) (bool, error) {
+	var callErr *zcode.CallError
+	if !errors.As(sendErr, &callErr) || callErr.Err.Code != zcode.CodeConcurrency {
+		return false, nil
+	}
+
+	if !m.OrphanRecovery {
+		return false, nil
+	}
+
+	slog.Warn("turn: backend reports an orphaned active prompt; stopping and retrying once",
+		"session", m.sessID)
+
+	m.mu.Lock()
+	m.startOrphanWaitLocked()
+	clearCh := m.orphanClear
+	window := m.orphanClearWindowLocked()
+	m.mu.Unlock()
+
+	// The stop goes through the bypass lane; a failure is recorded and the
+	// bounded wait still runs (the retry is attempted either way).
+	if err := m.conn.Stop(m.sessID); err != nil {
+		slog.Warn("turn: orphan stop failed", "session", m.sessID, "err", err)
+	}
+
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+	case <-clearCh:
+	case <-timer.C:
+	}
+
+	m.mu.Lock()
+	m.endOrphanWaitLocked()
+	m.resetTurnSignalsLocked()
+	m.mu.Unlock()
+
+	retryErr := m.sendTurn(ctx, content)
+	if retryErr == nil {
+		return true, nil
+	}
+
+	var retryCallErr *zcode.CallError
+	if errors.As(retryErr, &retryCallErr) && retryCallErr.Err.Code == zcode.CodeConcurrency {
+		return true, fmt.Errorf("turn: session/send after orphan stop: %w: %w", retryErr, ErrOrphanedBackend)
+	}
+
+	return true, retryErr
+}
+
+// mapSendError maps a session/send failure onto the machine's public error:
+// the orphan-recovery verdict passes through, the default numeric -32010
+// mapping stays ErrTurnActive (matched by code, never message text), and
+// everything else is the wrapped transport error.
+func (m *Machine) mapSendError(err error) error {
+	if errors.Is(err, ErrOrphanedBackend) {
+		return err
+	}
+
+	var callErr *zcode.CallError
+	if errors.As(err, &callErr) && callErr.Err.Code == zcode.CodeConcurrency {
+		return fmt.Errorf("turn: session/send: %w: %w", callErr, ErrTurnActive)
+	}
+
+	return fmt.Errorf("turn: session/send: %w", err)
+}
+
+// startOrphanWaitLocked opens the orphan clear-evidence window with a fresh
+// capacity-1 channel (evidence before the select is buffered, never lost).
+func (m *Machine) startOrphanWaitLocked() {
+	m.orphanWaiting = true
+	m.orphanClear = make(chan struct{}, 1)
+}
+
+// endOrphanWaitLocked closes the orphan wait (idempotent).
+func (m *Machine) endOrphanWaitLocked() {
+	m.orphanWaiting = false
+	m.orphanClear = nil
+}
+
+// signalOrphanClearLocked delivers clear evidence non-blockingly.
+func (m *Machine) signalOrphanClearLocked() {
+	if m.orphanClear == nil {
+		return
+	}
+
+	select {
+	case m.orphanClear <- struct{}{}:
+	default:
+	}
+}
+
+// orphanClearWindowLocked resolves the bounded clear wait: the injected
+// override when positive, else the production default.
+func (m *Machine) orphanClearWindowLocked() time.Duration {
+	if m.OrphanClearTimeout > 0 {
+		return m.OrphanClearTimeout
+	}
+
+	return DefaultOrphanClearTimeout
+}
+
+// observeOrphanEvidenceLocked inspects one envelope while the orphan wait is
+// active. Clear evidence must be EXPLICITLY session-scoped: the machine's
+// ObserveEnvelope is conn-wide, so a terminal or idle patch carrying a
+// foreign OR ABSENT sessionId neither clears the wait nor resolves — the
+// bound expires and the single retry still happens. Scoped evidence only
+// signals the wait (nothing classifies or resolves): a terminal's non-empty
+// turnId is retired so a late duplicate cannot bind the retried turn.
+func (m *Machine) observeOrphanEvidenceLocked(env zcode.Envelope) {
+	sid := paramsString(env.Params, "sessionId")
+	if sid != m.sessID {
+		slog.Debug("turn: orphan clear evidence ignored (not session-scoped)",
+			"session", m.sessID, "evidence_session", sid)
+
+		return
+	}
+
+	if kind, terminal := terminalSignalKind(env); terminal {
+		if turnID := paramsString(env.Params, "turnId"); turnID != "" {
+			m.retiredTurnID = turnID
+		}
+
+		m.signalOrphanClearLocked()
+
+		slog.Debug("turn: orphan cleared by terminal evidence", "session", m.sessID, "kind", kind)
+
+		return
+	}
+
+	if env.Method == zcode.MethodStateUpdated {
+		if obs, ok := decodeStatePatch(env, m.sessID); ok && obs.status != "" &&
+			obs.status != statusRunningPatch {
+			m.signalOrphanClearLocked()
+
+			slog.Debug("turn: orphan cleared by idle patch evidence",
+				"session", m.sessID, "status", obs.status)
+		}
+	}
+}
+
+// terminalSignalKind reports the terminal kind an envelope carries on a
+// known carrier (turn starts are not terminal evidence).
+func terminalSignalKind(env zcode.Envelope) (string, bool) {
+	field, ok := carrierKindField(env.Method)
+	if !ok {
+		return "", false
+	}
+
+	kind := paramsString(env.Params, field)
+
+	switch kind {
+	case KindTurnCompleted, KindTurnFailed, KindTurnTerminal,
+		KindTurnCompletedCU, KindTurnFailedCU:
+		return kind, true
+	}
+
+	return "", false
+}
+
 // guardTurnLocked rejects a concurrent second send (D-02: the -32010
 // concurrency guard is enforced wrapper-side, never silently queued).
 func (m *Machine) guardTurnLocked() error {
@@ -523,19 +842,37 @@ func (m *Machine) guardTurnLocked() error {
 }
 
 // beginTurnLocked starts a fresh turn: the per-turn signal state (the
-// learned turnId, the running-patch latch, the start-announcement record,
-// the veto budget, the resolution record) resets; the lifetime resolution
-// counter does not — it is the exactly-once proof.
+// learned turnId, the running-patch latch and its revision, the
+// start-announcement record, the veto budget, the resolution record)
+// resets; the lifetime resolution counter does not — it is the exactly-once
+// proof — and the retired turnId does not either (it is the memory that
+// keeps a prior turn's late terminal from binding this one).
 func (m *Machine) beginTurnLocked() {
 	m.state = stateRunning
-	m.turnID = ""
-	m.runningSeen = false
-	m.startProven = false
-	m.quietVetoes = 0
+	m.resetTurnSignalsLocked()
 	m.resolved = false
 	m.resolution = Resolution{}
 	m.ackAt = time.Time{}
 	m.resolvedCh = make(chan struct{})
+	m.stallWake = make(chan struct{}, 1)
+}
+
+// resetTurnSignalsLocked clears the per-turn signal and watchdog state — the
+// state an orphan-recovery retry must start clean (running latch, bound
+// turnId, start-proven, veto budget, progress clock, messages baseline)
+// while the RETIRED turnId is deliberately preserved.
+func (m *Machine) resetTurnSignalsLocked() {
+	m.turnID = ""
+	m.runningSeen = false
+	m.runningRevision = 0
+	m.runningRevisionSeen = false
+	m.runningReason = ""
+	m.startProven = false
+	m.quietVetoes = 0
+	m.lastProgress = time.Time{}
+	m.toolActive = false
+	m.messagesSeen = false
+	m.lastMessagesRaw = nil
 }
 
 // finishTurn marks the turn lifecycle done — the machine's resting state
@@ -614,6 +951,318 @@ func (m *Machine) maxQuietVetoes() int {
 	return DefaultMaxQuietVetoes
 }
 
+// noteProgressLocked feeds one observed envelope into the no-progress clock.
+// The scope is deliberately narrow (the 2026-11-25 field incident: retry
+// telemetry and stable poll echoes kept the quiet watcher alive forever):
+//
+//   - session/event part.delta with field text/reasoning;
+//   - session/event model.streaming payload.kind text_delta/reasoning_delta;
+//   - session/event tool.updated scheduled/started/progress (tool active)
+//     and result/error (tool inactive);
+//   - turn-start/terminal kinds on any carrier;
+//   - a session/messages payload whose messages array is non-empty on first
+//     sight or whose raw bytes changed since the previous poll.
+//
+// Everything else — model-request/retry telemetry, session.updated
+// lifecycle payloads, byte-stable poll echoes — is a lifecycle fact, not
+// model progress. Progress scopes to the machine's session when the
+// envelope carries a sessionId.
+func (m *Machine) noteProgressLocked(env zcode.Envelope) {
+	if sid := paramsString(env.Params, "sessionId"); sid != "" && sid != m.sessID {
+		return
+	}
+
+	progress := false
+
+	switch env.Method {
+	case zcode.MethodSessionEvent:
+		progress = m.sessionEventProgressLocked(env)
+	case MethodV4Telemetry, MethodComputerUseOperation:
+		field, _ := carrierKindField(env.Method)
+		progress = isTurnSignalKind(paramsString(env.Params, field))
+	case zcode.MethodSessionMessages:
+		progress = m.messagesProgressLocked(env)
+	}
+
+	if !progress {
+		return
+	}
+
+	m.lastProgress = time.Now()
+	m.pokeStallLocked()
+}
+
+// sessionEventProgressLocked classifies one session/event envelope against
+// the progress scope list.
+func (m *Machine) sessionEventProgressLocked(env zcode.Envelope) bool {
+	kind := paramsString(env.Params, "type")
+
+	if isTurnSignalKind(kind) {
+		return true
+	}
+
+	switch kind {
+	case "part.delta":
+		field := paramsString(env.Params, "field")
+
+		return field == "text" || field == "reasoning"
+	case "model.streaming":
+		payloadKind := nestedPayloadKind(env.Params)
+
+		return payloadKind == "text_delta" || payloadKind == "reasoning_delta"
+	case "tool.updated":
+		switch nestedPayloadKind(env.Params) {
+		case "scheduled", "started", "progress":
+			m.toolActive = true
+
+			return true
+		case "result", "error":
+			m.toolActive = false
+
+			return true
+		}
+	}
+
+	return false
+}
+
+// isTurnSignalKind reports whether a carrier kind is a turn start or
+// terminal — both are turn lifecycle facts and count as progress.
+func isTurnSignalKind(kind string) bool {
+	switch kind {
+	case KindTurnStarted, KindTurnCompleted, KindTurnFailed, KindTurnTerminal,
+		KindTurnStartedCU, KindTurnCompletedCU, KindTurnFailedCU:
+		return true
+	}
+
+	return false
+}
+
+// nestedPayloadKind digs payload.kind out of a session/event params map
+// (model.streaming/tool.updated carry their discriminator there).
+func nestedPayloadKind(raw json.RawMessage) string {
+	var params struct {
+		Payload struct {
+			Kind string `json:"kind"`
+		} `json:"payload"`
+	}
+
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return ""
+	}
+
+	return params.Payload.Kind
+}
+
+// messagesProgressLocked treats a session/messages content change as
+// progress: a non-empty messages array on first sight, or raw bytes that
+// differ from the previous poll. A byte-stable poll echo is presence
+// evidence, not progress.
+func (m *Machine) messagesProgressLocked(env zcode.Envelope) bool {
+	var params struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+
+	if err := json.Unmarshal(env.Params, &params); err != nil || len(params.Messages) == 0 {
+		return false
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(params.Messages, &messages); err != nil {
+		return false
+	}
+
+	nonEmpty := len(messages) > 0
+	changed := m.lastMessagesRaw != nil && !bytes.Equal(m.lastMessagesRaw, params.Messages)
+	m.lastMessagesRaw = bytes.Clone(params.Messages)
+
+	if nonEmpty && !m.messagesSeen {
+		m.messagesSeen = true
+
+		return true
+	}
+
+	return nonEmpty && changed
+}
+
+// pokeStallLocked wakes the watchdog non-blockingly to recompute the
+// remaining budget (progress moved the deadline).
+func (m *Machine) pokeStallLocked() {
+	if m.stallWake == nil {
+		return
+	}
+
+	select {
+	case m.stallWake <- struct{}{}:
+	default:
+	}
+}
+
+// stallLoop is the watchdog goroutine: it computes the remaining no-progress
+// budget, wakes on progress or the deadline, and exits as soon as the turn
+// is resolved or leaves the running state — a cancelling turn is outside the
+// watchdog's scope, so the loop never busy-fires a non-positive remainder
+// while the quiet/cancel path winds the turn down.
+func (m *Machine) stallLoop(ctx context.Context) {
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
+
+	for {
+		m.mu.Lock()
+		if m.resolved || m.state != stateRunning {
+			m.mu.Unlock()
+
+			return
+		}
+
+		remaining := m.stallRemainingLocked(time.Now())
+		wake := m.stallWake
+		m.mu.Unlock()
+
+		if remaining <= 0 {
+			if m.fireStallIfExpired() {
+				return
+			}
+
+			continue
+		}
+
+		timer.Reset(remaining)
+
+		select {
+		case <-ctx.Done():
+			stallTimerStop(timer)
+
+			return
+		case <-wake:
+			stallTimerStop(timer)
+		case <-timer.C:
+		}
+	}
+}
+
+// stallTimerStop stops t and drains its channel so the next Reset starts
+// from a clean timer.
+func stallTimerStop(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
+
+// stallRemainingLocked is the time left before the active budget expires
+// (non-positive when the budget is already spent).
+func (m *Machine) stallRemainingLocked(now time.Time) time.Duration {
+	budget := m.stallBudgetLocked()
+
+	if m.lastProgress.IsZero() {
+		return budget
+	}
+
+	return m.lastProgress.Add(budget).Sub(now)
+}
+
+// stallBudgetLocked resolves the active budget: the tool allowance while a
+// tool is active, the base allowance otherwise.
+func (m *Machine) stallBudgetLocked() time.Duration {
+	if m.toolActive {
+		return m.stallToolBudgetLocked()
+	}
+
+	if m.StallTimeout > 0 {
+		return m.StallTimeout
+	}
+
+	return DefaultStallTimeout
+}
+
+// stallToolBudgetLocked resolves the tool allowance: the explicit override,
+// else 2x an explicit base (test ergonomics), else the production default.
+func (m *Machine) stallToolBudgetLocked() time.Duration {
+	if m.StallToolTimeout > 0 {
+		return m.StallToolTimeout
+	}
+
+	if m.StallTimeout > 0 {
+		return stallToolBudgetMultiple * m.StallTimeout
+	}
+
+	return DefaultStallToolTimeout
+}
+
+// fireStallIfExpired sends the bypass-lane stop BEFORE resolving the stall
+// (so no successor prompt can race a late stop against its own send) and
+// reports whether the watchdog loop is done. The state is re-checked under
+// the mutex on both sides of the wire write: a cancel that landed in between
+// owns the outcome, and progress that moved the deadline keeps the loop
+// waiting.
+func (m *Machine) fireStallIfExpired() bool {
+	m.mu.Lock()
+	if m.resolved || m.state != stateRunning {
+		m.mu.Unlock()
+
+		return true
+	}
+
+	now := time.Now()
+	if remaining := m.stallRemainingLocked(now); remaining > 0 {
+		m.mu.Unlock()
+
+		return false
+	}
+
+	budget := m.stallBudgetLocked()
+	toolActive := m.toolActive
+	m.mu.Unlock()
+
+	if err := m.conn.Stop(m.sessID); err != nil {
+		slog.Warn("turn: stall stop failed", "session", m.sessID, "err", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.resolved || m.state != stateRunning {
+		return true
+	}
+
+	if remaining := m.stallRemainingLocked(time.Now()); remaining > 0 {
+		return false
+	}
+
+	err := stallCause(toolActive, budget)
+	m.resolveLocked(Resolution{Reason: StopError, Signal: SignalStall, At: time.Now(), Err: err})
+
+	slog.Warn("turn: stalled turn stopped", "session", m.sessID,
+		"tool_active", toolActive, "budget", budget.String(), "err", err)
+
+	return true
+}
+
+// errStallNoModelProgress / errStallNoToolProgress are the two stable stall
+// causes recorded on Resolution.Err and surfaced by the front as the coded
+// client error (the budget rides as the wrapper's detail, never the text).
+var (
+	errStallNoModelProgress = errors.New("turn stalled: no model progress (provider may be rate-limiting)")
+	errStallNoToolProgress  = errors.New(
+		"turn stalled: no tool progress (provider may be rate-limiting; a tool was active)")
+)
+
+// stallCause renders the recorded stall cause (the short stable wording the
+// front surfaces as a coded -32603).
+func stallCause(toolActive bool, budget time.Duration) error {
+	if toolActive {
+		return fmt.Errorf("%w: budget %s", errStallNoToolProgress, budget)
+	}
+
+	return fmt.Errorf("%w: budget %s", errStallNoModelProgress, budget)
+}
+
 // observeRouterEvent is the machine's face on the conn's reverse-request
 // router policy events (D-05 record-honesty): a tracked-no-answer deadline
 // expiring mid-turn — on the real path the scripted credential-cipher
@@ -648,19 +1297,65 @@ func (m *Machine) observeRouterEvent(ev zcode.RouterEvent) {
 // state.updated whose patch.status leaves "running" for this session — the
 // D-02 secondary signal (dialect §5 reliability column: "do not rely on it
 // alone"). The running patch itself never resolves: the latch requires a
-// running patch to have been observed first, and any later non-running
-// status counts as leaving running.
+// running patch to have been observed first, and the leaving patch must be
+// provably NEWER than the running patch that armed the turn.
+//
+// The idle patch is not reliably turn-scoped (dialect §5), so the binding is
+// the session-scoped revision: the running patch records the MAX revision
+// (and its reason) it was armed with, and a leaving patch completes the
+// turn only when both revisions are present and the idle revision is
+// strictly greater. A missing, equal, or lower revision is observation
+// only — the turn resolves through its terminal, quiet window, or watchdog.
+// While running, a cancelled status or a session_stopped reason is another
+// turn's stop outcome (the stop was explicit) and never completes this one;
+// while cancelling, any leaving-running patch is the stop's observed
+// outcome.
 func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 	if env.Method != zcode.MethodStateUpdated {
 		return false
 	}
 
-	// Wire payloads keep the dialect's camelCase keys verbatim (the
-	// tagliatelle contract), so the session id digs out of the params map
-	// and only the snake-safe inner patch shape is struct-decoded.
-	sessID := paramsString(env.Params, "sessionId")
-	if sessID != "" && sessID != m.sessID {
+	obs, ok := decodeStatePatch(env, m.sessID)
+	if !ok {
 		return false
+	}
+
+	slog.Debug("turn: state.updated patch", "session", m.sessID, "status", obs.status,
+		"reason", obs.reason, "revision", obs.revision, "armed_revision", m.runningRevision,
+		"state", m.state)
+
+	if obs.status == statusRunningPatch {
+		m.armRunningPatchLocked(obs)
+
+		return false
+	}
+
+	if !m.runningSeen || obs.status == "" {
+		return false
+	}
+
+	return m.leavingRunningCompletesLocked(obs)
+}
+
+// statePatchObservation is one decoded state.updated patch: the nested
+// status plus the top-level reason/revision pair the ordering gate reads.
+type statePatchObservation struct {
+	status      string
+	reason      string
+	revision    int64
+	hasRevision bool
+}
+
+// decodeStatePatch decodes one state.updated params payload scoped to
+// sessID. Wire payloads keep the dialect's camelCase keys verbatim (the
+// tagliatelle contract), so the session id digs out of the params map and
+// only the snake-safe inner patch shape is struct-decoded.
+func decodeStatePatch(env zcode.Envelope, sessID string) (statePatchObservation, bool) {
+	var obs statePatchObservation
+
+	sid := paramsString(env.Params, "sessionId")
+	if sid != "" && sid != sessID {
+		return obs, false
 	}
 
 	var params struct {
@@ -668,7 +1363,7 @@ func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 	}
 
 	if err := json.Unmarshal(env.Params, &params); err != nil || len(params.Patch) == 0 {
-		return false
+		return obs, false
 	}
 
 	var patch struct {
@@ -676,16 +1371,43 @@ func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 	}
 
 	if err := json.Unmarshal(params.Patch, &patch); err != nil {
+		return obs, false
+	}
+
+	obs.status = patch.Status
+	obs.reason = paramsString(env.Params, "reason")
+	obs.revision, obs.hasRevision = paramsInt64(env.Params, "revision")
+
+	return obs, true
+}
+
+// armRunningPatchLocked records the running patch that armed the turn,
+// keeping the MAX revision bound: a late lower-revision running echo must
+// not lower the bar the idle patch has to clear.
+func (m *Machine) armRunningPatchLocked(obs statePatchObservation) {
+	m.runningSeen = true
+
+	if obs.hasRevision && (!m.runningRevisionSeen || obs.revision > m.runningRevision) {
+		m.runningRevision = obs.revision
+		m.runningRevisionSeen = true
+		m.runningReason = obs.reason
+	}
+}
+
+// leavingRunningCompletesLocked applies the leaving-running gate: while
+// cancelling, the patch is the stop's explicit outcome; while running, a
+// cancelled status or session_stopped reason belongs to another turn's stop
+// and the revision must be present on both sides and strictly newer.
+func (m *Machine) leavingRunningCompletesLocked(obs statePatchObservation) bool {
+	if m.state == stateCancelling {
+		return true
+	}
+
+	if obs.status == statusCancelledPatch || obs.reason == reasonSessionStoppedPatch {
 		return false
 	}
 
-	if patch.Status == statusRunningPatch {
-		m.runningSeen = true
-
-		return false
-	}
-
-	return m.runningSeen && patch.Status != ""
+	return obs.hasRevision && m.runningRevisionSeen && obs.revision > m.runningRevision
 }
 
 // classifyTerminalLocked reports the terminal StopReason when env is a
@@ -695,9 +1417,11 @@ func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 // telemetry "turn.terminal", EXP-VM-QA02-family dumps 2026-11-23). Turn
 // -start kinds record the turn's id; a start on a TERMINAL-PROVEN carrier
 // additionally arms the quiet-settle veto (QA-03: the family promised a
-// terminal signal). A terminal whose turnId does not match the turn's id is
-// NOT a completion signal (a foreign turn's envelope must never resolve
-// this turn).
+// terminal signal). A terminal or turn-start with an EMPTY turnId never
+// binds (all shipped carriers are turnId-scoped); a signal carrying the
+// RETIRED turnId never binds a successor; a signal for a foreign bound turn
+// is observation only (IN-05: a foreign turn's envelope must never resolve
+// this turn, and a foreign start must not arm its veto).
 func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) {
 	field, ok := carrierKindField(env.Method)
 	if !ok {
@@ -709,8 +1433,8 @@ func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) 
 
 	switch kind {
 	case KindTurnStarted, KindTurnStartedCU:
-		if m.turnID == "" {
-			m.turnID = turnID
+		if !m.bindTurnStartLocked(turnID) {
+			return "", false
 		}
 
 		if m.startProvenCarrier(env.Method) {
@@ -719,19 +1443,19 @@ func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) 
 
 		return "", false
 	case KindTurnCompleted, KindTurnCompletedCU:
-		if !m.turnIDMatchesLocked(turnID) {
+		if !m.bindTerminalTurnLocked(turnID) {
 			return "", false
 		}
 
 		return StopCompleted, true
 	case KindTurnFailed, KindTurnFailedCU:
-		if !m.turnIDMatchesLocked(turnID) {
+		if !m.bindTerminalTurnLocked(turnID) {
 			return "", false
 		}
 
 		return StopFailed, true
 	case KindTurnTerminal:
-		if !m.turnIDMatchesLocked(turnID) {
+		if !m.bindTerminalTurnLocked(turnID) {
 			return "", false
 		}
 
@@ -785,12 +1509,73 @@ func carrierKindField(method string) (string, bool) {
 	return "", false
 }
 
-// turnIDMatchesLocked reports whether a turn-scoped signal belongs to the
-// active turn. Record-on-first-sight: exactly one turn runs per session at
-// a time (the -32010 guard), so the first turn-scoped signal defines the
-// turn's id; later signals must match it.
-func (m *Machine) turnIDMatchesLocked(turnID string) bool {
+// bindTerminalTurnLocked decides whether a TERMINAL signal's turnId belongs
+// to the live turn, and records it on first sight. The binder is
+// conservative by construction (the 2026-11-25 false-completion race):
+//
+//   - an EMPTY turnId never binds (all shipped carriers are turnId-scoped;
+//     the quiet window remains the honest fallback);
+//   - a turnId equal to the RETIRED id never binds a successor — the prior
+//     turn's late terminal is ignored while this turn is unbound;
+//   - when unbound, the first other non-empty turnId is the live turn
+//     (record-on-first-sight survives for the legitimate first signal);
+//   - when bound, only the exact bound turnId matches;
+//   - after resolution, a terminal that belongs to the resolved turn (or
+//     arrives while nothing is bound) records its id as retired and never
+//     resolves, so a late duplicate can never falsely complete a successor.
+func (m *Machine) bindTerminalTurnLocked(turnID string) bool {
+	if turnID == "" {
+		return false
+	}
+
+	if m.resolved {
+		if m.turnID == "" || turnID == m.turnID {
+			m.retiredTurnID = turnID
+		}
+
+		return false
+	}
+
 	if m.turnID == "" {
+		if turnID == m.retiredTurnID {
+			return false
+		}
+
+		m.turnID = turnID
+
+		return true
+	}
+
+	return turnID == m.turnID
+}
+
+// bindTurnStartLocked binds a turn-start signal. A start carrying the
+// retired turnId is ignored while the successor is unbound AND no running
+// patch has armed this turn yet: that is the stale-prior-turn shape (the
+// prior turn's start reached the wire before the new send, so a late
+// start+terminal pair cannot claim the successor). A retired-id start
+// observed AFTER this turn's own running patch is the successor's own start
+// under a backend that recycles turn ids (the legacy corpus fixtures and
+// any runtime that does not mint per-turn ids): binding it is safe because
+// the running patch proves this turn's send was already accepted.
+func (m *Machine) bindTurnStartLocked(turnID string) bool {
+	if turnID == "" {
+		return false
+	}
+
+	if m.resolved {
+		if m.turnID == "" || turnID == m.turnID {
+			m.retiredTurnID = turnID
+		}
+
+		return false
+	}
+
+	if m.turnID == "" {
+		if turnID == m.retiredTurnID && !m.runningSeen {
+			return false
+		}
+
 		m.turnID = turnID
 
 		return true
@@ -821,7 +1606,8 @@ func (m *Machine) resolveCancelGrace() {
 // resolveLocked resolves the turn exactly once (sync.Once semantics: the
 // per-turn resolved flag under the machine mutex), closes the wait channel,
 // and fires the OnResolve hook — the observable face of exactly-once. The
-// first supporting signal wins; later signals are observations only.
+// first supporting signal wins; later signals are observations only. A
+// resolved turn's bound turnId is retired for the successor's binder.
 func (m *Machine) resolveLocked(res Resolution) {
 	if m.resolved {
 		return
@@ -834,11 +1620,47 @@ func (m *Machine) resolveLocked(res Resolution) {
 
 	m.resolved = true
 	m.resolution = res
+
+	if m.turnID != "" {
+		m.retiredTurnID = m.turnID
+	}
+
+	slog.Debug("turn: resolved", "session", m.sessID, "reason", res.Reason,
+		"signal", res.Signal, "turnId", m.turnID, "err", res.Err)
+
 	close(m.resolvedCh)
 
 	if m.OnResolve != nil {
 		m.OnResolve(res)
 	}
+}
+
+// paramsInt64 digs one top-level integer value out of an envelope params
+// payload; undecodable params or an absent key classify as absent (the
+// idle-binding conservative fallback).
+func paramsInt64(raw json.RawMessage, key string) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return 0, false
+	}
+
+	switch v := obj[key].(type) {
+	case float64:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+
+		return n, true
+	}
+
+	return 0, false
 }
 
 // paramsString digs one top-level string value out of an envelope params

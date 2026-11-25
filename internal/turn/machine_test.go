@@ -57,6 +57,9 @@ const (
 	wireKeyTimestamp      = "timestamp"
 	wireKeyMessages       = "messages"
 	wireKeyType           = "type"
+	wireKeySeq            = "seq"
+	wireKeyPayload        = "payload"
+	wireKeyDelta          = "delta"
 
 	// unknownMethodReply is the fake's unknown-method -32601 reply message
 	// (goconst: the literal repeats across the programmatic scenarios).
@@ -127,18 +130,33 @@ func messagesRule(t *testing.T) fake.RequestRule {
 }
 
 // statePatch is a state.updated notification with a patch.status for the
-// fixed session (the capture-verbatim envelope shape).
+// fixed session (the capture-verbatim envelope shape) at the corpus
+// running-patch revision (1).
 func statePatch(t *testing.T, status, reason string) fake.SideEffect {
 	t.Helper()
 
-	return emit(t, zcode.MethodStateUpdated, map[string]any{
-		"patch":          map[string]any{"status": status},
+	return statePatchRev(t, status, reason, 1)
+}
+
+// statePatchRev is the revision-parameterized state.updated patch: the
+// revision/status/reason binding fixtures drive the idle gate, and a
+// revision <= 0 omits the key entirely (the absent-revision arm).
+func statePatchRev(t *testing.T, status, reason string, revision int) fake.SideEffect {
+	t.Helper()
+
+	params := map[string]any{
+		"patch":          map[string]any{wireKeyStatus: status},
 		"reason":         reason,
-		"revision":       1,
 		"scope":          "session",
 		wireKeySessionID: fixSessionID,
 		wireKeyType:      "state.updated",
-	})
+	}
+
+	if revision > 0 {
+		params["revision"] = revision
+	}
+
+	return emit(t, zcode.MethodStateUpdated, params)
 }
 
 // sessionEvent is a session/event turn-scoped carrier envelope.
@@ -147,7 +165,7 @@ func sessionEvent(t *testing.T, kind, turnID string) fake.SideEffect {
 
 	return emit(t, zcode.MethodSessionEvent, map[string]any{
 		wireKeyType:    kind,
-		"seq":          4,
+		wireKeySeq:     4,
 		wireKeyTurnID:  turnID,
 		"traceId":      "trace_fix1",
 		"deliveryKind": deliveryKind,
@@ -162,7 +180,7 @@ func v4Telemetry(t *testing.T, kind, turnID string) fake.SideEffect {
 	return emit(t, turn.MethodV4Telemetry, map[string]any{
 		wireKeyKind:      kind,
 		wireKeyTurnID:    turnID,
-		"eventSeq":       2,
+		wireKeyEventSeq:  2,
 		wireKeySessionID: fixSessionID,
 		"version":        1,
 	})
@@ -312,8 +330,18 @@ type turnExchange struct {
 
 // startTurnExchange wires the fake, the conn, a machine bound to the fixed
 // session with injectable millisecond quiet knobs, and the resolution spy.
-// Cleanup joins both ends.
+// Cleanup joins both ends. The quiet knobs are the variant suite's 40/2/10.
 func startTurnExchange(t *testing.T, sc *fake.Scenario) *turnExchange {
+	t.Helper()
+
+	return startTurnExchangeKnobs(t, sc, 40, 2, 10)
+}
+
+// startTurnExchangeKnobs wires the exchange with explicit quiet-window
+// knobs (quiet milliseconds, floor multiple, poll interval): the watchdog
+// tests use a wide quiet window so the quiet fallback cannot win a race the
+// stall budget is supposed to decide.
+func startTurnExchangeKnobs(t *testing.T, sc *fake.Scenario, quietMs, floorMultiple, pollMs int) *turnExchange {
 	t.Helper()
 
 	hostEnd, fakeEnd := roundTripPipes()
@@ -325,9 +353,9 @@ func startTurnExchange(t *testing.T, sc *fake.Scenario) *turnExchange {
 	t.Cleanup(func() { _ = conn.Close() })
 
 	m := turn.NewMachine(conn, fixSessionID, turn.NewPollWatcher(conn, turn.PollConfig{
-		QuietMs:        40,
-		FloorMultiple:  2,
-		PollIntervalMs: 10,
+		QuietMs:        quietMs,
+		FloorMultiple:  floorMultiple,
+		PollIntervalMs: pollMs,
 	}))
 
 	spy := &resolutionSpy{}
@@ -627,8 +655,8 @@ func TestCompletionVariants(t *testing.T) {
 				t.Helper()
 
 				return completionScenario(t,
-					statePatch(t, statusRunning, reasonPromptStarted),
-					statePatch(t, statusIdle, reasonPromptCompleted),
+					statePatchRev(t, statusRunning, reasonPromptStarted, 1),
+					statePatchRev(t, statusIdle, reasonPromptCompleted, 2),
 				)
 			},
 			want:   turn.StopCompleted,

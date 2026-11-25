@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v0.23.0
 status: completed
 stopped_at: Phase 10 complete — all phases complete
-last_updated: "2026-11-25T18:10:00.000Z"
+last_updated: "2026-11-25T18:38:32.620Z"
 last_activity: 2026-11-25
-last_activity_desc: Completed quick task 261125-s7k — session/cancel now always answers cancelled (failed-terminal mapping + bounded grace), so an Orca steer dispatches its new prompt; full gates green in the isolated worktree
-state_head: dcf69c9
+last_activity_desc: Completed quick task 261125-r6o — ACP turn stall recovery (live-turn completion binding, no-progress watchdog, orphaned backend-turn recovery); verification passed 9/9
+state_head: 91d25cf
 progress:
   total_phases: 1
   completed_phases: 1
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-24)
 Phase: Milestone v0.23.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-25 — Completed quick task 261125-s7k: `session/cancel` now always answers `stopReason:"cancelled"` (failed-terminal mapping + 2 s bounded grace, wired into session/new and session/resume), so an Orca steer dispatches its new prompt; whole-tree build, vet, lint, race, docs, and experiments gates are green in the isolated worktree.
+Last activity: 2026-11-25 — Completed quick task 261125-r6o: fix ACP turn stall recovery (live-turn completion binding, no-progress watchdog, orphaned backend-turn recovery); verification passed 9/9
 
 ## Performance Metrics
 
@@ -332,6 +332,7 @@ None yet.
 | 261125-0vv | Resolve reasoning against the target model and normalize Orca enabled/disabled thought aliases before validation. | 2026-11-25 | 5dc1621 | [261125-0vv-prevent-stale-reasoning-levels-from-bein](./quick/261125-0vv-prevent-stale-reasoning-levels-from-bein/) |
 | 261125-n0j | Advertise ACP sessionCapabilities.resume so Orca restores the same backend session through resume/subscribe without history replay. | 2026-11-25 | 89e4c07 | [261125-n0j-advertise-acp-sessioncapabilities-resume](./quick/261125-n0j-advertise-acp-sessioncapabilities-resume/) |
 | 261125-s7k | Answer session/cancel deterministically — failed-terminal mapping and a bounded grace — so an Orca steer stops waiting and dispatches its new prompt (session/new and session/resume). | 2026-11-25 | dcf69c9 | [261125-s7k-fix-acp-steer-after-cancel](./quick/261125-s7k-fix-acp-steer-after-cancel/) |
+| 261125-r6o | fix ACP turn stall recovery | 2026-11-25 | 91d25cf | [261125-r6o-fix-acp-turn-stall-recovery](./quick/261125-r6o-fix-acp-turn-stall-recovery/) |
 
 ## Deferred Items
 
