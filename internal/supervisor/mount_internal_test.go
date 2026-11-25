@@ -43,9 +43,9 @@ func TestDefaultStatfsMatchesSyscall(t *testing.T) {
 		t.Fatalf("syscall.Statfs(%q): %v", path, err)
 	}
 
-	want := int64(st.Type)
+	want := statfsType(&st)
 	if got != want {
-		t.Fatalf("defaultStatfs(%q) = %d, want int64(syscall.Statfs_t.Type) = %d", path, got, want)
+		t.Fatalf("defaultStatfs(%q) = %d, want statfsType(syscall.Statfs_t) = %d", path, got, want)
 	}
 }
 

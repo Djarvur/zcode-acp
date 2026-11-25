@@ -197,7 +197,7 @@ func defaultStatfs(path string) (int64, error) {
 		return 0, fmt.Errorf("zcode: statfs %s: %w", path, err)
 	}
 
-	return int64(st.Type), nil
+	return statfsType(&st), nil
 }
 
 // withDefaults resolves zero fields to the production defaults.
@@ -595,7 +595,7 @@ func (m *Mount) stopHelper() error {
 
 	if termErr := syscall.Kill(-m.child.PgID, syscall.SIGTERM); termErr != nil &&
 		!errors.Is(termErr, syscall.ESRCH) {
-		slog.Warn("supervisor: mount helper SIGTERM", "pgid", m.child.PgID, "err", termErr)
+		m.signalHelperTerminate(termErr)
 	}
 
 	select {
@@ -622,6 +622,25 @@ func (m *Mount) stopHelper() error {
 		return fmt.Errorf("%w: the helper %d was not reaped within %v",
 			errMountTeardown, m.helperPID, m.opts.ReapDeadline)
 	}
+}
+
+// signalHelperTerminate retries a denied group SIGTERM against the helper's
+// direct PID. macOS can return EPERM for the group signal even when the helper
+// is our own child; the direct signal still lets it run its cleanup, and the
+// unconditional group SIGKILL below remains the backstop.
+func (m *Mount) signalHelperTerminate(groupErr error) {
+	var pidErr error
+	if m.child.Cmd != nil && m.child.Cmd.Process != nil {
+		pidErr = m.child.Cmd.Process.Signal(syscall.SIGTERM)
+	}
+	if pidErr == nil || errors.Is(pidErr, os.ErrProcessDone) || errors.Is(pidErr, syscall.ESRCH) {
+		slog.Warn("supervisor: mount helper group SIGTERM denied; direct SIGTERM sent",
+			"pgid", m.child.PgID, "err", groupErr)
+
+		return
+	}
+	slog.Warn("supervisor: mount helper SIGTERM", "pgid", m.child.PgID,
+		"err", errors.Join(groupErr, pidErr))
 }
 
 // waitMountGone proves the mount is gone (D-02's zero-stale-mounts rule). A
