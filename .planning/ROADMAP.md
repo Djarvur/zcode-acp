@@ -73,7 +73,7 @@ Full details: `.planning/milestones/v0.23.0-phases/`, `v0.23.0-ROADMAP.md`, `v0.
 
 ### v0.24.0 — macOS Support (Planned)
 
-- [ ] **Phase 11: Darwin Build, Test & Release Gates** - Both macOS architectures compile and pass portable tests, CI, and checksummed release-artifact checks.
+- [x] **Phase 11: Darwin Build, Test & Release Gates** - Both macOS architectures compile and pass portable tests, CI, and checksummed release-artifact checks. (completed 2026-11-25)
 - [ ] **Phase 12: macOS Bundle Discovery & Overrides** - Standard `.app` locations and override forms resolve without entering the Linux AppImage/FUSE path.
 - [ ] **Phase 13: Desktop Launch & Runtime Environment** - The selected bundle launches the correct app-server with macOS provider paths and a usable GUI-launched tool PATH.
 - [ ] **Phase 14: macOS Authentication** - Existing api-key and OAuth paths work, with Keychain-backed credential decryption and safe coded failures.
@@ -108,7 +108,7 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
   3. CI reports passing build and test gates for Linux and for macOS arm64/amd64 with explicit required tool versions.
   4. A release snapshot produces checksummed macOS arm64 and amd64 binary artifacts whose checksums verify.
 
-**Plans**: 5/5 plans executed
+**Plans**: 5/5 plans complete
 
 Plans:
 **Wave 1**
@@ -195,7 +195,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 11. Darwin Build, Test & Release Gates | 5/5 | In Progress | - |
+| 11. Darwin Build, Test & Release Gates | 5/5 | Complete    | 2026-11-25 |
 | 12. macOS Bundle Discovery & Overrides | 0/TBD | Not started | - |
 | 13. Desktop Launch & Runtime Environment | 0/TBD | Not started | - |
 | 14. macOS Authentication | 0/TBD | Not started | - |

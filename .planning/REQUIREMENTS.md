@@ -9,9 +9,9 @@ Requirements for the macOS support milestone. Each maps to exactly one roadmap p
 
 ### Build & Toolchain
 
-- [ ] **MBLD-01**: The project cross-compiles with `CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...` and `CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./...`.
-- [ ] **MBLD-02**: Standard macOS build/test gates do not require `setsid`, GNU-only utilities, or the system Bash 3.2; required tool versions are explicit.
-- [ ] **MBLD-03**: CI builds and tests Linux plus macOS arm64/amd64, and a release snapshot produces checksummed universal macOS binary artifacts.
+- [x] **MBLD-01**: The project cross-compiles with `CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...` and `CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./...`.
+- [x] **MBLD-02**: Standard macOS build/test gates do not require `setsid`, GNU-only utilities, or the system Bash 3.2; required tool versions are explicit.
+- [x] **MBLD-03**: CI builds and tests Linux plus macOS arm64/amd64, and a release snapshot produces checksummed universal macOS binary artifacts.
 
 ### Discovery & Backend Launch
 
@@ -29,7 +29,7 @@ Requirements for the macOS support milestone. Each maps to exactly one roadmap p
 
 ### Tests & Orca Acceptance
 
-- [ ] **MTEST-01**: The full default test suite passes on macOS arm64 without an external `setsid` dependency.
+- [x] **MTEST-01**: The full default test suite passes on macOS arm64 without an external `setsid` dependency.
 - [ ] **MTEST-02**: Automated fixtures cover macOS `.app` discovery/override, exact app-server argv, provider-cache selection, and the Keychain command contract without touching a real desktop or keychain in CI.
 - [ ] **MORCA-01**: `zcode-acp omp --print --mode text @file` completes through a fake macOS `.app` backend with correct stdout and exit status.
 - [ ] **MORCA-02**: A live Orca card run on the current macOS machine completes the existing ACP flow against real ZCode with an available real account, and the evidence is recorded.
@@ -64,9 +64,9 @@ Populated during roadmap creation for v0.24.0.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| MBLD-01 | Phase 11 | Pending |
-| MBLD-02 | Phase 11 | Pending |
-| MBLD-03 | Phase 11 | Pending |
+| MBLD-01 | Phase 11 | Complete |
+| MBLD-02 | Phase 11 | Complete |
+| MBLD-03 | Phase 11 | Complete |
 | MDISC-01 | Phase 12 | Pending |
 | MDISC-02 | Phase 12 | Pending |
 | MDISC-03 | Phase 13 | Pending |
@@ -75,7 +75,7 @@ Populated during roadmap creation for v0.24.0.
 | MAUTH-01 | Phase 14 | Pending |
 | MAUTH-02 | Phase 14 | Pending |
 | MAUTH-03 | Phase 14 | Pending |
-| MTEST-01 | Phase 11 | Pending |
+| MTEST-01 | Phase 11 | Complete |
 | MTEST-02 | Phase 15 | Pending |
 | MORCA-01 | Phase 15 | Pending |
 | MORCA-02 | Phase 16 | Pending |
