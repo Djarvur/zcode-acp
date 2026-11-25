@@ -184,12 +184,15 @@ func (a *agentAdapter) Initialize(ctx context.Context, params acp.InitializeRequ
 
 // initializeResponse assembles the honest wire report from the neutral
 // InitReport: protocol version 1, real agentInfo, the advertised auth
-// methods as agent-variant entries, the capabilities block with the
-// sessionCapabilities.options empty-struct opt-in (MODEL-01, plan 06-04 —
-// UNCONDITIONAL per D-11: the config-options picker is auth-path-
-// independent; clients gate session/set_config_option on it), and zero
-// fs/terminal surface (the SDK capability structs carry no such fields at
-// all — honesty by construction, D-02/A7; omission is spec-correct).
+// methods as agent-variant entries, and exactly the sessionCapabilities
+// options and resume empty-struct opt-ins. Options is UNCONDITIONAL per
+// D-11 (the config-options picker is auth-path-independent); resume is
+// UNCONDITIONAL because ResumeSession already delegates to the implemented
+// SESS-01 front lifecycle. Top-level loadSession stays false and the
+// list/fork capabilities stay nil because those surfaces are unsupported;
+// close/delete stay unadvertised by the reviewed v1 decision. Zero fs/terminal
+// surface remains honest by construction (the SDK structs carry no such
+// fields — omission is spec-correct, D-02/A7).
 func initializeResponse(report InitReport) acp.InitializeResponse {
 	title := report.Title
 
@@ -215,6 +218,7 @@ func initializeResponse(report InitReport) acp.InitializeResponse {
 		AgentCapabilities: acp.AgentCapabilities{
 			SessionCapabilities: acp.SessionCapabilities{
 				Options: &acp.SessionOptionsCapabilities{},
+				Resume:  &acp.SessionResumeCapabilities{},
 			},
 		},
 	}
