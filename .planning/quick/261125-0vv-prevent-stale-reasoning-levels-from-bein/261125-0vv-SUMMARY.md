@@ -13,7 +13,7 @@ affects: [internal/acpfront, session/setModel, session/set_config_option, /model
 actuals:
   tokens: 259
   tasks: 3
-  commits: 6
+  commits: 7
 tech-stack:
   added: []
   patterns:
@@ -23,6 +23,7 @@ tech-stack:
 key-files:
   created: []
   modified:
+    - internal/acpfront/catalogrefresh_test.go
     - internal/acpfront/configoptions.go
     - internal/acpfront/front.go
     - internal/acpfront/pickerrefusal_internal_test.go
@@ -74,9 +75,9 @@ metrics:
   duration: 27min
   completed: 2026-11-25
   status: complete
-  commits: 6
-  plan_head_before: 7b59c64eda56c2e3b05622c28c4798056431b4c7
-  plan_head_after: eff9118535511e423539a2dfe878cf7f422fac47
+  commits: 7
+  plan_head_before: b550646b76990378a5d46066c54ab71e716353fe
+  plan_head_after: 5dc162188e587bf8cb2e9022b5fe7702cf9c2ec0
 ---
 
 # Quick Task 261125-0vv: Target-Aware Reasoning and Orca Alias Normalization Summary
@@ -89,8 +90,9 @@ metrics:
 - **Started:** 2026-11-24T22:07:04Z
 - **Completed:** 2026-11-24T22:34:35Z (2026-11-25 local)
 - **Tasks:** 3/3 completed
-- **Files modified:** 7
-- **Measured commits:** 6 from `7b59c64` through `eff9118`
+- **Files modified:** 8
+- **Measured commits:** 7 from rebase base `b550646` through `5dc1621`
+- **Rebased onto:** `b550646b76990378a5d46066c54ab71e716353fe` (live ACP model catalog updates)
 
 ## Accomplishments
 
@@ -105,14 +107,15 @@ metrics:
 
 TDD tasks retain separate RED and GREEN commits; every commit is task-scoped and contains code/tests only.
 
-1. **Task 1 RED: preserved cross-model retry regressions** — `7b3b3d6` (test)
-2. **Task 1 GREEN: exact-target reasoning resolver** — `e6cb2c3` (feat)
-3. **Task 2: ACP wire fallback matrix and /model parity** — `a3665e9` (test)
-4. **Task 3 RED: alias, refusal, omission, and advertisement regressions** — `b151bf3` (test)
-5. **Task 3 GREEN: pre-validation Orca alias normalization** — `988cef7` (feat)
-6. **Rule 1 follow-up: level-less fake golden correction** — `eff9118` (fix)
+1. **Task 1 RED: preserved cross-model retry regressions** — `ace41da` (test)
+2. **Task 1 GREEN: exact-target reasoning resolver** — `ec0bdaa` (feat)
+3. **Task 2: ACP wire fallback matrix and /model parity** — `645f9d2` (test)
+4. **Task 3 RED: alias, refusal, omission, and advertisement regressions** — `7f5c0e4` (test)
+5. **Task 3 GREEN: pre-validation Orca alias normalization** — `50e4be5` (feat)
+6. **Rule 1 follow-up: level-less fake golden correction** — `d725acd` (fix)
+7. **Rebase integration: validation helper extraction and shared catalog wire keys** — `5dc1621` (refactor)
 
-Plan metadata is intentionally uncommitted for orchestrator handling. `STATE.md`, `ROADMAP.md`, and prior quick-task artifacts were not modified.
+Plan metadata is committed by the orchestrator. The branch was rebased onto `b550646`; upstream catalog refresh and both mutation paths now share `catalogSessionLocks`, and the full race/build/vet/lint gates pass after integration.
 
 ## RED to GREEN Evidence
 
@@ -140,14 +143,15 @@ Rendered aliases failed listed-value validation as unlisted `enabled`/`disabled`
 
 | Task | RED | GREEN | Status |
 |------|-----|-------|--------|
-| 1 | `7b3b3d6` | `e6cb2c3` | Pass |
-| 2 | — test-only task | `a3665e9` | Pass |
-| 3 | `b151bf3` | `988cef7` | Pass |
+| 1 | `ace41da` | `ec0bdaa` | Pass |
+| 2 | — test-only task | `645f9d2` | Pass |
+| 3 | `7f5c0e4` | `50e4be5` | Pass |
 
 Both behavior-changing tasks have a `test(...)` commit followed by a descendant `feat(...)` commit. The Task 1 tracer feedback gate re-ran its full focused race/lint verification in auto mode before Task 2 expansion and passed.
 
 ## Files Created/Modified
 
+- `internal/acpfront/catalogrefresh_test.go` — shares reasoning snapshot wire keys with the upstream live-catalog fixtures.
 - `internal/acpfront/configoptions.go` — adds the pure exact-target reasoning resolver.
 - `internal/acpfront/front.go` — integrates target resolution into model mutation and adds narrow pre-validation Orca alias normalization.
 - `internal/acpfront/pickerrefusal_internal_test.go` — adds the composed already-preserved retry and direct missing-target fail-closed regression.
@@ -174,10 +178,18 @@ Both behavior-changing tasks have a `test(...)` commit followed by a descendant 
 - **Fix:** Removed the stale options object from that expected frame and updated the corpus driver comment.
 - **Files modified:** `internal/zcode/fake/golden_test.go`, `internal/zcode/fake/testdata/golden/config-option-set-model.golden`
 - **Verification:** `go test -race -count=1 ./internal/zcode/fake` passed, followed by a passing full repository race suite.
-- **Committed in:** `eff9118`
+- **Committed in:** `d725acd`
 
-**Total deviations:** 1 auto-fix (Rule 1)
-**Impact on plan:** The extra fixture update was directly caused by the planned resolver behavior and was required for the mandated full-repository race gate. No architectural or protected lifecycle changes were made.
+**2. [Rebase integration] Extracted validation helpers and shared catalog wire keys**
+- **Found during:** Rebase onto `b550646` and full lint verification
+- **Issue:** Upstream catalog-session locking raised two functions above the cyclomatic threshold, and merged test files crossed goconst/line-length limits.
+- **Fix:** Extracted pure validation helpers without changing behavior and reused shared reasoning snapshot wire-key constants.
+- **Files modified:** `internal/acpfront/front.go`, `internal/acpfront/catalogrefresh_test.go`, `internal/acpfront/setconfigoption_test.go`
+- **Verification:** Focused regressions, `TestLiveCatalogRefresh`, full race suite, build, vet, and lint all pass.
+- **Committed in:** `5dc1621`
+
+**Total deviations:** 1 auto-fix (Rule 1) + 1 rebase integration cleanup
+**Impact on plan:** Both changes were directly required by the planned behavior and mandated quality gates. No protected lifecycle behavior changed.
 
 ## Issues Encountered
 
@@ -203,8 +215,8 @@ None. No new endpoint, authentication path, file-access pattern, schema, or depe
 
 ## Self-Check: PASSED
 
-- All seven planned/directly affected code and fixture files exist.
-- All six code commits are ancestors of `eff9118`; the measured plan-base commit count is exactly six.
+- All eight planned/directly affected code and fixture files exist.
+- All seven task/integration commits are ancestors of `5dc1621`; the measured rebase-base commit count is exactly seven.
 - Both RED records re-validated as `RED_EVIDENCE_OK` and semantically match the planned failures.
-- Full repository build, vet, lint, and race tests pass.
-- No tracked files were deleted; planning and TDD evidence artifacts remain uncommitted for orchestrator handling.
+- Full repository build, vet, lint, race tests, and upstream `TestLiveCatalogRefresh` pass after rebase.
+- No tracked files were deleted; planning and TDD evidence artifacts are committed with the task docs.

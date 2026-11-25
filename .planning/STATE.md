@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v0.23.0
 status: completed
 stopped_at: Phase 10 complete — all phases complete
-last_updated: "2026-11-25T06:28:50Z"
+last_updated: "2026-11-25T06:51:08Z"
 last_activity: 2026-11-25
-last_activity_desc: Quick task 261125-0vv completed — target-aware reasoning resolution and Orca alias normalization
-state_head: d725acd63c0cf8abcfd6a549f2578888258095fa
+last_activity_desc: Quick task 261125-0vv rebased and re-verified — target-aware reasoning resolution and Orca alias normalization
+state_head: 5dc162188e587bf8cb2e9022b5fe7702cf9c2ec0
 progress:
   total_phases: 1
   completed_phases: 1
@@ -43,7 +43,7 @@ See: .planning/PROJECT.md (updated 2026-11-24)
 Phase: Milestone v0.23.0 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-11-25 — Completed quick task 261125-0vv: resolve reasoning against the target model and normalize Orca thought aliases
+Last activity: 2026-11-25 — Rebased and re-verified quick task 261125-0vv on master b550646: target-aware reasoning and Orca alias normalization remain green
 
 ## Performance Metrics
 
@@ -329,7 +329,7 @@ None yet.
 | 261124-tj2 | Refresh the re-announce dedupe entry while an ask is pending, so one requestUserInput ask renders ONE dialog for a slow human answer (the entry expired at 15 s + 5 s grace and re-opened the form every 20 s) | 2026-11-24 | 81527f0 | [261124-tj2-stop-askuser-dialog-repeat-on-reannounce](./quick/261124-tj2-stop-askuser-dialog-repeat-on-reannounce/) |
 | 261124-wlg | Publish confirmed live ACP model catalogs through config_option_update with bounded refresh, safe fallback, and transactional session lifecycle handling | 2026-11-25 | f79dc30 | [261124-wlg-implement-live-acp-model-catalog-refresh](./quick/261124-wlg-implement-live-acp-model-catalog-refresh/) |
 | 261124-w84 | Preserve ACP sessions after recoverable setModel validation errors such as unsupported reasoning effort, with regression coverage for picker and /model retries. | 2026-11-24 | b680da3 | [261124-w84-preserve-acp-session-on-recoverable-setm](./quick/261124-w84-preserve-acp-session-on-recoverable-setm/) |
-| 261125-0vv | Resolve reasoning against the target model and normalize Orca enabled/disabled thought aliases before validation. | 2026-11-25 | eff9118 | [261125-0vv-prevent-stale-reasoning-levels-from-bein](./quick/261125-0vv-prevent-stale-reasoning-levels-from-bein/) |
+| 261125-0vv | Resolve reasoning against the target model and normalize Orca enabled/disabled thought aliases before validation. | 2026-11-25 | 5dc1621 | [261125-0vv-prevent-stale-reasoning-levels-from-bein](./quick/261125-0vv-prevent-stale-reasoning-levels-from-bein/) |
 
 ## Deferred Items
 

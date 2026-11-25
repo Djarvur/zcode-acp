@@ -1,6 +1,6 @@
 ---
 phase: 261125-0vv
-verified: 2026-11-24T22:43:23Z
+verified: 2026-11-25T06:51:08Z
 status: passed
 score: 7/7 must-haves verified
 covered_files:
@@ -10,6 +10,7 @@ covered_files:
   - .planning/tdd/261125-0vv-task1-red.txt
   - .planning/tdd/261125-0vv-task3-red.json
   - .planning/tdd/261125-0vv-task3-red.txt
+  - internal/acpfront/catalogrefresh_test.go
   - internal/acpfront/configoptions.go
   - internal/acpfront/configoptions_test.go
   - internal/acpfront/front.go
@@ -17,7 +18,7 @@ covered_files:
   - internal/acpfront/setconfigoption_test.go
   - internal/zcode/fake/golden_test.go
   - internal/zcode/fake/testdata/golden/config-option-set-model.golden
-covered_digest: "v4:sha256:b45415f4c1455dae8c5f36d590f0f93fdd883e2617298a0ed2122229059a1fc8"
+covered_digest: "v4:sha256:48cbdd546359c5997f256d4e6f4eaf588357018d7276c99b3788b14141489ed0"
 behavior_unverified: 0
 overrides_applied: 0
 decision_coverage:
@@ -30,9 +31,9 @@ decision_coverage:
 
 **Task Goal:** Prevent stale reasoning levels from being carried across model switches and normalize Orca enabled/disabled reasoning states to valid backend thought levels.
 
-**Verified:** 2026-11-24T22:43:23Z
+**Verified:** 2026-11-25T06:51:08Z
 **Status:** passed
-**Re-verification:** No — initial verification
+**Re-verification:** Yes — after rebase onto `b550646` and integration commit `5dc1621`
 **Must-haves source:** `261125-0vv-PLAN.md` frontmatter (7 truths, 5 artifacts, 4 key links)
 
 ## Goal Achievement
@@ -90,7 +91,8 @@ No production data path terminates in a static return, hardcoded level list, or 
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Target resolution, aliases, preserved retry, lifecycle and validation regressions | `go test -race -count=1 -run '^(TestPickerCrossModelRetryResolvesTargetReasoning|TestSetConfigMutationMissingTargetFailsClosed|TestPickerRecoverableSetModelValidationPreservesSession|TestPickerSetModelRefusalRunsFullTeardown|TestModelSlashCarriesConfirmedLevel|TestSetConfigOptionTargetReasoningResolution|TestModelSlashTargetReasoningResolution|TestSetConfigOptionModelSwitch|TestSetConfigOptionThoughtSwitch|TestSetConfigOptionOrcaThoughtAliases|TestThoughtLevelAdvertisementRemainsVerbatimSelect|TestConfigOptionsTranslator|TestSetConfigOptionInvalid|TestIsRecoverableSetModelError)$' ./internal/acpfront` | `ok`, 4.947s | PASS |
+| Target resolution, aliases, preserved retry, lifecycle and validation regressions | `go test -race -count=1 -run '^(TestPickerCrossModelRetryResolvesTargetReasoning|TestSetConfigMutationMissingTargetFailsClosed|TestPickerRecoverableSetModelValidationPreservesSession|TestPickerSetModelRefusalRunsFullTeardown|TestModelSlashCarriesConfirmedLevel|TestSetConfigOptionTargetReasoningResolution|TestModelSlashTargetReasoningResolution|TestSetConfigOptionModelSwitch|TestSetConfigOptionThoughtSwitch|TestSetConfigOptionOrcaThoughtAliases|TestThoughtLevelAdvertisementRemainsVerbatimSelect|TestConfigOptionsTranslator|TestSetConfigOptionInvalid|TestIsRecoverableSetModelError)$' ./internal/acpfront` | `ok`, 5.089s | PASS |
+| Upstream live catalog refresh after rebase | `go test -race -count=1 -run '^TestLiveCatalogRefresh$' ./internal/acpfront` | `ok`, 5.028s | PASS |
 | Protected merge, mapping, CloseSession, recoverable and fatal teardown behavior | `go test -race -count=1 -run '^(TestSetConfigOptionReEmitReplyWins|TestSetConfigOptionReEmitStoreUpdated|TestCloseTeardown|TestSetConfigOptionDelegation|TestLifecycleDelegationCoded|TestModelSlashRecoverableSetModelValidationPreservesSession|TestPickerMalformedOrUnrecognizedSetModelDataRunsFullTeardown)$' ./internal/acpfront ./internal/acpport` | `ok`, 1.167s and 1.011s | PASS |
 
 ### Probe Execution
@@ -101,7 +103,7 @@ Not applicable. This quick task declares no probe scripts, and the repository ha
 
 | Gate | Command | Result | Status |
 |------|---------|--------|--------|
-| Complete `acpfront` race suite | `go test -race -count=1 ./internal/acpfront` | `ok`, 105.013s | PASS |
+| Complete `acpfront` race suite | `go test -race -count=1 ./internal/acpfront` | `ok`, 110.231s | PASS |
 | Build | `go build ./...` | Exit 0, no output | PASS |
 | Vet | `go vet ./...` | Exit 0, no output | PASS |
 | Strict lint | `golangci-lint run ./...` | Exit 0, `0 issues`; only the existing `exhaustruct` deprecation warning | PASS |
@@ -113,24 +115,26 @@ The RED logs contain the intended behavioral failures: Task 1 sent `max` where `
 
 ### Commit Verification
 
-Plan base: `7b59c64eda56c2e3b05622c28c4798056431b4c7`.
-HEAD: `eff9118535511e423539a2dfe878cf7f422fac47`.
+Rebase base: `b550646b76990378a5d46066c54ab71e716353fe`.
+HEAD: `5dc162188e587bf8cb2e9022b5fe7702cf9c2ec0`.
 
-All six requested commits are ancestors of HEAD, and the base-to-HEAD range contains exactly six commits:
+The task commits after rebase are:
 
-1. `7b3b3d6` — cross-model retry regressions (RED)
-2. `e6cb2c3` — exact-target resolver (GREEN)
-3. `a3665e9` — ACP wire fallback matrix and `/model` parity
-4. `b151bf3` — Orca alias regressions (RED)
-5. `988cef7` — pre-validation alias normalization (GREEN)
-6. `eff9118` — level-less fake golden correction
+1. `ace41da` — cross-model retry regressions (RED)
+2. `ec0bdaa` — exact-target resolver (GREEN)
+3. `645f9d2` — ACP wire fallback matrix and `/model` parity
+4. `7f5c0e4` — Orca alias regressions (RED)
+5. `50e4be5` — pre-validation alias normalization (GREEN)
+6. `d725acd` — level-less fake golden correction
+7. `5dc1621` — rebase integration cleanup for catalog-session locking and shared test wire keys
 
-No dependency files changed. `internal/acpport/agent.go` and `internal/acpfront/lifecycle.go` have identical Git object IDs before and after the range. The only production-file hunks in `front.go` are alias constants, pre-validation normalization, the two new alias helpers, and target-aware model payload construction.
+No dependency files changed. `internal/acpport/agent.go` and `internal/acpfront/lifecycle.go` remain byte-identical to the task base. Catalog refresh and both mutation paths share `catalogSessionLocks`; fresh catalog publication reconciles reasoning against refreshed model metadata. The recoverable classifier, teardown call sites, settings merge, and `CloseSession` remain unchanged.
 
 ### Test Quality Audit
 
 | Test File | Linked Concern | Active | Skipped | Circular | Assertion Level | Verdict |
 |-----------|----------------|--------|---------|----------|----------------|---------|
+| `internal/acpfront/catalogrefresh_test.go` | Upstream live catalog refresh and shared wire fixtures | Yes | 0 | No | Behavioral / wire value | PASS |
 | `internal/acpfront/configoptions_test.go` | Verbatim select and omission | Yes | 0 | No | Value / behavioral | PASS |
 | `internal/acpfront/pickerrefusal_internal_test.go` | Preserved retry, missing target, recoverable/fatal lifecycle | Yes | 0 | No | Behavioral / wire value | PASS |
 | `internal/acpfront/setconfigoption_test.go` | Exact-target matrix, slash parity, aliases, pre-wire refusal | Yes | 0 | No | Behavioral / wire value / exact error message | PASS |
