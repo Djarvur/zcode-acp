@@ -455,3 +455,178 @@ func resumedTranscriptMethodCount(tr fake.Transcript, method string) int {
 
 	return count
 }
+
+// resumedOrphanWindow bounds the resumed orphan-recovery arms.
+const resumedOrphanWindow = 2 * time.Second
+
+// resumedOrphanRetryTurn is the retried resumed turn's id.
+const resumedOrphanRetryTurn = "turn_resume_orphan_retry"
+
+// resumedOrphanScenario scripts a resumed session's orphan-recovery
+// exchange: resume + subscribe, the send rules (a single refusal then the
+// retried completion when selfHeal, an unlimited refusal otherwise), the
+// stop (idle evidence only when selfHeal), and the stored-reply projection.
+//
+//nolint:funlen // one declarative script with the self-heal variants
+func resumedOrphanScenario(selfHeal bool) *fake.Scenario {
+	refusal := fake.RequestRule{
+		Method: zcode.MethodSessionSend,
+		Reply: &fake.Reply{Error: &zcode.WireError{
+			Code:    zcode.CodeConcurrency,
+			Message: "active prompt exists",
+		}},
+	}
+	if selfHeal {
+		refusal.Times = 1
+	}
+
+	stop := fake.RequestRule{
+		Method: zcode.MethodSessionStop,
+		Reply:  &fake.Reply{Result: json.RawMessage(`{}`)},
+	}
+
+	rules := []fake.RequestRule{
+		{Method: zcode.MethodSessionResume, Reply: &fake.Reply{Result: json.RawMessage(
+			`{"session":{"sessionId":"` + interleaveSID + `"}}`)}},
+		{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{Result: json.RawMessage(
+			`{"sessionId":"` + interleaveSID + `","eventSeq":0,"events":[]}`)}},
+		refusal,
+	}
+
+	if selfHeal {
+		stop.SideEffects = []fake.SideEffect{
+			{Emit: &fake.Emit{Method: zcode.MethodStateUpdated, Params: json.RawMessage(
+				`{"patch":{"status":"idle"},"reason":"prompt_completed","revision":2,` +
+					`"scope":"session","sessionId":"` + interleaveSID + `","type":"state.updated"}`)}},
+		}
+	}
+
+	rules = append(rules, stop)
+
+	if selfHeal {
+		rules = append(rules, fake.RequestRule{
+			Method: zcode.MethodSessionSend,
+			Reply: &fake.Reply{Result: json.RawMessage(
+				`{"accepted":true,"sessionId":"` + interleaveSID + `","stateRevision":2}`)},
+			SideEffects: []fake.SideEffect{
+				{Emit: &fake.Emit{Method: zcode.MethodStateUpdated, Params: json.RawMessage(
+					`{"patch":{"status":"running"},"reason":"prompt_started","revision":1,` +
+						`"scope":"session","sessionId":"` + interleaveSID + `","type":"state.updated"}`)}},
+				{Emit: &fake.Emit{Method: zcode.MethodSessionEvent, Params: json.RawMessage(
+					`{"type":"turn.completed","seq":9,"turnId":"` + resumedOrphanRetryTurn + `",` +
+						`"deliveryKind":"desktop-continuous"}`)}},
+			},
+		})
+	}
+
+	rules = append(rules, fake.RequestRule{
+		Method: zcode.MethodSessionMessages,
+		Reply: &fake.Reply{Result: json.RawMessage(
+			`{"messages":[{"info":{"role":"assistant"},"parts":[{"type":"text","text":"ok"}]}],` +
+				`"sessionId":"` + interleaveSID + `"}`)},
+	})
+
+	return &fake.Scenario{
+		Name:      "resume-orphan-recovery",
+		OnRequest: rules,
+		UnknownMethod: &fake.Reply{Error: &zcode.WireError{
+			Code:    zcode.CodeMethodNotFound,
+			Message: failureMethodNotFound,
+		}},
+		EOFDrainMs: 1,
+	}
+}
+
+// TestResumedSessionOrphanRecovery proves the front-slot orphan flag and the
+// clear-timeout seam reach a session/resume machine, not only session/new's:
+// a third refusal is the non-retryable coded -32603 orphan phrase (never
+// -32003), and a healthy backend self-heals through one stop + one retry.
+//
+//nolint:cyclop,funlen // the two arms are one contrast story (stuck vs self-heal)
+func TestResumedSessionOrphanRecovery(t *testing.T) {
+	t.Run("second refusal is the non-retryable -32603 orphan phrase", func(t *testing.T) {
+		f, closeLegs := newInterleaveFront(t, resumedOrphanScenario(false),
+			WithOrphanClearTimeout(40*time.Millisecond))
+
+		ctx, cancel := context.WithTimeout(context.Background(), resumedOrphanWindow)
+		defer cancel()
+
+		sid, err := f.ResumeSession(ctx, interleaveSID, t.TempDir())
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+
+		started := time.Now()
+
+		_, err = f.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "stuck"}, pickerNoopSink())
+		elapsed := time.Since(started)
+
+		if err == nil {
+			t.Fatal("a stuck resumed orphan must surface a coded error, got a success answer")
+		}
+
+		var seamErr *acpport.Error
+		if !errors.As(err, &seamErr) || seamErr.Code != acpport.CodeInternal {
+			t.Fatalf("stuck resumed orphan error = %v, want a coded %d internal error",
+				err, acpport.CodeInternal)
+		}
+
+		if !strings.Contains(seamErr.Message, "still reports an active prompt after stop and retry") {
+			t.Fatalf("stuck resumed orphan message = %q, want the stable orphan phrase", seamErr.Message)
+		}
+
+		if seamErr.Code == acpport.CodeSessionBusy || seamErr.Reason == acpport.ReasonSessionBusy {
+			t.Fatalf("stuck resumed orphan surfaced the retryable session_busy class (%d/%q)",
+				seamErr.Code, seamErr.Reason)
+		}
+
+		// The 40 ms override reached the resumed machine (the 5 s production
+		// default would break the upper bound); the flag being off would have
+		// produced -32003.
+		if elapsed < 35*time.Millisecond || elapsed >= resumedOrphanWindow {
+			t.Fatalf("stuck resumed orphan elapsed = %v, want the 40 ms bounded wait (< %v)",
+				elapsed, resumedOrphanWindow)
+		}
+
+		tr := closeLegs()
+
+		if sends := resumedTranscriptMethodCount(tr, zcode.MethodSessionSend); sends != 2 {
+			t.Fatalf("session/send frames on the wire = %d, want exactly 2", sends)
+		}
+
+		if stops := resumedTranscriptMethodCount(tr, zcode.MethodSessionStop); stops != 1 {
+			t.Fatalf("session/stop frames on the wire = %d, want exactly 1", stops)
+		}
+	})
+
+	t.Run("self-heals through one stop and one retry", func(t *testing.T) {
+		f, closeLegs := newInterleaveFront(t, resumedOrphanScenario(true))
+
+		ctx, cancel := context.WithTimeout(context.Background(), resumedOrphanWindow)
+		defer cancel()
+
+		sid, err := f.ResumeSession(ctx, interleaveSID, t.TempDir())
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+
+		stop, err := f.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "heal"}, pickerNoopSink())
+		if err != nil {
+			t.Fatalf("self-healing resumed prompt: %v", err)
+		}
+
+		if stop != acpport.StopEndTurn {
+			t.Fatalf("self-healing resumed prompt stop = %q, want %q", stop, acpport.StopEndTurn)
+		}
+
+		tr := closeLegs()
+
+		if sends := resumedTranscriptMethodCount(tr, zcode.MethodSessionSend); sends != 2 {
+			t.Fatalf("session/send frames on the wire = %d, want exactly 2", sends)
+		}
+
+		if stops := resumedTranscriptMethodCount(tr, zcode.MethodSessionStop); stops != 1 {
+			t.Fatalf("session/stop frames on the wire = %d, want exactly 1", stops)
+		}
+	})
+}

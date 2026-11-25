@@ -175,6 +175,13 @@ type Front struct {
 	// defaults of 15 min base / 30 min while a tool is active).
 	turnStallTimeout     time.Duration
 	turnStallToolTimeout time.Duration
+
+	// turnOrphanClearTimeout bounds each prompt machine's orphan clear wait
+	// (WithOrphanClearTimeout; zero keeps the turn package's production
+	// default). The orphan-recovery FLAG itself is unconditional on every
+	// machine the front registers — the front-wide slot is the proof no
+	// local turn is active, so a backend -32010 can only name an orphan.
+	turnOrphanClearTimeout time.Duration
 }
 
 // ModelSelection is the configured backend model the session/new leg binds
@@ -256,6 +263,16 @@ func WithTurnStallTimeout(base, activeTool time.Duration) Option {
 		f.turnStallTimeout = base
 		f.turnStallToolTimeout = activeTool
 	}
+}
+
+// WithOrphanClearTimeout overrides the bounded wait for session-scoped clear
+// evidence before the orphan-recovery retry proceeds (the quick task's test
+// seam; zero keeps the turn package's 5 s production default). The
+// orphan-recovery flag itself is not configurable: every prompt machine the
+// front registers carries it, because the front-wide slot proves no local
+// turn is active when a send is refused -32010.
+func WithOrphanClearTimeout(d time.Duration) Option {
+	return func(f *Front) { f.turnOrphanClearTimeout = d }
 }
 
 // New returns a Front owning conn and registers the delta tap on the
@@ -451,6 +468,13 @@ const wireKeySessionID = "sessionId"
 // the wrong conversation.
 const turnActiveMessage = "another prompt is already running (this agent runs one turn at a time)"
 
+// orphanStuckMessage is the ONE stable non-retryable surface for a backend
+// that still reports an active prompt after the orphan stop and single
+// retry (the -32603 class; never the retryable -32003 session_busy class).
+// The message is a stable human-readable contract, never client-matched
+// content: no internal locations, turn ids, or backend text ride it.
+const orphanStuckMessage = "the backend still reports an active prompt after stop and retry (not retryable)"
+
 // Prompt runs one prompt turn (D-04/D-05): the front-wide turn slot is
 // acquired for the turn's whole lifetime (the single-active-turn
 // invariant — the delta-routing precondition, see the type doc), the turn
@@ -569,6 +593,14 @@ func (f *Front) Prompt(
 // shared -32003 session-busy class; every other failure is the coded -32603
 // internal error (never the wrapped transport noise verbatim).
 func promptRunError(runErr error) error {
+	// The orphan-recovery verdict is checked FIRST: a backend that still
+	// reports an active prompt after the stop and retry is stuck on an
+	// orphan, and the client must not keep retrying (the -32003 class is the
+	// unbounded-retry surface this quick task exists to remove).
+	if errors.Is(runErr, turn.ErrOrphanedBackend) {
+		return acpport.NewInternal("session/prompt: %s", orphanStuckMessage)
+	}
+
 	if errors.Is(runErr, turn.ErrTurnActive) {
 		return acpport.NewSessionBusy(turnActiveMessage)
 	}
@@ -892,6 +924,15 @@ func (f *Front) newSessionMachine(sessionID string) *turn.Machine {
 	// contract): zero keeps the turn package's production defaults.
 	machine.StallTimeout = f.turnStallTimeout
 	machine.StallToolTimeout = f.turnStallToolTimeout
+
+	// The front-wide slot is held by THIS prompt for the turn's whole
+	// lifetime, so a backend -32010 refusal reaching a slot-free front can
+	// only name an orphaned backend turn: enable the bounded one-stop/one-
+	// retry recovery on every machine the front registers for prompts
+	// (session/new and session/resume alike — this constructor is the ONE
+	// site).
+	machine.OrphanRecovery = true
+	machine.OrphanClearTimeout = f.turnOrphanClearTimeout
 
 	return machine
 }

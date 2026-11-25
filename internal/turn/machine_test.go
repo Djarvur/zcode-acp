@@ -147,7 +147,7 @@ func statePatchRev(t *testing.T, status, reason string, revision int) fake.SideE
 	t.Helper()
 
 	params := map[string]any{
-		"patch":          map[string]any{"status": status},
+		"patch":          map[string]any{wireKeyStatus: status},
 		"reason":         reason,
 		"scope":          "session",
 		wireKeySessionID: fixSessionID,

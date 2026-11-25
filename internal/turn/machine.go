@@ -207,6 +207,19 @@ const (
 // contract).
 var ErrTurnActive = errors.New("turn: a prompt is already running for this session")
 
+// ErrOrphanedBackend is the distinct non-retryable sentinel for a backend
+// that still reports an active prompt AFTER the orphan-recovery stop and
+// single retry: the front-wide slot proves no local turn was active, so the
+// backend is stuck on an orphan and the client must not keep retrying the
+// retryable -32003 session_busy class.
+var ErrOrphanedBackend = errors.New(
+	"turn: the backend still reports an active prompt after stop and retry")
+
+// DefaultOrphanClearTimeout bounds the orphan-recovery wait for
+// session-scoped clear evidence (a terminal or an idle state.updated patch)
+// before the single retry proceeds.
+const DefaultOrphanClearTimeout = 5 * time.Second
+
 // errObligationExpired is the static degradation sentinel wrapped into a
 // degraded Resolution.Err (D-05 record-honesty): a tracked-no-answer
 // reverse-request deadline elapsed mid-turn with no reply written — the
@@ -257,6 +270,19 @@ type Machine struct {
 	// with no StallToolTimeout scales the tool allowance to 2x base.
 	StallToolTimeout time.Duration
 
+	// OrphanRecovery enables the bounded orphan-recovery path: a numeric
+	// -32010 session/send rejection triggers ONE bypass-lane stop, a bounded
+	// wait for session-scoped clear evidence, and ONE retry. It is an opt-in
+	// flag because a direct machine embedding cannot prove no LOCAL turn is
+	// active; the front enables it on every machine it registers for prompts
+	// (its front-wide slot is that proof). Default false keeps the -32010 ->
+	// ErrTurnActive -> -32003 mapping.
+	OrphanRecovery bool
+
+	// OrphanClearTimeout bounds the orphan-recovery clear wait
+	// (DefaultOrphanClearTimeout when zero). Assign before any turn runs.
+	OrphanClearTimeout time.Duration
+
 	mu          sync.Mutex
 	state       machineState
 	turnID      string
@@ -286,6 +312,12 @@ type Machine struct {
 	stallWake       chan struct{}
 	messagesSeen    bool
 	lastMessagesRaw json.RawMessage
+
+	// The orphan-recovery wait state (per turn): while orphanWaiting, the
+	// one observe path inspects inbound envelopes ONLY for explicitly
+	// session-scoped clear evidence and signals orphanClear (capacity 1).
+	orphanWaiting bool
+	orphanClear   chan struct{}
 
 	startProven bool
 	quietVetoes int
@@ -385,23 +417,16 @@ func (m *Machine) Run(ctx context.Context, content string) (StopReason, error) {
 	m.beginTurnLocked()
 	m.mu.Unlock()
 
-	if _, err := m.conn.Call(ctx, zcode.MethodSessionSend, map[string]any{
-		"sessionId": m.sessID,
-		"content":   content,
-	}); err != nil {
-		m.finishTurn()
-
-		// The server-side -32010 rejection (PITFALL 5): when the send
-		// reached the wire and the server refused it with dialect §6
-		// CodeConcurrency, surface the same mapped clean error the
-		// wrapper-side guard uses — matched by the numeric code, never the
-		// message text.
-		var callErr *zcode.CallError
-		if errors.As(err, &callErr) && callErr.Err.Code == zcode.CodeConcurrency {
-			return "", fmt.Errorf("turn: session/send: %w: %w", callErr, ErrTurnActive)
+	if sendErr := m.sendTurn(ctx, content); sendErr != nil {
+		if retried, retryErr := m.recoverOrphanedSend(ctx, content, sendErr); retried {
+			sendErr = retryErr
 		}
 
-		return "", fmt.Errorf("turn: session/send: %w", err)
+		if sendErr != nil {
+			m.finishTurn()
+
+			return "", m.mapSendError(sendErr)
+		}
 	}
 
 	m.mu.Lock()
@@ -533,6 +558,15 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 		return
 	}
 
+	// While the orphan-recovery wait is active, the envelope is inspected
+	// ONLY for explicitly session-scoped clear evidence; nothing classifies
+	// or resolves until the single retry starts a fresh turn.
+	if m.orphanWaiting {
+		m.observeOrphanEvidenceLocked(env)
+
+		return
+	}
+
 	// Activity feed (QA-03): a watcher whose settle gate consumes live wire
 	// activity hears every mid-turn envelope through the machine's one
 	// observe funnel — the poll watcher resets its gate on session-scoped
@@ -613,6 +647,187 @@ func (m *Machine) startStallWatchdog(ctx context.Context) func() {
 	}
 }
 
+// sendTurn issues one fire-and-forget session/send and returns the wire
+// failure verbatim (the caller maps it).
+func (m *Machine) sendTurn(ctx context.Context, content string) error {
+	_, err := m.conn.Call(ctx, zcode.MethodSessionSend, map[string]any{
+		"sessionId": m.sessID,
+		"content":   content,
+	})
+
+	return err //nolint:wrapcheck // the caller maps the wire failure and wraps it in context
+}
+
+// recoverOrphanedSend handles a session/send rejection. The numeric -32010
+// concurrency refusal is mapped to ErrTurnActive by default; when the
+// machine's front-slot orphan recovery is enabled, it instead sends ONE
+// bypass-lane stop, waits a bounded interval for explicitly session-scoped
+// clear evidence, resets the per-turn signal state, and retries the send
+// exactly once. A second -32010 returns ErrOrphanedBackend; any other retry
+// failure returns the normal transport error. retried reports whether the
+// recovery path owned the failure (so the caller maps accordingly).
+func (m *Machine) recoverOrphanedSend(ctx context.Context, content string, sendErr error) (bool, error) {
+	var callErr *zcode.CallError
+	if !errors.As(sendErr, &callErr) || callErr.Err.Code != zcode.CodeConcurrency {
+		return false, nil
+	}
+
+	if !m.OrphanRecovery {
+		return false, nil
+	}
+
+	slog.Warn("turn: backend reports an orphaned active prompt; stopping and retrying once",
+		"session", m.sessID)
+
+	m.mu.Lock()
+	m.startOrphanWaitLocked()
+	clearCh := m.orphanClear
+	window := m.orphanClearWindowLocked()
+	m.mu.Unlock()
+
+	// The stop goes through the bypass lane; a failure is recorded and the
+	// bounded wait still runs (the retry is attempted either way).
+	if err := m.conn.Stop(m.sessID); err != nil {
+		slog.Warn("turn: orphan stop failed", "session", m.sessID, "err", err)
+	}
+
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+	case <-clearCh:
+	case <-timer.C:
+	}
+
+	m.mu.Lock()
+	m.endOrphanWaitLocked()
+	m.resetTurnSignalsLocked()
+	m.mu.Unlock()
+
+	retryErr := m.sendTurn(ctx, content)
+	if retryErr == nil {
+		return true, nil
+	}
+
+	var retryCallErr *zcode.CallError
+	if errors.As(retryErr, &retryCallErr) && retryCallErr.Err.Code == zcode.CodeConcurrency {
+		return true, fmt.Errorf("turn: session/send after orphan stop: %w: %w", retryErr, ErrOrphanedBackend)
+	}
+
+	return true, retryErr
+}
+
+// mapSendError maps a session/send failure onto the machine's public error:
+// the orphan-recovery verdict passes through, the default numeric -32010
+// mapping stays ErrTurnActive (matched by code, never message text), and
+// everything else is the wrapped transport error.
+func (m *Machine) mapSendError(err error) error {
+	if errors.Is(err, ErrOrphanedBackend) {
+		return err
+	}
+
+	var callErr *zcode.CallError
+	if errors.As(err, &callErr) && callErr.Err.Code == zcode.CodeConcurrency {
+		return fmt.Errorf("turn: session/send: %w: %w", callErr, ErrTurnActive)
+	}
+
+	return fmt.Errorf("turn: session/send: %w", err)
+}
+
+// startOrphanWaitLocked opens the orphan clear-evidence window with a fresh
+// capacity-1 channel (evidence before the select is buffered, never lost).
+func (m *Machine) startOrphanWaitLocked() {
+	m.orphanWaiting = true
+	m.orphanClear = make(chan struct{}, 1)
+}
+
+// endOrphanWaitLocked closes the orphan wait (idempotent).
+func (m *Machine) endOrphanWaitLocked() {
+	m.orphanWaiting = false
+	m.orphanClear = nil
+}
+
+// signalOrphanClearLocked delivers clear evidence non-blockingly.
+func (m *Machine) signalOrphanClearLocked() {
+	if m.orphanClear == nil {
+		return
+	}
+
+	select {
+	case m.orphanClear <- struct{}{}:
+	default:
+	}
+}
+
+// orphanClearWindowLocked resolves the bounded clear wait: the injected
+// override when positive, else the production default.
+func (m *Machine) orphanClearWindowLocked() time.Duration {
+	if m.OrphanClearTimeout > 0 {
+		return m.OrphanClearTimeout
+	}
+
+	return DefaultOrphanClearTimeout
+}
+
+// observeOrphanEvidenceLocked inspects one envelope while the orphan wait is
+// active. Clear evidence must be EXPLICITLY session-scoped: the machine's
+// ObserveEnvelope is conn-wide, so a terminal or idle patch carrying a
+// foreign OR ABSENT sessionId neither clears the wait nor resolves — the
+// bound expires and the single retry still happens. Scoped evidence only
+// signals the wait (nothing classifies or resolves): a terminal's non-empty
+// turnId is retired so a late duplicate cannot bind the retried turn.
+func (m *Machine) observeOrphanEvidenceLocked(env zcode.Envelope) {
+	sid := paramsString(env.Params, "sessionId")
+	if sid != m.sessID {
+		slog.Debug("turn: orphan clear evidence ignored (not session-scoped)",
+			"session", m.sessID, "evidence_session", sid)
+
+		return
+	}
+
+	if kind, terminal := terminalSignalKind(env); terminal {
+		if turnID := paramsString(env.Params, "turnId"); turnID != "" {
+			m.retiredTurnID = turnID
+		}
+
+		m.signalOrphanClearLocked()
+
+		slog.Debug("turn: orphan cleared by terminal evidence", "session", m.sessID, "kind", kind)
+
+		return
+	}
+
+	if env.Method == zcode.MethodStateUpdated {
+		if obs, ok := decodeStatePatch(env, m.sessID); ok && obs.status != "" &&
+			obs.status != statusRunningPatch {
+			m.signalOrphanClearLocked()
+
+			slog.Debug("turn: orphan cleared by idle patch evidence",
+				"session", m.sessID, "status", obs.status)
+		}
+	}
+}
+
+// terminalSignalKind reports the terminal kind an envelope carries on a
+// known carrier (turn starts are not terminal evidence).
+func terminalSignalKind(env zcode.Envelope) (string, bool) {
+	field, ok := carrierKindField(env.Method)
+	if !ok {
+		return "", false
+	}
+
+	kind := paramsString(env.Params, field)
+
+	switch kind {
+	case KindTurnCompleted, KindTurnFailed, KindTurnTerminal,
+		KindTurnCompletedCU, KindTurnFailedCU:
+		return kind, true
+	}
+
+	return "", false
+}
+
 // guardTurnLocked rejects a concurrent second send (D-02: the -32010
 // concurrency guard is enforced wrapper-side, never silently queued).
 func (m *Machine) guardTurnLocked() error {
@@ -634,22 +849,30 @@ func (m *Machine) guardTurnLocked() error {
 // keeps a prior turn's late terminal from binding this one).
 func (m *Machine) beginTurnLocked() {
 	m.state = stateRunning
+	m.resetTurnSignalsLocked()
+	m.resolved = false
+	m.resolution = Resolution{}
+	m.ackAt = time.Time{}
+	m.resolvedCh = make(chan struct{})
+	m.stallWake = make(chan struct{}, 1)
+}
+
+// resetTurnSignalsLocked clears the per-turn signal and watchdog state — the
+// state an orphan-recovery retry must start clean (running latch, bound
+// turnId, start-proven, veto budget, progress clock, messages baseline)
+// while the RETIRED turnId is deliberately preserved.
+func (m *Machine) resetTurnSignalsLocked() {
 	m.turnID = ""
 	m.runningSeen = false
 	m.runningRevision = 0
 	m.runningRevisionSeen = false
 	m.runningReason = ""
-	m.lastProgress = time.Time{}
-	m.toolActive = false
-	m.stallWake = make(chan struct{}, 1)
-	m.messagesSeen = false
-	m.lastMessagesRaw = nil
 	m.startProven = false
 	m.quietVetoes = 0
-	m.resolved = false
-	m.resolution = Resolution{}
-	m.ackAt = time.Time{}
-	m.resolvedCh = make(chan struct{})
+	m.lastProgress = time.Time{}
+	m.toolActive = false
+	m.messagesSeen = false
+	m.lastMessagesRaw = nil
 }
 
 // finishTurn marks the turn lifecycle done — the machine's resting state

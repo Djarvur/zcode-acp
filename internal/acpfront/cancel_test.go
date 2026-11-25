@@ -12,13 +12,15 @@ package acpfront_test
 //	TestSecondPromptRejected: a second prompt while a turn is active
 //	  answers the ONE clean session-busy refusal — JSON-RPC -32003 with
 //	  the stable concurrent-prompt message and data exactly
-//	  {"reason":"session_busy"} — from BOTH guard layers (the front-wide
-//	  turn slot and the machine's ErrTurnActive, whose backend-refusal
-//	  leg is the numeric -32010 mapping, message text never matched);
-//	  never a hang, never -32603 internal noise, never a second
-//	  concurrent turn on the wire. -32003 plus data.reason is the shape
-//	  Orca's retryBusyPrompts gate retries; the message stays stable for
-//	  humans but is never matched.
+//	  {"reason":"session_busy"} — from the front-wide turn slot; never a
+//	  hang, never -32603 internal noise, never a second concurrent turn
+//	  on the wire. -32003 plus data.reason is the shape Orca's
+//	  retryBusyPrompts gate retries; the message stays stable for humans
+//	  but is never matched. (The slot-free backend -32010 refusal this
+//	  file used to map here is now the orphan-recovery contract — see
+//	  orphan_test.go; the supersession is deliberate: a slot-free
+//	  refusal can only name an orphaned backend turn, and the retryable
+//	  busy class was exactly the unbounded-retry bug.)
 //	TestCancelAfterCompleteNoOp: a cancel arriving after the prompt
 //	  already answered produces no second response and no error frame —
 //	  the SDK notification is consumed and the machine's idempotent
@@ -176,13 +178,14 @@ func TestCancelMidTurn(t *testing.T) {
 }
 
 // TestSecondPromptRejected locks the ONE session-busy rejection surface for
-// concurrent prompts (D-05): whatever guard layer fires, the client sees the
-// same -32003 code, the same stable message and data.reason session_busy —
-// never a hang, never -32603 internal noise, never a second concurrent turn
-// on the wire.
+// a genuinely LOCAL concurrent turn (D-05): the front-wide slot answers the
+// -32003 code with the stable message and data.reason session_busy — never
+// a hang, never -32603 internal noise, never a second concurrent turn on the
+// wire. The slot-FREE backend -32010 refusal is deliberately NOT this
+// contract anymore: it is the orphan case (orphan_test.go), where the
+// retryable busy class was the unbounded-retry bug.
 func TestSecondPromptRejected(t *testing.T) {
 	t.Run("front turn slot held", testFrontSlotRejection)
-	t.Run("backend -32010 refusal mapped", testBackendRefusalRejection)
 }
 
 // assertRejectedSessionBusy checks one prompt error against the stable
@@ -302,39 +305,6 @@ func testFrontSlotRejection(t *testing.T) {
 	}
 
 	assertSingleSend(t, tr, "the rejected prompt never reached the app-server")
-}
-
-// testBackendRefusalRejection rides the send-refused-32010 corpus: the front
-// slot is FREE but the app-server refuses the send with the dialect §6
-// concurrency guard (-32010); the machine maps the numeric code to
-// ErrTurnActive (never the message text) and the front must surface the same
-// ONE session-busy refusal the slot path answers — -32003 with
-// data.reason session_busy, so the client's busy-retry gate engages instead
-// of the wrapped -32603 transport noise.
-func testBackendRefusalRejection(t *testing.T) {
-	h := newTracerFront(t, "send-refused-32010")
-
-	ctx, cancel := h.ExchangeCtx()
-	defer cancel()
-
-	if _, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1}); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
-
-	sid := openCancelStageSession(ctx, t, h)
-
-	_, err := h.client.Prompt(ctx, acp.PromptRequest{
-		SessionId: acp.SessionId(sid),
-		Prompt:    []acp.ContentBlock{acp.TextBlock("refused")},
-	})
-	assertRejectedSessionBusy(t, h.ACPLines(), err)
-
-	tr, trErr := h.Transcript(t)
-	if trErr != nil {
-		t.Fatalf("fake transcript: %v", trErr)
-	}
-
-	assertSingleSend(t, tr, "the refused turn made no further wire traffic")
 }
 
 // TestCancelAfterCompleteNoOp locks the no-op leg over the setmodel-followup
