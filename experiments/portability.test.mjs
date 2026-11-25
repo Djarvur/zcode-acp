@@ -121,3 +121,48 @@ test("CI appends shell gates while preserving native race and Linux VM separatio
   assert.doesNotMatch(miseSource, /CGO_ENABLED\s*=/m, "CGO settings must not be globalized");
   assert.doesNotMatch(miseSource, /vm-e2e\.sh/, "the Linux-only VM script must stay outside CI");
 });
+
+test("tool-version gate reads all five mise pins and probes only through mise", () => {
+  const gateSource = source("scripts/check-mise-tool-versions.mjs");
+  const expectedTools = ["go", "golangci-lint", "goreleaser", "node", "bash"];
+  const requiredBlock = /const REQUIRED_TOOLS = \[([\s\S]*?)\];/.exec(gateSource)?.[1];
+  assert.ok(requiredBlock, "the gate must declare its five required tools");
+  const gateTools = [...requiredBlock.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(gateTools, expectedTools);
+
+  const toolsTable = tomlSection(source("mise.toml"), "tools");
+  const pinnedTools = [...toolsTable.matchAll(/^([a-z-]+)\s*=\s*"([^"]+)"\s*$/gm)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(pinnedTools, expectedTools, "mise.toml must remain the five-pin source");
+
+  assert.ok(
+    gateSource.includes('readFileSync(path.join(REPO_ROOT, "mise.toml"), "utf8")'),
+    "the gate must read requirements from mise.toml",
+  );
+  assert.ok(
+    gateSource.includes('spawnSync("mise", ["exec", "--", tool, ...VERSION_ARGS[tool]]'),
+    "every version probe must run through mise exec",
+  );
+  assert.doesNotMatch(
+    gateSource,
+    /(?:spawnSync|execFileSync|execSync)\(\s*tool\b/,
+    "the gate must never fall back to a bare PATH command",
+  );
+  assert.match(gateSource, /timeout:\s*PROBE_TIMEOUT_MS/, "each probe must be bounded");
+});
+
+test("tool-version gate exports comparators and fails non-zero on drift", () => {
+  const gateSource = source("scripts/check-mise-tool-versions.mjs");
+
+  assert.match(gateSource, /export function resolvedVersionFromOutput\(/);
+  assert.match(gateSource, /export function requiredVersionMatches\(/);
+  assert.ok(
+    gateSource.includes("if (!passed) process.exitCode = 1;"),
+    "probe failures or version mismatches must set a non-zero exit",
+  );
+  assert.ok(
+    gateSource.includes("if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) main();"),
+    "importing the comparators must not execute mise",
+  );
+});
