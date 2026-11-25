@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 21
+open_count: 23
 waived_count: 0
 fixed_count: 3
-total_count: 24
-last_updated: 2026-11-25T13:32:20.120Z
+total_count: 26
+last_updated: 2026-11-25T13:43:17.794Z
 ---
 
 # Broken Windows Ledger
@@ -39,6 +39,8 @@ last_updated: 2026-11-25T13:32:20.120Z
 | 22 | 11 | unrun-verify | experiments/check-docs.sh |  | Task 1 mise-managed shell gate was not run because repository mise trust is prohibited; absolute Bash 5.3 syntax, docs, phase-gate, and secret-scan equivalents passed. | open |  | 2026-11-25T13:32:19.775Z |  |
 | 23 | 11 | unrun-verify | scripts/check-mise-tool-versions.mjs |  | Task 2 mise-resolved five-tool version probe was not run because repository mise trust is prohibited; offline comparator and static gate tests passed. | open |  | 2026-11-25T13:32:19.948Z |  |
 | 24 | 11 | unrun-verify | mise.toml |  | Task 2 named mise shell tasks were not run because repository mise trust is prohibited; both scripts passed directly through absolute Bash 5.3. | open |  | 2026-11-25T13:32:20.120Z |  |
+| 25 | 11 | unrun-verify | .github/workflows/pr-sanity.yml |  | Hosted pr-sanity matrix has not been observed on GitHub; Linux, macOS arm64/amd64, Darwin cross-build, govulncheck, and secret-scan still require a green run with recorded head SHA, architectures, and resolved versions. | open |  | 2026-11-25T13:43:17.611Z |  |
+| 26 | 11 | unrun-verify | scripts/check-mise-tool-versions.mjs |  | The mise-resolved five-tool runtime gate and mise task graph were not executed locally because mise.toml is explicitly untrusted; CI owns the first runtime observation. | open |  | 2026-11-25T13:43:17.794Z |  |
 
 ````json
 [
@@ -351,6 +353,32 @@ last_updated: 2026-11-25T13:32:20.120Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-25T13:32:20.120Z",
+    "resolved_at": null,
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 25,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": ".github/workflows/pr-sanity.yml",
+    "line": null,
+    "description": "Hosted pr-sanity matrix has not been observed on GitHub; Linux, macOS arm64/amd64, Darwin cross-build, govulncheck, and secret-scan still require a green run with recorded head SHA, architectures, and resolved versions.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-25T13:43:17.611Z",
+    "resolved_at": null,
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 26,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": "scripts/check-mise-tool-versions.mjs",
+    "line": null,
+    "description": "The mise-resolved five-tool runtime gate and mise task graph were not executed locally because mise.toml is explicitly untrusted; CI owns the first runtime observation.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-25T13:43:17.794Z",
     "resolved_at": null,
     "milestone": "v0.24.0"
   }
