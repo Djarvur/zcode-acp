@@ -39,3 +39,6 @@ experiments/raw/
 # Local build output: `go build ./...` writes the single main-package binary
 # to the repo root (discarded again once more packages exist, Phase 3+)
 /zcode-acp
+
+# GoReleaser snapshot output
+/dist/

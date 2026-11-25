@@ -1,0 +1,45 @@
+version: 2
+
+project_name: zcode-acp
+
+builds:
+  - id: darwin-arm64
+    main: ./cmd/zcode-acp
+    binary: zcode-acp
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [arm64]
+    flags: [-trimpath]
+    ldflags: [-s, -w, -X, "main.version={{ .Version }}"]
+  - id: darwin-amd64
+    main: ./cmd/zcode-acp
+    binary: zcode-acp
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [amd64]
+    flags: [-trimpath]
+    ldflags: [-s, -w, -X, "main.version={{ .Version }}"]
+
+universal_binaries:
+  - id: darwin-universal
+    ids: [darwin-arm64, darwin-amd64]
+    name_template: zcode-acp
+    replace: false
+
+archives:
+  # Binaries come from ids. This non-matching extra-file glob suppresses
+  # GoReleaser's default README/LICENSE members without adding another file.
+  - id: darwin-thin
+    ids: [darwin-arm64, darwin-amd64]
+    formats: [tar.gz]
+    files: [".zcode-acp-no-extra-files-*"]
+    name_template: "zcode-acp_{{ .Version }}_darwin_{{ .Arch }}"
+  - id: darwin-universal
+    ids: [darwin-universal]
+    formats: [tar.gz]
+    files: [".zcode-acp-no-extra-files-*"]
+    name_template: "zcode-acp_{{ .Version }}_darwin_universal"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
