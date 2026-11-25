@@ -157,6 +157,192 @@ func TestResume(t *testing.T) {
 	assertResumeLegOrder(t, tr, sid)
 }
 
+// TestOrcaCapabilityGateUsesResume models Orca's local session-setup gate on
+// the real SDK response: loadSession is checked first, then
+// sessionCapabilities.resume. Only a client that observes the resume opt-in
+// may call session/resume. The pure-resume fixture proves the selected path
+// reattaches sess_cfg without creating a replacement or replaying history.
+func TestOrcaCapabilityGateUsesResume(t *testing.T) {
+	h := newSetCfgFront(t, resumeSettingsScenario())
+
+	ctx, cancel := h.ExchangeCtx()
+	defer cancel()
+
+	initResp, err := h.client.Initialize(ctx, acp.InitializeRequest{ProtocolVersion: 1})
+	if err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	// Orca v1.4.271 rejects restoration locally when neither route is
+	// advertised. Keep this gate before ResumeSession so RED proves the
+	// missing advertisement stops the flow before any backend traffic.
+	if initResp.AgentCapabilities.LoadSession {
+		t.Fatal("Orca capability gate: loadSession must remain false")
+	}
+
+	if initResp.AgentCapabilities.SessionCapabilities.Resume == nil {
+		t.Fatal("Orca capability gate: sessionCapabilities.resume is not advertised")
+	}
+
+	const sid = "sess_cfg"
+	cwd := t.TempDir()
+
+	resp, err := h.client.ResumeSession(ctx, acp.ResumeSessionRequest{
+		SessionId: acp.SessionId(sid),
+		Cwd:       cwd,
+	})
+	if err != nil {
+		t.Fatalf("session/resume: %v", err)
+	}
+
+	marshaled, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal resume response: %v", err)
+	}
+
+	if string(marshaled) != "{}" {
+		t.Fatalf("resume response = %s, want the empty object", marshaled)
+	}
+
+	if updates := h.Updates(); len(updates) != 0 {
+		t.Fatalf("client collected %d updates after resume, want 0 (no history replay)", len(updates))
+	}
+
+	assertOrcaResumeACPWire(t, h.ACPLines(), sid, cwd)
+
+	tr, trErr := h.Transcript(t)
+	if trErr != nil {
+		t.Fatalf("fake transcript: %v", trErr)
+	}
+
+	assertOrcaResumeBackendWire(t, tr, sid)
+}
+
+// assertOrcaResumeACPWire proves the client-side story: initialize precedes
+// the gated resume request, the request preserves the id and cwd, and the
+// correlated reply is the empty success object.
+func assertOrcaResumeACPWire(t *testing.T, lines []TeeLine, sid, cwd string) {
+	t.Helper()
+
+	initIdx := teeLineIndex(t, lines, "in", `"protocolVersion"`, "initialize response")
+	resumeIdx := teeLineIndex(t, lines, "out", `"method":"session/resume"`, "session/resume request")
+
+	if initIdx >= resumeIdx {
+		t.Fatalf("Orca gate requires initialize (%d) before session/resume (%d)", initIdx, resumeIdx)
+	}
+
+	var resumeReq struct {
+		Params struct {
+			SessionID string `json:"sessionId"`
+			Cwd       string `json:"cwd"`
+		} `json:"params"`
+	}
+
+	if err := json.Unmarshal([]byte(lines[resumeIdx].JSON), &resumeReq); err != nil {
+		t.Fatalf("decode session/resume request: %v (%s)", err, lines[resumeIdx].JSON)
+	}
+
+	if resumeReq.Params.SessionID != sid || resumeReq.Params.Cwd != cwd {
+		t.Fatalf("session/resume params = %+v, want the original id %q and cwd %q",
+			resumeReq.Params, sid, cwd)
+	}
+
+	var resumeReply struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+
+	reply := sessTeeReply(t, lines, resumeIdx)
+	if err := json.Unmarshal([]byte(reply.JSON), &resumeReply); err != nil {
+		t.Fatalf("decode session/resume reply: %v (%s)", err, reply.JSON)
+	}
+
+	if len(resumeReply.Error) != 0 && !jsonIsNull(resumeReply.Error) {
+		t.Fatalf("session/resume reply carries an error: %s", reply.JSON)
+	}
+
+	if string(resumeReply.Result) != "{}" {
+		t.Fatalf("session/resume reply = %s, want result {}", reply.JSON)
+	}
+}
+
+// assertOrcaResumeBackendWire locks the backend transcript reached through
+// Orca's gate: exactly resume then subscribe for the same id, with no create,
+// model rebind, send, or messages/history request.
+func assertOrcaResumeBackendWire(t *testing.T, tr fake.Transcript, sid string) {
+	t.Helper()
+
+	requests := make([]fake.Line, 0, 2)
+	for _, line := range tr.Lines {
+		if line.Dir == "in" {
+			requests = append(requests, line)
+		}
+	}
+
+	if len(requests) != 2 {
+		t.Fatalf("Orca-gated resume recorded %d inbound backend requests, want exactly 2: %+v",
+			len(requests), requests)
+	}
+
+	for i, want := range []string{zcode.MethodSessionResume, zcode.MethodSessionSubscribe} {
+		var frame struct {
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal([]byte(requests[i].JSON), &frame); err != nil {
+			t.Fatalf("decode backend request %d: %v (%s)", i, err, requests[i].JSON)
+		}
+
+		if frame.Method != want {
+			t.Fatalf("backend request %d method = %q, want %q", i, frame.Method, want)
+		}
+	}
+
+	assertOrcaResumeBackendParams(t, requests[0].JSON, sid)
+	assertSubscribeFrame(t, requests[1].JSON, sid)
+
+	for _, method := range []string{
+		zcode.MethodSessionCreate,
+		zcode.MethodSessionSetModel,
+		zcode.MethodSessionSend,
+		zcode.MethodSessionMessages,
+	} {
+		if idxs := transcriptIndexes(tr, "in", `"method":"`+method+`"`); len(idxs) != 0 {
+			t.Fatalf("Orca-gated resume must not issue %s, found frames at %v", method, idxs)
+		}
+	}
+}
+
+// assertOrcaResumeBackendParams requires the backend resume payload to carry
+// exactly the original sessionId — no replacement id or fabricated hints.
+func assertOrcaResumeBackendParams(t *testing.T, raw, sid string) {
+	t.Helper()
+
+	var resume struct {
+		Params map[string]json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resume); err != nil {
+		t.Fatalf("decode backend session/resume params: %v (%s)", err, raw)
+	}
+
+	if len(resume.Params) != 1 {
+		t.Fatalf("backend session/resume params = %s, want exactly the original sessionId", raw)
+	}
+
+	rawID, ok := resume.Params["sessionId"]
+	if !ok {
+		t.Fatalf("backend session/resume carries no sessionId: %s", raw)
+	}
+
+	var gotID string
+	if err := json.Unmarshal(rawID, &gotID); err != nil {
+		t.Fatalf("decode backend session/resume sessionId: %v (%s)", err, rawID)
+	}
+
+	if gotID != sid {
+		t.Fatalf("backend session/resume sessionId = %q, want the original %q", gotID, sid)
+	}
+}
+
 // assertResumeLegOrder locks the resume leg's back-leg wire shape: exactly
 // one session/resume, exactly one subscribe AFTER it (the re-issue,
 // desktop-continuous for the reattached session), and NO setModel after

@@ -50,11 +50,11 @@ const (
 	arcTurn2ID = "turn_fix2"
 
 	// Leg 1 — initialize's honest capability reply: protocolVersion 1, the
-	// 06-04 sessionCapabilities options opt-in, and both authMethod ids.
-	arcTeeVersionOne = `"protocolVersion":1`
-	arcTeeOptionsCap = `"sessionCapabilities":{"options":{}}`
-	arcTeeAuthKeyID  = `"zai-api-key"`
-	arcTeeAuthPlanID = `"zai-individual-coding-plan"`
+	// options and resume sessionCapabilities opt-ins, and both authMethod ids.
+	arcTeeVersionOne  = `"protocolVersion":1`
+	arcTeeSessionCaps = `"sessionCapabilities":{"options":{},"resume":{}}`
+	arcTeeAuthKeyID   = `"zai-api-key"`
+	arcTeeAuthPlanID  = `"zai-individual-coding-plan"`
 
 	// Legs 4/5 — the two prompt resolutions: turn 1 answers end_turn,
 	// turn 2 answers cancelled (the CORE-05 lock carried into the arc).
@@ -188,8 +188,8 @@ func conformanceCancelLegRules() []fake.RequestRule {
 // assertConformanceInitialize runs the arc's initialize leg and locks the
 // honest capability reply on the raw tee frame: the D-02 probe shape
 // (assertInitializeReport, ridden whole), plus the three surfaces the arc
-// names — protocolVersion 1, the sessionCapabilities options opt-in
-// (06-04), and both authMethod ids.
+// names — protocolVersion 1, the options and resume sessionCapabilities
+// opt-ins, and both authMethod ids.
 func assertConformanceInitialize(ctx context.Context, t *testing.T, h *FrontHarness) {
 	t.Helper()
 
@@ -199,8 +199,8 @@ func assertConformanceInitialize(ctx context.Context, t *testing.T, h *FrontHarn
 	initIdx := teeLineIndex(t, lines, "in", arcTeeVersionOne, "initialize response")
 	initRaw := lines[initIdx].JSON
 
-	if !strings.Contains(initRaw, arcTeeOptionsCap) {
-		t.Fatalf("initialize response carries no sessionCapabilities options opt-in (06-04): %s", initRaw)
+	if !strings.Contains(initRaw, arcTeeSessionCaps) {
+		t.Fatalf("initialize response carries no options-plus-resume sessionCapabilities opt-ins: %s", initRaw)
 	}
 
 	if !strings.Contains(initRaw, arcTeeAuthKeyID) || !strings.Contains(initRaw, arcTeeAuthPlanID) {

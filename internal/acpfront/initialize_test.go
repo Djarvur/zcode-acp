@@ -18,10 +18,10 @@ const setModelScenario = "setmodel-followup"
 // decoded NOTHING — the wire truth is the contract, not the decoded struct.
 // The executed-probe shape (04-RESEARCH "Code Examples") is the golden
 // reference: protocolVersion 1, real agentInfo, exactly the two advertised
-// auth methods in contract order (agent variant, no type field), zero-value
-// capability objects — and NO loadSession/fs/terminal surface anywhere
-// (absence assertions, RESEARCH A7: assert absent features, not
-// empty-object cosmetics). This lock rides the plan 04-02 harness as
+// auth methods in contract order (agent variant, no type field), the options
+// and resume empty-struct capability opt-ins — and NO loadSession/fs/terminal
+// surface anywhere (absence assertions, RESEARCH A7: assert absent features,
+// not empty-object cosmetics). This lock rides the plan 04-02 harness as
 // composed by plan 04-06 (newTracerFront over the setmodel-followup corpus).
 func TestInitializeHonestCapabilities(t *testing.T) {
 	h := newTracerFront(t, setModelScenario)
@@ -38,12 +38,12 @@ func TestInitializeHonestCapabilities(t *testing.T) {
 	initRaw := lines[initIdx].JSON
 
 	// The EXACT executed-probe honest shape, byte for byte, WIDENED by plan
-	// 06-04 (MODEL-01, D-11): sessionCapabilities gains the options
-	// empty-struct opt-in. One lock covers protocolVersion 1, the agentInfo
-	// identity, and both authMethods in contract order without a type field
-	// (the agent variant is the default).
+	// 06-04 (MODEL-01, D-11) and quick task 261125-n0j: sessionCapabilities
+	// gains the options and resume empty-struct opt-ins. One lock covers
+	// protocolVersion 1, the agentInfo identity, and both authMethods in
+	// contract order without a type field (the agent variant is the default).
 	probeShape := `{"agentCapabilities":{"auth":{},"mcpCapabilities":{},"promptCapabilities":{},` +
-		`"sessionCapabilities":{"options":{}}},` +
+		`"sessionCapabilities":{"options":{},"resume":{}}},` +
 		`"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},` +
 		`"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},` +
 		`{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}`

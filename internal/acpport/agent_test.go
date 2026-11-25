@@ -184,23 +184,23 @@ func honestReport() acpport.InitReport {
 
 // honestInitializeFrame is the byte-exact wire shape the executed probe
 // against v0.20.0 produced (RESEARCH Code Examples), WIDENED deliberately
-// by plan 06-04 (MODEL-01, D-11): sessionCapabilities gains the options
-// empty-struct opt-in — clients gate session/set_config_option on it. The
-// agent-variant authMethods still carry no type discriminator, and no
-// fs/terminal/loadSession surface appears anywhere.
+// by plan 06-04 (MODEL-01, D-11) and quick task 261125-n0j: sessionCapabilities
+// gains the options and resume empty-struct opt-ins. Clients gate
+// session/set_config_option and session/resume on them. The agent-variant
+// authMethods still carry no type discriminator, and no fs/terminal/loadSession
+// surface appears anywhere.
 const honestInitializeFrame = `{"agentCapabilities":{"auth":{},"mcpCapabilities":{},` +
-	`"promptCapabilities":{},"sessionCapabilities":{"options":{}}},` +
+	`"promptCapabilities":{},"sessionCapabilities":{"options":{},"resume":{}}},` +
 	`"agentInfo":{"name":"zcode-acp","title":"zcode-acp agent","version":"0.0.0-dev"},` +
 	`"authMethods":[{"id":"zai-api-key","name":"z.ai API key"},` +
 	`{"id":"zai-individual-coding-plan","name":"z.ai Individual Coding Plan"}],"protocolVersion":1}`
 
-// TestInitCapabilities — plan 06-04 (MODEL-01, D-11): initialize advertises
-// sessionCapabilities.options, the SDK's empty-struct opt-in — clients MUST
-// only send session/set_config_option when it is present. The advertisement
-// is UNCONDITIONAL (D-11: the picker is auth-path-independent), and every
-// phase-4 honesty lock (protocol version, real agentInfo, both auth
-// methods, the byte-exact frame with zero fs/terminal) stays asserted
-// alongside the widened shape.
+// TestInitCapabilities locks the two honest session-capability opt-ins:
+// sessionCapabilities.options gates session/set_config_option, and
+// sessionCapabilities.resume gates session/resume. Both advertisements are
+// UNCONDITIONAL (the picker is auth-path-independent and ResumeSession already
+// delegates to the SESS-01 front lifecycle), while loadSession remains false
+// and every phase-4 honesty lock stays asserted beside the widened shape.
 func TestInitCapabilities(t *testing.T) {
 	h := newScriptedHandlers()
 	h.initReport = honestReport()
@@ -211,12 +211,20 @@ func TestInitCapabilities(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	// The SDK carries the capabilities block as a VALUE struct — the opt-in
-	// is AgentCapabilities.SessionCapabilities.Options (the empty-struct
-	// pointer; nil means unadvertised).
+	// The SDK carries the capabilities block as a VALUE struct — each opt-in
+	// is an empty-struct pointer; nil means unadvertised.
 	if resp.AgentCapabilities.SessionCapabilities.Options == nil {
 		t.Fatalf("initialize must advertise sessionCapabilities.options (the empty-struct opt-in, D-11): %+v",
 			resp.AgentCapabilities.SessionCapabilities)
+	}
+
+	if resp.AgentCapabilities.SessionCapabilities.Resume == nil {
+		t.Fatalf("initialize must advertise sessionCapabilities.resume (the empty-struct opt-in): %+v",
+			resp.AgentCapabilities.SessionCapabilities)
+	}
+
+	if resp.AgentCapabilities.LoadSession {
+		t.Fatal("initialize must not advertise top-level loadSession")
 	}
 
 	if resp.ProtocolVersion != acp.ProtocolVersionNumber {
@@ -306,9 +314,9 @@ func TestNewSessionAssemblesConfigOptions(t *testing.T) {
 
 // TestInitializeAssemblesHonestReport drives the adapter's Initialize and
 // byte-locks the response frame: protocolVersion 1, agentInfo
-// name/title/version, both authMethods in contract order, zero-value
-// capabilities, and NO fs/terminal/loadSession/type surface (D-02 —
-// honesty by construction; assert on absent features, A7).
+// name/title/version, both authMethods in contract order, exactly the options
+// and resume session-capability opt-ins, and NO fs/terminal/loadSession/type
+// surface (D-02 — honesty by construction; assert on absent features, A7).
 func TestInitializeAssemblesHonestReport(t *testing.T) {
 	h := newScriptedHandlers()
 	h.initReport = honestReport()
