@@ -15,10 +15,10 @@
 #     architecture and tool-version preflights;
 #   - a separate Linux job runs both literal CGO-free Darwin cross-builds.
 #
-# Gates: build + vet + golangci-lint + test -race + experiments suite + managed
-# shell gates + tidy-diff on Linux and both native macOS architectures, plus
-# separate Darwin cross-build, govulncheck, and secret-scan jobs. Native jobs
-# call exactly the same tasks as the local `mise run ci` (D-02).
+# Gates: build + vet + golangci-lint + test -race + experiments suite + Go
+# documentation/secret gates + tidy-diff on Linux and both native macOS
+# architectures, plus separate Darwin cross-build, govulncheck, and secret-scan
+# jobs. Native jobs call exactly the same tasks as the local `mise run ci` (D-02).
 #
 # Tool source: `mise install` reads mise.toml — the single place where tool
 # versions live. setup-go / golangci-lint-action are rejected on purpose (the
@@ -106,14 +106,6 @@ jobs:
       - name: Add mise to PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # mise has no Bash tool plugin. macOS runners carry Bash 3.2, so install
-      # Homebrew Bash 5 and prepend it before the PATH Bash requirement is read.
-      - name: Install Bash 5 via Homebrew
-        run: brew install bash
-
-      - name: Prepend Homebrew Bash to PATH
-        run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-
       - name: Install tools from mise.toml
         run: mise install
 
@@ -129,13 +121,12 @@ jobs:
           test "$(mise exec -- go env GOARCH)" = "$EXPECTED_GOARCH"
           test "$(uname -m)" = "$EXPECTED_UNAME_M"
 
-      # Print four mise-resolved versions and the PATH-level Bash line; fail on
-      # any pin or requirement drift.
+      # Print the four mise-resolved versions and fail on any pin drift.
       - name: Verify mise tool versions
         run: mise exec -- node scripts/check-mise-tool-versions.mjs
 
-      # The canonical task includes CGO-enabled native race tests and the
-      # managed Bash shell gates. Cross-build CGO settings stay out of this job.
+      # The canonical task includes CGO-enabled native race tests and the Go
+      # documentation and secret gates. Cross-build CGO settings stay out of this job.
       - name: Canonical CI gate
         run: mise run ci
 
@@ -154,14 +145,6 @@ jobs:
 
       - name: Add mise to PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      # mise has no Bash tool plugin. Install and prepend Homebrew Bash 5
-      # before the PATH-level Bash requirement is checked.
-      - name: Install Bash 5 via Homebrew
-        run: brew install bash
-
-      - name: Prepend Homebrew Bash to PATH
-        run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
       - name: Install tools from mise.toml
         run: mise install
@@ -261,7 +244,7 @@ jobs:
 
       # Fixed gate script (WR-01/IN-03 corrected in plan 02-03): fails on any
       # tracked file outside .planning matching a live-credential value shape.
-      # The named task selects the runner's PATH Bash 5 instead of the system shell.
+      # The named task runs the Go-backed tracked-file secret scanner.
       - name: secret scan
         run: mise run secret-scan
 

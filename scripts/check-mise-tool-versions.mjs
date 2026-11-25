@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // scripts/check-mise-tool-versions.mjs — compare the four mise-managed tool
-// pins plus the PATH-level Bash requirement with mise.toml. This gate never
-// installs or trusts tools.
+// pins with mise.toml. This gate never installs or trusts tools.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -12,9 +11,7 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SCRIPT_PATH), "..");
 const VERSION_PATTERN = /^\d+(?:\.\d+){0,2}$/;
 const PROBE_TIMEOUT_MS = 30_000;
-const MISE_TOOLS = ["go", "golangci-lint", "goreleaser", "node"];
-const REQUIRED_TOOLS = [...MISE_TOOLS, "bash"];
-const BASH_REQUIREMENT_ENV = "ZCODE_ACP_REQUIRED_BASH";
+const REQUIRED_TOOLS = ["go", "golangci-lint", "goreleaser", "node"];
 const VERSION_ARGS = {
   go: ["version"],
   "golangci-lint": ["--version"],
@@ -83,17 +80,9 @@ function readRequiredPin(document, tableName, key) {
 
 function readRequiredPins(document) {
   const pins = new Map();
-  for (const tool of MISE_TOOLS) {
+  for (const tool of REQUIRED_TOOLS) {
     pins.set(tool, readRequiredPin(document, "tools", tool));
   }
-
-  const bashPin = readRequiredPin(document, "env", BASH_REQUIREMENT_ENV);
-  if (bashPin.split(".").length === 3) {
-    throw new Error(
-      `mise.toml [env].${BASH_REQUIREMENT_ENV} must be a major or major.minor line`,
-    );
-  }
-  pins.set("bash", bashPin);
   return pins;
 }
 
@@ -137,10 +126,6 @@ function probeMiseTool(tool, required) {
   return probeVersion(tool, "mise", ["exec", "--", tool, ...VERSION_ARGS[tool]], required, "mise");
 }
 
-function probeBash(required) {
-  return probeVersion("bash", "bash", ["--version"], required, "PATH");
-}
-
 function main() {
   const requested = process.argv.slice(2);
   const unknown = requested.filter((tool) => !REQUIRED_TOOLS.includes(tool));
@@ -162,9 +147,7 @@ function main() {
   const selected = requested.length > 0 ? requested : REQUIRED_TOOLS;
   let passed = true;
   for (const tool of selected) {
-    const required = pins.get(tool);
-    const ok = tool === "bash" ? probeBash(required) : probeMiseTool(tool, required);
-    if (!ok) passed = false;
+    if (!probeMiseTool(tool, pins.get(tool))) passed = false;
   }
   if (!passed) process.exitCode = 1;
 }

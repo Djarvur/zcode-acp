@@ -142,7 +142,7 @@ Operational guarantees (documented resolutions of the probe-review rows):
 | `[V-RPT official install docs + CDN]` | Official install page and CDN artifact URLs fetched live at execution time (2026-11-19; AppImage/deb/rpm across linux-x64 and linux-arm64); URLs are recorded by pattern, never hardcoded into tooling. |
 | `[V-RPT live-update event]` | The completed install/apply step of a desktop auto-update was never observed; expected runtime-tree effects are inferred from observed artifact downloads + tree accretion. |
 
-Path note: this document records glob/tilde/`<placeholder>` patterns only — no user-specific absolute paths (enforced by `experiments/check-docs.sh`).
+Path note: this document records glob/tilde/`<placeholder>` patterns only — no user-specific absolute paths (enforced by `cmd/check-docs`).
 
 ---
 *Phase: 1 — Research & Protocol Documentation (DISC-03)*

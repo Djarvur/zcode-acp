@@ -16,30 +16,30 @@ gates that run before every commit.
 2. **These scripts spawn the real desktop bundle and may spend account quota**
    (the turn flow sends a real prompt; every other flow is registry-level).
    NEVER wire them into CI — CI must never spawn the desktop or call the
-   provider API. Only the two gates (`check-docs.sh`, `scan-secrets.sh`) are
+   provider API. Only the two Go gates (`cmd/check-docs`, `cmd/scan-secrets`) are
    CI-safe tools.
 3. **Machine paths stay on the command line.** The harness takes the bundle
    root, the entrypoint script, and the builtin config file as runtime
    arguments. No committed file may contain a user-specific absolute path —
-   `check-docs.sh` fails the build on that shape.
+   `cmd/check-docs` fails the build on that shape.
 4. **No account-state mutation.** No experiment in this phase mints API keys
    or writes account state; experiments are registry-level probes and, for
    the turn flow (added by plan 01-02), a single minimal prompt.
 
 ## Gates
 
-    bash experiments/check-docs.sh               # structure + provenance-tag conformance of docs/
-    bash experiments/check-docs.sh --phase-gate  # additionally: all six deliverable docs must exist
-    bash experiments/scan-secrets.sh             # secret-shape gate over tracked files (before every commit)
+    go run ./cmd/check-docs               # structure + provenance-tag conformance of docs/
+    go run ./cmd/check-docs --phase-gate  # additionally: all six deliverable docs must exist
+    go run ./cmd/scan-secrets             # secret-shape gate over tracked files (before every commit)
 
-`check-docs.sh` prints `CHECK FAIL: ...` for violations (exit 1) and
+`cmd/check-docs` prints `CHECK FAIL: ...` for violations (exit 1) and
 `PENDING: <path> (n/6 present)` for not-yet-written deliverable docs (affects
-the exit code only under `--phase-gate`). `scan-secrets.sh` prints
+the exit code only under `--phase-gate`). `cmd/scan-secrets` prints
 `SECRET SHAPE: ...` and exits 1 when any tracked file outside `.planning/`
 matches a live-credential value shape (three-part JWT tokens; credential-blob
 payloads after the enc prefix; long token values under credential keys).
-Documentation prose never trips the gate — the shapes match values, not
-mentions.
+Matched values are always redacted in the report. Documentation prose never
+trips the gate — the shapes match values, not mentions.
 
 ## Harness: `app-server-probe.mjs`
 

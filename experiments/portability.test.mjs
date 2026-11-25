@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -55,17 +55,12 @@ function assertWorkflowOrder(document, orderedNeedles) {
   }
 }
 
-function assertHomebrewBashBootstrap(job) {
-  const install = workflowStep(job, "Install Bash 5 via Homebrew");
-  const prepend = workflowStep(job, "Prepend Homebrew Bash to PATH");
-
-  assert.match(install, /^        run: brew install bash$/m);
-  assert.match(prepend, /^        run: echo "\$\(brew --prefix\)\/bin" >> "\$GITHUB_PATH"$/m);
-  assertWorkflowOrder(job, [
-    "      - name: Install Bash 5 via Homebrew",
-    "      - name: Prepend Homebrew Bash to PATH",
-    "      - name: Install tools from mise.toml",
-  ]);
+function assertNoBashDependency(document, label) {
+  assert.doesNotMatch(
+    document,
+    /brew install bash|brew --prefix[^\n]*GITHUB_PATH|ZCODE_ACP_REQUIRED_BASH|mise exec -- bash|run: bash\b/,
+    `${label} must not install or invoke Bash for a standard gate`,
+  );
 }
 
 function assertPortableDetachedFixture(source, fixture, selectors) {
@@ -106,60 +101,64 @@ test("readiness fixture creates its detached leak through Go", () => {
   ]);
 });
 
-test("docs gate uses four portable find-plus-grep scans", () => {
-  const docsSource = source("experiments/check-docs.sh");
-  const mintPattern = ["api", "keys"].join("_");
-  const portableScans = [
-    String.raw`find docs -type f -name '*.md' -exec grep -cE '^## Provenance legend' {} +`,
-    String.raw`find docs -type f -name '*.md' -exec grep -hoE '\[V-EXP [^]]+\]' {} +`,
-    String.raw`find docs -type f -name '*.md' -exec grep -hoE '\[V-[A-Za-z]+[^]]*\]' {} +`,
-    String.raw`find experiments -type f \( -name '*.mjs' -o -name '*.sh' \) ! -name 'check-docs.sh' -exec grep -nHiE '${mintPattern}' {} +`,
-  ];
+test("Go commands replace the docs and secret shell gates", () => {
+  assert.equal(
+    existsSync(path.join(repoRoot, "experiments/check-docs.sh")),
+    false,
+    "the shell docs gate must be deleted",
+  );
+  assert.equal(
+    existsSync(path.join(repoRoot, "experiments/scan-secrets.sh")),
+    false,
+    "the shell secret gate must be deleted",
+  );
 
-  for (const scan of portableScans) {
-    assert.ok(docsSource.includes(scan), `portable docs scan is missing: ${scan}`);
-  }
-  assert.doesNotMatch(
-    docsSource,
-    /--(?:include|exclude)(?:=|\b)/,
-    "the docs gate must not use GNU-only grep include/exclude filters",
-  );
+  const docsSource = source("cmd/check-docs/main.go");
+  assert.doesNotMatch(docsSource, /"os\/exec"/, "the docs gate must not shell out");
+  assert.doesNotMatch(docsSource, /exec\.Command/, "the docs gate must not invoke grep or find");
+  assert.ok(docsSource.includes("filepath.WalkDir"), "the docs gate must use filesystem traversal");
+  assert.ok(docsSource.includes("os.ReadFile"), "the docs gate must read files portably");
+
+  const secretSource = source("cmd/scan-secrets/main.go");
   assert.ok(
-    docsSource.includes("path_hits=$(grep -rnE \"$path_rx\" docs/ experiments/ 2>/dev/null || true)"),
-    "the existing portable recursive path scan must remain unchanged",
+    secretSource.includes(
+      'exec.CommandContext(context.Background(), "git", "ls-files", "-z")',
+    ),
+    "the secret gate must use git ls-files for tracked scope",
   );
+  assert.ok(secretSource.includes("[REDACTED]"), "the secret gate must redact matched values");
 });
 
-test("mise declares a PATH Bash line and exposes both shell gates", () => {
+test("mise exposes the Go gates and no managed Bash dependency", () => {
   const miseSource = source("mise.toml");
   const tools = tomlSection(miseSource, "tools");
   const environment = tomlSection(miseSource, "env");
 
   assert.doesNotMatch(tools, /^bash\s*=/m, "Bash must not be a mise tool-registry entry");
-  assert.match(
+  assert.doesNotMatch(
     environment,
-    /^ZCODE_ACP_REQUIRED_BASH\s*=\s*"5"\s*$/m,
-    "the PATH Bash requirement must be the major line 5",
+    /ZCODE_ACP_REQUIRED_BASH/,
+    "the Bash environment requirement must be removed",
   );
   assert.match(
     tomlSection(miseSource, "tasks.secret-scan"),
-    /^run\s*=\s*"bash experiments\/scan-secrets\.sh"\s*$/m,
-    "secret-scan must invoke the script through PATH bash",
+    /^run\s*=\s*"go run \.\/cmd\/scan-secrets"\s*$/m,
+    "secret-scan must run its Go command",
   );
   assert.match(
     tomlSection(miseSource, "tasks.check-docs"),
-    /^run\s*=\s*"bash experiments\/check-docs\.sh"\s*$/m,
-    "check-docs must invoke the script through PATH bash",
+    /^run\s*=\s*"go run \.\/cmd\/check-docs"\s*$/m,
+    "check-docs must run its Go command",
   );
 });
 
-test("CI appends shell gates while preserving native race and Linux VM separation", () => {
+test("CI includes Go gates while preserving native race and Linux VM separation", () => {
   const miseSource = source("mise.toml");
 
   assert.match(
     tomlSection(miseSource, "tasks.ci"),
     /^depends\s*=\s*\["build", "vet", "lint", "test", "test-experiments", "secret-scan", "check-docs"\]\s*$/m,
-    "shell gates must follow test-experiments in the canonical CI graph",
+    "Go gates must follow test-experiments in the canonical CI graph",
   );
   assert.match(
     tomlSection(miseSource, "tasks.test"),
@@ -175,56 +174,32 @@ test("CI appends shell gates while preserving native race and Linux VM separatio
   assert.doesNotMatch(miseSource, /vm-e2e\.sh/, "the Linux-only VM script must stay outside CI");
 });
 
-test("tool-version gate reads four mise pins plus the PATH Bash line", () => {
+test("tool-version gate reads only the four mise tool pins", () => {
   const gateSource = source("scripts/check-mise-tool-versions.mjs");
-  const expectedMiseTools = ["go", "golangci-lint", "goreleaser", "node"];
-  const miseBlock = /const MISE_TOOLS = \[([\s\S]*?)\];/.exec(gateSource)?.[1];
-  assert.ok(miseBlock, "the gate must declare its four mise-managed tools");
-  const gateTools = [...miseBlock.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(gateTools, expectedMiseTools);
-  assert.ok(
-    gateSource.includes('const REQUIRED_TOOLS = [...MISE_TOOLS, "bash"];'),
-    "the gate must add Bash to the selectable requirements",
-  );
-  assert.ok(
-    gateSource.includes('const BASH_REQUIREMENT_ENV = "ZCODE_ACP_REQUIRED_BASH";'),
-    "the gate must read the Bash requirement from its environment key",
-  );
+  const expectedTools = ["go", "golangci-lint", "goreleaser", "node"];
+  const requiredBlock = /const REQUIRED_TOOLS = \[([\s\S]*?)\];/.exec(gateSource)?.[1];
+  assert.ok(requiredBlock, "the gate must declare its four required tools");
+  const gateTools = [...requiredBlock.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(gateTools, expectedTools);
+  assert.doesNotMatch(gateSource, /bash|BASH/, "the tool-version gate must not probe Bash");
 
   const miseSource = source("mise.toml");
   const toolsTable = tomlSection(miseSource, "tools");
   const pinnedTools = [...toolsTable.matchAll(/^([a-z-]+)\s*=\s*"([^"]+)"\s*$/gm)].map(
     (match) => match[1],
   );
-  assert.deepEqual(pinnedTools, expectedMiseTools, "mise.toml must contain only four tool pins");
-  assert.match(
-    tomlSection(miseSource, "env"),
-    /^ZCODE_ACP_REQUIRED_BASH\s*=\s*"5"\s*$/m,
-    "mise.toml must carry the Bash line requirement",
-  );
+  assert.deepEqual(pinnedTools, expectedTools, "mise.toml must contain exactly four tool pins");
+  assert.doesNotMatch(tomlSection(miseSource, "env"), /BASH|bash/, "no Bash env pin may remain");
 
   assert.ok(
     gateSource.includes('readFileSync(path.join(REPO_ROOT, "mise.toml"), "utf8")'),
     "the gate must read requirements from mise.toml",
   );
   assert.ok(
-    gateSource.includes('readRequiredPin(document, "env", BASH_REQUIREMENT_ENV)'),
-    "the Bash line must be parsed from [env] rather than [tools]",
-  );
-  assert.ok(
     gateSource.includes(
       'probeVersion(tool, "mise", ["exec", "--", tool, ...VERSION_ARGS[tool]], required, "mise")',
     ),
     "the four managed tools must probe through mise exec",
-  );
-  assert.ok(
-    gateSource.includes('probeVersion("bash", "bash", ["--version"], required, "PATH")'),
-    "Bash must probe directly from PATH",
-  );
-  assert.doesNotMatch(
-    gateSource,
-    /mise", \["exec", "--", "bash"/,
-    "Bash must never be resolved through the mise tool registry",
   );
   assert.doesNotMatch(
     gateSource,
@@ -256,7 +231,7 @@ test("Linux sanity preserves its protected required-check name and runner", () =
   assert.match(sanity, /^    runs-on: ubuntu-latest$/m);
 });
 
-test("macOS arm64 installs Bash 5 before mise and runs canonical gates", () => {
+test("macOS arm64 runs preflights and canonical gates without Bash setup", () => {
   const arm64 = workflowJob("macos-arm64");
 
   assert.match(arm64, /^    name: build \/ vet \/ lint \/ test \/ tidy \(macOS arm64\)$/m);
@@ -265,7 +240,7 @@ test("macOS arm64 installs Bash 5 before mise and runs canonical gates", () => {
   assert.ok(arm64.includes("      - uses: actions/checkout@v4"));
   assert.ok(arm64.includes("        run: curl https://mise.run | sh"));
   assert.ok(arm64.includes('        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"'));
-  assertHomebrewBashBootstrap(arm64);
+  assertNoBashDependency(arm64, "macOS arm64");
   assert.ok(arm64.includes("        run: mise install"));
 
   const architecture = workflowStep(arm64, "Verify native architecture");
@@ -293,7 +268,7 @@ test("macOS arm64 installs Bash 5 before mise and runs canonical gates", () => {
   assert.doesNotMatch(arm64, /CGO_ENABLED\s*=\s*0/, "native race tests must keep CGO enabled");
 });
 
-test("macOS amd64 mirrors Bash bootstrap, preflights, and canonical gates", () => {
+test("macOS amd64 mirrors preflights and canonical gates without Bash setup", () => {
   const amd64 = workflowJob("macos-amd64");
 
   assert.match(amd64, /^    name: build \/ vet \/ lint \/ test \/ tidy \(macOS amd64\)$/m);
@@ -302,7 +277,7 @@ test("macOS amd64 mirrors Bash bootstrap, preflights, and canonical gates", () =
   assert.ok(amd64.includes("      - uses: actions/checkout@v4"));
   assert.ok(amd64.includes("        run: curl https://mise.run | sh"));
   assert.ok(amd64.includes('        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"'));
-  assertHomebrewBashBootstrap(amd64);
+  assertNoBashDependency(amd64, "macOS amd64");
   assert.ok(amd64.includes("        run: mise install"));
 
   const architecture = workflowStep(amd64, "Verify native architecture");
@@ -357,19 +332,13 @@ test("Darwin cross-build checks tool pins before both literal CGO-free targets",
   ]);
 });
 
-test("Linux jobs use the runner Bash line without Homebrew installation", () => {
-  for (const jobId of ["sanity", "darwin-cross-build", "govulncheck", "secret-scan"]) {
-    const job = workflowJob(jobId);
-    assert.doesNotMatch(job, /brew install bash/, `${jobId} must not install Homebrew Bash`);
-    assert.doesNotMatch(
-      job,
-      /brew --prefix[^\n]*GITHUB_PATH/,
-      `${jobId} must not prepend a Homebrew Bash path`,
-    );
+test("standard workflows install and invoke no Bash dependency", () => {
+  for (const workflow of [".github/workflows/pr-sanity.yml", ".github/workflows/release.yml"]) {
+    assertNoBashDependency(source(workflow), workflow);
   }
 });
 
-test("secret-scan runs both shell gates through mise tasks with PATH Bash", () => {
+test("secret-scan runs both Go gates through named mise tasks", () => {
   const secretScan = workflowJob("secret-scan");
 
   assert.match(secretScan, /^    name: secret-scan$/m);
@@ -382,7 +351,7 @@ test("secret-scan runs both shell gates through mise tasks with PATH Bash", () =
   assert.ok(
     workflowStep(secretScan, "docs conformance gate").includes("        run: mise run check-docs"),
   );
-  assert.doesNotMatch(secretScan, /run: bash experiments\//, "shell gates must use managed mise tasks");
+  assertNoBashDependency(secretScan, "secret-scan job");
   assertWorkflowOrder(secretScan, [
     "      - name: Install tools from mise.toml",
     "      - name: secret scan",

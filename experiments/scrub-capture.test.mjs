@@ -4,7 +4,7 @@
 //
 // IMPORTANT: forbidden shapes (JWT values, credential-blob payloads, long token
 // values, UUIDs) are constructed here by STRING CONCATENATION so that no forbidden
-// literal appears verbatim in this tracked file — `bash experiments/scan-secrets.sh`
+// literal appears verbatim in this tracked file — `go run ./cmd/scan-secrets`
 // must stay green with this file committed.
 
 import { test } from 'node:test';

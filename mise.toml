@@ -19,9 +19,6 @@ goreleaser = "2.20.2"
 node = "26"
 
 [env]
-# Bash requirement for the shell gates. mise has no Bash tool plugin, so this
-# is a PATH-level line pin checked by scripts/check-mise-tool-versions.mjs.
-ZCODE_ACP_REQUIRED_BASH = "5"
 # Deterministic build/test paths
 GOFLAGS = "-trimpath"
 
@@ -55,12 +52,16 @@ run = "go mod tidy && git diff --exit-code -- go.mod go.sum && [ \"$(grep -c '^r
 
 [tasks.secret-scan]
 description = "Scan tracked files for credential-shaped values"
-run = "bash experiments/scan-secrets.sh"
+run = "go run ./cmd/scan-secrets"
 
 [tasks.check-docs]
 description = "Check documentation structure and provenance tags"
-run = "bash experiments/check-docs.sh"
+run = "go run ./cmd/check-docs"
+
+[tasks.verify-darwin-release]
+description = "Verify checksummed Darwin release archives in dist/"
+run = "go run ./cmd/verify-darwin-release dist"
 
 [tasks.ci]
-description = "Full CI gate: build + vet + lint + test + experiments + shell gates (D-02)"
+description = "Full CI gate: build + vet + lint + test + experiments + Go gates (D-02)"
 depends = ["build", "vet", "lint", "test", "test-experiments", "secret-scan", "check-docs"]

@@ -28,19 +28,11 @@ jobs:
       - name: Add mise to PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # mise has no Bash tool plugin. Install and prepend Homebrew Bash 5
-      # before mise install and the version gate.
-      - name: Install Bash 5 via Homebrew
-        run: brew install bash
-
-      - name: Prepend Homebrew Bash to PATH
-        run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-
       - name: Install tools from mise.toml
         run: mise install
 
       - name: Validate tool versions
-        run: GOPROXY=off mise exec -- node scripts/check-mise-tool-versions.mjs go goreleaser bash
+        run: GOPROXY=off mise exec -- node scripts/check-mise-tool-versions.mjs go goreleaser
 
       - name: Download frozen Go modules
         timeout-minutes: 5
@@ -55,10 +47,8 @@ jobs:
           GOPROXY=off mise exec -- go mod verify
           GOPROXY=off mise run tidy-diff
 
-      - name: Require Apple release tools
-        run: |
-          command -v lipo
-          command -v shasum
+      - name: Require Apple lipo
+        run: command -v lipo
 
       - name: Validate GoReleaser config
         run: GOPROXY=off mise exec -- goreleaser check
@@ -67,7 +57,7 @@ jobs:
         run: GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish
 
       - name: Verify Darwin snapshot artifacts
-        run: mise exec -- bash scripts/verify-darwin-release.sh dist
+        run: mise run verify-darwin-release
 
       - name: Upload Darwin snapshot artifacts
         uses: actions/upload-artifact@v4
@@ -99,19 +89,11 @@ jobs:
       - name: Add mise to PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # mise has no Bash tool plugin. Install and prepend Homebrew Bash 5
-      # before mise install and the version gate.
-      - name: Install Bash 5 via Homebrew
-        run: brew install bash
-
-      - name: Prepend Homebrew Bash to PATH
-        run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-
       - name: Install tools from mise.toml
         run: mise install
 
       - name: Validate tool versions
-        run: GOPROXY=off mise exec -- node scripts/check-mise-tool-versions.mjs go goreleaser bash
+        run: GOPROXY=off mise exec -- node scripts/check-mise-tool-versions.mjs go goreleaser
 
       - name: Download frozen Go modules
         timeout-minutes: 5
@@ -126,10 +108,8 @@ jobs:
           GOPROXY=off mise exec -- go mod verify
           GOPROXY=off mise run tidy-diff
 
-      - name: Require Apple release tools
-        run: |
-          command -v lipo
-          command -v shasum
+      - name: Require Apple lipo
+        run: command -v lipo
 
       - name: Validate GoReleaser config
         run: GOPROXY=off mise exec -- goreleaser check

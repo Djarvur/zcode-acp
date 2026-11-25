@@ -416,4 +416,4 @@ First-class section per D-01: everything above documents the **shipped 3.18.2** 
 
 Assumption-mapping carryovers from plan 01-02 (both landed): the **encoding** row is stated in section 1 (string-or-int ids, UTF-8, echoes recorded in captures); the **empty/unknown-method** row is stated in section 4 (empty subscribe result is a valid result; unknown-method family -32600/-32601; empty capture = EOF-pitfall failure signature).
 
-Path note: this document records glob/tilde/`<placeholder>` patterns only — no user-specific absolute paths (enforced by `experiments/check-docs.sh`).
+Path note: this document records glob/tilde/`<placeholder>` patterns only — no user-specific absolute paths (enforced by `cmd/check-docs`).
