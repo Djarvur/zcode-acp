@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 25
+open_count: 22
 waived_count: 0
-fixed_count: 4
+fixed_count: 7
 total_count: 29
-last_updated: 2026-11-25T14:07:16.961Z
+last_updated: 2026-11-25T17:58:08.285Z
 ---
 
 # Broken Windows Ledger
@@ -36,9 +36,9 @@ last_updated: 2026-11-25T14:07:16.961Z
 | 19 | 10 | unrun-verify | internal/supervisor/appimage_realdesktop_test.go |  | Manual-Only VER-02 real run not executed by the executor: ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run TestRealAppImageMount ./internal/supervisor/ must run once on a FUSE-capable host before ship | open |  | 2026-11-24T00:18:44.913Z |  |
 | 20 | 261124-wlg | deviation | internal/acpfront/turnctx.go | 433 | Rule 2: explicit NoteConfigOptions accounting added outside plan allowlist to satisfy exhaustive lint; catalog updates bypass turn pump. | fixed |  | 2026-11-24T21:12:50.615Z | 2026-11-24T23:00:49.898Z |
 | 21 | 261124-wlg | deviation | internal/acpfront/catalogrefresh.go |  | Rule 1: failed fan-out now fails the refresh pass so identical later signals remain retryable. | fixed |  | 2026-11-24T21:12:51.361Z | 2026-11-24T23:00:50.034Z |
-| 22 | 11 | unrun-verify | experiments/check-docs.sh |  | Task 1 mise-managed shell gate was not run because repository mise trust is prohibited; absolute Bash 5.3 syntax, docs, phase-gate, and secret-scan equivalents passed. | open |  | 2026-11-25T13:32:19.775Z |  |
-| 23 | 11 | unrun-verify | scripts/check-mise-tool-versions.mjs |  | Task 2 mise-resolved five-tool version probe was not run because repository mise trust is prohibited; offline comparator and static gate tests passed. | open |  | 2026-11-25T13:32:19.948Z |  |
-| 24 | 11 | unrun-verify | mise.toml |  | Task 2 named mise shell tasks were not run because repository mise trust is prohibited; both scripts passed directly through absolute Bash 5.3. | open |  | 2026-11-25T13:32:20.120Z |  |
+| 22 | 11 | unrun-verify | experiments/check-docs.sh |  | Task 1 mise-managed shell gate was not run because repository mise trust is prohibited; absolute Bash 5.3 syntax, docs, phase-gate, and secret-scan equivalents passed. | fixed |  | 2026-11-25T13:32:19.775Z | 2026-11-25T17:58:07.921Z |
+| 23 | 11 | unrun-verify | scripts/check-mise-tool-versions.mjs |  | Task 2 mise-resolved five-tool version probe was not run because repository mise trust is prohibited; offline comparator and static gate tests passed. | fixed |  | 2026-11-25T13:32:19.948Z | 2026-11-25T17:58:08.102Z |
+| 24 | 11 | unrun-verify | mise.toml |  | Task 2 named mise shell tasks were not run because repository mise trust is prohibited; both scripts passed directly through absolute Bash 5.3. | fixed |  | 2026-11-25T13:32:20.120Z | 2026-11-25T17:58:08.285Z |
 | 25 | 11 | unrun-verify | .github/workflows/pr-sanity.yml |  | Hosted pr-sanity matrix has not been observed on GitHub; Linux, macOS arm64/amd64, Darwin cross-build, govulncheck, and secret-scan still require a green run with recorded head SHA, architectures, and resolved versions. | open |  | 2026-11-25T13:43:17.611Z |  |
 | 26 | 11 | unrun-verify | scripts/check-mise-tool-versions.mjs |  | The mise-resolved five-tool runtime gate and mise task graph were not executed locally because mise.toml is explicitly untrusted; CI owns the first runtime observation. | open |  | 2026-11-25T13:43:17.794Z |  |
 | 27 | 11 | deviation | .goreleaser.yaml | 35 | Rule 1: GoReleaser 2.20.2 archives.files adds extra filesystem members rather than selecting binaries; a non-matching sentinel glob suppresses default docs while archive ids select only zcode-acp. | fixed |  | 2026-11-25T14:07:16.281Z | 2026-11-25T14:07:16.593Z |
@@ -327,10 +327,10 @@ last_updated: 2026-11-25T14:07:16.961Z
     "file": "experiments/check-docs.sh",
     "line": null,
     "description": "Task 1 mise-managed shell gate was not run because repository mise trust is prohibited; absolute Bash 5.3 syntax, docs, phase-gate, and secret-scan equivalents passed.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-11-25T13:32:19.775Z",
-    "resolved_at": null,
+    "resolved_at": "2026-11-25T17:58:07.921Z",
     "milestone": "v0.24.0"
   },
   {
@@ -340,10 +340,10 @@ last_updated: 2026-11-25T14:07:16.961Z
     "file": "scripts/check-mise-tool-versions.mjs",
     "line": null,
     "description": "Task 2 mise-resolved five-tool version probe was not run because repository mise trust is prohibited; offline comparator and static gate tests passed.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-11-25T13:32:19.948Z",
-    "resolved_at": null,
+    "resolved_at": "2026-11-25T17:58:08.102Z",
     "milestone": "v0.24.0"
   },
   {
@@ -353,10 +353,10 @@ last_updated: 2026-11-25T14:07:16.961Z
     "file": "mise.toml",
     "line": null,
     "description": "Task 2 named mise shell tasks were not run because repository mise trust is prohibited; both scripts passed directly through absolute Bash 5.3.",
-    "status": "open",
+    "status": "fixed",
     "reason": "",
     "recorded_at": "2026-11-25T13:32:20.120Z",
-    "resolved_at": null,
+    "resolved_at": "2026-11-25T17:58:08.285Z",
     "milestone": "v0.24.0"
   },
   {
