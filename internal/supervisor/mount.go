@@ -593,10 +593,11 @@ func (m *Mount) stopHelper() error {
 	default:
 	}
 
-	if termErr := syscall.Kill(-m.child.PgID, syscall.SIGTERM); termErr != nil &&
-		!errors.Is(termErr, syscall.ESRCH) {
-		m.signalHelperTerminate(termErr)
-	}
+	// Signal the helper's own PID FIRST. A group SIGTERM here can land on the
+	// helper's cleanup child (rm/fusermount) and kill it mid-unmount, which is
+	// exactly the macOS amd64 teardown flake. The group SIGKILL below still
+	// reaches grandchildren after the grace period.
+	m.signalHelperTerminate()
 
 	select {
 	case <-m.child.Done:
@@ -624,23 +625,27 @@ func (m *Mount) stopHelper() error {
 	}
 }
 
-// signalHelperTerminate retries a denied group SIGTERM against the helper's
-// direct PID. macOS can return EPERM for the group signal even when the helper
-// is our own child; the direct signal still lets it run its cleanup, and the
-// unconditional group SIGKILL below remains the backstop.
-func (m *Mount) signalHelperTerminate(groupErr error) {
+// signalHelperTerminate sends SIGTERM to the helper's direct PID. The group is
+// only TERMed when the direct signal cannot be delivered (macOS can deny the
+// group form while allowing the direct one); the unconditional group SIGKILL
+// after the grace period remains the backstop for grandchildren.
+func (m *Mount) signalHelperTerminate() {
 	var pidErr error
+
 	if m.child.Cmd != nil && m.child.Cmd.Process != nil {
 		pidErr = m.child.Cmd.Process.Signal(syscall.SIGTERM)
 	}
-	if pidErr == nil || errors.Is(pidErr, os.ErrProcessDone) || errors.Is(pidErr, syscall.ESRCH) {
-		slog.Warn("supervisor: mount helper group SIGTERM denied; direct SIGTERM sent",
-			"pgid", m.child.PgID, "err", groupErr)
 
+	pidGone := pidErr == nil || errors.Is(pidErr, os.ErrProcessDone) || errors.Is(pidErr, syscall.ESRCH)
+	if pidGone {
 		return
 	}
-	slog.Warn("supervisor: mount helper SIGTERM", "pgid", m.child.PgID,
-		"err", errors.Join(groupErr, pidErr))
+
+	if groupErr := syscall.Kill(-m.child.PgID, syscall.SIGTERM); groupErr != nil &&
+		!errors.Is(groupErr, syscall.ESRCH) {
+		slog.Warn("supervisor: mount helper SIGTERM", "pgid", m.child.PgID,
+			"pid_err", pidErr, "group_err", groupErr)
+	}
 }
 
 // waitMountGone proves the mount is gone (D-02's zero-stale-mounts rule). A
