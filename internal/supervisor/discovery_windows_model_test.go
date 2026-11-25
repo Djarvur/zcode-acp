@@ -1,3 +1,4 @@
+//nolint:testpackage // the Windows stage rules are unexported and tested in place on every platform
 package supervisor
 
 import (
@@ -27,6 +28,15 @@ const (
 var (
 	errTestHiveUnreadable = errors.New("hive unreadable")
 	errTestHKCULocked     = errors.New("hkcu locked")
+)
+
+// Fixture spellings: the version, the ZCode display name, and the Windows
+// path shapes the record rules must normalize.
+const (
+	testWindowsVersion     = "3.18.2"
+	testWindowsDisplayName = "ZCode"
+	testWindowsInstallPath = `C:\ZCode`
+	testWindowsBinaryPath  = `C:\ZCode\ZCode.exe`
 )
 
 // writeWindowsBundleTree lays down the layout-invariant Windows spawn surface
@@ -265,8 +275,8 @@ func TestWindowsRegistryStageHit(t *testing.T) {
 	const key = `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\ZCode`
 	entry := UninstallEntry{
 		Key:             key,
-		DisplayName:     "ZCode 3.18.2",
-		DisplayVersion:  "3.18.2",
+		DisplayName:     testWindowsDisplayName + " " + testWindowsVersion,
+		DisplayVersion:  testWindowsVersion,
 		InstallLocation: root,
 	}
 
@@ -282,7 +292,7 @@ func TestWindowsRegistryStageHit(t *testing.T) {
 		Binary:     filepath.Join(root, windowsBinaryName),
 		Entrypoint: filepath.Join(root, filepath.FromSlash(entrypointRel)),
 		Layout:     layoutWindowsRegistry,
-		Version:    "3.18.2",
+		Version:    testWindowsVersion,
 	}
 	if install != want {
 		t.Fatalf("install mismatch:\n got %+v\nwant %+v", install, want)
@@ -313,7 +323,7 @@ func TestWindowsRegistryStageHit(t *testing.T) {
 func TestWindowsRegistryStageMisses(t *testing.T) {
 	entries := []UninstallEntry{
 		{Key: `HKCU\...\ZCodeWriter`, DisplayName: "ZCodeWriter", InstallLocation: t.TempDir()},
-		{Key: `HKLM\...\ZCode`, DisplayName: "ZCode", DisplayVersion: "3.18.2"},
+		{Key: `HKLM\...\ZCode`, DisplayName: testWindowsDisplayName, DisplayVersion: testWindowsVersion},
 		{Key: `HKLM\...\ZCode 3.17.1`, DisplayName: "ZCode 3.17.1", InstallLocation: t.TempDir()},
 	}
 
@@ -369,7 +379,7 @@ func TestWindowsRegistryStageDisplayIcon(t *testing.T) {
 			probes, install, ok := windowsRegistryStage(func() ([]UninstallEntry, error) {
 				return []UninstallEntry{{
 					Key:         `HKCU\...\ZCode`,
-					DisplayName: "ZCode",
+					DisplayName: testWindowsDisplayName,
 					DisplayIcon: test.icon,
 				}}, nil
 			})
@@ -419,8 +429,8 @@ func TestWindowsRegistryStageSeamStates(t *testing.T) {
 		probes, install, ok := windowsRegistryStage(func() ([]UninstallEntry, error) {
 			return []UninstallEntry{{
 				Key:             `HKLM\...\ZCode`,
-				DisplayName:     "ZCode",
-				DisplayVersion:  "3.18.2",
+				DisplayName:     testWindowsDisplayName,
+				DisplayVersion:  testWindowsVersion,
 				InstallLocation: root,
 			}}, errTestHKCULocked
 		})
@@ -485,7 +495,7 @@ func TestWindowsDisplayNameMatches(t *testing.T) {
 		name string
 		want bool
 	}{
-		{"ZCode", true},
+		{testWindowsDisplayName, true},
 		{"ZCode 3.18.2", true},
 		{"zcode", true},
 		{"  ZCode 3.18.2 ", true},
@@ -512,8 +522,8 @@ func TestWindowsInstallRoot(t *testing.T) {
 	}{
 		{
 			name:  "install location wins over the icon",
-			entry: UninstallEntry{InstallLocation: `C:\ZCode`, DisplayIcon: `C:\Other\ZCode.exe`},
-			want:  `C:\ZCode`,
+			entry: UninstallEntry{InstallLocation: testWindowsInstallPath, DisplayIcon: `C:\Other\ZCode.exe`},
+			want:  testWindowsInstallPath,
 		},
 		{
 			name:  "quoted install location",
@@ -522,18 +532,18 @@ func TestWindowsInstallRoot(t *testing.T) {
 		},
 		{
 			name:  "trailing separators stripped",
-			entry: UninstallEntry{InstallLocation: `C:\ZCode\`},
-			want:  `C:\ZCode`,
+			entry: UninstallEntry{InstallLocation: testWindowsInstallPath + `\`},
+			want:  testWindowsInstallPath,
 		},
 		{
 			name:  "display icon quoted with icon index",
-			entry: UninstallEntry{DisplayIcon: `"C:\ZCode\ZCode.exe",0`},
-			want:  `C:\ZCode`,
+			entry: UninstallEntry{DisplayIcon: `"` + testWindowsBinaryPath + `",0`},
+			want:  testWindowsInstallPath,
 		},
 		{
 			name:  "display icon unquoted with icon index",
-			entry: UninstallEntry{DisplayIcon: `C:\ZCode\ZCode.exe,0`},
-			want:  `C:\ZCode`,
+			entry: UninstallEntry{DisplayIcon: testWindowsBinaryPath + `,0`},
+			want:  testWindowsInstallPath,
 		},
 		{
 			name:  "empty record",
@@ -556,9 +566,9 @@ func TestWindowsDisplayIconPath(t *testing.T) {
 		value string
 		want  string
 	}{
-		{"quoted with index", `"C:\ZCode\ZCode.exe",0`, `C:\ZCode\ZCode.exe`},
-		{"quoted without index", `"C:\ZCode\ZCode.exe"`, `C:\ZCode\ZCode.exe`},
-		{"unquoted with index", `C:\ZCode\ZCode.exe,0`, `C:\ZCode\ZCode.exe`},
+		{"quoted with index", `"` + testWindowsBinaryPath + `",0`, testWindowsBinaryPath},
+		{"quoted without index", `"` + testWindowsBinaryPath + `"`, testWindowsBinaryPath},
+		{"unquoted with index", testWindowsBinaryPath + `,0`, testWindowsBinaryPath},
 		{"comma in a directory name", `C:\ZCode, Inc\ZCode.exe`, `C:\ZCode, Inc\ZCode.exe`},
 		{"empty", "", ""},
 	}

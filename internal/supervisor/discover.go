@@ -175,8 +175,9 @@ func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 	add(p.probeOverride())
 
 	// The platform install-layout stage: Linux runs the XDG/AppImage/dpkg/
-	// opt/rpm probes in the documented order; Windows and Darwin have no
-	// native probe yet and answer an honest diagnostic row.
+	// opt/rpm probes in the documented order; Windows runs the native install
+	// stage (directory sources, then the uninstall registry); Darwin answers
+	// an honest diagnostic row.
 	stageRows, stageInstall, stageOK := p.probeInstallStage(ctx, found)
 	probes = append(probes, stageRows...)
 	if stageOK && !found {
@@ -261,12 +262,20 @@ func volatileInstallPath(inst Install) string {
 // returns the Install for it (binary <root>/zcode, entrypoint
 // <root>/resources/glm/zcode.cjs — install-discovery.md :38).
 func bundleInstall(root, layout string) (Install, bool) {
+	return bundleInstallBinary(root, layout, platformBinaryName())
+}
+
+// bundleInstallBinary is bundleInstall with an explicit binary name: the
+// Windows stage validates <root>\ZCode.exe on hosts whose
+// platformBinaryName() answers a different name, so the same invariant tree
+// check serves every platform.
+func bundleInstallBinary(root, layout, exeName string) (Install, bool) {
 	if root == "" || mountDecoy(root) {
 		return Install{}, false
 	}
 	inst := Install{
 		Root:       root,
-		Binary:     filepath.Join(root, platformBinaryName()),
+		Binary:     filepath.Join(root, exeName),
 		Entrypoint: filepath.Join(root, entrypointRel),
 		Layout:     layout,
 	}
