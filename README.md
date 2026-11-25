@@ -169,6 +169,13 @@ a host that only accepts preset agents wires it up through a per-agent
 command override. The whole integration is ONE override string plus ONE env
 mechanism, per auth path — nothing else to configure.
 
+**Session restoration.** Orca checks top-level `loadSession` first and then
+`sessionCapabilities.resume`. This wrapper advertises `sessionCapabilities.options:{}`
+and `sessionCapabilities.resume:{}`, but not `loadSession`, so Orca resumes the
+existing backend session with the same session id and the wrapper re-subscribes.
+Restoration creates no replacement session, performs no model rebind, and replays
+no history; `session/load` and history import remain unsupported.
+
 ### 1. The per-agent command override
 
 In the client's Settings, set the per-agent command override for the `omp`

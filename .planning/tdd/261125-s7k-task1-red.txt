@@ -1,0 +1,11 @@
+2026/11/25 20:43:38 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 20:43:38 WARN zcode: read loop ended err="io: read/write on closed pipe"
+2026/11/25 20:43:38 WARN zcode: read loop ended err="io: read/write on closed pipe"
+--- FAIL: TestCancelResolvesCancelledOnFailedTerminal (0.00s)
+    --- FAIL: TestCancelResolvesCancelledOnFailedTerminal/session_event_turn.failed (0.00s)
+        cancel_outcome_test.go:142: Run reason = "failed", want "cancelled" (a failed terminal is the stop's outcome)
+    --- FAIL: TestCancelResolvesCancelledOnFailedTerminal/v4_telemetry_turn.terminal_failed (0.00s)
+        cancel_outcome_test.go:166: Run reason = "failed", want "cancelled" (a failed terminal is the stop's outcome)
+FAIL
+FAIL	github.com/Djarvur/zcode-acp/internal/turn	0.063s
+FAIL

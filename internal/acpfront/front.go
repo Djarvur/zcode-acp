@@ -158,6 +158,11 @@ type Front struct {
 	// in tests; zero keeps the production budget.
 	closeStripeWaitOverride time.Duration
 
+	// cancelGrace bounds a cancelled turn's answer (the ACP cancel contract,
+	// quick task 261125-s7k). Zero keeps turn.DefaultCancelGrace; tests
+	// inject milliseconds. Passed to every machine the front registers.
+	cancelGrace time.Duration
+
 	// auth is the injected authenticate machinery (plan 05-07, WithAuth):
 	// the configured key binding, the resolved install, and the read-back
 	// want list. Nil until wired — authenticate answers the honest no-key
@@ -212,6 +217,16 @@ func WithModel(sel ModelSelection) Option {
 // never a hang, never a silent drop.
 func WithStreamCeiling(bytes int) Option {
 	return func(f *Front) { f.streamCeiling = bytes }
+}
+
+// WithCancelGrace overrides the bounded answer a cancelled turn gets when the
+// backend reports no stop outcome (the ACP cancel contract — a client's
+// session/cancel must always answer the active session/prompt). Zero keeps
+// turn.DefaultCancelGrace. Every machine the front registers receives it
+// through the shared session-machine constructor, so session/new and
+// session/resume cannot diverge.
+func WithCancelGrace(d time.Duration) Option {
+	return func(f *Front) { f.cancelGrace = d }
 }
 
 // WithCloseTurnWait overrides the close teardown's bounded active-turn wait
@@ -371,7 +386,7 @@ func (f *Front) NewSession(
 	// earlier, front.go New) — the flush-before-stopReason registration
 	// order. Phase-3 watcher defaults; corpus-grade terminal/cancel signals
 	// resolve turns well inside the quiet-window gates.
-	machine := turn.NewMachine(f.conn, sid, turn.NewPollWatcher(f.conn, turn.PollConfig{}))
+	machine := f.newSessionMachine(sid)
 	f.registry.Register(core.Session{ID: sid, Machine: machine})
 
 	// The confirmed snapshot -> configOptions (MODEL-01): the latest
@@ -823,6 +838,19 @@ func (f *Front) CommandCatalog(ctx context.Context, sessionID string) []acpport.
 	})
 
 	return items
+}
+
+// newSessionMachine builds the turn machine every front-registered session
+// runs on — session/new and session/resume alike. One constructor keeps the
+// per-machine configuration (today: the cancel grace that bounds a cancelled
+// turn's answer) from diverging between the two lifecycle paths.
+func (f *Front) newSessionMachine(sessionID string) *turn.Machine {
+	opts := []turn.MachineOption(nil)
+	if f.cancelGrace > 0 {
+		opts = append(opts, turn.WithCancelGrace(f.cancelGrace))
+	}
+
+	return turn.NewMachine(f.conn, sessionID, turn.NewPollWatcher(f.conn, turn.PollConfig{}), opts...)
 }
 
 // slashTurnBusy reports whether the named session's own turn holds the

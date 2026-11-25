@@ -1,0 +1,109 @@
+
+COMMAND: tdd-red-evidence
+{
+  "passed": true,
+  "block": false,
+  "verdict": "RED_EVIDENCE_OK",
+  "reason": "target_test_failed",
+  "evidence": {
+    "command": "go test -race -count=1 -run '^(TestInitCapabilities|TestInitializeAssemblesHonestReport|TestInitializeHonestCapabilities|TestSessionCapabilitiesAdvertisementStayedHonest|TestConformanceV1Arc|TestOrcaCapabilityGateUsesResume|TestResume)$' ./internal/acpport ./internal/acpfront",
+    "exit_code": 1,
+    "target_test": "TestOrcaCapabilityGateUsesResume",
+    "tests": 6,
+    "pass": 0,
+    "fail": 6,
+    "failing_tests": [
+      "TestInitCapabilities",
+      "TestInitializeAssemblesHonestReport",
+      "TestConformanceV1Arc",
+      "TestInitializeHonestCapabilities",
+      "TestOrcaCapabilityGateUsesResume",
+      "TestSessionCapabilitiesAdvertisementStayedHonest"
+    ],
+    "matched_test": "TestOrcaCapabilityGateUsesResume",
+    "format": "go-test",
+    "report_errors": []
+  },
+  "record": {
+    "command": "go test -race -count=1 -run '^(TestInitCapabilities|TestInitializeAssemblesHonestReport|TestInitializeHonestCapabilities|TestSessionCapabilitiesAdvertisementStayedHonest|TestConformanceV1Arc|TestOrcaCapabilityGateUsesResume|TestResume)$' ./internal/acpport ./internal/acpfront",
+    "exit_code": 1,
+    "failing_test": "TestOrcaCapabilityGateUsesResume",
+    "target_test": "TestOrcaCapabilityGateUsesResume",
+    "expected": "Initialize advertises sessionCapabilities.resume so the Orca-style gate calls session/resume and reaches backend resume then subscribe for sess_cfg.",
+    "actual": "Initialize omits sessionCapabilities.resume; TestOrcaCapabilityGateUsesResume fails at the client-side capability gate before ResumeSession or backend traffic.",
+    "verdict": "RED_EVIDENCE_OK",
+    "reason": "target_test_failed"
+  },
+  "message": "RED evidence verified: target test \"TestOrcaCapabilityGateUsesResume\" failed as expected (exit 1). GREEN authorized."
+}EXIT_CODE[tdd-red-evidence]=0
+
+COMMAND: docs
+EXIT_CODE[docs]=0
+
+COMMAND: build
+EXIT_CODE[build]=0
+
+COMMAND: vet
+EXIT_CODE[vet]=0
+
+COMMAND: lint
+level=warning msg="The linter 'exhaustruct' is deprecated (since v2.13.0) due to: new major version. Replaced by exhaustruct_v5."
+0 issues.
+EXIT_CODE[lint]=0
+
+COMMAND: race
+?   	github.com/Djarvur/zcode-acp/cmd/fake-app-server	[no test files]
+ok  	github.com/Djarvur/zcode-acp/cmd/zcode-acp	40.739s
+ok  	github.com/Djarvur/zcode-acp/internal/acpfront	110.816s
+ok  	github.com/Djarvur/zcode-acp/internal/acpport	5.065s
+ok  	github.com/Djarvur/zcode-acp/internal/core	1.014s
+ok  	github.com/Djarvur/zcode-acp/internal/hostsvc	1.402s
+ok  	github.com/Djarvur/zcode-acp/internal/interact	2.409s
+ok  	github.com/Djarvur/zcode-acp/internal/supervisor	3.583s
+ok  	github.com/Djarvur/zcode-acp/internal/texttask	1.322s
+ok  	github.com/Djarvur/zcode-acp/internal/turn	4.015s
+ok  	github.com/Djarvur/zcode-acp/internal/zcode	3.198s
+ok  	github.com/Djarvur/zcode-acp/internal/zcode/fake	23.814s
+?   	github.com/Djarvur/zcode-acp/test/realdesktop	[no test files]
+EXIT_CODE[race]=0
+
+COMMAND: experiments
+✔ JWT-shaped token values are redacted and the line stays parseable JSON (51.047439ms)
+✔ credential blobs with the enc:v2:os: prefix are fully redacted including the prefix (39.78083ms)
+✔ legacy enc:v1: credential blobs are fully redacted including the prefix (36.833225ms)
+✔ credential blob bodies containing dots/colons are redacted WHOLE (no residue after the placeholder) (40.182071ms)
+✔ long token values under credential keys are redacted (45.434568ms)
+✔ UUID-shaped identifiers become stable per-file placeholders (nth distinct -> nth) (38.325585ms)
+✔ absolute paths under the user home directory become tilde-relative (42.433865ms)
+✔ the header line (line 1) passes through byte-identical (39.498949ms)
+✔ scrubbing is idempotent: scrubbing already-scrubbed output changes nothing (84.323654ms)
+✔ empty input produces empty output and exit 0 (39.520554ms)
+✔ user_info payload objects are redacted wholesale (41.397359ms)
+✔ CR-01: two user_info objects on ONE line are both redacted in a single pass (39.997434ms)
+✔ CR-01: scrubbing a multi-user_info line is a fixed point (re-scrub is byte-identical) (70.251812ms)
+✔ CR-01 wrapped: a user_info payload inside the probe envelope form is redacted wholesale (35.478727ms)
+✔ CR-01 wrapped: scrubbing wrapped-form output is a fixed point (re-scrub is byte-identical) (84.1126ms)
+✔ path prefixes passed via --redact-path become the <path> placeholder (35.047764ms)
+✔ WR-03: a sibling path sharing only the home prefix survives verbatim (home + name + /segment) (37.03613ms)
+✔ WR-03: a bare sibling of the home directory survives verbatim (home + name) (34.556692ms)
+✔ WR-03: the boundary rewrite is idempotent — scrubbing scrubbed sibling output is a fixed point (72.112891ms)
+✔ IN-04: a first line that is not JSON fails loudly (non-zero exit, message names the problem) (49.445994ms)
+✔ IN-04: a JSON first line without a capture key fails loudly (33.689323ms)
+✔ IN-04: --no-header scrubs line 1 like a data line and exits 0 (39.166971ms)
+✔ no-keyring stage asserts the four coded keyring sentinels verbatim (2.004577ms)
+✔ no-keyring stage wraps the attempt in a bounded timeout(1) (0.366537ms)
+﹣ live stripped-PATH arm surfaces the binary-missing sentinel (guarded) (0.114587ms) # SKIP
+ℹ tests 25
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 1153.484533
+EXIT_CODE[experiments]=0
+
+COMMAND: tracked-diff-clean
+EXIT_CODE[tracked-diff-clean]=0
+
+OVERALL_EXIT=0

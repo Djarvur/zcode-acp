@@ -1,0 +1,21 @@
+# 261125-s7k completion gates — 2026-11-25T17:56:28Z branch fix/acp-steer-after-cancel base 74016b7
+build: PASS
+vet: PASS
+0 issues.
+lint-exit: 0
+ok  	github.com/Djarvur/zcode-acp/cmd/zcode-acp	41.510s
+ok  	github.com/Djarvur/zcode-acp/internal/acpfront	115.471s
+ok  	github.com/Djarvur/zcode-acp/internal/acpport	5.060s
+ok  	github.com/Djarvur/zcode-acp/internal/core	1.015s
+ok  	github.com/Djarvur/zcode-acp/internal/hostsvc	1.412s
+ok  	github.com/Djarvur/zcode-acp/internal/interact	2.415s
+ok  	github.com/Djarvur/zcode-acp/internal/supervisor	3.628s
+ok  	github.com/Djarvur/zcode-acp/internal/texttask	1.316s
+ok  	github.com/Djarvur/zcode-acp/internal/turn	4.201s
+ok  	github.com/Djarvur/zcode-acp/internal/zcode	3.196s
+ok  	github.com/Djarvur/zcode-acp/internal/zcode/fake	23.829s
+docs: PASS
+ℹ tests 25
+ℹ pass 24
+ℹ fail 0
+tidy: PASS

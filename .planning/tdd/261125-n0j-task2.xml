@@ -1,0 +1,44 @@
+<task type="tdd" tdd="true">
+  <name>Task 2: Advertise the existing resume capability and turn the contracts green (GREEN)</name>
+  <files>internal/acpport/agent.go</files>
+  <read_first>
+    @internal/acpport/agent.go
+    @internal/acpport/agent_test.go
+    @internal/acpfront/lifecycle.go
+    @internal/acpfront/lifecycle_test.go
+  </read_first>
+  <behavior>
+    - `initializeResponse` unconditionally sets both `Options` and `Resume` to non-nil empty SDK capability structs.
+    - The exact adapter and composed initialize frames contain only options and resume within sessionCapabilities.
+    - Orca's capability gate now reaches `ResumeSession`; the backend sees resume then subscribe for the same id and no replacement/create, model rebind, or history replay.
+    - Existing resume delegation, validation, cwd/settings recording, closing-race, and no-replay lifecycle tests remain unchanged and green.
+  </behavior>
+  <action>
+    Per D-01/D-03/D-04, make the single production change in `initializeResponse`: set `SessionCapabilities.Resume = &acp.SessionResumeCapabilities{}` beside the existing `Options` assignment. Keep it unconditional, with no dependency on auth state, client identity, session existence, or backend response; `ResumeSession` is already implemented and the front owns per-session validation and lifecycle behavior.
+
+    Update the nearby adapter and initialize comments to state that resume is advertised because the SESS-01 lifecycle delegates to the front, while close/delete remain deliberately unadvertised and load/list/fork remain unsupported. Do not change `ResumeSession`, `Handlers`, `Front.ResumeSession`, backend method constants, SDK imports, or any capability field other than resume. Do not add load support, history replay, model switching, or new production symbols.
+
+    Run the focused contracts, both affected package race suites, and package lint. This is GREEN for Task 1's RED evidence; no additional behavior or fallback path is authorized.
+  </action>
+  <verify>
+    <automated>go test -race -count=1 -run '^(TestInitCapabilities|TestInitializeAssemblesHonestReport|TestInitializeHonestCapabilities|TestSessionCapabilitiesAdvertisementStayedHonest|TestConformanceV1Arc|TestOrcaCapabilityGateUsesResume|TestLifecycleDelegation|TestLifecycleDelegationWire|TestResume|TestResumeRecordsCwd|TestResumeRecordsConfirmedSettings|TestResumeRejectsRelativeCwd|TestResumeRejectedWhileClosing)$' ./internal/acpport ./internal/acpfront</automated>
+    <fails_when>Any initialize, Orca-gated resume, delegation, lifecycle, validation, race, or no-replay assertion fails or the command times out.</fails_when>
+    <automated>go test -race -count=1 ./internal/acpport ./internal/acpfront</automated>
+    <fails_when>Either affected package has a failing test, build failure, hang, or race report.</fails_when>
+    <automated>golangci-lint run ./internal/acpport/... ./internal/acpfront/...</automated>
+    <fails_when>The linter exits nonzero or reports any diagnostic in the affected packages.</fails_when>
+  </verify>
+  <done>Initialize advertises exactly options and resume as empty objects; the Orca-gated wire test reaches backend resume then subscribe with the same session id and no replacement, model switch, or replay; all affected package race tests and lint pass.</done>
+  <acceptance_criteria>
+    - `SessionCapabilities.Resume` is non-nil and marshals as `{}` on every initialize response.
+    - `LoadSession` remains false and list/fork/delete/close capability pointers remain nil.
+    - The new gate test proves initialize -> client capability decision -> session/resume -> backend resume -> backend subscribe for one unchanged id.
+    - The gated backend transcript has exactly two inbound requests and zero create/setModel/send/messages frames; the client collects zero replay updates.
+    - Existing resume lifecycle tests and both affected package race suites pass.
+    - Strict lint reports zero affected-package issues.
+  </acceptance_criteria>
+  <artifacts>
+    - Modified `initializeResponse` in `internal/acpport/agent.go`; no new production symbol.
+    - GREEN verification results for the adapter, composed-wire, conformance, and resume lifecycle contracts.
+  </artifacts>
+</task>

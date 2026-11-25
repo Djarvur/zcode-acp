@@ -544,24 +544,15 @@ func waitSessRawReply(t *testing.T, h *FrontHarness, idKey string) TeeLine {
 	return TeeLine{}
 }
 
-// TestSessionCapabilitiesAdvertisementStayedHonest is the T-07-08
-// advertisement honesty lock (plan 07-03 Task 3): the initialize reply's
-// sessionCapabilities declares OPTIONS — the D-11 empty-struct opt-in — and
-// NOTHING else. delete/fork/list/load/resume/close stay UNADVERTISED: the
-// graceful arms of Tasks 1-2 serve spec-loose clients only.
+// TestSessionCapabilitiesAdvertisementStayedHonest locks the exact ACP v1
+// session capability surface: options and resume, each encoded as {}. The
+// options opt-in gates session/set_config_option; resume gates session/resume
+// and reaches the already implemented SESS-01 reattach lifecycle.
 //
-// GUARD: passes at HEAD and must KEEP passing. GUARD MUTATION — adding any
-// of the six capability fields in agent.go's initializeResponse flips this
-// red. The advertisement is not cosmetic: Orca gates delete/fork/list
-// client-side, and advertising delete flips Orca into calling session/delete
-// on its disposable listing sessions (it uses throwaway folders precisely
-// because omp does not advertise delete — Pitfall 4). The one
-// honest-improvement candidate, advertising close (implemented since SESS-01,
-// never checked by Orca), is DECIDED AGAINST for v1: advertising would churn
-// every initialize byte-lock for zero v1 benefit — revisit on demand.
-//
-// No production file changes back this lock: it freezes the assembly exactly
-// as the 06-04 D-11 advertisement stands.
+// GUARD MUTATION — adding or removing any session capability field flips this
+// red. delete/fork/list/load/close stay unadvertised: in particular advertising
+// delete flips Orca into deleting its disposable listing sessions (Pitfall 4).
+// Top-level loadSession stays false, so history import remains unsupported.
 func TestSessionCapabilitiesAdvertisementStayedHonest(t *testing.T) {
 	h := newSessCompatFront(t, sessDeleteScenario())
 
@@ -581,6 +572,7 @@ func TestSessionCapabilitiesAdvertisementStayedHonest(t *testing.T) {
 	var frame struct {
 		Result struct {
 			AgentCapabilities struct {
+				LoadSession         bool                       `json:"loadSession"`
 				SessionCapabilities map[string]json.RawMessage `json:"sessionCapabilities"`
 			} `json:"agentCapabilities"`
 			AuthMethods []map[string]any `json:"authMethods"`
@@ -593,33 +585,33 @@ func TestSessionCapabilitiesAdvertisementStayedHonest(t *testing.T) {
 		t.Fatalf("decode initialize response frame: %v (%s)", err, initRaw)
 	}
 
-	sc := frame.Result.AgentCapabilities.SessionCapabilities
-
-	// The D-11 opt-in is the ONE declared capability, and it is the empty
-	// struct (the wire shape {"options":{}} — options serviced, nothing
-	// configurable).
-	if raw, ok := sc["options"]; !ok || strings.TrimSpace(string(raw)) != "{}" {
-		t.Fatalf("sessionCapabilities[\"options\"] = %q (present: %v), want the empty-struct opt-in: %s",
-			raw, ok, initRaw)
+	if frame.Result.AgentCapabilities.LoadSession {
+		t.Fatalf("initialize advertises top-level loadSession; history import stays unsupported: %s", initRaw)
 	}
 
-	// GUARD MUTATION surface: any of the six must never appear.
-	for _, banned := range []string{"delete", "fork", "list", "load", "resume", "close"} {
+	sc := frame.Result.AgentCapabilities.SessionCapabilities
+
+	for _, capability := range []string{"options", "resume"} {
+		if raw, ok := sc[capability]; !ok || strings.TrimSpace(string(raw)) != "{}" {
+			t.Fatalf("sessionCapabilities[%q] = %q (present: %v), want the empty-struct opt-in: %s",
+				capability, raw, ok, initRaw)
+		}
+	}
+
+	for _, banned := range []string{"delete", "fork", "list", "load", "close"} {
 		if _, present := sc[banned]; present {
-			t.Fatalf("sessionCapabilities advertises %q — the honesty lock forbids it "+
-				"(advertising delete flips Orca into deleting its disposable listing sessions, Pitfall 4): %s",
+			t.Fatalf("sessionCapabilities advertises %q — the exact options-plus-resume contract forbids it: %s",
 				banned, initRaw)
 		}
 	}
 
-	if len(sc) != 1 {
+	if len(sc) != 2 {
 		keys := make([]string, 0, len(sc))
 		for k := range sc {
 			keys = append(keys, k)
 		}
 
-		t.Fatalf("sessionCapabilities carries %v, want exactly [options] (the advertisement grows only "+
-			"with an honest, reviewed decision): %s", keys, initRaw)
+		t.Fatalf("sessionCapabilities carries %v, want exactly [options resume]: %s", keys, initRaw)
 	}
 
 	// The auth surface stays exactly the two advertised ids (agent variant).

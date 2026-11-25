@@ -1,0 +1,9 @@
+COMMAND: go test -race -count=1 (focused contracts)
+ok  	github.com/Djarvur/zcode-acp/internal/acpport	1.015s
+ok  	github.com/Djarvur/zcode-acp/internal/acpfront	2.311s
+COMMAND: go test -race -count=1 (affected packages)
+ok  	github.com/Djarvur/zcode-acp/internal/acpport	5.046s
+ok  	github.com/Djarvur/zcode-acp/internal/acpfront	110.606s
+COMMAND: golangci-lint run (affected packages)
+level=warning msg="The linter 'exhaustruct' is deprecated (since v2.13.0) due to: new major version. Replaced by exhaustruct_v5."
+0 issues.
