@@ -236,6 +236,48 @@ test("release workflow runs the proven snapshot with read-only rights", () => {
   ]);
 });
 
+test("release workflow scopes snapshot and tag publication", () => {
+  const source = readSource(path.join(repoRoot, ".github", "workflows", "release.yml"));
+  const snapshot = jobSection(source, "snapshot");
+  const release = jobSection(source, "release");
+  assert.match(topLevelSection(source, "permissions"), /contents: read/);
+  assert.equal((source.match(/contents:\s*write/g) ?? []).length, 1);
+  assert.equal((source.match(/GITHUB_TOKEN:/g) ?? []).length, 1);
+  assert.doesNotMatch(snapshot, /GITHUB_TOKEN|contents:\s*write/);
+  assert.doesNotMatch(source, /GOPROXY=off[^\n]*go mod download/);
+
+  assert.match(release, /^    needs: snapshot$/m);
+  assert.match(release, /^    if: github\.event_name == 'push' && startsWith\(github\.ref, 'refs\/tags\/v'\)$/m);
+  assert.match(release, /runs-on: macos-latest/);
+  assert.match(release, /permissions:\s*\n\s+contents: write/);
+  assert.match(release, /uses: actions\/checkout@v4/);
+  assert.match(release, /fetch-depth: 0/);
+  assert.match(release, /run: curl https:\/\/mise\.run \| sh/);
+  assert.match(release, /run: mise install/);
+  assertDependencyGate(release);
+
+  const publish = namedStep(release, "goreleaser release");
+  assert.match(publish, /GOPROXY=off mise exec -- goreleaser release --clean/);
+  assert.match(publish, /GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+  assert.doesNotMatch(publish, /--snapshot|--skip=publish/);
+  assertOrdered(release, [
+    "name: Validate tool versions",
+    "name: Download frozen Go modules",
+    "name: Verify frozen modules offline",
+    "name: Require Apple release tools",
+    "name: Validate GoReleaser config",
+    "GOPROXY=off mise exec -- goreleaser check",
+    "      - name: goreleaser release",
+    "GOPROXY=off mise exec -- goreleaser release --clean",
+  ]);
+
+  // Task 2's verified read-only snapshot remains present and unchanged in contract.
+  assert.match(snapshot, /name: goreleaser snapshot \(macOS universal\)/);
+  assert.match(snapshot, /GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish/);
+  assert.match(snapshot, /mise exec -- bash scripts\/verify-darwin-release\.sh dist/);
+  assert.match(snapshot, /uses: actions\/upload-artifact@v4/);
+});
+
 const archiveNames = {
   arm64: "zcode-acp_0.0.0-SNAPSHOT-test_darwin_arm64.tar.gz",
   amd64: "zcode-acp_0.0.0-SNAPSHOT-test_darwin_amd64.tar.gz",
