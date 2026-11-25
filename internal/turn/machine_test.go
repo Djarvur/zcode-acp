@@ -60,8 +60,6 @@ const (
 	wireKeySeq            = "seq"
 	wireKeyPayload        = "payload"
 	wireKeyDelta          = "delta"
-	wireKeyStatus         = "status"
-	wireKeyEventSeq       = "eventSeq"
 
 	// unknownMethodReply is the fake's unknown-method -32601 reply message
 	// (goconst: the literal repeats across the programmatic scenarios).
