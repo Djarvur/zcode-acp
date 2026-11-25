@@ -108,12 +108,12 @@ feature set. Orca's existing `omp` parsing/stdout contract is retained, not rede
   3. CI reports passing build and test gates for Linux and for macOS arm64/amd64 with explicit required tool versions.
   4. A release snapshot produces checksummed macOS arm64 and amd64 binary artifacts whose checksums verify.
 
-**Plans**: 5 plans
+**Plans**: 2/5 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 11-01-PLAN.md — Normalize the Statfs width and prove both CGO-free Darwin builds.
-- [ ] 11-02-PLAN.md — Replace both detached shell fixtures with Go re-exec helpers.
+- [x] 11-01-PLAN.md — Normalize the Statfs width and prove both CGO-free Darwin builds.
+- [x] 11-02-PLAN.md — Replace both detached shell fixtures with Go re-exec helpers.
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 11-03-PLAN.md — Make docs scans portable, pin managed Bash, and enforce all five mise-resolved tool versions.
@@ -195,7 +195,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 11. Darwin Build, Test & Release Gates | 0/5 | Not started | - |
+| 11. Darwin Build, Test & Release Gates | 2/5 | In Progress | - |
 | 12. macOS Bundle Discovery & Overrides | 0/TBD | Not started | - |
 | 13. Desktop Launch & Runtime Environment | 0/TBD | Not started | - |
 | 14. macOS Authentication | 0/TBD | Not started | - |

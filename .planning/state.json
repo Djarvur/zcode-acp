@@ -6,7 +6,7 @@
     {
       "number": "11",
       "name": "Darwin Build, Test & Release Gates",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "number": "12",
@@ -39,5 +39,5 @@
     "label": "Advance to the next step",
     "reason": "Phase 1 of 6 · 0% · executing"
   },
-  "updated_at": "2026-11-25T12:35:26.545Z"
+  "updated_at": "2026-11-25T13:25:48.224Z"
 }
