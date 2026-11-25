@@ -141,10 +141,17 @@ const (
 	MethodComputerUseOperation = "computer-use/operation-event"
 )
 
-// stateRunningPatch is the state.updated patch.status value the idle-patch
-// latch consumes (dialect §5: only "running" was ever observed live — the
-// recorded A4 assumption; "leaving running" implies running was seen).
-const statusRunningPatch = "running"
+// state.updated patch values the idle-patch latch consumes (dialect §5:
+// only "running" was ever observed live — the recorded A4 assumption;
+// "leaving running" implies running was seen). A cancelled status and a
+// session_stopped reason are another turn's stop outcome: the stop was
+// explicit, so the patch is the outcome of the turn the stop interrupted,
+// never this running turn's completion.
+const (
+	statusRunningPatch        = "running"
+	statusCancelledPatch      = "cancelled"
+	reasonSessionStoppedPatch = "session_stopped"
+)
 
 // DefaultMaxQuietVetoes is the quiet-settle veto budget for start-announced
 // turns (QA-03): how many consecutive quiet-window settlements — with NO
@@ -221,12 +228,26 @@ type Machine struct {
 	state       machineState
 	turnID      string
 	runningSeen bool
-	startProven bool
-	quietVetoes int
-	resolved    bool
-	resolution  Resolution
-	resolvedCh  chan struct{}
-	ackAt       time.Time
+	// retiredTurnID remembers the turnId the last turn resolved with (or a
+	// late duplicate terminal observed after resolution). It PERSISTS across
+	// turns: beginTurnLocked never clears it, so a prompt accepted after a
+	// prior turn resolved cannot be bound by that turn's late terminal — the
+	// 2026-11-25 field incident's false completion.
+	retiredTurnID string
+	// runningRevision/runningRevisionSeen/runningReason record the running
+	// state.updated patch that armed the idle latch: an idle patch completes
+	// the turn only when both revisions are present and the idle revision is
+	// strictly greater (dialect §5: idle patches are not reliably
+	// turn-scoped, so ordering must be proven by the session-scoped revision).
+	runningRevision     int64
+	runningRevisionSeen bool
+	runningReason       string
+	startProven         bool
+	quietVetoes         int
+	resolved            bool
+	resolution          Resolution
+	resolvedCh          chan struct{}
+	ackAt               time.Time
 
 	// removeNotificationObserver / removeRouterObserver deregister the
 	// machine from the conn's two ordered fan-outs (WR-07: exposed for
@@ -523,13 +544,18 @@ func (m *Machine) guardTurnLocked() error {
 }
 
 // beginTurnLocked starts a fresh turn: the per-turn signal state (the
-// learned turnId, the running-patch latch, the start-announcement record,
-// the veto budget, the resolution record) resets; the lifetime resolution
-// counter does not — it is the exactly-once proof.
+// learned turnId, the running-patch latch and its revision, the
+// start-announcement record, the veto budget, the resolution record)
+// resets; the lifetime resolution counter does not — it is the exactly-once
+// proof — and the retired turnId does not either (it is the memory that
+// keeps a prior turn's late terminal from binding this one).
 func (m *Machine) beginTurnLocked() {
 	m.state = stateRunning
 	m.turnID = ""
 	m.runningSeen = false
+	m.runningRevision = 0
+	m.runningRevisionSeen = false
+	m.runningReason = ""
 	m.startProven = false
 	m.quietVetoes = 0
 	m.resolved = false
@@ -648,19 +674,65 @@ func (m *Machine) observeRouterEvent(ev zcode.RouterEvent) {
 // state.updated whose patch.status leaves "running" for this session — the
 // D-02 secondary signal (dialect §5 reliability column: "do not rely on it
 // alone"). The running patch itself never resolves: the latch requires a
-// running patch to have been observed first, and any later non-running
-// status counts as leaving running.
+// running patch to have been observed first, and the leaving patch must be
+// provably NEWER than the running patch that armed the turn.
+//
+// The idle patch is not reliably turn-scoped (dialect §5), so the binding is
+// the session-scoped revision: the running patch records the MAX revision
+// (and its reason) it was armed with, and a leaving patch completes the
+// turn only when both revisions are present and the idle revision is
+// strictly greater. A missing, equal, or lower revision is observation
+// only — the turn resolves through its terminal, quiet window, or watchdog.
+// While running, a cancelled status or a session_stopped reason is another
+// turn's stop outcome (the stop was explicit) and never completes this one;
+// while cancelling, any leaving-running patch is the stop's observed
+// outcome.
 func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 	if env.Method != zcode.MethodStateUpdated {
 		return false
 	}
 
-	// Wire payloads keep the dialect's camelCase keys verbatim (the
-	// tagliatelle contract), so the session id digs out of the params map
-	// and only the snake-safe inner patch shape is struct-decoded.
-	sessID := paramsString(env.Params, "sessionId")
-	if sessID != "" && sessID != m.sessID {
+	obs, ok := decodeStatePatch(env, m.sessID)
+	if !ok {
 		return false
+	}
+
+	slog.Debug("turn: state.updated patch", "session", m.sessID, "status", obs.status,
+		"reason", obs.reason, "revision", obs.revision, "armed_revision", m.runningRevision,
+		"state", m.state)
+
+	if obs.status == statusRunningPatch {
+		m.armRunningPatchLocked(obs)
+
+		return false
+	}
+
+	if !m.runningSeen || obs.status == "" {
+		return false
+	}
+
+	return m.leavingRunningCompletesLocked(obs)
+}
+
+// statePatchObservation is one decoded state.updated patch: the nested
+// status plus the top-level reason/revision pair the ordering gate reads.
+type statePatchObservation struct {
+	status      string
+	reason      string
+	revision    int64
+	hasRevision bool
+}
+
+// decodeStatePatch decodes one state.updated params payload scoped to
+// sessID. Wire payloads keep the dialect's camelCase keys verbatim (the
+// tagliatelle contract), so the session id digs out of the params map and
+// only the snake-safe inner patch shape is struct-decoded.
+func decodeStatePatch(env zcode.Envelope, sessID string) (statePatchObservation, bool) {
+	var obs statePatchObservation
+
+	sid := paramsString(env.Params, "sessionId")
+	if sid != "" && sid != sessID {
+		return obs, false
 	}
 
 	var params struct {
@@ -668,7 +740,7 @@ func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 	}
 
 	if err := json.Unmarshal(env.Params, &params); err != nil || len(params.Patch) == 0 {
-		return false
+		return obs, false
 	}
 
 	var patch struct {
@@ -676,16 +748,43 @@ func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 	}
 
 	if err := json.Unmarshal(params.Patch, &patch); err != nil {
+		return obs, false
+	}
+
+	obs.status = patch.Status
+	obs.reason = paramsString(env.Params, "reason")
+	obs.revision, obs.hasRevision = paramsInt64(env.Params, "revision")
+
+	return obs, true
+}
+
+// armRunningPatchLocked records the running patch that armed the turn,
+// keeping the MAX revision bound: a late lower-revision running echo must
+// not lower the bar the idle patch has to clear.
+func (m *Machine) armRunningPatchLocked(obs statePatchObservation) {
+	m.runningSeen = true
+
+	if obs.hasRevision && (!m.runningRevisionSeen || obs.revision > m.runningRevision) {
+		m.runningRevision = obs.revision
+		m.runningRevisionSeen = true
+		m.runningReason = obs.reason
+	}
+}
+
+// leavingRunningCompletesLocked applies the leaving-running gate: while
+// cancelling, the patch is the stop's explicit outcome; while running, a
+// cancelled status or session_stopped reason belongs to another turn's stop
+// and the revision must be present on both sides and strictly newer.
+func (m *Machine) leavingRunningCompletesLocked(obs statePatchObservation) bool {
+	if m.state == stateCancelling {
+		return true
+	}
+
+	if obs.status == statusCancelledPatch || obs.reason == reasonSessionStoppedPatch {
 		return false
 	}
 
-	if patch.Status == statusRunningPatch {
-		m.runningSeen = true
-
-		return false
-	}
-
-	return m.runningSeen && patch.Status != ""
+	return obs.hasRevision && m.runningRevisionSeen && obs.revision > m.runningRevision
 }
 
 // classifyTerminalLocked reports the terminal StopReason when env is a
@@ -695,9 +794,11 @@ func (m *Machine) classifyIdlePatchLocked(env zcode.Envelope) bool {
 // telemetry "turn.terminal", EXP-VM-QA02-family dumps 2026-11-23). Turn
 // -start kinds record the turn's id; a start on a TERMINAL-PROVEN carrier
 // additionally arms the quiet-settle veto (QA-03: the family promised a
-// terminal signal). A terminal whose turnId does not match the turn's id is
-// NOT a completion signal (a foreign turn's envelope must never resolve
-// this turn).
+// terminal signal). A terminal or turn-start with an EMPTY turnId never
+// binds (all shipped carriers are turnId-scoped); a signal carrying the
+// RETIRED turnId never binds a successor; a signal for a foreign bound turn
+// is observation only (IN-05: a foreign turn's envelope must never resolve
+// this turn, and a foreign start must not arm its veto).
 func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) {
 	field, ok := carrierKindField(env.Method)
 	if !ok {
@@ -709,8 +810,8 @@ func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) 
 
 	switch kind {
 	case KindTurnStarted, KindTurnStartedCU:
-		if m.turnID == "" {
-			m.turnID = turnID
+		if !m.bindTurnStartLocked(turnID) {
+			return "", false
 		}
 
 		if m.startProvenCarrier(env.Method) {
@@ -719,19 +820,19 @@ func (m *Machine) classifyTerminalLocked(env zcode.Envelope) (StopReason, bool) 
 
 		return "", false
 	case KindTurnCompleted, KindTurnCompletedCU:
-		if !m.turnIDMatchesLocked(turnID) {
+		if !m.bindTerminalTurnLocked(turnID) {
 			return "", false
 		}
 
 		return StopCompleted, true
 	case KindTurnFailed, KindTurnFailedCU:
-		if !m.turnIDMatchesLocked(turnID) {
+		if !m.bindTerminalTurnLocked(turnID) {
 			return "", false
 		}
 
 		return StopFailed, true
 	case KindTurnTerminal:
-		if !m.turnIDMatchesLocked(turnID) {
+		if !m.bindTerminalTurnLocked(turnID) {
 			return "", false
 		}
 
@@ -785,12 +886,73 @@ func carrierKindField(method string) (string, bool) {
 	return "", false
 }
 
-// turnIDMatchesLocked reports whether a turn-scoped signal belongs to the
-// active turn. Record-on-first-sight: exactly one turn runs per session at
-// a time (the -32010 guard), so the first turn-scoped signal defines the
-// turn's id; later signals must match it.
-func (m *Machine) turnIDMatchesLocked(turnID string) bool {
+// bindTerminalTurnLocked decides whether a TERMINAL signal's turnId belongs
+// to the live turn, and records it on first sight. The binder is
+// conservative by construction (the 2026-11-25 false-completion race):
+//
+//   - an EMPTY turnId never binds (all shipped carriers are turnId-scoped;
+//     the quiet window remains the honest fallback);
+//   - a turnId equal to the RETIRED id never binds a successor — the prior
+//     turn's late terminal is ignored while this turn is unbound;
+//   - when unbound, the first other non-empty turnId is the live turn
+//     (record-on-first-sight survives for the legitimate first signal);
+//   - when bound, only the exact bound turnId matches;
+//   - after resolution, a terminal that belongs to the resolved turn (or
+//     arrives while nothing is bound) records its id as retired and never
+//     resolves, so a late duplicate can never falsely complete a successor.
+func (m *Machine) bindTerminalTurnLocked(turnID string) bool {
+	if turnID == "" {
+		return false
+	}
+
+	if m.resolved {
+		if m.turnID == "" || turnID == m.turnID {
+			m.retiredTurnID = turnID
+		}
+
+		return false
+	}
+
 	if m.turnID == "" {
+		if turnID == m.retiredTurnID {
+			return false
+		}
+
+		m.turnID = turnID
+
+		return true
+	}
+
+	return turnID == m.turnID
+}
+
+// bindTurnStartLocked binds a turn-start signal. A start carrying the
+// retired turnId is ignored while the successor is unbound AND no running
+// patch has armed this turn yet: that is the stale-prior-turn shape (the
+// prior turn's start reached the wire before the new send, so a late
+// start+terminal pair cannot claim the successor). A retired-id start
+// observed AFTER this turn's own running patch is the successor's own start
+// under a backend that recycles turn ids (the legacy corpus fixtures and
+// any runtime that does not mint per-turn ids): binding it is safe because
+// the running patch proves this turn's send was already accepted.
+func (m *Machine) bindTurnStartLocked(turnID string) bool {
+	if turnID == "" {
+		return false
+	}
+
+	if m.resolved {
+		if m.turnID == "" || turnID == m.turnID {
+			m.retiredTurnID = turnID
+		}
+
+		return false
+	}
+
+	if m.turnID == "" {
+		if turnID == m.retiredTurnID && !m.runningSeen {
+			return false
+		}
+
 		m.turnID = turnID
 
 		return true
@@ -821,7 +983,8 @@ func (m *Machine) resolveCancelGrace() {
 // resolveLocked resolves the turn exactly once (sync.Once semantics: the
 // per-turn resolved flag under the machine mutex), closes the wait channel,
 // and fires the OnResolve hook — the observable face of exactly-once. The
-// first supporting signal wins; later signals are observations only.
+// first supporting signal wins; later signals are observations only. A
+// resolved turn's bound turnId is retired for the successor's binder.
 func (m *Machine) resolveLocked(res Resolution) {
 	if m.resolved {
 		return
@@ -834,11 +997,47 @@ func (m *Machine) resolveLocked(res Resolution) {
 
 	m.resolved = true
 	m.resolution = res
+
+	if m.turnID != "" {
+		m.retiredTurnID = m.turnID
+	}
+
+	slog.Debug("turn: resolved", "session", m.sessID, "reason", res.Reason,
+		"signal", res.Signal, "turnId", m.turnID, "err", res.Err)
+
 	close(m.resolvedCh)
 
 	if m.OnResolve != nil {
 		m.OnResolve(res)
 	}
+}
+
+// paramsInt64 digs one top-level integer value out of an envelope params
+// payload; undecodable params or an absent key classify as absent (the
+// idle-binding conservative fallback).
+func paramsInt64(raw json.RawMessage, key string) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return 0, false
+	}
+
+	switch v := obj[key].(type) {
+	case float64:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+
+		return n, true
+	}
+
+	return 0, false
 }
 
 // paramsString digs one top-level string value out of an envelope params

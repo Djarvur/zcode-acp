@@ -127,18 +127,33 @@ func messagesRule(t *testing.T) fake.RequestRule {
 }
 
 // statePatch is a state.updated notification with a patch.status for the
-// fixed session (the capture-verbatim envelope shape).
+// fixed session (the capture-verbatim envelope shape) at the corpus
+// running-patch revision (1).
 func statePatch(t *testing.T, status, reason string) fake.SideEffect {
 	t.Helper()
 
-	return emit(t, zcode.MethodStateUpdated, map[string]any{
+	return statePatchRev(t, status, reason, 1)
+}
+
+// statePatchRev is the revision-parameterized state.updated patch: the
+// revision/status/reason binding fixtures drive the idle gate, and a
+// revision <= 0 omits the key entirely (the absent-revision arm).
+func statePatchRev(t *testing.T, status, reason string, revision int) fake.SideEffect {
+	t.Helper()
+
+	params := map[string]any{
 		"patch":          map[string]any{"status": status},
 		"reason":         reason,
-		"revision":       1,
 		"scope":          "session",
 		wireKeySessionID: fixSessionID,
 		wireKeyType:      "state.updated",
-	})
+	}
+
+	if revision > 0 {
+		params["revision"] = revision
+	}
+
+	return emit(t, zcode.MethodStateUpdated, params)
 }
 
 // sessionEvent is a session/event turn-scoped carrier envelope.
@@ -627,8 +642,8 @@ func TestCompletionVariants(t *testing.T) {
 				t.Helper()
 
 				return completionScenario(t,
-					statePatch(t, statusRunning, reasonPromptStarted),
-					statePatch(t, statusIdle, reasonPromptCompleted),
+					statePatchRev(t, statusRunning, reasonPromptStarted, 1),
+					statePatchRev(t, statusIdle, reasonPromptCompleted, 2),
 				)
 			},
 			want:   turn.StopCompleted,
