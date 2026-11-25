@@ -1,3 +1,5 @@
+//go:build linux
+
 package interact
 
 // IN-03 (plan 07-02) in-package classify-order locks. The classify switch is

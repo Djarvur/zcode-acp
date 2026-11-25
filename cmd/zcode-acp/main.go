@@ -55,14 +55,6 @@ const (
 	// honest error), never a credential value.
 	envAPIKey = "ZCODE_ACP_API_KEY"
 
-	// optDir is the package-family discovery root (the deb layout, /opt/ZCode).
-	optDir = "/opt/ZCode"
-
-	// secretToolBin is the libsecret CLI the D-06 credential loader shells
-	// (a system binary on the guarded real tier — never a Go module, the
-	// T-5-SC zero-new-dependency posture).
-	secretToolBin = "secret-tool"
-
 	// spawnWait bounds the wait for the supervisor's first spawned child.
 	spawnWait = 10 * time.Second
 
@@ -925,11 +917,11 @@ func buildCodingPlanMachinery(inst supervisor.Install) *codingPlanMachinery {
 	env := interact.ScrubbedEnv(os.Environ())
 
 	creds := interact.NewCredentialStore(credentialsPath(),
-		interact.NewSecretToolKeyLoader(secretToolBin, credentialsPath(), env))
+		interact.NewPlatformKeyLoader(credentialsPath(), env))
 
 	return &codingPlanMachinery{
 		creds:  creds,
-		prober: interact.NewKeyringProber(secretToolBin, credentialsPath(), env),
+		prober: interact.NewPlatformKeyringProber(credentialsPath(), env),
 		gate:   interact.NewEntitlementGate(settingPath(), creds),
 		minter: hostsvc.NewPatMinter(
 			hostsvc.WithPatClientVersion(patClientVersion(inst)),
@@ -1001,7 +993,7 @@ func wireResponder(
 			APIKeyFallback: hostsvc.RuntimeHeadersHandler(keys),
 		})),
 		interact.WithCredentialDecrypt(interact.NewCredentialDecrypt(
-			interact.NewSecretToolKeyLoader(secretToolBin, credentialsPath(), interact.ScrubbedEnv(os.Environ())))),
+			interact.NewPlatformKeyLoader(credentialsPath(), interact.ScrubbedEnv(os.Environ())))),
 	)
 
 	conn.OnRequest = responder.Serve
@@ -1361,7 +1353,7 @@ func discoverInstall(ctx context.Context, appServer string) (supervisor.Install,
 		home = ""
 	}
 
-	probers := supervisor.DefaultProbers(home, optDir)
+	probers := supervisor.DefaultProbers(home, supervisor.DefaultOptDir())
 	if appServer != "" {
 		probers.Override = func() (supervisor.Install, bool) {
 			return supervisor.OverrideInstall(appServer)

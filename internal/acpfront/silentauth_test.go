@@ -29,7 +29,7 @@ func TestSilentAuthFillsCatalogOnNewSession(t *testing.T) {
 	}
 
 	sn, err := h.client.NewSession(context.Background(), acp.NewSessionRequest{
-		Cwd:        "/tmp/happy-turn-ws",
+		Cwd:        cpCycleWorkspace,
 		McpServers: []acp.McpServer{},
 	})
 	if err != nil {
@@ -108,7 +108,7 @@ func TestSilentAuthKeyringFailureStillOpens(t *testing.T) {
 	}
 
 	sn, err := h.client.NewSession(context.Background(), acp.NewSessionRequest{
-		Cwd:        "/tmp/happy-turn-ws",
+		Cwd:        cpCycleWorkspace,
 		McpServers: []acp.McpServer{},
 	})
 	if err != nil {

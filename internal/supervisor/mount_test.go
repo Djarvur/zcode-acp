@@ -1,3 +1,5 @@
+//go:build linux
+
 // Mount lifecycle tests (plan 10-01; MNT-01..03, MNT-06; VER-01): a scripted
 // fake AppImage runtime drives the PRODUCTION PrepareMount/Stop path with no
 // FUSE. The fake answers only --appimage-mount, creates a .mount_* directory

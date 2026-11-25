@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Exec-plumbing tier for the standalone fake binary (BRIDGE-02, D-01 mode
 // B): the helper-process reexec idiom (GOROOT-verified convention — the
 // net/http/httptest/server_test.go:426,435 shape) drives a REAL child

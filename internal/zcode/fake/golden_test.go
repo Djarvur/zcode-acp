@@ -344,17 +344,52 @@ const (
 )
 
 var (
+	// corpusWorkspacePath is the fixed synthetic workspace the corpus
+	// preambles create against. It is built from the platform temp root
+	// because session/new rejects POSIX paths on Windows; normalizeGoldenPaths
+	// maps it back to the canonical /tmp spelling in the transcript.
+	corpusWorkspacePath = filepath.Join(os.TempDir(), "happy-turn-ws") //nolint:gochecknoglobals // test fixture
+
+	// permCancelCwd is the permission-cancel row's session cwd (same
+	// platform-absolute rule as corpusWorkspacePath).
+	permCancelCwd = filepath.Join(os.TempDir(), "perm-cancel-ws") //nolint:gochecknoglobals // test fixture
+
 	cpCorpusRevPattern     = regexp.MustCompile(`account-bridge:\d+`)
 	cpCorpusBuiltinPattern = regexp.MustCompile(`zcode-builtin:44:[0-9a-f]{64}`)
-	cpCorpusProbeDir       = regexp.MustCompile(`zcode-acp-auth-probe-\d+`)
+	cpCorpusProbeDir       = regexp.MustCompile(
+		regexp.QuoteMeta(wirePath(os.TempDir())) + `[\\/]+zcode-acp-auth-probe-\d+`,
+	)
+	cpCorpusWorkspacePath  = regexp.MustCompile(regexp.QuoteMeta(wirePath(corpusWorkspacePath)))
+	cpCorpusPermCancelPath = regexp.MustCompile(regexp.QuoteMeta(wirePath(permCancelCwd)))
 )
 
 // normalizeCodingPlanCorpus substitutes the machine-derived tokens.
 func normalizeCodingPlanCorpus(b []byte) []byte {
 	b = cpCorpusRevPattern.ReplaceAll(b, []byte(cpCorpusRevisionToken))
-	b = cpCorpusProbeDir.ReplaceAll(b, []byte(cpCorpusProbeDirToken))
+	b = cpCorpusProbeDir.ReplaceAll(b, []byte("/tmp/"+cpCorpusProbeDirToken))
 
 	return cpCorpusBuiltinPattern.ReplaceAll(b, []byte(cpCorpusBuiltinToken))
+}
+
+// normalizeGoldenPaths rewrites platform-derived absolute paths and the
+// builtin-table revision hash to the corpus' canonical POSIX spellings so the
+// byte-lock stays cross-platform deterministic.
+func normalizeGoldenPaths(b []byte) []byte {
+	b = cpCorpusWorkspacePath.ReplaceAll(b, []byte("/tmp/happy-turn-ws"))
+	b = cpCorpusPermCancelPath.ReplaceAll(b, []byte("/tmp/perm-cancel-ws"))
+
+	return cpCorpusBuiltinPattern.ReplaceAll(b, []byte(cpCorpusBuiltinToken))
+}
+
+// wirePath renders p as it appears inside a JSON string on the wire
+// (JSON-escaped, without the surrounding quotes).
+func wirePath(p string) string {
+	encoded, err := json.Marshal(p)
+	if err != nil {
+		panic(err)
+	}
+
+	return string(encoded[1 : len(encoded)-1])
 }
 
 // assertCodingPlanProbeFailTranscript is the probe-fail row's semantic
@@ -399,7 +434,7 @@ func TestGolden(t *testing.T) {
 				post(t, tr)
 			}
 
-			golden := goldenBytes(tr)
+			golden := normalizeGoldenPaths(goldenBytes(tr))
 			if norm, ok := goldenNormalizers()[name]; ok {
 				golden = norm(golden)
 			}
@@ -1139,7 +1174,7 @@ func drivePermissionCancel(ctx context.Context, d *exchangeDriver) {
 	agentConn, _, _ := acpport.NewAgentSideConnection(acpport.NewAgent(front), toClientW, toAgentR)
 	_ = acp.NewClientSideConnection(client, toAgentW, toClientR)
 
-	sid, _, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: "/tmp/perm-cancel-ws"})
+	sid, _, err := front.NewSession(ctx, acpport.NewSessionParams{Cwd: permCancelCwd})
 	if err != nil {
 		t.Fatalf("front.NewSession: %v", err)
 	}
@@ -1395,10 +1430,6 @@ const (
 
 	// corpusLayoutExplicit is the fixture install layout string.
 	corpusLayoutExplicit = "explicit"
-
-	// corpusWorkspacePath is the fixed synthetic workspace the corpus
-	// preambles create against (byte-deterministic).
-	corpusWorkspacePath = "/tmp/happy-turn-ws"
 
 	// corpusCfgOptionModel/corpusCfgOptionThought are the config-option
 	// rows' configId values; corpusCfgLevelHigh the shared confirmed level

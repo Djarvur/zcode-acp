@@ -1,4 +1,4 @@
-//go:build realdesktop
+//go:build realdesktop && linux
 
 // Shared real-tier helper module for the REAL mount-first acceptance
 // (VER-02, plan 10-05) — MANUAL-ONLY, never CI (Pitfall 10; the Phase 2

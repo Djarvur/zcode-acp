@@ -1,3 +1,5 @@
+//go:build linux
+
 // In-package discovery seam test (WR-01): defaultDpkgQuery is unexported, so
 // the production dpkg status parse is exercised here against fake dpkg-query
 // and dpkg binaries on PATH. The external test package stubs the seam away,

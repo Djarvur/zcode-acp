@@ -1,3 +1,5 @@
+//go:build linux
+
 // Mount owner (plan 10-01; MNT-01..03, MNT-06; D-01/D-02/D-11): a packed
 // AppImage is mounted by a supervised `--appimage-mount` helper and the
 // mounted tree is handed to the existing supervisor as an Install. No
@@ -611,8 +613,8 @@ func (m *Mount) stopHelper() error {
 	case <-m.child.Done:
 		return nil
 	default:
-		if killErr := killGroup(m.child.PgID); killErr != nil {
-			slog.Warn("supervisor: mount helper group kill", "pgid", m.child.PgID, "err", killErr)
+		if killErr := m.child.terminateTree(); killErr != nil {
+			slog.Warn("supervisor: mount helper process-tree kill", "pid", m.child.PgID, "err", killErr)
 		}
 	}
 

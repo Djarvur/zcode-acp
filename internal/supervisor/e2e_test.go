@@ -1,16 +1,17 @@
 // End-to-end exec chain (BRIDGE-03 + BRIDGE-04 composition, plan 03-09):
 // the FULL phase chain composed in one test — the supervisor spawns the
-// standalone fake-app-server BINARY through the real spawn path (process
-// group, allowlisted env, drained stderr), a zcode.Conn rides the exec
-// pipes, and the turn machine drives turns over them. Subtest 1 replays the
-// happy-turn corpus row: the conn's router answers the create-time
-// runtime-preferences obligation (D-05) and Machine.Run resolves completed
-// exactly once. Subtest 2 replays the cancel-mid-turn corpus row: a machine
-// bound to the same corpus session id has its turn cancelled mid-flight
-// through the bypass lane and resolves cancelled exactly once. Each subtest
-// ends with the supervisor's staged shutdown and the poll-verified
-// zero-survivors proof (kill(-pgid, 0) ESRCH — the ROADMAP criteria 2 + 4
-// composition, RESEARCH System Architecture Diagram executed).
+// standalone fake-app-server BINARY through the real spawn path (platform
+// process tree: process group on Unix, Job Object on Windows; allowlisted
+// env, drained stderr), a zcode.Conn rides the exec pipes, and the turn
+// machine drives turns over them. Subtest 1 replays the happy-turn corpus
+// row: the conn's router answers the create-time runtime-preferences
+// obligation (D-05) and Machine.Run resolves completed exactly once. Subtest
+// 2 replays the cancel-mid-turn corpus row: a machine bound to the same
+// corpus session id has its turn cancelled mid-flight through the bypass
+// lane and resolves cancelled exactly once. Each subtest ends with the
+// supervisor's staged shutdown and the poll-verified zero-survivors proof
+// (process-group ESRCH on Unix, closed pid on Windows — the ROADMAP criteria
+// 2 + 4 composition, RESEARCH System Architecture Diagram executed).
 //
 // CI isolation (T-3-13): the child is the built FAKE binary only — the
 // real-desktop path stays behind realdesktop_test.go's build tag + env
@@ -28,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -86,6 +88,10 @@ const e2eRunContent = "hello from the e2e exec chain"
 // server's stdlib flag).
 const e2eScenarioFlag = "--scenario"
 
+// e2eExplicitLayout is the discovery layout the synthetic override install
+// declares (discover order step 1).
+const e2eExplicitLayout = "explicit"
+
 // TestEndToEndExecChain runs the full phase chain end-to-end on real exec
 // pipes: supervisor → built fake binary child → codec Conn → turn machine —
 // the happy turn, the mid-turn cancel, then the staged shutdown with zero
@@ -116,7 +122,12 @@ func e2eBuildFakeBinary(t *testing.T) string {
 	ctx, cancel := context.WithTimeout(context.Background(), e2eBuildDeadline)
 	defer cancel()
 
-	binPath := filepath.Join(t.TempDir(), "fake-app-server")
+	binName := "fake-app-server"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+
+	binPath := filepath.Join(t.TempDir(), binName)
 
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", binPath,
 		"github.com/Djarvur/zcode-acp/cmd/fake-app-server")
@@ -277,7 +288,7 @@ func e2eDiscoverOverride(ctx context.Context, t *testing.T, fakeBinary string) s
 			return supervisor.Install{
 				Root:   filepath.Dir(fakeBinary),
 				Binary: fakeBinary,
-				Layout: fixtureExplicitLayout,
+				Layout: e2eExplicitLayout,
 			}, true
 		},
 		Home:   t.TempDir(),
@@ -300,9 +311,10 @@ func e2eDiscoverOverride(ctx context.Context, t *testing.T, fakeBinary string) s
 
 // e2eShutdownAndAssertGone drives the supervisor's staged shutdown (the
 // supervision ctx cancel), asserts Start returns nil on the intentional
-// path, and proves zero surviving group members: the monitor reaped the
-// child (Done closed, Exited delivered) and kill(-pgid, 0) reports ESRCH by
-// bounded poll — stdin-EOF is never trusted (PITFALL 6) and zombies exist
+// path, and proves zero surviving tree members: the monitor reaped the
+// child (Done closed, Exited delivered) and the platform process-tree check
+// reports no survivors (process-group ESRCH on Unix, closed pid on Windows)
+// by bounded poll — stdin-EOF is never trusted (PITFALL 6) and zombies exist
 // until reaped, so zero survivors is proven by polling, never one racy
 // check.
 func e2eShutdownAndAssertGone(t *testing.T, child *supervisor.Child,
@@ -322,7 +334,7 @@ func e2eShutdownAndAssertGone(t *testing.T, child *supervisor.Child,
 	}
 
 	assertReaped(t, child)
-	assertGone(t, "the fake app-server process group", -child.PgID)
+	e2eAssertTreeGone(t, child)
 }
 
 // e2eNewMachine builds the turn machine over the conn with the fast watcher
