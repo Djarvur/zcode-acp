@@ -13,7 +13,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -67,6 +69,11 @@ const (
 	testMountReapDeadline = 5 * time.Second
 	testMountPollInterval = 5 * time.Millisecond
 	testMountLossPoll     = 10 * time.Millisecond
+
+	mountCleanerRunFlag      = "-test.run=^TestDetachedMountCleanerHelper$"
+	mountCleanerEnv          = "ZCODE_ACP_TEST_DETACHED_MOUNT_CLEANER"
+	mountRootEnv             = "ZCODE_ACP_TEST_DETACHED_MOUNT_ROOT"
+	testDetachedCleanerDelay = 500 * time.Millisecond
 )
 
 // testMountOpts is the millisecond-scale MountOpts every test uses.
@@ -192,8 +199,8 @@ while [ ! -f "@@APP_PID@@" ]; do sleep 0.02; done
 rm -rf "$dir"
 while :; do sleep 0.05; done
 `
-	// fakeScriptStubborn ignores SIGTERM and keeps the tree alive; a detached
-	// (setsid) short-lived process removes the tree after the helper is
+	// fakeScriptStubborn ignores SIGTERM and keeps the tree alive; the test
+	// starts a detached Go helper that removes the tree after the helper is
 	// killed — the fake analogue of the real keepalive-pipe unmount.
 	fakeScriptStubborn = fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
@@ -201,7 +208,6 @@ printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
 : > "$dir/resources/glm/zcode.cjs"
 trap '' TERM
-setsid sh -c 'sleep 0.5; rm -rf "$1"' _ "$dir" >/dev/null 2>&1 &
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
@@ -445,6 +451,27 @@ func assertProcessGone(t *testing.T, pid int, what string) {
 	}
 }
 
+// TestDetachedMountCleanerHelper is the bounded, detached remover selected by
+// TestMountStop. The dedicated marker keeps it inert in the ordinary suite.
+func TestDetachedMountCleanerHelper(t *testing.T) {
+	if os.Getenv(mountCleanerEnv) != "1" {
+		return
+	}
+
+	root := os.Getenv(mountRootEnv)
+	if root == "" {
+		fmt.Fprintf(os.Stderr, "detached mount cleaner: %s is missing\n", mountRootEnv)
+		os.Exit(1)
+	}
+
+	time.Sleep(testDetachedCleanerDelay)
+
+	if err := os.RemoveAll(root); err != nil {
+		fmt.Fprintf(os.Stderr, "detached mount cleaner: remove %q: %v\n", root, err)
+		os.Exit(1)
+	}
+}
+
 // TestMountStop proves the staged stop against a helper that ignores SIGTERM:
 // the escalation to a group SIGKILL happens only after StopGrace, the helper is
 // reaped, the tree disappears (the detached cleaner is the fake analogue of
@@ -461,6 +488,25 @@ func TestMountStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareMount: %v", err)
 	}
+
+	cleaner := exec.Command(os.Args[0], mountCleanerRunFlag)
+	cleaner.Env = append(os.Environ(), mountCleanerEnv+"=1", mountRootEnv+"="+mount.Root())
+	cleaner.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cleaner.Stderr = os.Stderr
+
+	if err := cleaner.Start(); err != nil {
+		t.Fatalf("start the detached mount cleaner: %v", err)
+	}
+
+	cleanerPID := cleaner.Process.Pid
+	t.Cleanup(func() {
+		if cleaner.ProcessState != nil {
+			return
+		}
+
+		_ = syscall.Kill(cleanerPID, syscall.SIGKILL)
+		_ = cleaner.Wait()
+	})
 
 	pid := mount.HelperPID()
 	if pid == 0 {
@@ -487,6 +533,12 @@ func TestMountStop(t *testing.T) {
 	assertProcessGone(t, pid, "the stubborn mount helper")
 	assertMountPathGone(t, mount.Root(), "the mount root")
 	assertMountPathGone(t, filepath.Dir(mount.Root()), "the private base")
+
+	if err := cleaner.Wait(); err != nil {
+		t.Fatalf("reap the detached mount cleaner: %v", err)
+	}
+
+	assertProcessGone(t, cleanerPID, "the detached mount cleaner")
 
 	if err := mount.Stop(); err != nil {
 		t.Fatalf("second Stop = %v, want nil (idempotent)", err)
