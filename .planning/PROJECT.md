@@ -24,6 +24,18 @@ api-key — гарантированный тестовый уровень + sec
 в `/model` и picker полный (19 записей, provider labels) и сохраняется при
 переключениях.
 
+## Current Milestone: v0.24.0 macOS Support
+
+**Goal:** Existing `zcode-acp` functionality runs on universal macOS (arm64/amd64):
+the binary builds, discovers and launches ZCode Desktop, passes tests, and completes
+an Orca end-to-end run on the current machine without adding new ACP capabilities.
+
+**Target features:**
+- Remove Linux-only build/runtime assumptions and produce universal macOS binaries.
+- Discover `ZCode.app` on macOS and launch its desktop app-server correctly.
+- Preserve api-key and OAuth coding-plan authentication through macOS Keychain.
+- Add macOS test/CI coverage and a live Orca acceptance run.
+
 ## Core Value
 
 ACP-клиент может провести с ZCode полный ход end-to-end — от `initialize` до
@@ -74,10 +86,9 @@ ACP-клиент может провести с ZCode полный ход end-to
 
 ### Active
 
-- Нет активных требований — v0.23.0 закрыт; следующий milestone ещё не запланирован.
-  Кандидат на следующую работу (из `draft.txt`): очередь второго `session/prompt` и
-  отдача `-32003 session_busy` вместо invalid-request; quick task `261124-1ou` уже
-  стартовал в ветке `fix/acp-session-busy-32003`.
+- macOS support for the existing v0.23.0 feature set — universal arm64/amd64 build,
+  ZCode Desktop discovery/launch, Keychain-backed credentials, tests/CI, and live Orca
+  acceptance. No new ACP functionality is in scope.
 
 (Вне milestone: пост-v1 пожелания живут в 07-REVIEW-DISPOSITION.md
 (IN-a..h, IN-02/03) и deferred-реестре STATE.md. Фазы 8–9 не имеют
@@ -88,7 +99,7 @@ VALIDATION.md/SECURITY.md — это advisory-долг, отмеченный п�
 - Подделка аттестации/подписи ради квот — сознательно не делается; только
   официальные пути (PAT выдаётся z.ai, подписывает официальный бинарь)
 - Бэкенд zcode CLI — только desktop app-server в v1
-- Окружения кроме Ubuntu GNOME (KDE, macOS, Windows) в v1 — принимаются PR
+- Окружения кроме Ubuntu GNOME и macOS (KDE и Windows) — принимаются PR
 - Патчи бандла ZCode (zcode.cjs и др.) — обёртка ничего не модифицирует
 - Чтение точного счётчика квоты OAuth — API этого не позволяет
 
@@ -143,9 +154,9 @@ mount→session/create прошёл), OMP print mode для текстовых �
 - **Research policy**: всё про ZCode — сначала исходники
   (https://github.com/zai-org/ZCode), потом эксперименты; всё про Orca —
   сначала исходники (https://github.com/stablyai/orca)
-- **Platform**: код кроссплатформенный без ограничений, но v1 поддерживает
-  только Ubuntu GNOME (зависимость от Secret Service/gnome-keyring при
-  расшифровке кредов); остальные окружения — через PR
+- **Platform**: v1 supports Ubuntu GNOME; v0.24.0 adds universal macOS
+  (arm64/amd64) for the same existing feature set. KDE and Windows remain out of
+  scope; the wrapper does not add a ZCode CLI backend.
 - **Docs language**: English (README, рецепты, docs/)
 - **Repo config**: по образцу https://github.com/Djarvur/goswitch — строгий
   линтер, GitHub Actions, protected branch
@@ -173,6 +184,8 @@ mount→session/create прошёл), OMP print mode для текстовых �
 | Discovery — одна pure-read стадия с версионным ранжированием; unversioned packed/tree = miss, не last-resort; плохой новый кандидат не блокирует годный старый | Stale unpacked не должен пинить версию, но miss не должен превращаться в победителя; per-candidate miss-строки сохраняют диагностику | ✓ Good — packed 4.0.0 beats stale 3.18.2; tie-break documented and tested |
 | Packed override абсолютизируется (никогда PATH-resolve); volatile `/tmp/.mount_*` отвергается уже на probe; `desktopVersion` предпочитает `Install.Version`, basename — второй источник | Иначе `.AppImage` уйдёт в GUI-ветку, /tmp-мусор станет spawn root, а PAT-клиент отправит 0.0.0 | ✓ Good — Phase 10; real mount reports version=4.0.0 |
 | Real-machine acceptance ограничен mount→session/create (D-14); live prompt на 4.0.0 — отдельный milestone; extraction proof аддитивный (pre-existing extracts разрешены и сохраняются) | Protocol drift 4.0.0 — отдельная работа; blanket «parent clean» дал бы ложный fail на хосте с 3.18.2 extract | ✓ Good — real run PASS 5.45s, 0 added entries, 1 pre-existing retained |
+| v0.24.0 is a platform port, not a feature expansion | The user explicitly ruled out new functionality; success means existing ACP behavior works on macOS | — Pending |
+| macOS target is universal arm64/amd64 | Go can produce both binaries; live E2E runs on the current Apple Silicon machine | — Pending |
 
 ## Evolution
 
@@ -192,4 +205,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-24 after Phase 10 (v0.23.0)*
+*Last updated: 2026-11-25 after starting v0.24.0 macOS Support*

@@ -1,18 +1,12 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v0.23.0 — Mount-First AppImage Backend",
-  "phases": [
-    {
-      "number": "10",
-      "name": "Mount-First AppImage Backend",
-      "status": "complete"
-    }
-  ],
+  "milestone": "v0.24.0",
+  "phases": [],
   "next": {
-    "command": "/gsd-new-milestone",
-    "label": "Start a new milestone",
-    "reason": "All phases complete — start a new milestone"
+    "command": "/gsd-discuss-phase",
+    "label": "Discuss the first phase",
+    "reason": "Project initialized — plan your first phase"
   },
-  "updated_at": "2026-11-24T05:54:01.588Z"
+  "updated_at": "2026-11-25T09:13:49.344Z"
 }
