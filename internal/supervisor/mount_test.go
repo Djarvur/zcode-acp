@@ -472,6 +472,36 @@ func TestDetachedMountCleanerHelper(t *testing.T) {
 	}
 }
 
+// startDetachedMountCleaner launches the bounded remover in its own session and
+// registers unconditional PID cleanup before returning it to the test.
+func startDetachedMountCleaner(t *testing.T, root string) *exec.Cmd {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), testMountReapDeadline)
+	t.Cleanup(cancel)
+
+	cleaner := exec.CommandContext(ctx, os.Args[0], mountCleanerRunFlag)
+	cleaner.Env = append(os.Environ(), mountCleanerEnv+"=1", mountRootEnv+"="+root)
+	cleaner.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cleaner.Stderr = os.Stderr
+
+	if err := cleaner.Start(); err != nil {
+		t.Fatalf("start the detached mount cleaner: %v", err)
+	}
+
+	cleanerPID := cleaner.Process.Pid
+	t.Cleanup(func() {
+		if cleaner.ProcessState != nil {
+			return
+		}
+
+		_ = syscall.Kill(cleanerPID, syscall.SIGKILL)
+		_ = cleaner.Wait()
+	})
+
+	return cleaner
+}
+
 // TestMountStop proves the staged stop against a helper that ignores SIGTERM:
 // the escalation to a group SIGKILL happens only after StopGrace, the helper is
 // reaped, the tree disappears (the detached cleaner is the fake analogue of
@@ -489,24 +519,8 @@ func TestMountStop(t *testing.T) {
 		t.Fatalf("PrepareMount: %v", err)
 	}
 
-	cleaner := exec.Command(os.Args[0], mountCleanerRunFlag)
-	cleaner.Env = append(os.Environ(), mountCleanerEnv+"=1", mountRootEnv+"="+mount.Root())
-	cleaner.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cleaner.Stderr = os.Stderr
-
-	if err := cleaner.Start(); err != nil {
-		t.Fatalf("start the detached mount cleaner: %v", err)
-	}
-
+	cleaner := startDetachedMountCleaner(t, mount.Root())
 	cleanerPID := cleaner.Process.Pid
-	t.Cleanup(func() {
-		if cleaner.ProcessState != nil {
-			return
-		}
-
-		_ = syscall.Kill(cleanerPID, syscall.SIGKILL)
-		_ = cleaner.Wait()
-	})
 
 	pid := mount.HelperPID()
 	if pid == 0 {

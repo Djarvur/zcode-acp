@@ -346,7 +346,6 @@ const (
 var (
 	cpCorpusRevPattern     = regexp.MustCompile(`account-bridge:\d+`)
 	cpCorpusBuiltinPattern = regexp.MustCompile(`zcode-builtin:44:[0-9a-f]{64}`)
-	cpCorpusProbeDir       = codingPlanProbeDirPattern()
 )
 
 // codingPlanProbeDirPattern accepts both the platform temp-root spelling and
@@ -371,7 +370,7 @@ func codingPlanProbeDirPattern() *regexp.Regexp {
 // normalizeCodingPlanCorpus substitutes the machine-derived tokens.
 func normalizeCodingPlanCorpus(b []byte) []byte {
 	b = cpCorpusRevPattern.ReplaceAll(b, []byte(cpCorpusRevisionToken))
-	b = cpCorpusProbeDir.ReplaceAll(b, []byte("/tmp/"+cpCorpusProbeDirToken))
+	b = codingPlanProbeDirPattern().ReplaceAll(b, []byte("/tmp/"+cpCorpusProbeDirToken))
 
 	return cpCorpusBuiltinPattern.ReplaceAll(b, []byte(cpCorpusBuiltinToken))
 }

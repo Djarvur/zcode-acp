@@ -787,7 +787,7 @@ func TestE2EDetachedLeakLauncherHelper(t *testing.T) {
 		t.Fatalf("%s is missing", e2eDetachedLeakPIDEnv)
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestE2EDetachedLeakHelper$")
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestE2EDetachedLeakHelper$")
 	cmd.Env = append(os.Environ(),
 		e2eDetachedLeakHelperEnv+"=1",
 		e2eDetachedLeakPIDEnv+"="+pidPath,

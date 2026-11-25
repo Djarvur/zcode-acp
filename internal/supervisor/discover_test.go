@@ -894,7 +894,8 @@ func xdgSeedPacked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an XDG AppImage target must be a ranked candidate: %v", err)
 	}
-	if install.AppImage != canonicalTestPath(t, packed) || install.Version != fakeAppImageVer || install.Layout != testAppImageLayout {
+	if install.AppImage != canonicalTestPath(t, packed) ||
+		install.Version != fakeAppImageVer || install.Layout != testAppImageLayout {
 		t.Fatalf("the seeded packed target must win: %+v", install)
 	}
 
@@ -947,7 +948,8 @@ func xdgSeedUnpacked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an XDG squashfs-root target must be a ranked candidate: %v", err)
 	}
-	if install.Root != canonicalTestPath(t, unpacked) || install.Layout != fixtureUnpackedLayout || install.Version != fixtureUnpackedVer {
+	if install.Root != canonicalTestPath(t, unpacked) ||
+		install.Layout != fixtureUnpackedLayout || install.Version != fixtureUnpackedVer {
 		t.Fatalf("the seeded unpacked tree must win: %+v", install)
 	}
 
