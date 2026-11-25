@@ -14,13 +14,29 @@ engineering surface.
 
 ## Install
 
-**Platform support.** Linux is the supported platform (v1 targets Ubuntu GNOME).
-Windows is not supported: the wrapper does not currently build there — the
-process-management and AppImage-mount layers use POSIX/Linux primitives, so
-`GOOS=windows go build ./...` fails. A Windows port is very welcome: if you make
-it build and work there, send a pull request and we will review and merge it with
-gratitude. macOS is not supported by this tree yet; its port is being adapted
-separately.
+**Platform support.** Linux is the reference platform (v1 targets Ubuntu GNOME).
+Windows is supported by this tree: the process-management layer uses Job
+Objects, the coding-plan credential key is read from Windows Credential
+Manager (the same store the ZCode desktop writes), and `GOOS=windows go build
+./...` passes. Windows has no AppImage mount; point the wrapper at an installed
+ZCode desktop tree or `ZCode.exe` with `--app-server` /
+`ZCODE_ACP_APP_SERVER`:
+
+```powershell
+.\zcode-acp.exe --app-server "$env:LOCALAPPDATA\Programs\ZCode\ZCode.exe"
+```
+
+Native Windows install discovery is not implemented yet, so the explicit
+override is currently required there. The coding-plan path needs an interactive
+user logon session: Windows Credential Manager reads fail from a network logon
+(for example an SSH session) with `ERROR_NO_SUCH_LOGON_SESSION` — run the
+wrapper from the desktop session, as the ZCode desktop itself does. The
+unattended-VM scaffolding used to validate the port lives in
+[`scripts/windows-vm/`](scripts/windows-vm/): the Autounattend answer file, the
+offline Win32-OpenSSH tools ISO builder, and the real-backend
+`smoke-server.ps1`. macOS is not supported by this tree yet; its port is being
+adapted separately (the keyring, install-discovery, and mount seams are
+already split behind build tags with Darwin stubs).
 
 Build from source with a Go toolchain pinned via
 [mise](https://mise.jdx.dev) (`mise.toml` carries the exact versions CI runs):
@@ -36,12 +52,15 @@ its checksum against the publisher's sidecar.
 
 On the target machine the binary needs:
 
-- a ZCode desktop install — the wrapper discovers it at startup
+- a ZCode desktop install — the wrapper discovers it at startup on Linux
   (env/flag override → desktop entry → version-ranked AppImage paths → package
-  paths; `--app-server` overrides the search), and
-- `secret-tool` (the `libsecret-tools` package) plus an unlocked
+  paths; `--app-server` overrides the search). On Windows, native discovery is
+  pending: pass `--app-server`/`ZCODE_ACP_APP_SERVER` with the installed
+  `ZCode.exe` (or its tree root), and
+- on Linux, `secret-tool` (the `libsecret-tools` package) plus an unlocked
   gnome-keyring **only for the coding-plan auth path** — the api-key path
-  needs neither.
+  needs neither. On Windows the coding-plan key comes from Windows Credential
+  Manager instead (no CLI dependency).
 
 **Packed-AppImage backend.** When the selected install is a packed `.AppImage`,
 the wrapper mounts it read-only at startup through the AppImage's own
@@ -111,6 +130,13 @@ fix:
 | `keyring probe: no desktop session available (the keyring bus cannot autolaunch headless — run inside your desktop session)` | the wrapper runs outside a desktop session; the keyring bus cannot autolaunch |
 | `keyring probe: no ZCode desktop login found in the keyring (log in via the ZCode desktop first)` | no matching ZCode credential in the keyring — log in via the desktop first |
 | `keyring probe: keyring lookup did not answer within its bound` | the bounded lookup (5 s ceiling) outlived its bound |
+
+The four arms above are the Linux `secret-tool` probe. On Windows the cached
+arms are `keyring probe: Windows Credential Manager is unavailable` (a network
+logon or a locked store) and the shared `no ZCode desktop login found` /
+`no Windows Credential Manager entry for this credentials file`; the fix for
+the latter is to log in via the installed ZCode desktop (or run the wrapper in
+the interactive desktop session where that login lives).
 
 **FUSE / packed-AppImage mount** (the packed-AppImage backend). The AppImage
 runtime reports these exact messages; they may arrive on stdout after a leading
