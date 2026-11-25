@@ -134,6 +134,108 @@ test("artifact verifier enforces safe checksummed architecture checks", () => {
   ]);
 });
 
+function jobSection(source, name) {
+  const lines = source.split("\n");
+  const start = lines.indexOf(`  ${name}:`);
+  assert.notEqual(start, -1, `missing job ${name}`);
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^  [A-Za-z][A-Za-z0-9_-]*:/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start + 1, end).join("\n");
+}
+
+function namedStep(job, name) {
+  const marker = `      - name: ${name}\n`;
+  const start = job.indexOf(marker);
+  assert.notEqual(start, -1, `missing step ${name}`);
+  const rest = job.slice(start + marker.length);
+  const next = rest.search(/^      - (?:name|uses):/m);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+function assertDependencyGate(job) {
+  const version = namedStep(job, "Validate tool versions");
+  const download = namedStep(job, "Download frozen Go modules");
+  const offline = namedStep(job, "Verify frozen modules offline");
+  const apple = namedStep(job, "Require Apple release tools");
+  const config = namedStep(job, "Validate GoReleaser config");
+
+  assert.match(version, /GOPROXY=off mise exec -- node scripts\/check-mise-tool-versions\.mjs go goreleaser bash/);
+  assert.match(download, /timeout-minutes: 5/);
+  assert.match(download, /GOPROXY: https:\/\/proxy\.golang\.org/);
+  assert.match(download, /mise exec -- go mod download/);
+  assert.match(download, /git diff --exit-code HEAD -- go\.mod go\.sum/);
+  assert.doesNotMatch(download, /GOPROXY:\s*off/);
+  assert.doesNotMatch(download, /^\s+if:/m);
+  assert.match(offline, /GOPROXY=off mise exec -- go mod verify/);
+  assert.match(offline, /GOPROXY=off mise run tidy-diff/);
+  assert.doesNotMatch(offline, /^\s+if:/m);
+  assert.match(apple, /command -v lipo/);
+  assert.match(apple, /command -v shasum/);
+  assert.match(config, /GOPROXY=off mise exec -- goreleaser check/);
+
+  assertOrdered(job, [
+    "name: Validate tool versions",
+    "name: Download frozen Go modules",
+    "mise exec -- go mod download",
+    "git diff --exit-code HEAD -- go.mod go.sum",
+    "name: Verify frozen modules offline",
+    "GOPROXY=off mise exec -- go mod verify",
+    "GOPROXY=off mise run tidy-diff",
+    "name: Require Apple release tools",
+    "name: Validate GoReleaser config",
+    "GOPROXY=off mise exec -- goreleaser check",
+  ]);
+
+  const offlineIndex = job.indexOf("name: Verify frozen modules offline");
+  for (const match of job.matchAll(/GOPROXY=off mise exec -- goreleaser [^\n]+/g)) {
+    assert.ok(match.index > offlineIndex, "offline GoReleaser command precedes the dependency gate");
+  }
+}
+
+test("release workflow runs the proven snapshot with read-only rights", () => {
+  const source = readSource(path.join(repoRoot, ".github", "workflows", "release.yml"));
+  const triggers = topLevelSection(source, "on");
+  assert.match(triggers, /push:\s*\n\s+tags: \['v\*'\]/);
+  assert.match(triggers, /^  workflow_dispatch:/m);
+  assert.match(topLevelSection(source, "permissions"), /contents: read/);
+  assert.doesNotMatch(source, /GOPROXY=off[^\n]*go mod download/);
+
+  const snapshot = jobSection(source, "snapshot");
+  assert.match(snapshot, /name: goreleaser snapshot \(macOS universal\)/);
+  assert.match(snapshot, /runs-on: macos-latest/);
+  assert.match(snapshot, /uses: actions\/checkout@v4/);
+  assert.match(snapshot, /fetch-depth: 0/);
+  assert.match(snapshot, /run: curl https:\/\/mise\.run \| sh/);
+  assert.match(snapshot, /run: mise install/);
+  assert.doesNotMatch(snapshot, /GITHUB_TOKEN|secrets\.|contents:\s*write/);
+  assert.doesNotMatch(snapshot, /^\s+if:/m);
+  assertDependencyGate(snapshot);
+
+  const build = namedStep(snapshot, "Build release snapshot");
+  const verify = namedStep(snapshot, "Verify Darwin snapshot artifacts");
+  const upload = namedStep(snapshot, "Upload Darwin snapshot artifacts");
+  assert.match(build, /GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish/);
+  assert.match(verify, /mise exec -- bash scripts\/verify-darwin-release\.sh dist/);
+  assert.match(upload, /uses: actions\/upload-artifact@v4/);
+  assert.match(upload, /if-no-files-found: error/);
+  assert.match(upload, /dist\/zcode-acp_\*_darwin_arm64\.tar\.gz/);
+  assert.match(upload, /dist\/zcode-acp_\*_darwin_amd64\.tar\.gz/);
+  assert.match(upload, /dist\/zcode-acp_\*_darwin_universal\.tar\.gz/);
+  assert.match(upload, /dist\/checksums\.txt/);
+  assertOrdered(snapshot, [
+    "GOPROXY=off mise exec -- goreleaser check",
+    "name: Build release snapshot",
+    "GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish",
+    "name: Verify Darwin snapshot artifacts",
+    "name: Upload Darwin snapshot artifacts",
+  ]);
+});
+
 const archiveNames = {
   arm64: "zcode-acp_0.0.0-SNAPSHOT-test_darwin_arm64.tar.gz",
   amd64: "zcode-acp_0.0.0-SNAPSHOT-test_darwin_amd64.tar.gz",
