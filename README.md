@@ -329,14 +329,18 @@ owner's reference repo, adapted to this project):
 
 | Workflow | Triggers | What it runs |
 |----------|----------|--------------|
-| `pr-sanity` | push to `master`, any pull request, manual dispatch | Three jobs: **`build / vet / lint / test / tidy`** (go build, go vet, strict pinned golangci-lint, go test with the race detector, the experiments `node --test` suite, and a go.mod/go.sum tidy-diff check), **`govulncheck`** (reachable-vulnerability scan), **`secret-scan`** (secret-shape scan over the whole tracked tree, plus the docs conformance gate) |
+| `pr-sanity` | push to `master`, any pull request, manual dispatch | Four jobs: **`build / vet / lint / test / tidy`** (go build, go vet, strict pinned golangci-lint, go test with the race detector, the experiments `node --test` suite, and a go.mod/go.sum tidy-diff check), **`govulncheck`** (reachable-vulnerability scan), **`secret-scan`** (secret-shape scan over the whole tracked tree, plus the docs conformance gate), **`build / vet / test (windows)`** (the same go build, go vet, and race-enabled Go suite on a native `windows-latest` runner, with Go installed from the same `mise.toml` pin) |
 | `release` | `v*` tags only | goreleaser build + publish; inert until the release flow lands (no `.goreleaser.yaml` yet) |
 | `e2e-matrix` | manual dispatch only | Placeholder skeleton for the future self-hosted GNOME desktop e2e runner; inert until a runner is registered (Phase 7) |
 | `security-scheduled` | weekly schedule (Mondays 06:00 UTC) + manual dispatch | govulncheck over the module |
 
-Tool versions come from `mise.toml` only. CI installs the toolchain with
-`mise install` and runs the exact mise tasks the local gate loop uses — no
-workflow pins a second copy of any tool version.
+Tool versions come from `mise.toml` only. The Linux job installs the full tool
+set with `mise install`; the Windows job installs only the Go pin with
+`mise install go`. Both run the exact mise tasks the local gate loop uses, and
+no workflow pins a second copy of any tool version.
+
+The Windows job checks out `testdata/` at LF through `.gitattributes`, so the
+byte-exact golden fixtures are identical on both runners.
 
 CI runs offline test tiers only (the Go suite, the experiments node:test
 suite, static gates); it never talks to external AI services and never drives
@@ -354,6 +358,10 @@ first name are significant):
 
 Renaming one of these job names requires updating the protection rule in the
 same change.
+
+The `build / vet / test (windows)` job is not part of the protection body: it
+reports on every pull request, so the required set stays exactly these three
+names.
 
 ## Branch flow
 
