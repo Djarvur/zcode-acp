@@ -2,7 +2,7 @@
 status: clean
 depth: manual
 phase: 11-darwin-build-test-release-gates
-files_reviewed: 17
+files_reviewed: 21
 findings:
   critical: 0
   warning: 0
@@ -14,9 +14,9 @@ findings:
 
 ## Scope
 
-Manual advisory review of the 17 source/config/test files changed by Phase 11,
-including the two test-side path-alias deviation files not surfaced by the GSD
-evaluation-scope union.
+Manual advisory review of the Phase 11 source/config/test files, updated after
+the post-execution Go-gate migration. The migration replaces the three shell
+gates with Go commands and removes Bash from the managed toolchain.
 
 ## Review Method
 
@@ -26,10 +26,10 @@ They were stopped, and the orchestrator performed a focused manual review of:
 - `internal/supervisor/mount.go` and its tests;
 - macOS detached-process test helpers;
 - canonical temp-path test normalization;
-- `mise.toml` and tool-version enforcement;
+- `mise.toml` and the four-tool version enforcement;
 - PR sanity and release workflows;
 - `.goreleaser.yaml`;
-- `scripts/verify-darwin-release.sh`;
+- Go docs, secret, and Darwin release verifier commands;
 - release and portability test fixtures.
 
 ## Result
@@ -42,6 +42,7 @@ Confirmed properties:
 - Detached fixtures no longer depend on an external `setsid` binary.
 - macOS `/var` and `/private/var` aliases are normalized only in test expectations.
 - Release archives are binary-only, checksum-verified, safely staged, and rejected if they contain traversal, symlinks, or unexpected members.
+- The docs, secret, and release gates are Go commands covered by Go tests; credential findings are redacted.
 - Snapshot jobs hydrate frozen modules before offline verification and builds.
 - Write permissions and `GITHUB_TOKEN` are confined to the tag-publish job.
 - Linux required-check names and AppImage/FUSE production behavior remain unchanged.
@@ -49,5 +50,4 @@ Confirmed properties:
 ## Residuals
 
 - Hosted GitHub macOS runner labels and `workflow_dispatch` behavior remain external observations until the branch is pushed.
-- Mise-wrapper commands remain unrun locally because the repository config is not trusted; exact absolute-tool equivalents passed.
-- The release verifier intentionally requires managed Bash 5.3; it is invoked through mise in CI and the documented local gate.
+- Go gate tests, strict lint, `mise run ci`, and the real verifier over `dist` pass; no managed-Bash residual remains.

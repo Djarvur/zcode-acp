@@ -2,9 +2,20 @@
 
 **Mapped:** 2026-11-25
 **Files analyzed:** 15 new/modified files
-**Analogs found:** 12 / 15 (`.goreleaser.yaml`, `scripts/check-mise-tool-versions.mjs`, and `scripts/verify-darwin-release.sh` have explicit no-analog dispositions)
+**Analogs found (historical):** 12 / 15 (`.goreleaser.yaml`, `scripts/check-mise-tool-versions.mjs`, and the shell verifier have explicit no-analog dispositions; the shell verifier is superseded by `cmd/verify-darwin-release`)
 
 All analog paths below were verified with `git ls-files` in the target repository. No mise configuration was executed and no network-dependent command was run.
+
+## Post-execution deviation (2026-11-25)
+
+The Bash recommendations and shell-gate patterns in this map are historical and **superseded**. During execution, `mise install` proved that mise has no Bash backend; the PATH workaround was then rejected as a managed toolchain dependency. The implemented gates are Go commands:
+
+- `cmd/check-docs` — portable filesystem traversal, no grep/find shell-outs;
+- `cmd/scan-secrets` — `git ls-files` tracked scope with redacted diagnostics;
+- `cmd/verify-darwin-release` — `archive/tar`, `compress/gzip`, `crypto/sha256`, and `lipo`;
+- `scripts/check-mise-tool-versions.mjs` — exactly four mise-managed tools: Go, golangci-lint, GoReleaser, and Node.
+
+Every `Bash`, `check-docs.sh`, `scan-secrets.sh`, `verify-darwin-release.sh`, five-tool gate, and shell-verifier recommendation below is retained only as historical pattern research. The current implementation is defined by Plans 11-03/11-05, the Go command tests, and `mise run ci`.
 
 ## File Classification
 
@@ -646,7 +657,7 @@ A detached helper needs direct PID cleanup because negative-PGID group kills do 
 
 **Analog disposition:** no analog — no tracked script currently compares mise-resolved tool output with repository pins. Use the ESM/direct-invocation shape of `experiments/scrub-capture.mjs`, but do not copy its file-transform behavior.
 
-**Required pattern:** built-in Node imports only; read `mise.toml` as data; parse the five `[tools]` entries (`go`, `golangci-lint`, `goreleaser`, `node`, `bash`); export `resolvedVersionFromOutput` and `requiredVersionMatches`; guard main execution with the ESM direct-invocation check. Probe only through `mise exec -- <tool> <version-args>`, bound each probe, and set a non-zero exit on unknown tool, malformed/missing pin, failed probe, missing version, or mismatch. Never install/trust tools, fall back to bare PATH, or print credential material.
+**Required pattern (historical five-tool design — superseded by the four-tool Go migration):** built-in Node imports only; read `mise.toml` as data; parse the `[tools]` entries (`go`, `golangci-lint`, `goreleaser`, `node`, and the historical `bash` entry); export `resolvedVersionFromOutput` and `requiredVersionMatches`; guard main execution with the ESM direct-invocation check. Probe only through `mise exec -- <tool> <version-args>`, bound each probe, and set a non-zero exit on unknown tool, malformed/missing pin, failed probe, missing version, or mismatch. Never install/trust tools, fall back to bare PATH, or print credential material.
 
 ### `experiments/tool-versions.test.mjs` (test, pure function-I/O)
 
@@ -654,7 +665,7 @@ A detached helper needs direct PID cleanup because negative-PGID group kills do 
 
 **Required pattern:** import only the two exported comparator functions. Table-drive matching exact pins, matching one/two-component lines, wrong patch/minor/major, malformed input, and missing output. Keep the suite offline: it must never spawn mise or inspect the host tool installation. The runnable gate, not the comparator test, owns process-exit behavior.
 
-### `scripts/verify-darwin-release.sh` (executable verifier, file-I/O + process-I/O)
+### `scripts/verify-darwin-release.sh` (historical shell verifier — superseded by `cmd/verify-darwin-release`)
 
 **Analog disposition:** no analog — the tracked tree has scripts for VM acceptance and docs/secret scanning, but none verifies release archives. `scripts/vm-e2e.sh:66-89` supplies only the safety discipline: bounded checks, actionable diagnostics, no credential values, and no implicit downloads.
 
@@ -672,7 +683,7 @@ A detached helper needs direct PID cleanup because negative-PGID group kills do 
 
 **Required pattern:** append a commented `/dist/` entry. Keep existing raw-capture and root-binary exclusions unchanged; do not ignore source, checksums outside `dist/`, or release workflow files.
 
-### `experiments/check-docs.sh` (executable gate, file-I/O)
+### `experiments/check-docs.sh` (historical shell gate — superseded by `cmd/check-docs`)
 
 **Analogs:** this file's existing diagnostics and accumulated `rc`; `experiments/scan-secrets.sh:26-28` for pinning to the repository top level.
 

@@ -1,10 +1,9 @@
 ---
 phase: 11-darwin-build-test-release-gates
-verified: 2026-11-25T17:35:00Z
+verified: 2026-11-25T18:29:50Z
 status: human_needed
 score: 30/31 must-haves verified
-covered_files: [".github/workflows/pr-sanity.yml", ".github/workflows/release.yml", ".gitignore", ".goreleaser.yaml", ".planning/phases/11-darwin-build-test-release-gates/11-01-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-01-SUMMARY.md", ".planning/phases/11-darwin-build-test-release-gates/11-02-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-02-SUMMARY.md", ".planning/phases/11-darwin-build-test-release-gates/11-03-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-03-SUMMARY.md", ".planning/phases/11-darwin-build-test-release-gates/11-04-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-04-SUMMARY.md", ".planning/phases/11-darwin-build-test-release-gates/11-05-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-05-SUMMARY.md", "cmd/zcode-acp/main_test.go", "experiments/check-docs.sh", "experiments/portability.test.mjs", "experiments/release.test.mjs", "experiments/tool-versions.test.mjs", "internal/supervisor/discover_test.go", "internal/supervisor/mount.go", "internal/supervisor/mount_internal_test.go", "internal/supervisor/mount_test.go", "internal/zcode/fake/golden_test.go", "mise.toml", "scripts/check-mise-tool-versions.mjs", "scripts/verify-darwin-release.sh"]
-covered_digest: "v3:sha256:8707170bc361f496262e29592c4ea7f303333d70ee09d13b7be2a0d4ffc04922"
+covered_files: [".github/workflows/pr-sanity.yml", ".github/workflows/release.yml", ".gitignore", ".goreleaser.yaml", ".planning/phases/11-darwin-build-test-release-gates/11-01-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-01-SUMMARY.md", ".planning/phases/11-darwin-build-test-release-gates/11-02-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-02-SUMMARY.md", ".planning/phases/11-darwin-build-test-release-gates/11-03-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-03-SUMMARY.md", ".planning/phases/11-darwin-build-test-release-gates/11-04-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-04-SUMMARY.md", ".planning/phases/11-darwin-build-test-release-gates/11-05-PLAN.md", ".planning/phases/11-darwin-build-test-release-gates/11-05-SUMMARY.md", "cmd/check-docs/main.go", "cmd/check-docs/main_test.go", "cmd/scan-secrets/main.go", "cmd/scan-secrets/main_test.go", "cmd/verify-darwin-release/main.go", "cmd/verify-darwin-release/main_test.go", "cmd/zcode-acp/main_test.go", "experiments/portability.test.mjs", "experiments/release.test.mjs", "experiments/tool-versions.test.mjs", "internal/supervisor/discover_test.go", "internal/supervisor/mount.go", "internal/supervisor/mount_internal_test.go", "internal/supervisor/mount_test.go", "internal/zcode/fake/golden_test.go", "mise.toml", "scripts/check-mise-tool-versions.mjs"]
 behavior_unverified: 1
 overrides_applied: 0
 ---
@@ -13,7 +12,7 @@ overrides_applied: 0
 
 **Phase Goal:** Developers can build, test, and package the existing bridge for both macOS architectures without Linux-only tool assumptions.
 
-**Status:** human_needed — implementation and all local equivalents are green; two hosted-environment observations require a human action.
+**Status:** human_needed — implementation and all local equivalents are green; the hosted-environment observation requires a human action.
 
 ## Goal Achievement
 
@@ -22,9 +21,9 @@ overrides_applied: 0
 | Requirement | Status | Evidence |
 |---|---|---|
 | MBLD-01 | ✓ VERIFIED | `CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...` and the amd64 equivalent pass with Go 1.27.4. |
-| MBLD-02 | ✓ VERIFIED | Full `go test -race -count=1 ./...` passes on macOS arm64 without external `setsid`; Bash 5.3 docs/secret gates pass; exact `golangci-lint 2.15.0` reports 0 issues. |
-| MBLD-03 | ✓ VERIFIED (local equivalents) | GoReleaser 2.20.2 snapshot emits arm64, amd64, and universal archives; SHA-256 checks pass; each archive contains exactly one regular `zcode-acp`; `lipo` reports `arm64`, `x86_64`, and `x86_64 arm64`. CI and release workflow structures pass static tests. |
-| MTEST-01 | ✓ VERIFIED | Full race suite passes on macOS arm64; Node experiments report 46 passed, 2 guarded skips. |
+| MBLD-02 | ✓ VERIFIED | Full `go test ./...` and `mise run ci` pass on macOS arm64 without external `setsid`; Go docs/secret gates pass; four-tool version gate passes; exact `golangci-lint 2.15.0` reports 0 issues. |
+| MBLD-03 | ✓ VERIFIED (local equivalents) | GoReleaser 2.20.2 snapshot emits arm64, amd64, and universal archives; Go `crypto/sha256` and `archive/tar` verification pass; each archive contains exactly one regular `zcode-acp`; `lipo` reports `arm64`, `x86_64`, and `x86_64 arm64`. CI and release workflow structures pass static tests. |
+| MTEST-01 | ✓ VERIFIED | Full race suite passes on macOS arm64; Node experiments report 47 passed, 1 guarded skip. |
 
 ### Human Verification Required
 
@@ -36,23 +35,26 @@ overrides_applied: 0
 
 The repository `mise.toml` was explicitly trusted after review. The real runtime gates then passed:
 
-- `mise install` — four tools installed; Bash is resolved from Homebrew because mise does not provide a Bash backend.
-- `mise exec -- node scripts/check-mise-tool-versions.mjs` — four mise probes plus direct PATH Bash 5.3.20.
-- `mise run ci` — PASS in 123.03 s.
-- `mise run check-docs && mise run secret-scan` — PASS.
-- `mise run test-experiments` — PASS, 47 passed / 2 guarded skips.
+- `mise install` — four tools installed: Go, golangci-lint, GoReleaser, and Node; no Bash tool.
+- `mise exec -- node scripts/check-mise-tool-versions.mjs` — four mise probes, no Bash requirement.
+- `mise run ci` — PASS in 110.97 s; Go docs/secret gates and Node suite included.
+- `mise run check-docs && mise run secret-scan` — PASS with Go commands.
+- `mise run test-experiments` — PASS, 47 passed / 1 guarded skip.
+- `mise run verify-darwin-release` — PASS for all three archives.
 
 ## Implementation Evidence
 
 - `internal/supervisor/mount.go`: `defaultStatfs` returns `int64(st.Type)`, preserving the Linux/Darwin seam.
 - `internal/supervisor/mount_test.go`, `cmd/zcode-acp/main_test.go`: detached fixtures use Go re-exec helpers instead of `setsid`.
 - `internal/supervisor/discover_test.go`, `internal/zcode/fake/golden_test.go`: macOS `/var` ↔ `/private/var` aliases normalized in expectations only.
-- `mise.toml`: managed Bash 5.3 added; `check-docs` and `secret-scan` tasks exposed; canonical `ci` task includes them.
-- `scripts/check-mise-tool-versions.mjs`: five-tool exact/line comparison with non-zero drift failure.
-- `.github/workflows/pr-sanity.yml`: native macOS arm64/amd64 jobs plus separate Darwin cross-build job; Linux required-check name preserved.
+- `cmd/check-docs`: Go documentation conformance gate with unit tests and preserved `CHECK FAIL`/`PENDING` output.
+- `cmd/scan-secrets`: Go tracked-file scanner with the original credential regexes, `git ls-files` scope, and redacted findings.
+- `mise.toml`: four tool pins; `check-docs` and `secret-scan` tasks run Go commands; canonical `ci` includes them; no Bash pin.
+- `scripts/check-mise-tool-versions.mjs`: four-tool exact/line comparison with non-zero drift failure.
+- `.github/workflows/pr-sanity.yml`: native macOS arm64/amd64 jobs plus separate Darwin cross-build job; Linux required-check name preserved; no Bash setup or invocation.
 - `.goreleaser.yaml`: binary-only tar.gz archives for arm64, amd64, and universal.
-- `scripts/verify-darwin-release.sh`: checksum, exact-member, safe-extraction, and `lipo` architecture verification.
-- `.github/workflows/release.yml`: bounded module hydration, offline verify/tidy, read-only snapshot, write-scoped tag publication.
+- `cmd/verify-darwin-release`: Go `crypto/sha256`, `archive/tar`, `compress/gzip`, and `lipo` verification with adversarial tests; no shell verifier remains.
+- `.github/workflows/release.yml`: bounded module hydration, offline verify/tidy, read-only snapshot, write-scoped tag publication, Go verifier task.
 
 ## Residuals
 

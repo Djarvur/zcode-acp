@@ -4,6 +4,17 @@
 **Domain:** Go cross-compilation, portable process tests, CI matrices, macOS universal binary releases
 **Confidence:** MEDIUM
 
+## Post-execution deviation (2026-11-25)
+
+The Bash approach recommended in this research was rejected during execution after `mise install` proved that mise has no Bash backend (`bash not found in mise tool registry`). A PATH-based workaround was also rejected as a managed toolchain dependency. All three standard gates were ported to Go:
+
+- `cmd/check-docs` replaces `experiments/check-docs.sh`;
+- `cmd/scan-secrets` replaces `experiments/scan-secrets.sh`;
+- `cmd/verify-darwin-release` replaces `scripts/verify-darwin-release.sh`;
+- the shared version gate manages only Go, golangci-lint, GoReleaser, and Node.
+
+**Superseded research:** every Bash pin, Homebrew Bash setup, `mise exec -- bash`, `shasum`/`tar` shell verifier, and "managed Bash" recommendation below is retained as historical research only. It is not part of the current implementation. Current gates run through `mise run check-docs`, `mise run secret-scan`, and `mise run verify-darwin-release`, with Go unit tests and `go test ./...`.
+
 <user_constraints>
 ## User Constraints (from CONTEXT.md)
 
@@ -38,7 +49,7 @@ None recorded.
 | ID | Description | Research Support |
 |----|-------------|------------------|
 | MBLD-01 | Both exact CGO-free Darwin cross-builds complete. | Cast `Statfs_t.Type` at the existing `int64` seam; gate both exact commands in CI; GoReleaser builds the same two targets. |
-| MBLD-02 | Standard macOS gates avoid external `setsid`, GNU utilities, and stock Bash 3.2; tool versions are explicit. | Replace two shell `setsid` fixtures with Go test-binary re-exec helpers using `SysProcAttr.Setsid`; invoke shell gates through a mise-managed Bash; keep the Linux-only VM script outside the macOS default gate. |
+| MBLD-02 | Standard macOS gates avoid external `setsid`, GNU utilities, and stock Bash 3.2; tool versions are explicit. | Replace two shell `setsid` fixtures with Go test-binary re-exec helpers using `SysProcAttr.Setsid`; implement docs/secret gates as Go commands; keep the Linux-only VM script outside the macOS default gate. **Bash recommendations below are superseded by the post-execution deviation above.** |
 | MBLD-03 | CI builds/tests Linux and both macOS architectures; snapshot emits checksummed universal macOS artifacts. | Preserve the existing Linux required-check name, add native macOS jobs, add a macOS GoReleaser snapshot job, and verify SHA-256 plus `lipo -archs`. |
 | MTEST-01 | Full default suite passes on macOS arm64 without external `setsid`. | Native `macos-latest` arm64 race-test job plus re-exec helper tests; do not set `CGO_ENABLED=0` for `-race`. |
 </phase_requirements>
@@ -51,7 +62,7 @@ The test portability work is confined to two scripted fixtures that call externa
 
 CI and release need structural changes. The current sanity workflow is Ubuntu-only, and the release workflow runs GoReleaser on Ubuntu even though no GoReleaser config exists. Build/test Linux and both macOS architectures on native runners, cross-build both Darwin targets with CGO disabled, and run the release snapshot on macOS so GoReleaser can use the platform's universal-binary tooling. Replace the docs gate's GNU-only include filters with portable `find` plus `grep`. Publish thin arm64, thin amd64, and universal archives, each containing only the regular `zcode-acp` binary, with SHA-256 checksums; independently verify checksums, exact member/type lists, and architecture slices before extraction. [VERIFIED: .github/workflows/pr-sanity.yml:47-54; .github/workflows/release.yml:39-67; release.yml:15-19 states no `.goreleaser.yaml` exists]
 
-**Primary recommendation:** Fix the `Statfs` conversion, replace both `setsid` fixture calls with Go re-exec helpers, make docs scans portable, add mise-managed Bash plus a five-tool mise-resolved version gate, extend CI with native macOS arm64/amd64 jobs and exact Darwin cross-builds, then prove a binary-only three-archive macOS snapshot before workflow expansion.
+**Historical primary recommendation (superseded by the Go-gate migration above):** Fix the `Statfs` conversion, replace both `setsid` fixture calls with Go re-exec helpers, make docs scans portable, add mise-managed Bash plus a five-tool mise-resolved version gate, extend CI with native macOS arm64/amd64 jobs and exact Darwin cross-builds, then prove a binary-only three-archive macOS snapshot before workflow expansion.
 
 ## Architectural Responsibility Map
 
@@ -85,7 +96,7 @@ The target repository's configured project instructions are `.claude/CLAUDE.md`.
 | `github.com/coder/acp-go-sdk` | `v0.20.0` | Existing ACP dependency | Keep the frozen dependency; Phase 11 adds no module. [VERIFIED: go.mod:5; go.sum:1-2] |
 | mise | Host `2026.11.13`; repository config currently untrusted | Single source of tool versions and tasks | Existing D-02 convention; do not duplicate pins in workflow inputs. [VERIFIED: mise.toml:1-17; local mise error output] |
 | GoReleaser | Repository pin `2.20.2`; only `2.17.1` installed locally | Multi-arch builds, universal binary, archives, checksums | Already pinned for release; add the missing config rather than hand-rolling packaging. [VERIFIED: mise.toml:14-17; local `goreleaser --version` output] |
-| Bash | Recommended mise pin `5.3` [ASSUMED] | Run shell gates on macOS without stock 3.2 | `check-docs.sh` uses Bash 4 associative arrays; a managed Bash preserves the script. [VERIFIED: experiments/check-docs.sh:58 quotes `declare -A REQUIRED_SECTIONS`; local `/bin/bash --version` reports `3.2.57(1)-release`] |
+| Bash | Recommended mise pin `5.3` [ASSUMED] **SUPERSEDED — mise has no Bash backend; gates are Go commands.** | Run shell gates on macOS without stock 3.2 | `check-docs.sh` uses Bash 4 associative arrays; a managed Bash preserves the script. [VERIFIED: experiments/check-docs.sh:58 quotes `declare -A REQUIRED_SECTIONS`; local `/bin/bash --version` reports `3.2.57(1)-release`] |
 
 ### Supporting
 
@@ -341,7 +352,7 @@ The binary path `./cmd/zcode-acp` corresponds to the package already built by te
 **How to avoid:** Record the helper PID, use short fixture delays, and register unconditional PID cleanup in the parent.
 **Warning signs:** `kill(pid, 0)` still succeeds after the test, or CI workers accumulate sleep processes. [VERIFIED: cmd/zcode-acp/main_test.go:956-966 already has recorded-PID cleanup for the old detached descendant]
 
-### Pitfall 4: Stock Bash cannot parse the docs gate
+### Pitfall 4: Stock Bash cannot parse the docs gate (historical — superseded by Go migration)
 
 **What goes wrong:** `declare -A` fails on macOS Bash 3.2.
 **Why it happens:** The script uses associative arrays, while `/bin/bash` is 3.2.57 on this host.
@@ -452,7 +463,7 @@ The architecture assertion must contain both `arm64` and `x86_64`; the checksum 
 
 | # | Claim | Section | Risk if Wrong |
 |---|-------|---------|---------------|
-| A1 | mise can provide Bash `5.3` on macOS and Linux; exact patch resolves consistently. | Standard Stack; Pitfall 4 | Shell-gate install fails or results differ; fallback is rewriting `check-docs.sh` to Bash 3.2-compatible syntax. |
+| A1 | mise can provide Bash `5.3` on macOS and Linux; exact patch resolves consistently. **SUPERSEDED — mise has no Bash backend; all three gates are Go commands.** | Standard Stack; Pitfall 4 | Shell-gate install fails or results differ; fallback is rewriting `check-docs.sh` to Bash 3.2-compatible syntax. |
 | A2 | `macos-latest` is arm64 and `macos-15-intel` is amd64 at execution time. | Standard Stack; Pitfall 7 | One architecture is not truly tested; add a `go env GOARCH` preflight and adjust labels. |
 | A3 | GoReleaser `2.20.2` retains the `universal_binaries`, archive, and checksum schema observed in local `2.17.1`. | Pattern 5; Pitfall 8 | Config fails validation; install exact version and adapt before snapshot. |
 | A4 | GoReleaser's universal-binary creation must run on macOS and can use `lipo` there. | Pattern 5; Pitfall 8 | Snapshot cannot create a fat binary on Ubuntu; move the job or install equivalent tooling. |
@@ -482,11 +493,12 @@ The architecture assertion must contain both `arm64` and `x86_64`; the checksum 
    - Recommendation: Make module acquisition a human-approved execution checkpoint; do not change the dependency.
    - **Resolution (implemented by Plan 05, Tasks 2-3):** The local tracer retains a declared cached-module precondition. Each hosted release job independently runs a five-minute online `mise exec -- go mod download` against `https://proxy.golang.org` using the frozen `go.mod`/`go.sum`, fails on drift in those files, then runs `GOPROXY=off mise exec -- go mod verify` and `GOPROXY=off mise run tidy-diff` before any offline GoReleaser command. Do not vendor, substitute, or change the dependency; no product or paid service is contacted.
 
-4. **Should shell portability be solved by managed Bash or by rewriting the docs gate? (RESOLVED)**
+4. **Should shell portability be solved by managed Bash or by rewriting the docs gate? (RESOLVED — HISTORICAL, SUPERSEDED)**
    - What we know: `check-docs.sh` uses `declare -A`; stock macOS Bash is 3.2. [VERIFIED: experiments/check-docs.sh:58; local Bash version]
    - What's unclear: Whether adding another managed tool is preferred.
    - Recommendation: Use mise-managed Bash for Phase 11 to minimize gate churn; revisit POSIX conversion separately.
-   - **Resolution (implemented by Plan 03, Tasks 1-2):** Pin `bash = "5.3"` in `mise.toml`, expose both scripts as named mise tasks, replace the docs script's four GNU-only include-filter scans with portable find-plus-grep while preserving output/exit contracts, and enforce all five mise-resolved tool versions with the shared non-zero-on-mismatch gate.
+   - **Historical resolution (implemented by Plan 03, Tasks 1-2):** Pin `bash = "5.3"` in `mise.toml`, expose both scripts as named mise tasks, replace the docs script's four GNU-only include-filter scans with portable find-plus-grep while preserving output/exit contracts, and enforce all five mise-resolved tool versions with the shared non-zero-on-mismatch gate.
+   - **Post-execution resolution (2026-11-25):** mise has no Bash backend. The Bash approach was rejected; docs, secret, and release gates are Go commands, and the version gate manages four tools.
 
 ## Environment Availability
 
@@ -496,7 +508,7 @@ The architecture assertion must contain both `arm64` and `x86_64`; the checksum 
 | Host default Go | None | Yes, wrong version | `1.26.5` per confirmed audit | `GOTOOLCHAIN=local` plus direct Go 1.27.4 avoids auto-download. |
 | `acp-go-sdk` module cache | First compile/test | No | `v0.20.0` absent | Approved network fetch or approved vendoring only. |
 | mise binary | Tool/task orchestration | Yes | `2026.11.13 macos-arm64` | Direct commands; target `mise.toml` is untrusted and was not executed. |
-| Managed Bash 5.x | Shell gates on macOS | No evidence | Stock `/bin/bash` `3.2.57` | Add exact mise pin or rewrite `check-docs.sh`. |
+| Managed Bash 5.x | Shell gates on macOS | No evidence **SUPERSEDED — not a managed dependency; Go gates replace shell scripts.** | Stock `/bin/bash` `3.2.57` | Add exact mise pin or rewrite `check-docs.sh`. |
 | GoReleaser 2.20.2 | Snapshot/release | No | Only `2.17.1` installed | Install exact pin after trust; do not validate release with 2.17.1 alone. |
 | golangci-lint 2.15.0 | Lint gate | No evidence | Installed inventory shows `2.12.2` | Install exact pin after trust. |
 | Node 26 | Experiment tests | Yes | `v26.2.0` | Direct Node binary path. |

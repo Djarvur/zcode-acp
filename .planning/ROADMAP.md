@@ -116,7 +116,7 @@ Plans:
 - [x] 11-02-PLAN.md — Replace both detached shell fixtures with Go re-exec helpers.
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [x] 11-03-PLAN.md — Make docs scans portable, pin managed Bash, and enforce all five mise-resolved tool versions.
+- [x] 11-03-PLAN.md — Port docs/secret gates to Go commands and enforce all four mise-resolved tool versions.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [x] 11-04-PLAN.md — Add Linux/macOS native CI gates and both Darwin cross-builds.
