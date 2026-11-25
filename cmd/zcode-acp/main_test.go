@@ -273,6 +273,11 @@ const (
 	e2eFakeTermRecord   = "term-record.txt"
 	e2eFakeLeakPID      = "leak.pid"
 
+	e2eDetachedLeakLauncherEnv = "ZCODE_ACP_TEST_DETACHED_LEAK_LAUNCHER"
+	e2eDetachedLeakHelperEnv   = "ZCODE_ACP_TEST_DETACHED_LEAK_HELPER"
+	e2eDetachedLeakPIDEnv      = "ZCODE_ACP_TEST_DETACHED_LEAK_PID"
+	e2eDetachedLeakLifetime    = 30 * time.Second
+
 	// e2eMountRecordWait bounds the wait for the helper's mount line; a
 	// wrapper that treats the AppImage as the app-server binary never mounts
 	// (the RED shape this test pins).
@@ -664,9 +669,15 @@ func TestAppImageMountFailures(t *testing.T) {
 func e2eWriteFakeAppImageFailure(t *testing.T, fixture, variant string) string {
 	t.Helper()
 
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve the current test binary: %v", err)
+	}
+
 	body := strings.NewReplacer(
 		"@@PID@@", filepath.Join(fixture, e2eFakeHelperPID),
 		"@@LEAK_PID@@", filepath.Join(fixture, e2eFakeLeakPID),
+		"@@TEST_BINARY@@", testBinary,
 	).Replace(e2eFakeAppImageFailureScript(variant))
 
 	appImage := filepath.Join(fixture, e2eFakeAppImageName)
@@ -712,7 +723,9 @@ mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
 printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
 : > "$dir/resources/glm/zcode.cjs"
-setsid sh -c 'echo $$ > "@@LEAK_PID@@"; exec sleep 30' &
+ZCODE_ACP_TEST_DETACHED_LEAK_LAUNCHER=1 \
+ZCODE_ACP_TEST_DETACHED_LEAK_PID="@@LEAK_PID@@" \
+"@@TEST_BINARY@@" '-test.run=^TestE2EDetachedLeakLauncherHelper$' >/dev/null &
 trap '' TERM
 while :; do sleep 0.05; done
 `
@@ -736,6 +749,52 @@ exit 127
 	default:
 		return preamble + "exit 127\n"
 	}
+}
+
+// TestE2EDetachedLeakLauncherHelper runs inside the fake mount helper's process
+// group and starts only the sleeping descendant in a detached session. Returning
+// after Start leaves that descendant alive with this process's inherited stderr.
+func TestE2EDetachedLeakLauncherHelper(t *testing.T) {
+	if os.Getenv(e2eDetachedLeakLauncherEnv) != "1" {
+		return
+	}
+
+	pidPath := os.Getenv(e2eDetachedLeakPIDEnv)
+	if pidPath == "" {
+		t.Fatalf("%s is missing", e2eDetachedLeakPIDEnv)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestE2EDetachedLeakHelper$")
+	cmd.Env = append(os.Environ(),
+		e2eDetachedLeakHelperEnv+"=1",
+		e2eDetachedLeakPIDEnv+"="+pidPath,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the detached leak helper: %v", err)
+	}
+}
+
+// TestE2EDetachedLeakHelper records its PID and holds the inherited wrapper
+// stderr pipe open for the fixture's bounded lifetime. Its dedicated marker keeps
+// it inert in the ordinary suite.
+func TestE2EDetachedLeakHelper(t *testing.T) {
+	if os.Getenv(e2eDetachedLeakHelperEnv) != "1" {
+		return
+	}
+
+	pidPath := os.Getenv(e2eDetachedLeakPIDEnv)
+	if pidPath == "" {
+		t.Fatalf("%s is missing", e2eDetachedLeakPIDEnv)
+	}
+
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		t.Fatalf("record the detached leak helper PID: %v", err)
+	}
+
+	time.Sleep(e2eDetachedLeakLifetime)
 }
 
 // e2eAssertNoMountBase requires no zcode-acp-mount-* base to remain under root.
