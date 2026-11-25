@@ -42,3 +42,6 @@ experiments/raw/
 
 # GoReleaser snapshot output
 /dist/
+
+# GSD runtime lock
+/.planning/milestone.lock
