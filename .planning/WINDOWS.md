@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 23
+open_count: 25
 waived_count: 0
-fixed_count: 3
-total_count: 26
-last_updated: 2026-11-25T13:43:17.794Z
+fixed_count: 4
+total_count: 29
+last_updated: 2026-11-25T14:07:16.961Z
 ---
 
 # Broken Windows Ledger
@@ -41,6 +41,9 @@ last_updated: 2026-11-25T13:43:17.794Z
 | 24 | 11 | unrun-verify | mise.toml |  | Task 2 named mise shell tasks were not run because repository mise trust is prohibited; both scripts passed directly through absolute Bash 5.3. | open |  | 2026-11-25T13:32:20.120Z |  |
 | 25 | 11 | unrun-verify | .github/workflows/pr-sanity.yml |  | Hosted pr-sanity matrix has not been observed on GitHub; Linux, macOS arm64/amd64, Darwin cross-build, govulncheck, and secret-scan still require a green run with recorded head SHA, architectures, and resolved versions. | open |  | 2026-11-25T13:43:17.611Z |  |
 | 26 | 11 | unrun-verify | scripts/check-mise-tool-versions.mjs |  | The mise-resolved five-tool runtime gate and mise task graph were not executed locally because mise.toml is explicitly untrusted; CI owns the first runtime observation. | open |  | 2026-11-25T13:43:17.794Z |  |
+| 27 | 11 | deviation | .goreleaser.yaml | 35 | Rule 1: GoReleaser 2.20.2 archives.files adds extra filesystem members rather than selecting binaries; a non-matching sentinel glob suppresses default docs while archive ids select only zcode-acp. | fixed |  | 2026-11-25T14:07:16.281Z | 2026-11-25T14:07:16.593Z |
+| 28 | 11 | unrun-verify | .github/workflows/release.yml | 34 | Release-specific mise exec commands were not run locally because mise.toml is untrusted; exact absolute GoReleaser 2.20.2 snapshot, verifier fixtures, version comparisons, and frozen-module gates passed. | open |  | 2026-11-25T14:07:16.778Z |  |
+| 29 | 11 | unrun-verify | .github/workflows/release.yml | 16 | Hosted workflow_dispatch snapshot observation remains pending a branch push: confirm read-only rights, bounded module hydration, offline checksum/tidy, three archives plus checksums, verifier success, and publish-job skip; no tag was pushed. | open |  | 2026-11-25T14:07:16.961Z |  |
 
 ````json
 [
@@ -379,6 +382,45 @@ last_updated: 2026-11-25T13:43:17.794Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-11-25T13:43:17.794Z",
+    "resolved_at": null,
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 27,
+    "kind": "deviation",
+    "phase": "11",
+    "file": ".goreleaser.yaml",
+    "line": 35,
+    "description": "Rule 1: GoReleaser 2.20.2 archives.files adds extra filesystem members rather than selecting binaries; a non-matching sentinel glob suppresses default docs while archive ids select only zcode-acp.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-11-25T14:07:16.281Z",
+    "resolved_at": "2026-11-25T14:07:16.593Z",
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 28,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": ".github/workflows/release.yml",
+    "line": 34,
+    "description": "Release-specific mise exec commands were not run locally because mise.toml is untrusted; exact absolute GoReleaser 2.20.2 snapshot, verifier fixtures, version comparisons, and frozen-module gates passed.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-25T14:07:16.778Z",
+    "resolved_at": null,
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 29,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": ".github/workflows/release.yml",
+    "line": 16,
+    "description": "Hosted workflow_dispatch snapshot observation remains pending a branch push: confirm read-only rights, bounded module hydration, offline checksum/tidy, three archives plus checksums, verifier success, and publish-job skip; no tag was pushed.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-25T14:07:16.961Z",
     "resolved_at": null,
     "milestone": "v0.24.0"
   }
