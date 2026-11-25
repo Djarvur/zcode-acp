@@ -1,4 +1,4 @@
-in	{"id":1,"method":"provider/updateAccountConfig","params":{"basedOnZCodeBuiltinRevision":"zcode-builtin:44:17a5ba97f090b6ea3b979cb793f404b51aaf27763d8e3a4f20ce067b7866424f","providers":{},"revision":"account-bridge:corpus-fix1","states":{}}}
+in	{"id":1,"method":"provider/updateAccountConfig","params":{"basedOnZCodeBuiltinRevision":"zcode-builtin:44:cp-corpus-fixture-hash","providers":{},"revision":"account-bridge:corpus-fix1","states":{}}}
 out	{"id":1,"result":{"receivedRevision":"account-bridge:corpus-fix1","providerCount":0,"status":"received"}}
 in	{"id":2,"method":"provider/refreshRegistry","params":{"reason":"account-config-sync"}}
 out	{"method":"state.updated","params":{"scope":"registry","reason":"registry_refresh","revision":2,"patch":{"providers":{"zai-api":{"models":["GLM-5.3-Flash","GLM-5.3"]}}}}}

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package main
 
 // TestAgentBinaryEndToEnd (plan 04-05): the BUILT zcode-acp binary carries
@@ -2851,6 +2853,7 @@ func testWiringClientVersion(t *testing.T) {
 		t.Fatalf("patClientVersion = %q, want the fixture tree's %q", got, wiringVersionSegment)
 	}
 
+	optDir := supervisor.DefaultOptDir()
 	bare := supervisor.Install{Root: optDir, Binary: optDir + "/zcode"} // the deb layout carries no version segment
 	if got := patClientVersion(bare)(); got != patDesktopVersionFallback {
 		t.Fatalf("patClientVersion(bare) = %q, want the documented %q fallback", got, patDesktopVersionFallback)
@@ -2900,6 +2903,7 @@ func TestDesktopVersionMounted(t *testing.T) {
 	})
 
 	t.Run("bare install keeps the documented fallback", func(t *testing.T) {
+		optDir := supervisor.DefaultOptDir()
 		bare := supervisor.Install{Root: optDir, Binary: optDir + "/zcode"}
 		if got := desktopVersion(bare); got != "" {
 			t.Fatalf("desktopVersion(bare) = %q, want no version", got)

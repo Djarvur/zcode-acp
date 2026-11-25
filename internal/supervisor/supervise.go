@@ -181,8 +181,8 @@ func (s *Supervisor) shutdown(child *Child, policy Policy) {
 
 	// Stage 3: the group SIGKILL backstop — best-effort, logged, never
 	// propagated (the shutdown contract).
-	if err := killGroup(child.PgID); err != nil {
-		s.log.Warn("supervisor: staged shutdown group kill", "pgid", child.PgID, "err", err)
+	if err := child.terminateTree(); err != nil {
+		s.log.Warn("supervisor: staged shutdown process-tree kill", "pid", child.PgID, "err", err)
 	}
 
 	select { // stage 4: the reap completes (never Wait twice — the monitor owns it)

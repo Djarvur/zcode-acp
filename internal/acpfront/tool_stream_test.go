@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,8 +31,10 @@ import (
 // the corpus file_path values are workspace-relative on purpose.
 
 // toolLifecycleCwd is the fixed absolute session cwd the tool tests open
-// sessions with; every diff/location assert resolves against it.
-const toolLifecycleCwd = "/tmp/tool-lifecycle-ws"
+// sessions with; every diff/location assert resolves against it. It is built
+// from the platform temp root because session/new rejects POSIX paths on
+// Windows.
+var toolLifecycleCwd = filepath.Join(os.TempDir(), "tool-lifecycle-ws") //nolint:gochecknoglobals // test fixture
 
 // TestToolLifecycle drives the tool-lifecycle corpus row through the
 // composed harness in two staged legs:
@@ -265,7 +269,7 @@ func assertWriteStartCard(t *testing.T, h *FrontHarness) {
 			start.Title, start.Kind, start.Status)
 	}
 
-	wantPath := toolLifecycleCwd + "/docs/new.md"
+	wantPath := filepath.Join(toolLifecycleCwd, "docs", "new.md")
 
 	if len(start.Content) != 1 || start.Content[0].Diff == nil {
 		t.Fatalf("leg 2 start carries no diff content")
@@ -625,7 +629,7 @@ func assertEditStartCard(t *testing.T, updates []ACPUpdate, sid string) {
 func assertEditStartDiff(t *testing.T, start *acp.SessionUpdateToolCall, updates []ACPUpdate) {
 	t.Helper()
 
-	wantPath := toolLifecycleCwd + "/src/main.go"
+	wantPath := filepath.Join(toolLifecycleCwd, "src", "main.go")
 
 	if len(start.Content) != 1 || start.Content[0].Diff == nil {
 		t.Fatalf("tool_call carries no diff content: %s", updateKinds(updates))

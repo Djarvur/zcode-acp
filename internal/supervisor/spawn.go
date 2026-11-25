@@ -21,7 +21,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -76,8 +75,17 @@ const (
 	waitDelayDefault = 5 * time.Second
 )
 
+// processTree is the platform-owned lifetime boundary for a backend and its
+// descendants: Unix uses a process group; Windows uses a Job Object.
+type processTree interface {
+	assign(proc *os.Process) error
+	resume() error
+	terminate() error
+	close()
+}
+
 // Child is one spawned app-server child process and the handles its
-// supervisor needs: the protocol pipes, the process-group id, and the exit
+// supervisor needs: the protocol pipes, the process-tree owner, and the exit
 // monitor's delivery.
 type Child struct {
 	// Cmd is the exec handle. Wait bookkeeping is owned by the monitor
@@ -90,9 +98,11 @@ type Child struct {
 	// Stdout is the protocol's read side — handed to the codec Conn, whose
 	// read loop is the stdout pump (SpawnChild never reads Stdout itself).
 	Stdout io.ReadCloser
-	// PgID is the child's process-group id. Setpgid makes the child its own
-	// group leader, so -PgID addresses the whole tree incl. grandchildren.
+	// PgID is the child's process-group id on Unix and its pid on Windows.
+	// The platform process tree, not this diagnostic number, owns termination.
 	PgID int
+	// tree owns the platform process-group/Job-Object lifetime boundary.
+	tree processTree
 	// Exited delivers exactly one ExitInfo when the monitor has reaped the
 	// child (buffered, so the monitor never blocks). Receive it only after
 	// Done closes — the delivery is a single send, Done is the multi-observer
@@ -159,7 +169,7 @@ func ChildEnv(inst Install, parentEnv []string) []string {
 	env := make([]string, 0, len(allowlistKeys())+contractEnvVarCount)
 
 	for _, key := range allowlistKeys() {
-		if v, ok := parent[key]; ok {
+		if v, ok := envValue(parent, key); ok {
 			env = append(env, key+"="+v)
 		}
 	}
@@ -172,9 +182,10 @@ func ChildEnv(inst Install, parentEnv []string) []string {
 
 	// The personal path pairs with the builtin one (resolveNodeProviderRuntimePaths
 	// throws unless both are present): the desktop passes the same pair
-	// (provider-runtime-env.ts:88-99). Derived from the child's own HOME —
+	// (provider-runtime-env.ts:88-99). Derived from the child's own home —
 	// the desktop's dataBaseDir default — never from the wrapper's cwd.
-	if home, ok := parent["HOME"]; ok && home != "" {
+	home := homeValue(parent)
+	if home != "" {
 		env = append(env, childPersonalVar+"="+filepath.Join(home, ".zcode", "v2", "provider_config.json"))
 	}
 
@@ -195,15 +206,33 @@ func SpawnChild(ctx context.Context, argv, env []string, opts SpawnOpts) (*Child
 
 	opts.applyDefaults()
 
-	cmd, pipes, err := newSpawnCommand(ctx, argv, env, opts)
+	tree, err := newProcessTree()
 	if err != nil {
+		return nil, err
+	}
+
+	cmd, pipes, err := newSpawnCommand(ctx, argv, env, opts, tree)
+	if err != nil {
+		tree.close()
+
 		return nil, err
 	}
 
 	if err := cmd.Start(); err != nil {
 		pipes.closeAll()
+		tree.close()
 
 		return nil, fmt.Errorf("zcode: spawn %s: %w", argv[0], err)
+	}
+	if err := tree.assign(cmd.Process); err != nil {
+		abortStartedChild(cmd, pipes, tree)
+
+		return nil, err
+	}
+	if err := tree.resume(); err != nil {
+		abortStartedChild(cmd, pipes, tree)
+
+		return nil, err
 	}
 
 	exited := make(chan ExitInfo, 1)
@@ -215,17 +244,31 @@ func SpawnChild(ctx context.Context, argv, env []string, opts SpawnOpts) (*Child
 		Stdin:      pipes.stdin,
 		Stdout:     pipes.stdout,
 		PgID:       cmd.Process.Pid,
+		tree:       tree,
 		Exited:     exited,
 		Done:       done,
 		StderrDone: stderrDone,
 	}
 
 	go drainChildStderr(pipes.stderr, opts.StderrCap, opts.StderrTap, stderrDone)
-	go monitorChild(cmd, stderrDone, exited, done)
+	go monitorChild(cmd, tree, stderrDone, exited, done)
 
 	slog.Debug("supervisor: child spawned", "pid", child.PgID, "binary", argv[0])
 
 	return child, nil
+}
+
+// abortStartedChild cleans up a process that Start created but the spawn path
+// could not fully initialize. No monitor owns Wait on this path, so cleanup
+// must reap exactly once before releasing the platform process-tree handle.
+func abortStartedChild(cmd *exec.Cmd, pipes spawnPipes, tree processTree) {
+	if termErr := tree.terminate(); termErr != nil {
+		slog.Warn("supervisor: abort process-tree terminate", "pid", cmd.Process.Pid, "err", termErr)
+	}
+	_ = cmd.Process.Kill()
+	pipes.closeAll()
+	_ = cmd.Wait()
+	tree.close()
 }
 
 // spawnPipes holds the three stdio pipe ends SpawnChild opens on the parent
@@ -249,14 +292,14 @@ func (p spawnPipes) closeAll() {
 
 // newSpawnCommand builds the exec.Cmd: env, the process-group start, the
 // three stdio pipes, the group-kill Cancel, and the WaitDelay backstop.
-func newSpawnCommand(ctx context.Context, argv, env []string, opts SpawnOpts) (*exec.Cmd, spawnPipes, error) {
+func newSpawnCommand(
+	ctx context.Context, argv, env []string, opts SpawnOpts, tree processTree,
+) (*exec.Cmd, spawnPipes, error) {
 	//nolint:gosec // argv is the supervisor's own spawn contract (the canonical
 	// app-server line or the mount helper), never shell-interpreted user input
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = env
-	// The process-group start: the child leads its own group so the staged
-	// shutdown can SIGKILL the whole tree (T-3-09, PITFALL 6).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureCommand(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -290,8 +333,11 @@ func newSpawnCommand(ctx context.Context, argv, env []string, opts SpawnOpts) (*
 		if cmd.Process == nil {
 			return nil
 		}
+		if err := tree.assign(cmd.Process); err != nil {
+			return err
+		}
 
-		return killGroup(cmd.Process.Pid)
+		return tree.terminate()
 	}
 	cmd.WaitDelay = opts.WaitDelay
 
@@ -302,7 +348,10 @@ func newSpawnCommand(ctx context.Context, argv, env []string, opts SpawnOpts) (*
 // finish (PITFALL 3 — never Wait before the pumps finish), then Wait, then
 // delivers ExitInfo on the buffered channel and closes Done (the multi-
 // observer reap signal — close, unlike the delivery, is never consumed).
-func monitorChild(cmd *exec.Cmd, stderrDone <-chan struct{}, exited chan<- ExitInfo, done chan struct{}) {
+func monitorChild(
+	cmd *exec.Cmd, tree processTree, stderrDone <-chan struct{}, exited chan<- ExitInfo, done chan struct{},
+) {
+	defer tree.close()
 	<-stderrDone
 
 	err := cmd.Wait()
@@ -350,19 +399,14 @@ func drainChildStderr(rc io.Reader, capBytes int, tap io.Writer, done chan<- str
 	}
 }
 
-// killGroup SIGKILLs the whole process group; an already-gone group
-// (ESRCH) is success.
-func killGroup(pgid int) error {
-	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("zcode: group kill %d: %w", pgid, err)
+// terminateTree is the staged shutdown's unconditional process-tree kill.
+// The platform owner tolerates an already-gone tree.
+func (c *Child) terminateTree() error {
+	if c == nil || c.tree == nil {
+		return nil
 	}
 
-	return nil
-}
-
-// allowlistKeys is the parent env allowlist (copy-only vars).
-func allowlistKeys() []string {
-	return []string{allowlistPathVar, allowlistHomeVar}
+	return c.tree.terminate()
 }
 
 // applyDefaults resolves SpawnOpts zero values to production defaults.

@@ -1,2 +1,4 @@
 github.com/coder/acp-go-sdk v0.20.0 h1:nrDOWYLy7a32ZNi6OYqw1oDhr5j34pfKPXmGoxYlvBc=
 github.com/coder/acp-go-sdk v0.20.0/go.mod h1:yKzM/3R9uELp4+nBAwwtkS0aN1FOFjo11CNPy37yFko=
+golang.org/x/sys v0.50.0 h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=
+golang.org/x/sys v0.50.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
