@@ -712,24 +712,29 @@ func assertConfigOptionsMatch(t *testing.T, got []acp.SessionConfigOption, want 
 }
 
 const (
-	reasoningSnapshotProvider       = "zai-api"
-	reasoningSnapshotSource         = "DeepSeek"
-	reasoningSnapshotTargetProvider = "OpenCodeGo"
-	reasoningSnapshotTargetModel    = "hungerg-free"
-	reasoningSnapshotTarget         = reasoningSnapshotTargetProvider + "/" + reasoningSnapshotTargetModel
-	reasoningLevelMax               = "max"
-	reasoningLevelOff               = "off"
-	reasoningLabelMax               = "Max"
-	reasoningLabelHigh              = "High"
-	reasoningLabelLow               = "Low"
-	reasoningLabelOff               = "Off"
-	reasoningSnapshotLabelKey       = "label"
-	reasoningSnapshotCurrentKey     = "current"
-	reasoningSnapshotLastUsedKey    = "lastUsed"
-	reasoningBindingCurrent         = "current"
-	reasoningBindingLastUsed        = "lastUsed"
-	orcaThoughtEnabled              = "enabled"
-	orcaThoughtDisabled             = "disabled"
+	reasoningSnapshotProvider        = "zai-api"
+	reasoningSnapshotSource          = "DeepSeek"
+	reasoningSnapshotTargetProvider  = "OpenCodeGo"
+	reasoningSnapshotTargetModel     = "hungerg-free"
+	reasoningSnapshotTarget          = reasoningSnapshotTargetProvider + "/" + reasoningSnapshotTargetModel
+	reasoningLevelMax                = "max"
+	reasoningLevelOff                = "off"
+	reasoningLabelMax                = "Max"
+	reasoningLabelHigh               = "High"
+	reasoningLabelLow                = "Low"
+	reasoningLabelOff                = "Off"
+	reasoningSnapshotLabelKey        = "label"
+	reasoningSnapshotValueKey        = "value"
+	reasoningSnapshotProviderIDKey   = "providerId"
+	reasoningSnapshotModelIDKey      = "modelId"
+	reasoningSnapshotAvailableKey    = "available"
+	reasoningSnapshotDefaultLevelKey = "defaultLevel"
+	reasoningSnapshotCurrentKey      = "current"
+	reasoningSnapshotLastUsedKey     = "lastUsed"
+	reasoningBindingCurrent          = "current"
+	reasoningBindingLastUsed         = "lastUsed"
+	orcaThoughtEnabled               = "enabled"
+	orcaThoughtDisabled              = "disabled"
 )
 
 // cfgReasoningEntry builds one catalog entry without duplicating wire JSON.
@@ -746,7 +751,10 @@ func cfgReasoningEntry(ref acpfront.ModelRef, levels ...string) acpfront.ModelEn
 }
 
 func cfgReasoningRefWire(ref acpfront.ModelRef) map[string]any {
-	return map[string]any{"providerId": ref.ProviderID, "modelId": ref.ModelID}
+	return map[string]any{
+		reasoningSnapshotProviderIDKey: ref.ProviderID,
+		reasoningSnapshotModelIDKey:    ref.ModelID,
+	}
 }
 
 func cfgReasoningCatalogWire(available []acpfront.ModelEntry) []any {
@@ -759,12 +767,14 @@ func cfgReasoningCatalogWire(available []acpfront.ModelEntry) []any {
 			levels := make([]any, 0, len(entry.ReasoningLevels))
 			for _, level := range entry.ReasoningLevels {
 				levels = append(levels, map[string]any{
-					"value": level.Value, reasoningSnapshotLabelKey: level.Label, "description": level.Description,
+					reasoningSnapshotValueKey: level.Value,
+					reasoningSnapshotLabelKey: level.Label,
+					"description":             level.Description,
 				})
 			}
 
 			wireEntry["reasoning"] = map[string]any{
-				"levels": levels, "defaultLevel": entry.DefaultLevel,
+				"levels": levels, reasoningSnapshotDefaultLevelKey: entry.DefaultLevel,
 			}
 		}
 
@@ -778,7 +788,9 @@ func cfgReasoningFallbackWire(globalLevels []acpfront.LevelEntry) []any {
 	fallback := make([]any, 0, len(globalLevels))
 	for _, level := range globalLevels {
 		fallback = append(fallback, map[string]any{
-			"value": level.Value, reasoningSnapshotLabelKey: level.Label, "description": level.Description,
+			reasoningSnapshotValueKey: level.Value,
+			reasoningSnapshotLabelKey: level.Label,
+			"description":             level.Description,
 		})
 	}
 
@@ -798,7 +810,7 @@ func cfgReasoningCreateResult(
 ) string {
 	t.Helper()
 
-	model := map[string]any{"available": cfgReasoningCatalogWire(available)}
+	model := map[string]any{reasoningSnapshotAvailableKey: cfgReasoningCatalogWire(available)}
 	if current != nil {
 		model[reasoningSnapshotCurrentKey] = cfgReasoningRefWire(*current)
 	}

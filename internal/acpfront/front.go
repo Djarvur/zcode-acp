@@ -691,25 +691,9 @@ func (f *Front) SetSessionConfigOption(
 			"session/set_config_option: %s: the confirmed settings snapshot does not decode", sessionID)
 	}
 
-	normalized, handled, err := normalizeThoughtAlias(s, configID, value)
+	normalized, err := validateConfigOptionSelection(s, configID, value)
 	if err != nil {
 		return nil, err
-	}
-
-	if !handled {
-		options := BuildConfigOptions(s)
-
-		def := configOptionByID(options, configID)
-		if def == nil {
-			return nil, acpport.NewInvalidParams(
-				"session/set_config_option: unknown configId %q (allowed: %s)", configID, allowedOptionIDs(options))
-		}
-
-		if !configOptionListed(def, value) {
-			return nil, acpport.NewInvalidParams(
-				"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
-				configID, value, listedOptionValues(def))
-		}
 	}
 
 	params, err := setConfigMutation(sessionID, s, configID, normalized)
@@ -758,6 +742,32 @@ func (f *Front) SetSessionConfigOption(
 	}
 
 	return BuildConfigOptions(cs), nil
+}
+
+// validateConfigOptionSelection normalizes Orca's closed thought aliases
+// before rendered-option lookup; every other value keeps the advertised select
+// membership check. The helper keeps the session mutation flow linear without
+// weakening either validation boundary.
+func validateConfigOptionSelection(s Settings, configID, value string) (string, error) {
+	normalized, handled, err := normalizeThoughtAlias(s, configID, value)
+	if err != nil || handled {
+		return normalized, err
+	}
+
+	options := BuildConfigOptions(s)
+	def := configOptionByID(options, configID)
+	if def == nil {
+		return "", acpport.NewInvalidParams(
+			"session/set_config_option: unknown configId %q (allowed: %s)", configID, allowedOptionIDs(options))
+	}
+
+	if !configOptionListed(def, value) {
+		return "", acpport.NewInvalidParams(
+			"session/set_config_option: configId %q: value %q is not one of the listed values (%s)",
+			configID, value, listedOptionValues(def))
+	}
+
+	return value, nil
 }
 
 // DeleteSession answers the dialect's session/delete (SESS-02, plan 07-03,
@@ -895,19 +905,8 @@ func (f *Front) promptModelSlash(
 			"session/prompt /model: %s: the confirmed settings snapshot does not decode", params.SessionID)
 	}
 
-	def := configOptionByID(BuildConfigOptions(s), optionIDModel)
-	if def == nil {
-		// The snapshot binds no model (D-10: an unbound session renders no
-		// model option) — the pinned no-model sentence rides the detail
-		// carriage.
-		return "", true, acpport.NewInternalWithData(noModelSelectedDetail)
-	}
-
-	if !configOptionListed(def, selector) {
-		// The validate-first refusal: never a backend call — the pinned
-		// unknown-selector detail rides the detail carriage (the Hb
-		// matchers read ONLY -32603 + data.details, Pitfall 1).
-		return "", true, acpport.NewInternalWithData(unknownACPModelFormat, selector)
+	if err := validateModelSlashSelector(s, selector); err != nil {
+		return "", true, err
 	}
 
 	mutation, err := setConfigMutation(params.SessionID, s, optionIDModel, selector)
@@ -949,6 +948,27 @@ func (f *Front) promptModelSlash(
 	}
 
 	return acpport.StopEndTurn, true, nil
+}
+
+// validateModelSlashSelector keeps the slash command's validate-first contract
+// while separating picker rendering from the session mutation flow.
+func validateModelSlashSelector(s Settings, selector string) error {
+	def := configOptionByID(BuildConfigOptions(s), optionIDModel)
+	if def == nil {
+		// The snapshot binds no model (D-10: an unbound session renders no
+		// model option) — the pinned no-model sentence rides the detail
+		// carriage.
+		return acpport.NewInternalWithData(noModelSelectedDetail)
+	}
+
+	if !configOptionListed(def, selector) {
+		// The validate-first refusal: never a backend call — the pinned
+		// unknown-selector detail rides the detail carriage (the Hb
+		// matchers read ONLY -32603 + data.details, Pitfall 1).
+		return acpport.NewInternalWithData(unknownACPModelFormat, selector)
+	}
+
+	return nil
 }
 
 // isRecoverableSetModelError recognizes only model-selection validation
