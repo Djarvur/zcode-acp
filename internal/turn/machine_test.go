@@ -57,6 +57,11 @@ const (
 	wireKeyTimestamp      = "timestamp"
 	wireKeyMessages       = "messages"
 	wireKeyType           = "type"
+	wireKeySeq            = "seq"
+	wireKeyPayload        = "payload"
+	wireKeyDelta          = "delta"
+	wireKeyStatus         = "status"
+	wireKeyEventSeq       = "eventSeq"
 
 	// unknownMethodReply is the fake's unknown-method -32601 reply message
 	// (goconst: the literal repeats across the programmatic scenarios).
@@ -162,7 +167,7 @@ func sessionEvent(t *testing.T, kind, turnID string) fake.SideEffect {
 
 	return emit(t, zcode.MethodSessionEvent, map[string]any{
 		wireKeyType:    kind,
-		"seq":          4,
+		wireKeySeq:     4,
 		wireKeyTurnID:  turnID,
 		"traceId":      "trace_fix1",
 		"deliveryKind": deliveryKind,
@@ -177,7 +182,7 @@ func v4Telemetry(t *testing.T, kind, turnID string) fake.SideEffect {
 	return emit(t, turn.MethodV4Telemetry, map[string]any{
 		wireKeyKind:      kind,
 		wireKeyTurnID:    turnID,
-		"eventSeq":       2,
+		wireKeyEventSeq:  2,
 		wireKeySessionID: fixSessionID,
 		"version":        1,
 	})
@@ -327,8 +332,18 @@ type turnExchange struct {
 
 // startTurnExchange wires the fake, the conn, a machine bound to the fixed
 // session with injectable millisecond quiet knobs, and the resolution spy.
-// Cleanup joins both ends.
+// Cleanup joins both ends. The quiet knobs are the variant suite's 40/2/10.
 func startTurnExchange(t *testing.T, sc *fake.Scenario) *turnExchange {
+	t.Helper()
+
+	return startTurnExchangeKnobs(t, sc, 40, 2, 10)
+}
+
+// startTurnExchangeKnobs wires the exchange with explicit quiet-window
+// knobs (quiet milliseconds, floor multiple, poll interval): the watchdog
+// tests use a wide quiet window so the quiet fallback cannot win a race the
+// stall budget is supposed to decide.
+func startTurnExchangeKnobs(t *testing.T, sc *fake.Scenario, quietMs, floorMultiple, pollMs int) *turnExchange {
 	t.Helper()
 
 	hostEnd, fakeEnd := roundTripPipes()
@@ -340,9 +355,9 @@ func startTurnExchange(t *testing.T, sc *fake.Scenario) *turnExchange {
 	t.Cleanup(func() { _ = conn.Close() })
 
 	m := turn.NewMachine(conn, fixSessionID, turn.NewPollWatcher(conn, turn.PollConfig{
-		QuietMs:        40,
-		FloorMultiple:  2,
-		PollIntervalMs: 10,
+		QuietMs:        quietMs,
+		FloorMultiple:  floorMultiple,
+		PollIntervalMs: pollMs,
 	}))
 
 	spy := &resolutionSpy{}

@@ -168,6 +168,13 @@ type Front struct {
 	// want list. Nil until wired — authenticate answers the honest no-key
 	// coded error.
 	auth *AuthConfig
+
+	// turnStallTimeout/turnStallToolTimeout are the no-progress watchdog
+	// budgets every prompt machine the front registers inherits
+	// (WithTurnStallTimeout; zero keeps the turn package's production
+	// defaults of 15 min base / 30 min while a tool is active).
+	turnStallTimeout     time.Duration
+	turnStallToolTimeout time.Duration
 }
 
 // ModelSelection is the configured backend model the session/new leg binds
@@ -236,6 +243,19 @@ func WithCancelGrace(d time.Duration) Option {
 // production wiring never sets it.
 func WithCloseTurnWait(d time.Duration) Option {
 	return func(f *Front) { f.closeWaitOverride = d }
+}
+
+// WithTurnStallTimeout sets the no-progress watchdog budgets every prompt
+// machine the front registers inherits (the quick task's test seam; zero
+// keeps the turn package's production defaults). base bounds a silent
+// RUNNING turn; activeTool bounds it while a tool is active. A zero
+// activeTool with a positive base scales to 2x base (the turn package's
+// documented test-ergonomics rule).
+func WithTurnStallTimeout(base, activeTool time.Duration) Option {
+	return func(f *Front) {
+		f.turnStallTimeout = base
+		f.turnStallToolTimeout = activeTool
+	}
 }
 
 // New returns a Front owning conn and registers the delta tap on the
@@ -384,8 +404,10 @@ func (f *Front) NewSession(
 
 	// The machine registers on the conn's fan-out AFTER the tap (constructed
 	// earlier, front.go New) — the flush-before-stopReason registration
-	// order. Phase-3 watcher defaults; corpus-grade terminal/cancel signals
-	// resolve turns well inside the quiet-window gates.
+	// order. The shared constructor carries the front's turn config (the
+	// cancel grace and the stall/orphan seam) into every prompt machine;
+	// phase-3 watcher defaults keep corpus-grade terminal/cancel signals
+	// resolving well inside the quiet-window gates.
 	machine := f.newSessionMachine(sid)
 	f.registry.Register(core.Session{ID: sid, Machine: machine})
 
@@ -494,16 +516,7 @@ func (f *Front) Prompt(
 	}
 
 	if runErr != nil {
-		// The concurrency guard (CORE-05): the machine's ErrTurnActive — its
-		// backend-refusal leg being the numeric -32010 mapping — is the same
-		// rejection the front-wide slot answers, so both surfaces share the
-		// one NewSessionBusy constructor and message (never the wrapped
-		// transport noise, which carries the server's wire error verbatim).
-		if errors.Is(runErr, turn.ErrTurnActive) {
-			return "", acpport.NewSessionBusy(turnActiveMessage)
-		}
-
-		return "", acpport.NewInternal("session/prompt: %v", runErr)
+		return "", promptRunError(runErr)
 	}
 
 	switch reason {
@@ -536,11 +549,31 @@ func (f *Front) Prompt(
 		return acpport.StopCancelled, nil
 	case turn.StopFailed, turn.StopError:
 		// A5: ACP v1 has no failure stopReason — a backend failure surfaces
-		// as the coded internal error, never a synthetic result.
+		// as the coded internal error, never a synthetic result. A stall
+		// resolution records its cause on Resolution.Err (the no-progress
+		// watchdog): surface that cause verbatim so the client sees a coded
+		// -32603 naming the stall instead of a silent end_turn.
+		if res := st.Machine.Resolution(); res.Err != nil {
+			return "", acpport.NewInternal("session/prompt: %v", res.Err)
+		}
+
 		return "", acpport.NewInternal("session/prompt: turn ended: %s", reason)
 	default:
 		return "", acpport.NewInternal("session/prompt: turn ended: %s", reason)
 	}
+}
+
+// promptRunError maps a machine Run error onto the client surface: the
+// concurrency guard (CORE-05) — the wrapper-side slot rejection and the
+// machine's numeric -32010 backend-refusal leg alike — answers the ONE
+// shared -32003 session-busy class; every other failure is the coded -32603
+// internal error (never the wrapped transport noise verbatim).
+func promptRunError(runErr error) error {
+	if errors.Is(runErr, turn.ErrTurnActive) {
+		return acpport.NewSessionBusy(turnActiveMessage)
+	}
+
+	return acpport.NewInternal("session/prompt: %v", runErr)
 }
 
 // modelSlashSelector detects the omp dialect's /model command form in one
@@ -840,17 +873,27 @@ func (f *Front) CommandCatalog(ctx context.Context, sessionID string) []acpport.
 	return items
 }
 
-// newSessionMachine builds the turn machine every front-registered session
-// runs on — session/new and session/resume alike. One constructor keeps the
-// per-machine configuration (today: the cancel grace that bounds a cancelled
-// turn's answer) from diverging between the two lifecycle paths.
+// newSessionMachine is the ONE prompt-machine constructor the front uses:
+// NewSession and resumeSessionLocked both build their machines through it,
+// so every per-machine production setting (the cancel grace that bounds a
+// cancelled turn's answer, the no-progress watchdog seam, and the front-slot
+// orphan-recovery flag once enabled) reaches a resumed session exactly as a
+// fresh one — a per-call-site assignment is how the resumed path would
+// silently regress.
 func (f *Front) newSessionMachine(sessionID string) *turn.Machine {
 	opts := []turn.MachineOption(nil)
 	if f.cancelGrace > 0 {
 		opts = append(opts, turn.WithCancelGrace(f.cancelGrace))
 	}
 
-	return turn.NewMachine(f.conn, sessionID, turn.NewPollWatcher(f.conn, turn.PollConfig{}), opts...)
+	machine := turn.NewMachine(f.conn, sessionID, turn.NewPollWatcher(f.conn, turn.PollConfig{}), opts...)
+
+	// The turn fields are assigned before any Run (the MaxQuietVetoes
+	// contract): zero keeps the turn package's production defaults.
+	machine.StallTimeout = f.turnStallTimeout
+	machine.StallToolTimeout = f.turnStallToolTimeout
+
+	return machine
 }
 
 // slashTurnBusy reports whether the named session's own turn holds the

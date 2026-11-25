@@ -147,9 +147,12 @@ func (f *Front) resumeSessionLocked(ctx context.Context, sessionID, cwd string) 
 	}
 
 	// The machine registers on the conn's fan-out AFTER the tap — the same
-	// flush-before-stopReason registration order NewSession relies on. The
-	// construction stays OUTSIDE the close gate (its observer registrations
-	// are conn-mutex work; only the close-gate section below is atomic).
+	// flush-before-stopReason registration order NewSession relies on, built
+	// through the ONE shared constructor so the front's turn config (the
+	// cancel grace and the stall/orphan seam) reaches a resumed session
+	// exactly as a new one's. The construction stays OUTSIDE the close gate
+	// (its observer registrations are conn-mutex work; only the close-gate
+	// section below is atomic).
 	machine := f.newSessionMachine(sid)
 
 	// WR-05 (plan 07-01): the mandatory WR-03 re-check, the reattach

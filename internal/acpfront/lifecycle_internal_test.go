@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -116,8 +117,11 @@ func (p *pipeEnd) Close() error { return errors.Join(p.r.Close(), p.w.Close()) }
 // iteration end — 2000+ fresh legs per test must not stack up until the
 // test's cleanup phase. The closer returns the fake's recorded transcript
 // (serve fully drained — the wire-order assertion surface for the flows
-// that need it).
-func newInterleaveFront(t *testing.T, sc *fake.Scenario) (front *Front, closeLegs func() fake.Transcript) {
+// that need it). Options configure the Front at construction (the stall /
+// orphan seam arms); existing call sites stay source-compatible.
+func newInterleaveFront(
+	t *testing.T, sc *fake.Scenario, opts ...Option,
+) (front *Front, closeLegs func() fake.Transcript) {
 	t.Helper()
 
 	toFakeR, toFakeW := io.Pipe()
@@ -134,7 +138,7 @@ func newInterleaveFront(t *testing.T, sc *fake.Scenario) (front *Front, closeLeg
 	}()
 
 	conn := zcode.NewConn(hostEnd)
-	front = New(conn)
+	front = New(conn, opts...)
 
 	var once sync.Once
 
@@ -318,4 +322,136 @@ func TestRegisterIfOpen(t *testing.T) {
 	if _, getErr := f2.registry.Get(interleaveSID); getErr != nil {
 		t.Fatalf("the successful control resume must leave the session registered, got: %v", getErr)
 	}
+}
+
+// resumedStallWindow bounds the resumed-session stall exchange. RED (without
+// the seam) needed room for the production quiet floor (7.5 s) plus the
+// reconcile; GREEN bounds the exchange at 2 s — the 60 ms watchdog must fire
+// far inside it, and the 5 s production default would break the bound.
+const resumedStallWindow = 2 * time.Second
+
+// The resumed arm's watchdog budgets (the same seam the session/new arm
+// composes).
+const (
+	resumedStallBudget     = 60 * time.Millisecond
+	resumedStallToolBudget = 120 * time.Millisecond
+)
+
+// resumedStallScenario scripts a resumed session's two-turn stall exchange:
+// resume + subscribe, a first send answered only by its ack (the silent
+// backend turn), a stop, and a second send whose running patch + terminal
+// complete normally; the messages projection carries the stored reply so
+// the completion reconcile returns promptly.
+func resumedStallScenario() *fake.Scenario {
+	return &fake.Scenario{
+		Name: "resume-stall-seam",
+		OnRequest: []fake.RequestRule{
+			{Method: zcode.MethodSessionResume, Reply: &fake.Reply{Result: json.RawMessage(
+				`{"session":{"sessionId":"` + interleaveSID + `"}}`)}},
+			{Method: zcode.MethodSessionSubscribe, Reply: &fake.Reply{Result: json.RawMessage(
+				`{"sessionId":"` + interleaveSID + `","eventSeq":0,"events":[]}`)}},
+			{
+				Method: zcode.MethodSessionSend,
+				Times:  1,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"accepted":true,"sessionId":"` +
+					interleaveSID + `","stateRevision":1}`)},
+			},
+			{Method: zcode.MethodSessionStop, Reply: &fake.Reply{Result: json.RawMessage(`{}`)}},
+			{
+				Method: zcode.MethodSessionSend,
+				Reply: &fake.Reply{Result: json.RawMessage(`{"accepted":true,"sessionId":"` +
+					interleaveSID + `","stateRevision":2}`)},
+				SideEffects: []fake.SideEffect{
+					{Emit: &fake.Emit{Method: zcode.MethodStateUpdated, Params: json.RawMessage(
+						`{"patch":{"status":"running"},"reason":"prompt_started","revision":1,` +
+							`"scope":"session","sessionId":"` + interleaveSID + `","type":"state.updated"}`)}},
+					{Emit: &fake.Emit{Method: zcode.MethodSessionEvent, Params: json.RawMessage(
+						`{"type":"turn.completed","seq":9,"turnId":"turn_resume_stall",` +
+							`"deliveryKind":"desktop-continuous"}`)}},
+				},
+			},
+			{Method: zcode.MethodSessionMessages, Reply: &fake.Reply{Result: json.RawMessage(
+				`{"messages":[{"info":{"role":"assistant"},"parts":[{"type":"text","text":"ok"}]}],` +
+					`"sessionId":"` + interleaveSID + `"}`)}},
+		},
+		UnknownMethod: &fake.Reply{Error: &zcode.WireError{
+			Code:    zcode.CodeMethodNotFound,
+			Message: failureMethodNotFound,
+		}},
+		EOFDrainMs: 1,
+	}
+}
+
+// TestResumedSessionStallSeam proves the stall seam reaches a
+// session/resume machine, not only session/new's: the first resumed prompt
+// surfaces the coded -32603 naming the stall with exactly one session/stop,
+// and a second prompt completes normally (the slot released, the watchdog
+// joined).
+func TestResumedSessionStallSeam(t *testing.T) {
+	f, closeLegs := newInterleaveFront(t, resumedStallScenario(),
+		WithTurnStallTimeout(resumedStallBudget, resumedStallToolBudget))
+
+	ctx, cancel := context.WithTimeout(context.Background(), resumedStallWindow)
+	defer cancel()
+
+	cwd := t.TempDir()
+
+	sid, err := f.ResumeSession(ctx, interleaveSID, cwd)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	_, err = f.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "stall"}, pickerNoopSink())
+	if err == nil {
+		t.Fatal("a stalled resumed turn must surface a coded error, got a success answer")
+	}
+
+	var seamErr *acpport.Error
+	if !errors.As(err, &seamErr) || seamErr.Code != acpport.CodeInternal {
+		t.Fatalf("stalled resumed prompt error = %v, want a coded %d internal error", err, acpport.CodeInternal)
+	}
+
+	if !strings.Contains(seamErr.Message, "turn stalled") {
+		t.Fatalf("stalled resumed prompt message = %q, want it to name the stall", seamErr.Message)
+	}
+
+	resp, err := f.Prompt(ctx, acpport.PromptParams{SessionID: sid, Text: "after stall"}, pickerNoopSink())
+	if err != nil {
+		t.Fatalf("second resumed prompt: %v", err)
+	}
+
+	if resp != acpport.StopEndTurn {
+		t.Fatalf("second resumed prompt stop = %q, want %q", resp, acpport.StopEndTurn)
+	}
+
+	tr := closeLegs()
+
+	if sends := resumedTranscriptMethodCount(tr, zcode.MethodSessionSend); sends != 2 {
+		t.Fatalf("session/send frames on the wire = %d, want exactly 2", sends)
+	}
+
+	if stops := resumedTranscriptMethodCount(tr, zcode.MethodSessionStop); stops != 1 {
+		t.Fatalf("session/stop frames on the wire = %d, want exactly 1 (the watchdog stop)", stops)
+	}
+}
+
+// resumedTranscriptMethodCount counts one method's host→fake frames in a
+// drained transcript.
+func resumedTranscriptMethodCount(tr fake.Transcript, method string) int {
+	count := 0
+
+	for _, line := range tr.Lines {
+		if line.Dir != fake.DirIn {
+			continue
+		}
+
+		var env struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal([]byte(line.JSON), &env) == nil && env.Method == method {
+			count++
+		}
+	}
+
+	return count
 }

@@ -28,6 +28,7 @@
 package turn
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -91,6 +92,27 @@ const (
 	// degraded state — never completed/failed (the BRIDGE-04 prohibition:
 	// no resolution without a supporting completion signal).
 	SignalDegraded SignalKind = "degraded"
+
+	// SignalStall — the no-progress watchdog resolved the turn: a RUNNING
+	// turn made no real model/tool progress past the configured threshold,
+	// the bypass-lane session/stop was sent first, and the turn resolved
+	// StopError carrying the recorded stall cause. A cancelling turn is
+	// outside the watchdog's scope.
+	SignalStall SignalKind = "stall"
+)
+
+// Watchdog budget defaults (the 2026-11-25 field incident: a 429 retry
+// backoff kept one turn silent ~50 minutes and the wrapper had no progress
+// bound). Base is the no-model-progress allowance; the larger tool allowance
+// applies while a tool is active.
+const (
+	DefaultStallTimeout     = 15 * time.Minute
+	DefaultStallToolTimeout = 30 * time.Minute
+
+	// stallToolBudgetMultiple scales the tool allowance to an explicit base
+	// override when no explicit tool override is configured (test
+	// ergonomics: the tool budget stays a deterministic multiple of base).
+	stallToolBudgetMultiple = 2
 )
 
 // Resolution is the exactly-once completion record: the StopReason, the
@@ -224,6 +246,17 @@ type Machine struct {
 	// finishTurn clears it between turns.
 	cancelTimer *time.Timer
 
+	// StallTimeout bounds a RUNNING turn's total no-progress silence
+	// (DefaultStallTimeout when zero). Assign before any turn runs. The
+	// watchdog fires only while the turn is running — a cancelling turn
+	// keeps the existing quiet/cancel contract.
+	StallTimeout time.Duration
+
+	// StallToolTimeout is the larger allowance applied while a tool is
+	// active (DefaultStallToolTimeout when zero). An explicit StallTimeout
+	// with no StallToolTimeout scales the tool allowance to 2x base.
+	StallToolTimeout time.Duration
+
 	mu          sync.Mutex
 	state       machineState
 	turnID      string
@@ -242,12 +275,24 @@ type Machine struct {
 	runningRevision     int64
 	runningRevisionSeen bool
 	runningReason       string
-	startProven         bool
-	quietVetoes         int
-	resolved            bool
-	resolution          Resolution
-	resolvedCh          chan struct{}
-	ackAt               time.Time
+
+	// The no-progress watchdog state (per turn): lastProgress is the last
+	// real model/tool progress instant, toolActive the tool-allowance
+	// selector, stallWake the capacity-1 poke channel, and the messages
+	// pair the poll-surface content baseline (a stable echo is not
+	// progress).
+	lastProgress    time.Time
+	toolActive      bool
+	stallWake       chan struct{}
+	messagesSeen    bool
+	lastMessagesRaw json.RawMessage
+
+	startProven bool
+	quietVetoes int
+	resolved    bool
+	resolution  Resolution
+	resolvedCh  chan struct{}
+	ackAt       time.Time
 
 	// removeNotificationObserver / removeRouterObserver deregister the
 	// machine from the conn's two ordered fan-outs (WR-07: exposed for
@@ -361,6 +406,7 @@ func (m *Machine) Run(ctx context.Context, content string) (StopReason, error) {
 
 	m.mu.Lock()
 	m.ackAt = time.Now()
+	m.lastProgress = m.ackAt
 	m.mu.Unlock()
 
 	stop, err := m.watcher.Watch(ctx, m.sessID, m.onWatcherObservation)
@@ -371,6 +417,8 @@ func (m *Machine) Run(ctx context.Context, content string) (StopReason, error) {
 	}
 
 	defer stop()
+
+	defer m.startStallWatchdog(ctx)()
 
 	reason, waitErr := m.Wait(ctx)
 	m.finishTurn()
@@ -460,6 +508,16 @@ func (m *Machine) AckAt() time.Time {
 	return m.ackAt
 }
 
+// Resolution returns the current turn's exactly-once completion record (the
+// zero Resolution before the first turn resolves). The front reads it to
+// surface a recorded stall cause as the coded client error.
+func (m *Machine) Resolution() Resolution {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.resolution
+}
+
 // ObserveEnvelope is the ONE classification path for every inbound envelope
 // (the T-3-06 mitigation): the ordered D-02 signal union — terminal kinds
 // with turnId match across the known carriers first, then the idle patch
@@ -492,6 +550,10 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	if env.Method != zcode.MethodSessionMessages {
 		m.quietVetoes = 0
 	}
+
+	// The no-progress watchdog's clock: real model/tool progress resets it,
+	// telemetry and stable poll echoes do not (the narrow scope list).
+	m.noteProgressLocked(env)
 
 	reason, terminal := m.classifyTerminalLocked(env)
 	if terminal {
@@ -530,6 +592,27 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 	}
 }
 
+// startStallWatchdog starts the no-progress watchdog goroutine on a derived
+// context and returns the join function: cancelling the derived context
+// unblocks the loop and the join waits until it exits, so Run never returns
+// with the goroutine still running (the single-stop-after-resolution
+// guarantee).
+func (m *Machine) startStallWatchdog(ctx context.Context) func() {
+	stallCtx, stallCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		m.stallLoop(stallCtx)
+	}()
+
+	return func() {
+		stallCancel()
+		<-done
+	}
+}
+
 // guardTurnLocked rejects a concurrent second send (D-02: the -32010
 // concurrency guard is enforced wrapper-side, never silently queued).
 func (m *Machine) guardTurnLocked() error {
@@ -556,6 +639,11 @@ func (m *Machine) beginTurnLocked() {
 	m.runningRevision = 0
 	m.runningRevisionSeen = false
 	m.runningReason = ""
+	m.lastProgress = time.Time{}
+	m.toolActive = false
+	m.stallWake = make(chan struct{}, 1)
+	m.messagesSeen = false
+	m.lastMessagesRaw = nil
 	m.startProven = false
 	m.quietVetoes = 0
 	m.resolved = false
@@ -638,6 +726,318 @@ func (m *Machine) maxQuietVetoes() int {
 	}
 
 	return DefaultMaxQuietVetoes
+}
+
+// noteProgressLocked feeds one observed envelope into the no-progress clock.
+// The scope is deliberately narrow (the 2026-11-25 field incident: retry
+// telemetry and stable poll echoes kept the quiet watcher alive forever):
+//
+//   - session/event part.delta with field text/reasoning;
+//   - session/event model.streaming payload.kind text_delta/reasoning_delta;
+//   - session/event tool.updated scheduled/started/progress (tool active)
+//     and result/error (tool inactive);
+//   - turn-start/terminal kinds on any carrier;
+//   - a session/messages payload whose messages array is non-empty on first
+//     sight or whose raw bytes changed since the previous poll.
+//
+// Everything else — model-request/retry telemetry, session.updated
+// lifecycle payloads, byte-stable poll echoes — is a lifecycle fact, not
+// model progress. Progress scopes to the machine's session when the
+// envelope carries a sessionId.
+func (m *Machine) noteProgressLocked(env zcode.Envelope) {
+	if sid := paramsString(env.Params, "sessionId"); sid != "" && sid != m.sessID {
+		return
+	}
+
+	progress := false
+
+	switch env.Method {
+	case zcode.MethodSessionEvent:
+		progress = m.sessionEventProgressLocked(env)
+	case MethodV4Telemetry, MethodComputerUseOperation:
+		field, _ := carrierKindField(env.Method)
+		progress = isTurnSignalKind(paramsString(env.Params, field))
+	case zcode.MethodSessionMessages:
+		progress = m.messagesProgressLocked(env)
+	}
+
+	if !progress {
+		return
+	}
+
+	m.lastProgress = time.Now()
+	m.pokeStallLocked()
+}
+
+// sessionEventProgressLocked classifies one session/event envelope against
+// the progress scope list.
+func (m *Machine) sessionEventProgressLocked(env zcode.Envelope) bool {
+	kind := paramsString(env.Params, "type")
+
+	if isTurnSignalKind(kind) {
+		return true
+	}
+
+	switch kind {
+	case "part.delta":
+		field := paramsString(env.Params, "field")
+
+		return field == "text" || field == "reasoning"
+	case "model.streaming":
+		payloadKind := nestedPayloadKind(env.Params)
+
+		return payloadKind == "text_delta" || payloadKind == "reasoning_delta"
+	case "tool.updated":
+		switch nestedPayloadKind(env.Params) {
+		case "scheduled", "started", "progress":
+			m.toolActive = true
+
+			return true
+		case "result", "error":
+			m.toolActive = false
+
+			return true
+		}
+	}
+
+	return false
+}
+
+// isTurnSignalKind reports whether a carrier kind is a turn start or
+// terminal — both are turn lifecycle facts and count as progress.
+func isTurnSignalKind(kind string) bool {
+	switch kind {
+	case KindTurnStarted, KindTurnCompleted, KindTurnFailed, KindTurnTerminal,
+		KindTurnStartedCU, KindTurnCompletedCU, KindTurnFailedCU:
+		return true
+	}
+
+	return false
+}
+
+// nestedPayloadKind digs payload.kind out of a session/event params map
+// (model.streaming/tool.updated carry their discriminator there).
+func nestedPayloadKind(raw json.RawMessage) string {
+	var params struct {
+		Payload struct {
+			Kind string `json:"kind"`
+		} `json:"payload"`
+	}
+
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return ""
+	}
+
+	return params.Payload.Kind
+}
+
+// messagesProgressLocked treats a session/messages content change as
+// progress: a non-empty messages array on first sight, or raw bytes that
+// differ from the previous poll. A byte-stable poll echo is presence
+// evidence, not progress.
+func (m *Machine) messagesProgressLocked(env zcode.Envelope) bool {
+	var params struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+
+	if err := json.Unmarshal(env.Params, &params); err != nil || len(params.Messages) == 0 {
+		return false
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(params.Messages, &messages); err != nil {
+		return false
+	}
+
+	nonEmpty := len(messages) > 0
+	changed := m.lastMessagesRaw != nil && !bytes.Equal(m.lastMessagesRaw, params.Messages)
+	m.lastMessagesRaw = bytes.Clone(params.Messages)
+
+	if nonEmpty && !m.messagesSeen {
+		m.messagesSeen = true
+
+		return true
+	}
+
+	return nonEmpty && changed
+}
+
+// pokeStallLocked wakes the watchdog non-blockingly to recompute the
+// remaining budget (progress moved the deadline).
+func (m *Machine) pokeStallLocked() {
+	if m.stallWake == nil {
+		return
+	}
+
+	select {
+	case m.stallWake <- struct{}{}:
+	default:
+	}
+}
+
+// stallLoop is the watchdog goroutine: it computes the remaining no-progress
+// budget, wakes on progress or the deadline, and exits as soon as the turn
+// is resolved or leaves the running state — a cancelling turn is outside the
+// watchdog's scope, so the loop never busy-fires a non-positive remainder
+// while the quiet/cancel path winds the turn down.
+func (m *Machine) stallLoop(ctx context.Context) {
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
+
+	for {
+		m.mu.Lock()
+		if m.resolved || m.state != stateRunning {
+			m.mu.Unlock()
+
+			return
+		}
+
+		remaining := m.stallRemainingLocked(time.Now())
+		wake := m.stallWake
+		m.mu.Unlock()
+
+		if remaining <= 0 {
+			if m.fireStallIfExpired() {
+				return
+			}
+
+			continue
+		}
+
+		timer.Reset(remaining)
+
+		select {
+		case <-ctx.Done():
+			stallTimerStop(timer)
+
+			return
+		case <-wake:
+			stallTimerStop(timer)
+		case <-timer.C:
+		}
+	}
+}
+
+// stallTimerStop stops t and drains its channel so the next Reset starts
+// from a clean timer.
+func stallTimerStop(t *time.Timer) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
+
+// stallRemainingLocked is the time left before the active budget expires
+// (non-positive when the budget is already spent).
+func (m *Machine) stallRemainingLocked(now time.Time) time.Duration {
+	budget := m.stallBudgetLocked()
+
+	if m.lastProgress.IsZero() {
+		return budget
+	}
+
+	return m.lastProgress.Add(budget).Sub(now)
+}
+
+// stallBudgetLocked resolves the active budget: the tool allowance while a
+// tool is active, the base allowance otherwise.
+func (m *Machine) stallBudgetLocked() time.Duration {
+	if m.toolActive {
+		return m.stallToolBudgetLocked()
+	}
+
+	if m.StallTimeout > 0 {
+		return m.StallTimeout
+	}
+
+	return DefaultStallTimeout
+}
+
+// stallToolBudgetLocked resolves the tool allowance: the explicit override,
+// else 2x an explicit base (test ergonomics), else the production default.
+func (m *Machine) stallToolBudgetLocked() time.Duration {
+	if m.StallToolTimeout > 0 {
+		return m.StallToolTimeout
+	}
+
+	if m.StallTimeout > 0 {
+		return stallToolBudgetMultiple * m.StallTimeout
+	}
+
+	return DefaultStallToolTimeout
+}
+
+// fireStallIfExpired sends the bypass-lane stop BEFORE resolving the stall
+// (so no successor prompt can race a late stop against its own send) and
+// reports whether the watchdog loop is done. The state is re-checked under
+// the mutex on both sides of the wire write: a cancel that landed in between
+// owns the outcome, and progress that moved the deadline keeps the loop
+// waiting.
+func (m *Machine) fireStallIfExpired() bool {
+	m.mu.Lock()
+	if m.resolved || m.state != stateRunning {
+		m.mu.Unlock()
+
+		return true
+	}
+
+	now := time.Now()
+	if remaining := m.stallRemainingLocked(now); remaining > 0 {
+		m.mu.Unlock()
+
+		return false
+	}
+
+	budget := m.stallBudgetLocked()
+	toolActive := m.toolActive
+	m.mu.Unlock()
+
+	if err := m.conn.Stop(m.sessID); err != nil {
+		slog.Warn("turn: stall stop failed", "session", m.sessID, "err", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.resolved || m.state != stateRunning {
+		return true
+	}
+
+	if remaining := m.stallRemainingLocked(time.Now()); remaining > 0 {
+		return false
+	}
+
+	err := stallCause(toolActive, budget)
+	m.resolveLocked(Resolution{Reason: StopError, Signal: SignalStall, At: time.Now(), Err: err})
+
+	slog.Warn("turn: stalled turn stopped", "session", m.sessID,
+		"tool_active", toolActive, "budget", budget.String(), "err", err)
+
+	return true
+}
+
+// errStallNoModelProgress / errStallNoToolProgress are the two stable stall
+// causes recorded on Resolution.Err and surfaced by the front as the coded
+// client error (the budget rides as the wrapper's detail, never the text).
+var (
+	errStallNoModelProgress = errors.New("turn stalled: no model progress (provider may be rate-limiting)")
+	errStallNoToolProgress  = errors.New(
+		"turn stalled: no tool progress (provider may be rate-limiting; a tool was active)")
+)
+
+// stallCause renders the recorded stall cause (the short stable wording the
+// front surfaces as a coded -32603).
+func stallCause(toolActive bool, budget time.Duration) error {
+	if toolActive {
+		return fmt.Errorf("%w: budget %s", errStallNoToolProgress, budget)
+	}
+
+	return fmt.Errorf("%w: budget %s", errStallNoModelProgress, budget)
 }
 
 // observeRouterEvent is the machine's face on the conn's reverse-request
