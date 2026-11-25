@@ -1,0 +1,11 @@
+{
+  "command": "go test -race -count=1 -run 'TestConfigOptionUpdateWire|TestAsyncSinkBinding|TestAuthenticateRequestsCatalogRefresh' ./internal/acpport",
+  "exitCode": 1,
+  "targetTest": "TestConfigOptionUpdateWire",
+  "targetFile": "internal/acpport/catalogupdate_test.go",
+  "expected": "The new neutral NoteConfigOptions emits a config_option_update notification; construction binds the sink; successful authenticate requests refresh.",
+  "actual": "The sink rejected config_options as an unknown note kind; construction bound no sink; successful authenticate made zero refresh requests.",
+  "output": "--- FAIL: TestConfigOptionUpdateWire (0.00s)\n    catalogupdate_test.go:65: sink(config options): acpport: unknown session note kind \"config_options\"\n2026/11/24 23:49:43 INFO connection closed cause=\"io: read/write on closed pipe\"\n--- FAIL: TestAsyncSinkBinding (0.00s)\n    catalogupdate_test.go:85: construction returned without binding the asynchronous update sink\n2026/11/24 23:49:43 INFO connection closed cause=\"io: read/write on closed pipe\"\n--- FAIL: TestAuthenticateRequestsCatalogRefresh (0.00s)\n    catalogupdate_test.go:110: refresh requests = 0, want 1 after successful authenticate\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpport\t0.013s\nFAIL\n",
+  "semanticAssessment": "CONFIRMED RED: every target executed and failed on its intended behavior assertion, not compilation or fixture setup. The primary wire target failed specifically on the unknown-note guard. Authentication failure did not request refresh in the current implementation; the success arm had zero requests as expected at RED.",
+  "rawOutputPath": ".planning/tdd/261124-wlg-task1-red.raw.txt"
+}

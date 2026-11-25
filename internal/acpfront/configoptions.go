@@ -20,6 +20,8 @@ import (
 // map-based, type-assert with comma-ok, capture-verbatim camelCase wire
 // keys, undecodable = absent — never a verdict, never a panic.
 
+const jsonNullValue = "null"
+
 // ModelRef is one backend model reference (settings.model.current/lastUsed
 // and available[].ref): the providerId/modelId pair the wire serializes as
 // providerId + "/" + modelId (the repo's existing read-back serialization,
@@ -174,7 +176,7 @@ func digModelRef(raw any) (*ModelRef, bool) {
 	pid, _ := m["providerId"].(string)
 	mid, _ := m["modelId"].(string)
 
-	if pid == "" && mid == "" {
+	if pid == "" || mid == "" {
 		return nil, false
 	}
 
@@ -443,7 +445,7 @@ func mergeCatalogEntries(createRaw, followRaw json.RawMessage) (json.RawMessage,
 	}
 
 	available := create.Settings.Model.Available
-	if len(available) == 0 || string(available) == "null" {
+	if len(available) == 0 || string(available) == jsonNullValue {
 		return nil, false
 	}
 

@@ -430,6 +430,8 @@ func noteBytes(note acpport.SessionNote) int {
 		}
 
 		return size
+	case acpport.NoteConfigOptions:
+		return perFrameAllowance // session-level catalog updates bypass the turn pump
 	case acpport.NoteTool:
 		t := note.Tool
 		if t == nil {

@@ -1,6 +1,7 @@
 package acpfront
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"path/filepath"
@@ -108,6 +109,10 @@ const (
 // (the single-active-turn invariant): envelopes outside an active prompt
 // turn are observation only.
 func (f *Front) observeEnvelope(env zcode.Envelope) {
+	if env.Method == zcode.MethodStateUpdated && registryCatalogPatch(env.Params) {
+		f.requestCatalogRefresh(context.Background(), registryCatalogSignal(env.Params))
+	}
+
 	if env.Method != zcode.MethodSessionEvent {
 		return
 	}

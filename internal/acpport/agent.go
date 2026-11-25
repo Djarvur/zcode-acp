@@ -51,6 +51,10 @@ type sinkBinder interface {
 	bindSink(sink UpdateSink)
 }
 
+type updateSinkBinder interface {
+	bindUpdateSink(sink UpdateSink)
+}
+
 // permissionBinder is the adapter-side one-shot construction hook: it
 // hands the connection-bound PermissionSender to the adapter, which
 // forwards it into the Handlers impl when it opts in via the exported
@@ -66,6 +70,19 @@ type permissionBinder interface {
 // satisfied by another package's type, and the bridge lives in acpfront.
 type PermissionBinder interface {
 	BindPermissionSender(sender PermissionSender)
+}
+
+// UpdateSinkBinder opts a Handlers implementation into the construction-time
+// connection sink binding used for front-originated asynchronous updates.
+type UpdateSinkBinder interface {
+	BindUpdateSink(sink UpdateSink)
+}
+
+// CatalogRefresher opts a Handlers implementation into a post-authenticate
+// catalog refresh request. The request is advisory and cannot turn confirmed
+// authentication into a failure.
+type CatalogRefresher interface {
+	RequestCatalogRefresh(ctx context.Context)
 }
 
 // NewAgent wraps a Handlers impl as the acp.Agent implementation — the
@@ -92,6 +109,10 @@ func NewAgentSideConnection(
 	sink := NewUpdateSink(conn)
 	if binder, ok := agent.(sinkBinder); ok {
 		binder.bindSink(sink)
+	}
+
+	if binder, ok := agent.(updateSinkBinder); ok {
+		binder.bindUpdateSink(sink)
 	}
 
 	sender := newPermissionSender(conn)
@@ -405,6 +426,10 @@ func (a *agentAdapter) Authenticate(
 		return acp.AuthenticateResponse{}, wireError(err)
 	}
 
+	if refresher, ok := a.h.(CatalogRefresher); ok {
+		refresher.RequestCatalogRefresh(ctx)
+	}
+
 	return acp.AuthenticateResponse{}, nil
 }
 
@@ -574,6 +599,14 @@ func (a *agentAdapter) emitCommandCatalog(ctx context.Context, sessionID string)
 // construction.
 func (a *agentAdapter) bindSink(sink UpdateSink) {
 	a.sink.Store(&sink)
+}
+
+// bindUpdateSink forwards the same connection-bound sink to the Handlers
+// implementation for front-originated asynchronous notifications.
+func (a *agentAdapter) bindUpdateSink(sink UpdateSink) {
+	if binder, ok := a.h.(UpdateSinkBinder); ok {
+		binder.BindUpdateSink(sink)
+	}
 }
 
 // bindPermissionSender forwards the connection-bound sender into the

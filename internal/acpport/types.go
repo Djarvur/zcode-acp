@@ -192,13 +192,18 @@ const (
 	// NoteCatalog carries the slash-command catalog (v0.21.0 CAT-01): ONE
 	// available_commands_update per session/new, skills + the /model item.
 	NoteCatalog SessionNoteKind = "catalog"
+
+	// NoteConfigOptions carries a complete backend-confirmed config-options
+	// snapshot for one active session. It is traceable to fresh create/setModel
+	// settings, never to a refresh acknowledgement or a requested selection.
+	NoteConfigOptions SessionNoteKind = "config_options"
 )
 
-// SessionNote is one streaming content delta (D-04): one backend
-// part.delta envelope maps to exactly one note — nothing here is ever
-// synthesized (every chunk the client sees is traceable to one received
-// backend event). Tool lifecycle envelopes map onto Kind NoteTool with a
-// non-nil Tool payload (TOOL-01).
+// SessionNote is one backend-sourced content delta or confirmed snapshot
+// update: content deltas map one received backend event to one note, and
+// NoteConfigOptions carries a confirmed backend settings snapshot. Nothing is
+// synthesized from acknowledgements or requested values. Tool lifecycle
+// envelopes map onto Kind NoteTool with a non-nil Tool payload (TOOL-01).
 type SessionNote struct {
 	SessionID string
 	Kind      SessionNoteKind
@@ -209,6 +214,10 @@ type SessionNote struct {
 
 	// Catalog carries the slash-command items when Kind is NoteCatalog.
 	Catalog []CommandItem
+
+	// ConfigOptions carries the full confirmed list when Kind is
+	// NoteConfigOptions; an empty list is distinct from a missing payload.
+	ConfigOptions []ConfigOptionDef
 }
 
 // CommandItem is one neutral autocomplete item (v0.21.0): the command name,

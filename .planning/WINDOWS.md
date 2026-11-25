@@ -2,9 +2,9 @@
 schema_version: 1
 open_count: 18
 waived_count: 0
-fixed_count: 1
-total_count: 19
-last_updated: 2026-11-24T00:18:44.913Z
+fixed_count: 3
+total_count: 21
+last_updated: 2026-11-24T23:00:50.034Z
 ---
 
 # Broken Windows Ledger
@@ -34,6 +34,8 @@ last_updated: 2026-11-24T00:18:44.913Z
 | 17 | 7 | unrun-verify | .planning/phases/07-hardening-vm-manual-e2e-documentation/07-UAT.md |  | QA-02 VM field run of scripts/vm-e2e.sh is the human-gated end-of-phase UAT (D-05): executor staged the copy-pasteable runbook + PENDING ledger row; the one documented VM execution happens under user control at phase verification, never autonomously | open |  | 2026-11-22T14:45:18.280Z |  |
 | 18 | 7 | unrun-verify | .planning/phases/07-hardening-vm-manual-e2e-documentation/07-UAT.md |  | QA-03 Orca card E2E through BOTH auth paths is THE phase user gate (D-06): executor staged per-path checklists + observation items + PENDING ledger row; the real-account run happens under user control at phase verification, never autonomously | open |  | 2026-11-22T14:45:18.399Z |  |
 | 19 | 10 | unrun-verify | internal/supervisor/appimage_realdesktop_test.go |  | Manual-Only VER-02 real run not executed by the executor: ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run TestRealAppImageMount ./internal/supervisor/ must run once on a FUSE-capable host before ship | open |  | 2026-11-24T00:18:44.913Z |  |
+| 20 | 261124-wlg | deviation | internal/acpfront/turnctx.go | 433 | Rule 2: explicit NoteConfigOptions accounting added outside plan allowlist to satisfy exhaustive lint; catalog updates bypass turn pump. | fixed |  | 2026-11-24T21:12:50.615Z | 2026-11-24T23:00:49.898Z |
+| 21 | 261124-wlg | deviation | internal/acpfront/catalogrefresh.go |  | Rule 1: failed fan-out now fails the refresh pass so identical later signals remain retryable. | fixed |  | 2026-11-24T21:12:51.361Z | 2026-11-24T23:00:50.034Z |
 
 ````json
 [
@@ -282,6 +284,32 @@ last_updated: 2026-11-24T00:18:44.913Z
     "reason": "",
     "recorded_at": "2026-11-24T00:18:44.913Z",
     "resolved_at": null,
+    "milestone": "v0.23.0"
+  },
+  {
+    "id": 20,
+    "kind": "deviation",
+    "phase": "261124-wlg",
+    "file": "internal/acpfront/turnctx.go",
+    "line": 433,
+    "description": "Rule 2: explicit NoteConfigOptions accounting added outside plan allowlist to satisfy exhaustive lint; catalog updates bypass turn pump.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-11-24T21:12:50.615Z",
+    "resolved_at": "2026-11-24T23:00:49.898Z",
+    "milestone": "v0.23.0"
+  },
+  {
+    "id": 21,
+    "kind": "deviation",
+    "phase": "261124-wlg",
+    "file": "internal/acpfront/catalogrefresh.go",
+    "line": null,
+    "description": "Rule 1: failed fan-out now fails the refresh pass so identical later signals remain retryable.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-11-24T21:12:51.361Z",
+    "resolved_at": "2026-11-24T23:00:50.034Z",
     "milestone": "v0.23.0"
   }
 ]

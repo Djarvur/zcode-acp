@@ -66,6 +66,18 @@ const closeTurnWait = 10 * time.Second
 // closingMu-guarded critical section (plan 07-01 WR-05, hardening the
 // plan-05-10 WR-03 gate): no machine observer leak, no zombie registration.
 func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (string, error) {
+	unlock, err := f.lockCatalogSession(ctx, sessionID)
+	if err != nil {
+		return "", acpport.NewInternal("session/resume: session synchronization: %v", err)
+	}
+	defer unlock()
+
+	return f.resumeSessionLocked(ctx, sessionID, cwd)
+}
+
+// resumeSessionLocked runs the complete resume/settings/register lifecycle
+// while the caller holds the session stripe.
+func (f *Front) resumeSessionLocked(ctx context.Context, sessionID, cwd string) (string, error) {
 	if sessionID == "" {
 		return "", acpport.NewInvalidParams("session/resume: sessionId must not be empty")
 	}
@@ -114,7 +126,7 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (strin
 	// /model slash the pinned no-model refusal despite the
 	// backend-confirmed binding (no setModel follow-up re-records it — the
 	// binding persists backend-side).
-	f.recordSettings(sid, res)
+	f.recordSettingsUnchecked(sid, res)
 
 	// The re-issued subscribe (the D-03 gate applies to a reattached
 	// session exactly as to a new one — session/event pushes are gated on
@@ -148,6 +160,9 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (strin
 	// release can never race the teardown's own CloseObservers on the same
 	// machine.
 	if !f.registerIfOpen(sid, machine) {
+		f.dropCwd(sid)
+		f.dropSettings(sid)
+
 		return "", acpport.NewInvalidRequest("session/resume: %s: the session is closing or closed", sessionID)
 	}
 
@@ -159,6 +174,36 @@ func (f *Front) ResumeSession(ctx context.Context, sessionID, cwd string) (strin
 // CloseSession runs the ordered teardown (SESS-01). Unregistered ids fail
 // clean before anything touches the backend wire (T-5-13).
 func (f *Front) CloseSession(ctx context.Context, sessionID string) error {
+	unlock, err := f.lockCatalogSession(ctx, sessionID)
+	if err != nil {
+		return acpport.NewInternal("session/close: session synchronization: %v", err)
+	}
+
+	return f.closeSession(ctx, sessionID, unlock, true, time.Time{})
+}
+
+// closeSessionLocked tears down one session while the caller holds its stripe,
+// preventing an in-flight mutation from recording settings after the drop.
+func (f *Front) closeSessionLocked(ctx context.Context, sessionID string) error {
+	return f.closeSession(ctx, sessionID, nil, false, f.sharedCloseDrainDeadline(ctx))
+}
+
+// closeSession marks closing under the session stripe. A standalone close
+// releases the stripe during turn/backend teardown so resume can acquire it and
+// reject the closing session, then reacquires it for the final atomic drop.
+//
+//nolint:funlen // ordered close/drain/backend/final-drop lifecycle stays in one transactional sequence
+func (f *Front) closeSession(
+	ctx context.Context, sessionID string, unlock func(), managed bool, drainDeadline time.Time,
+) error {
+	if managed {
+		defer func() {
+			if unlock != nil {
+				unlock()
+			}
+		}()
+	}
+
 	st, err := f.registry.Get(sessionID)
 	if err != nil {
 		return acpport.NewInvalidRequest("session/close: %v: %s", err, sessionID)
@@ -183,10 +228,26 @@ func (f *Front) CloseSession(ctx context.Context, sessionID string) error {
 
 	f.closingMu.Unlock()
 
+	if managed {
+		unlock()
+		unlock = nil
+	}
+
+	// Catalog/picker teardown shares ONE deadline across both drains and the
+	// backend close. Standalone CloseSession passes a zero deadline and keeps
+	// its existing independent closeWait windows.
+	drain := func() bool {
+		if drainDeadline.IsZero() {
+			return f.drainActiveTurn(sessionID, st)
+		}
+
+		return f.drainActiveTurnUntil(sessionID, st, drainDeadline)
+	}
+
 	// Teardown order, step 1: cancel any active turn and wait bounded for
 	// it to drain (the stop's observed outcome resolves it; the drain also
 	// re-cancels a turn that sneaked in at the slot).
-	if f.drainActiveTurn(sessionID, st) {
+	if drain() {
 		// Pitfall 2: the cancelled turn's pending permission bridges must
 		// not dangle — the session-scoped sweep (plan 05-15 WR-07) cancels
 		// exactly the closing session's pendings, never another session's
@@ -210,24 +271,49 @@ func (f *Front) CloseSession(ctx context.Context, sessionID string) error {
 	// the slot BEFORE the closing gate — impossible: the gate predates both
 	// drains. The second drain is the cheap re-check that keeps the
 	// release steps strictly behind an unwound turn.
-	f.drainActiveTurn(sessionID, st)
+	drain()
 
-	// Steps 3-5: registry release, then both observer removes (WR-07 — the
-	// plan-05-03 exposed CloseObservers drives the notification and router
-	// fan-outs, idempotently), then the cwd entry (the map stays bounded
-	// with the registry).
-	f.registry.Remove(sessionID)
-	st.Machine.CloseObservers()
-	f.dropCwd(sessionID)
-	f.dropSettings(sessionID)
+	if managed {
+		closeCtx, cancel := context.WithTimeout(context.Background(), f.closeStripeWait())
+		//nolint:contextcheck // final teardown must complete even when the request context is canceled
+		unlock, err = f.lockCatalogSession(closeCtx, sessionID)
+		cancel()
+		if err != nil {
+			f.finishCloseLocally(sessionID, st)
+			slog.Warn("acpfront: final close stripe timed out; local teardown completed",
+				"session", sessionID, "err", err)
 
-	f.closingMu.Lock()
-	delete(f.closing, sessionID)
-	f.closingMu.Unlock()
+			return acpport.NewInternal("session/close: final teardown synchronization: %v", err)
+		}
+	}
+
+	f.finishCloseLocally(sessionID, st)
 
 	slog.Info("acpfront: session closed", "session", sessionID)
 
 	return nil
+}
+
+func (f *Front) closeStripeWait() time.Duration {
+	if f.closeStripeWaitOverride > 0 {
+		return f.closeStripeWaitOverride
+	}
+
+	return catalogRefreshBudget
+}
+
+// finishCloseLocally is the transactional final drop. closingMu makes registry
+// removal, settings/cwd removal, and marker deletion atomic with
+// recordSettings' closing/registry-aware commit, even if the stripe is gone.
+func (f *Front) finishCloseLocally(sessionID string, st core.Session) {
+	f.closingMu.Lock()
+	defer f.closingMu.Unlock()
+
+	f.registry.Remove(sessionID)
+	st.Machine.CloseObservers()
+	f.dropCwd(sessionID)
+	f.dropSettings(sessionID)
+	delete(f.closing, sessionID)
 }
 
 // drainActiveTurn cancels the session's active turn (machine.Cancel —
@@ -242,8 +328,22 @@ func (f *Front) CloseSession(ctx context.Context, sessionID string) error {
 // was cancelled, never on an idle close). A turn of another session (the
 // front-wide slot) never blocks this session's close beyond the check.
 func (f *Front) drainActiveTurn(sessionID string, st core.Session) bool {
-	deadline := time.Now().Add(f.closeWait())
+	return f.drainActiveTurnUntil(sessionID, st, time.Now().Add(f.closeWait()))
+}
 
+func (f *Front) sharedCloseDrainDeadline(ctx context.Context) time.Time {
+	if ctx == nil {
+		return time.Time{}
+	}
+	deadline := time.Now().Add(f.closeWait())
+	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
+	}
+
+	return deadline
+}
+
+func (f *Front) drainActiveTurnUntil(sessionID string, st core.Session, deadline time.Time) bool {
 	sawTurn := false
 
 	for {
