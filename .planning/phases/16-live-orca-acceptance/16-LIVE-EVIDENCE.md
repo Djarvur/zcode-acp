@@ -1,6 +1,6 @@
 # Phase 16 Live Orca Acceptance — Evidence
 
-**Date:** 2026-11-26 03:17 (Europe/Moscow)
+**Date:** 2026-11-26 03:40 (Europe/Moscow)
 **Machine:** this Mac (arm64, macOS 27.2)
 **Status:** passed
 
@@ -43,10 +43,15 @@ The original file is backed up as
 
 Orca structured chat:
 
-- `orcaSessionId`: `2db66245-c8cf-4ff6-9dd0-77343fac7c59`
+- First passing session: `2db66245-c8cf-4ff6-9dd0-77343fac7c59`.
+- Final merged-build session (after integrating upstream Windows support):
+  `df489fe3-3dfa-486d-a397-c7722aa45c46`.
 - user: `Reply with exactly ZCODE_ORCA_OK and nothing else.`
 - assistant: `ZCODE_ORCA_OK`
 - state: `done`
+
+Hosted CI for the merged tree (`45732157499`) passed every job: Linux,
+macOS arm64, macOS amd64, Windows, Darwin cross-build, govulncheck, secret-scan.
 
 Bridge diagnostics for the same path:
 
