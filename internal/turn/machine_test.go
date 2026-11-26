@@ -22,8 +22,11 @@ import (
 // millisecond timings, so no test waits on wall-clock defaults).
 
 const (
-	fixSessionID = "sess_fix1"
-	fixTurnID    = "turn_fix1"
+	wireKeyTraceID      = "traceId"
+	wireKeyDeliveryKind = "deliveryKind"
+	fixTraceID          = "trace_fix1"
+	fixSessionID        = "sess_fix1"
+	fixTurnID           = "turn_fix1"
 
 	// turnTestTimeout bounds each exchange; the GREEN run completes in
 	// milliseconds and a RED run fails fast on its own assertion.
@@ -164,11 +167,11 @@ func sessionEvent(t *testing.T, kind, turnID string) fake.SideEffect {
 	t.Helper()
 
 	return emit(t, zcode.MethodSessionEvent, map[string]any{
-		wireKeyType:    kind,
-		wireKeySeq:     4,
-		wireKeyTurnID:  turnID,
-		"traceId":      "trace_fix1",
-		"deliveryKind": deliveryKind,
+		wireKeyType:         kind,
+		wireKeySeq:          4,
+		wireKeyTurnID:       turnID,
+		wireKeyTraceID:      fixTraceID,
+		wireKeyDeliveryKind: deliveryKind,
 	})
 }
 

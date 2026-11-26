@@ -180,6 +180,13 @@ the whole context window as completion tokens. In the model's
 Use a value comfortably below the model's context window; 32768 is a safe
 starting point for chat and tool use.
 
+**Provider quota / limit refusal** — ACP v1 has no failure `stopReason`, so a
+provider 429/quota refusal surfaces as `-32603` with
+`session/prompt: backend turn failed before completion (the model provider
+refused the turn; check its quota/limits and retry)`. The exact reset time is
+in ZCode's own provider response and logs; the observed 4.0.0 `turn-failed`
+event carries no provider detail.
+
 **FUSE / packed-AppImage mount** (the packed-AppImage backend). The AppImage
 runtime reports these exact messages; they may arrive on stdout after a leading
 empty line, so the wrapper classifies the observed text rather than trusting

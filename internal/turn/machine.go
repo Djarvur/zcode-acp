@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -206,6 +207,13 @@ const (
 // message text is never compared (dialect §6: messages are not a stable
 // contract).
 var ErrTurnActive = errors.New("turn: a prompt is already running for this session")
+
+// errBackendTurnFailed wraps a backend turn.failed detail for the ACP error
+// surface, so the client sees the provider's own message instead of only the
+// generic "turn ended: failed" wording.
+const turnFailureErrorKey = "error"
+
+var errBackendTurnFailed = errors.New("backend turn failed")
 
 // ErrOrphanedBackend is the distinct non-retryable sentinel for a backend
 // that still reports an active prompt AFTER the orphan-recovery stop and
@@ -606,7 +614,13 @@ func (m *Machine) ObserveEnvelope(env zcode.Envelope) {
 			return
 		}
 
-		m.resolveLocked(Resolution{Reason: reason, Signal: SignalTerminalEvent, At: time.Now()})
+		resolution := Resolution{Reason: reason, Signal: SignalTerminalEvent, At: time.Now()}
+		if reason == StopFailed {
+			if detail := terminalFailureDetail(env.Params); detail != "" {
+				resolution.Err = fmt.Errorf("%w: %s", errBackendTurnFailed, detail)
+			}
+		}
+		m.resolveLocked(resolution)
 
 		return
 	}
@@ -1665,6 +1679,52 @@ func paramsInt64(raw json.RawMessage, key string) (int64, bool) {
 
 // paramsString digs one top-level string value out of an envelope params
 // payload; undecodable params classify as absent.
+// terminalFailureDetail extracts the provider/backend failure message from a
+// terminal event payload. Shapes vary by carrier: error may be a string or an
+// object with message; some deliveries carry a top-level message/reason or a
+// payload wrapper. An empty answer leaves the front's generic failed wording.
+func terminalFailureDetail(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+
+	if detail := detailFromMap(obj); detail != "" {
+		return detail
+	}
+	if payload, ok := obj["payload"].(map[string]any); ok {
+		return detailFromMap(payload)
+	}
+
+	return ""
+}
+
+// detailFromMap reads the first non-empty failure message in preference order.
+func detailFromMap(obj map[string]any) string {
+	for _, key := range []string{turnFailureErrorKey, "message", "reason", "detail", "cause"} {
+		switch value := obj[key].(type) {
+		case string:
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		case map[string]any:
+			for _, nested := range []string{"message", "reason", "detail", "cause"} {
+				if s, ok := value[nested].(string); ok {
+					if trimmed := strings.TrimSpace(s); trimmed != "" {
+						return trimmed
+					}
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
 func paramsString(raw json.RawMessage, key string) string {
 	if len(raw) == 0 {
 		return ""
