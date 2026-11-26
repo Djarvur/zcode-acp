@@ -244,3 +244,21 @@ func setEnv(env []string, key, value string) []string {
 
 	return out
 }
+
+// FindExecutable resolves name through an explicit PATH value without
+// consulting the process environment (exec.LookPath cannot take one).
+func FindExecutable(name, pathValue string) string {
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			continue
+		}
+
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return candidate
+		}
+	}
+
+	return ""
+}

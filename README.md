@@ -45,12 +45,21 @@ offline Win32-OpenSSH tools ISO builder, and the real-backend
 
 On macOS the wrapper discovers `/Applications/ZCode.app` and
 `$HOME/Applications/ZCode.app`, validates `Contents/Info.plist`, and reads the
-bundle version. It launches `Contents/MacOS/ZCode` with
-`Contents/Resources/glm/zcode.cjs` and `ELECTRON_RUN_AS_NODE=1`; macOS never
-enters the AppImage/FUSE path. The desktop architecture must match the wrapper:
-`darwin-aarch64` on Apple silicon, `darwin-x86_64` on Intel. Discovery selects
-the matching runtime-provider cache under
+bundle version. It launches `Contents/Resources/glm/zcode.cjs` with
+`ELECTRON_RUN_AS_NODE=1`; macOS never enters the AppImage/FUSE path. The
+desktop architecture must match the wrapper: `darwin-aarch64` on Apple
+silicon, `darwin-x86_64` on Intel. Discovery selects the matching
+runtime-provider cache under
 `~/.zcode/v2/runtime/provider/<platform>/<version>/`.
+
+To keep the Dock clean, macOS launches the app-server under the host's `node`
+from the login-shell PATH (Node 22+; tested with 26) instead of the Electron
+binary: Electron registers its app-server and every bundled MCP child as a
+foreground LaunchServices app, producing "ZCode"/"exec" Dock icons. The same
+`zcode.cjs` runs correctly under Node, and its MCP children stay
+`BackgroundOnly`. If Node is absent, the wrapper falls back to the Electron
+launcher (still functional, but Dock icons can appear);
+`ZCODE_ACP_DISABLE_NODE_LAUNCHER=1` forces that fallback explicitly.
 
 Build from source with a Go toolchain pinned via
 [mise](https://mise.jdx.dev) (`mise.toml` carries the exact versions CI runs):

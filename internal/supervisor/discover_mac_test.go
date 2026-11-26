@@ -340,8 +340,8 @@ func TestMacAppSpawnContract(t *testing.T) {
 	want := []string{
 		filepath.Join(root, "Contents", "MacOS", "ZCode"),
 		filepath.Join(root, "Contents", "Resources", "glm", "zcode.cjs"),
-		"app-server",
-		"--stdio",
+		fixtureAppServerArg,
+		fixtureStdioArg,
 	}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("SpawnArgv = %v, want %v", got, want)

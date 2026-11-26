@@ -391,7 +391,7 @@ func ompRunText(t *testing.T, bin string, argv []string, ride textRide) textRun 
 	stderrBuf := &e2eSyncBuffer{}
 
 	cmd := exec.CommandContext(ctx, bin, argv...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "ZCODE_ACP_DISABLE_NODE_LAUNCHER=1"}
 	if ride.apiKey != "" {
 		cmd.Env = append(cmd.Env, "ZCODE_ACP_API_KEY="+ride.apiKey)
 	}

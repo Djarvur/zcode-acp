@@ -1409,7 +1409,17 @@ func startSupervised(
 	// A GUI-launched Orca inherits launchd's minimal PATH; the login-shell
 	// union restores the user's toolchain before the allowlist child env is
 	// built (PATH only; proxies and arbitrary vars stay scrubbed).
-	childEnv := supervisor.ChildEnv(inst, supervisor.EnrichParentPATH(spawnCtx, os.Environ()))
+	parentEnv := supervisor.EnrichParentPATH(spawnCtx, os.Environ())
+	childEnv := supervisor.ChildEnv(inst, parentEnv)
+	spawnArgv := supervisor.SpawnArgvForInstall(inst, parentEnv)
+
+	slog.Info("zcode-acp: app-server launcher", "binary", spawnArgv[0],
+		"layout", inst.Layout)
+
+	if inst.Layout == "mac-app" && spawnArgv[0] == inst.Binary {
+		slog.Warn("zcode-acp: Node not found on PATH; launching the Electron " +
+			"app-server (macOS may show ZCode/exec icons in the Dock)")
+	}
 
 	sup := supervisor.NewSupervisor(func(_ context.Context) (*supervisor.Child, error) {
 		// The mount guard runs before EVERY spawn (the first one included): a
@@ -1420,7 +1430,7 @@ func startSupervised(
 		}
 
 		child, spawnErr := supervisor.SpawnChild(spawnCtx,
-			supervisor.SpawnArgv(inst),
+			spawnArgv,
 			childEnv,
 			supervisor.SpawnOpts{})
 		if spawnErr == nil {

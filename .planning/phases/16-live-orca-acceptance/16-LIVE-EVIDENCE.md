@@ -46,6 +46,7 @@ Orca structured chat:
 - First passing session: `2db66245-c8cf-4ff6-9dd0-77343fac7c59`.
 - Final merged-build session (after integrating upstream Windows support):
   `df489fe3-3dfa-486d-a397-c7722aa45c46`.
+- Final Node-backed session: `b23f5213-f9c6-411f-a8d9-a042f0ea2b88`.
 - user: `Reply with exactly ZCODE_ORCA_OK and nothing else.`
 - assistant: `ZCODE_ORCA_OK`
 - state: `done`
@@ -59,6 +60,17 @@ Bridge diagnostics for the same path:
 - `keyring probe class=ok`
 - `session opened`
 - prompt finished with `stopReason=end_turn`.
+
+## Dock cleanup
+
+The Electron app-server registers itself and every bundled MCP child as a
+foreground LaunchServices app (`type="Foreground"`), producing the Dock's
+"ZCode"/"exec" icons. `SpawnArgvForInstall` now launches the same
+`Contents/Resources/glm/zcode.cjs` under the host's `node` (login-shell PATH)
+on macOS. Verified live: the app-server and all MCP children report
+`type="BackgroundOnly"` in `lsappinfo` and the live chat still returns
+`ZCODE_ORCA_OK`. The old foreground Electron session was stopped; the
+`ZCODE_ACP_DISABLE_NODE_LAUNCHER=1` override keeps the Electron fallback.
 
 ## Notes
 
