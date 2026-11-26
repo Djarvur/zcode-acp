@@ -360,23 +360,23 @@ var (
 	cpCorpusPermCancelPath = regexp.MustCompile(regexp.QuoteMeta(wirePath(permCancelCwd)))
 )
 
-// codingPlanProbeDirPattern accepts both the platform temp-root spelling and
-// its EvalSymlinks-resolved form (/var/folders ↔ /private/var/folders on macOS).
+// codingPlanProbeDirPattern accepts the platform temp-root spelling and its
+// EvalSymlinks-resolved form (/var/folders ↔ /private/var/folders on macOS),
+// in the JSON-escaped wire spelling Windows uses.
 func codingPlanProbeDirPattern() *regexp.Regexp {
-	root := filepath.ToSlash(filepath.Clean(os.TempDir()))
-	roots := []string{root}
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		if canonical := filepath.ToSlash(filepath.Clean(resolved)); canonical != root {
+	roots := []string{filepath.Clean(os.TempDir())}
+	if resolved, err := filepath.EvalSymlinks(roots[0]); err == nil {
+		if canonical := filepath.Clean(resolved); canonical != roots[0] {
 			roots = append(roots, canonical)
 		}
 	}
 
 	quoted := make([]string, 0, len(roots))
-	for _, candidate := range roots {
-		quoted = append(quoted, regexp.QuoteMeta(candidate))
+	for _, root := range roots {
+		quoted = append(quoted, regexp.QuoteMeta(wirePath(root)))
 	}
 
-	return regexp.MustCompile(`(?:` + strings.Join(quoted, `|`) + `)/zcode-acp-auth-probe-\d+`)
+	return regexp.MustCompile(`(?:` + strings.Join(quoted, `|`) + `)[\\/]+zcode-acp-auth-probe-\d+`)
 }
 
 // normalizeCodingPlanCorpus substitutes the machine-derived tokens.
