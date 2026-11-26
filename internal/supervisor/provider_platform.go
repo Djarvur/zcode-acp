@@ -1,7 +1,5 @@
 package supervisor
 
-import "runtime"
-
 const (
 	goosDarwin  = "darwin"
 	goosLinux   = "linux"
@@ -32,9 +30,4 @@ func ProviderPlatformDir(goos, goarch string) string {
 	}
 
 	return ""
-}
-
-// hostProviderPlatform is the current process's cache platform directory.
-func hostProviderPlatform() string {
-	return ProviderPlatformDir(runtime.GOOS, runtime.GOARCH)
 }

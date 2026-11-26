@@ -2,7 +2,12 @@
 
 package supervisor
 
-import "context"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+)
 
 // platformBinaryName is the macOS desktop executable name. An .app bundle is
 // resolved through macAppInstall; this name only serves the explicit-root
@@ -82,6 +87,48 @@ func dedupeStrings(values []string) []string {
 	}
 
 	return out
+}
+
+// defaultMacApps is the production standard-location scan.
+func defaultMacApps(home string) func() []string {
+	return func() []string {
+		dirs := []string{"/Applications"}
+		if home != "" {
+			dirs = append(dirs, filepath.Join(home, "Applications"))
+		}
+
+		return scanMacApps(dirs)
+	}
+}
+
+// scanMacApps finds ZCode*.app bundles in the given application dirs.
+func scanMacApps(dirs []string) []string {
+	seen := make(map[string]struct{})
+	apps := make([]string, 0, len(dirs))
+
+	add := func(path string) {
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		apps = append(apps, path)
+	}
+
+	for _, dir := range dirs {
+		matches, _ := filepath.Glob(filepath.Join(dir, "ZCode*.app"))
+		for _, match := range matches {
+			if info, err := os.Stat(match); err == nil && info.IsDir() {
+				add(match)
+			}
+		}
+	}
+
+	return apps
+}
+
+// hostProviderPlatform is the current process's cache platform directory.
+func hostProviderPlatform() string {
+	return ProviderPlatformDir(runtime.GOOS, runtime.GOARCH)
 }
 
 // DefaultProbers returns the Darwin seam set: the explicit override plus the
