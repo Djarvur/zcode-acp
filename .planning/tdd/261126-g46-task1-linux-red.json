@@ -1,0 +1,11 @@
+{
+  "command": "CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go test -c -o /tmp/zcode-acp-g46-supervisor-linux.test ./internal/supervisor && docker run --rm --network none --platform linux/arm64 -v /tmp/zcode-acp-g46-supervisor-linux.test:/supervisor.test:ro debian:bookworm-slim /supervisor.test -test.run='^TestLinuxInstallKeepsNewestProviderCache$' -test.count=1",
+  "exitCode": 1,
+  "output": "TAP version 13\n1..1\nnot ok 1 - TestLinuxInstallKeepsNewestProviderCache\n# === RUN   TestLinuxInstallKeepsNewestProviderCache\n#     discover_test.go:1138: Linux BuiltinFile = \"/tmp/TestLinuxInstallKeepsNewestProviderCache3157588518/001/.zcode/v2/runtime/provider/linux-x86_64/3.18.2/endpoint-78d7c3bef4024722642626fe3669a799/zcode-builtin.json\", want the newest cache \"/tmp/TestLinuxInstallKeepsNewestProviderCache3157588518/001/.zcode/v2/runtime/provider/linux-x86_64/4.0.0/endpoint-78d7c3bef4024722642626fe3669a799/zcode-builtin.json\"\n# --- FAIL: TestLinuxInstallKeepsNewestProviderCache (0.00s)\n",
+  "targetTest": "TestLinuxInstallKeepsNewestProviderCache",
+  "targetFile": "internal/supervisor/discover_test.go",
+  "expected": "The Linux install selects the numerically newest usable 4.0.0 provider cache.",
+  "actual": "The global exact-version preference selected the install's older 3.18.2 cache.",
+  "semanticAssessment": "The named target executed in a real linux/arm64 test binary and failed on the planned BuiltinFile assertion; the TAP report is adapted from the unmodified Go test2json stream. No setup, load, or fixture failure occurred.",
+  "consoleOutput": "--- FAIL: TestLinuxInstallKeepsNewestProviderCache (0.00s)\n    discover_test.go:1138: Linux BuiltinFile = \"/tmp/TestLinuxInstallKeepsNewestProviderCache3157588518/001/.zcode/v2/runtime/provider/linux-x86_64/3.18.2/endpoint-78d7c3bef4024722642626fe3669a799/zcode-builtin.json\", want the newest cache \"/tmp/TestLinuxInstallKeepsNewestProviderCache3157588518/001/.zcode/v2/runtime/provider/linux-x86_64/4.0.0/endpoint-78d7c3bef4024722642626fe3669a799/zcode-builtin.json\"\nFAIL\n"
+}

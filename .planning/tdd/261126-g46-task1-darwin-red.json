@@ -1,0 +1,11 @@
+{
+  "command": "go test -json ./internal/supervisor -run '^TestReadBundleInfoBinaryContext$' -count=1",
+  "exitCode": 1,
+  "output": "TAP version 13\n1..1\nnot ok 1 - TestReadBundleInfoBinaryContext\n# === RUN   TestReadBundleInfoBinaryContext\n#     bundle_internal_test.go:137: readBundleInfo() error = parse Info.plist: read plist token: XML syntax error on line 1: illegal character code U+0000, want context.Canceled\n# --- FAIL: TestReadBundleInfoBinaryContext (0.00s)\n",
+  "targetTest": "TestReadBundleInfoBinaryContext",
+  "targetFile": "internal/supervisor/bundle_internal_test.go",
+  "expected": "An already-canceled context surfaces context.Canceled from the binary-plist fallback.",
+  "actual": "readBundleInfo discarded the conversion error and returned only the XML parse error, so errors.Is(err, context.Canceled) was false.",
+  "semanticAssessment": "The named Darwin target executed and failed on the planned cancellation assertion, not on setup or fixture loading. The TAP report is adapted from the unmodified Go test JSON stream.",
+  "consoleOutput": "--- FAIL: TestReadBundleInfoBinaryContext (0.00s)\n    bundle_internal_test.go:137: readBundleInfo() error = parse Info.plist: read plist token: XML syntax error on line 1: illegal character code U+0000, want context.Canceled\nFAIL\n"
+}

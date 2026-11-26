@@ -5,11 +5,11 @@ milestone_name: macOS Support (In Progress)
 current_phase: 16
 current_phase_name: Live Orca Acceptance
 status: blocked
-stopped_at: "Phase 16 blocked — live z.ai tool-call and permission acceptance pending quota"
-last_updated: "2026-11-26T08:55:37.000Z"
+stopped_at: Phase 16 blocked — live z.ai tool-call and permission acceptance pending quota
+last_updated: "2026-11-26T09:18:45.798Z"
 last_activity: 2026-11-26
-last_activity_desc: "Phase 16 blocked — intended-account live z.ai tool-call and permission proof pending"
-state_head: b19b955598f783d2a8bfae9e18b57096cf2107be
+last_activity_desc: Phase 16 blocked — intended-account live z.ai tool-call and permission proof pending
+state_head: 6b811935e7256bb3896863df6607084a7103828f
 progress:
   total_phases: 6
   completed_phases: 5
@@ -45,7 +45,7 @@ See: .planning/PROJECT.md (updated 2026-11-25)
 Phase: 16 — Live Orca Acceptance
 Plan: 16-UAT blocked
 Status: Blocked — intended-account live z.ai tool-call and permission proof is still required
-Last activity: 2026-11-26 — corrected the custom DeepSeek text result to partial diagnostic evidence only
+Last activity: 2026-11-26 — completed quick task 261126-g46: Fix final macOS PR review blockers
 
 ## Performance Metrics
 
@@ -348,6 +348,7 @@ None yet.
 | 261125-r6o | fix ACP turn stall recovery | 2026-11-25 | 91d25cf | [261125-r6o-fix-acp-turn-stall-recovery](./quick/261125-r6o-fix-acp-turn-stall-recovery/) |
 | 261126-2s8 | Add a windows-latest CI job to the pr-sanity workflow that runs go build, go vet, and go test on Windows using the repo's pinned Go toolchain, keeping the Linux gate unchanged. | 2026-11-26 | d368bc4 | /home/nil/DiskD/W/Djarvur/zcode-acp/.planning/quick/261126-2s8-add-a-windows-latest-ci-job-to-the-pr-sanity-workflow-that |
 | 261126-2s9 | Implement native Windows install discovery (LocalAppData, Program Files, and registry uninstall entries) so --app-server is no longer required, with tests. | 2026-11-26 | 9454ba3 | /home/nil/DiskD/W/Djarvur/zcode-acp/.planning/quick/261126-2s9-implement-native-windows-install-discovery-localappdata-pro |
+| 261126-g46 | Fix final macOS PR review blockers | 2026-11-26 | 6b81193 | [261126-g46-fix-final-macos-pr-review-blockers](./quick/261126-g46-fix-final-macos-pr-review-blockers/) |
 
 ## Deferred Items
 

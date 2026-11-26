@@ -1,0 +1,11 @@
+{
+  "command": "go test -json ./internal/supervisor -run '^TestLoginShellRunnerDescendantStdout$' -count=1",
+  "exitCode": 1,
+  "output": "TAP version 13\n1..1\nnot ok 1 - TestLoginShellRunnerDescendantStdout\n# === RUN   TestLoginShellRunnerDescendantStdout\n#     path_internal_test.go:151: probe hung after the direct helper exited and its descendant inherited stdout\n# --- FAIL: TestLoginShellRunnerDescendantStdout (2.00s)\n",
+  "targetTest": "TestLoginShellRunnerDescendantStdout",
+  "targetFile": "internal/supervisor/path_internal_test.go",
+  "expected": "The production runner returns a prompt error and leaves no helper process group or descendant.",
+  "actual": "The direct helper exited, but exec's stdout copier remained blocked by the same-group descendant until the 2-second watchdog failed the test.",
+  "semanticAssessment": "The named target executed and failed on the planned bounded-return assertion. Cleanup killed the recorded group; the TAP report is adapted from the unmodified Go test JSON stream.",
+  "consoleOutput": "--- FAIL: TestLoginShellRunnerDescendantStdout (2.00s)\n    path_internal_test.go:151: probe hung after the direct helper exited and its descendant inherited stdout\nFAIL\n"
+}
