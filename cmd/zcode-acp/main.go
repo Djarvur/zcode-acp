@@ -1369,9 +1369,8 @@ func discoverInstall(ctx context.Context, appServer string) (supervisor.Install,
 
 	probers := supervisor.DefaultProbers(home, supervisor.DefaultOptDir())
 	if appServer != "" {
-		//nolint:contextcheck // OverrideInstall has no ctx; plutil is bounded internally
 		probers.Override = func() (supervisor.Install, bool) {
-			return supervisor.OverrideInstall(appServer)
+			return supervisor.OverrideInstallContext(ctx, appServer)
 		}
 	}
 

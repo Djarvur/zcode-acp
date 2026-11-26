@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -43,6 +44,10 @@ const (
 	appExecutableKey = "CFBundleExecutable"
 	appVersionKey    = "CFBundleShortVersionString"
 	appBuildKey      = "CFBundleVersion"
+
+	// plistConversionTimeout bounds the OS converter even when the caller's
+	// context has no deadline. Caller cancellation still shortens this window.
+	plistConversionTimeout = 5 * time.Second
 
 	plistKindDict   = "dict"
 	plistKindString = "string"
@@ -257,11 +262,20 @@ func readBundleInfo(ctx context.Context, path string) (map[string]string, error)
 
 	if runtime.GOOS == goosDarwin {
 		args := []string{"-convert", "xml1", "-o", "-", path}
-		out, convErr := exec.CommandContext(ctx, "plutil", args...).Output()
+		conversionCtx, cancel := context.WithTimeout(ctx, plistConversionTimeout)
+		out, convErr := exec.CommandContext(conversionCtx, "/usr/bin/plutil", args...).Output()
+		conversionErr := errors.Join(convErr, conversionCtx.Err())
+		cancel()
 		if convErr == nil {
 			if converted, err := parsePlistDict(out); err == nil {
 				return converted, nil
 			}
+		}
+		if conversionErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("parse Info.plist: %w", parseErr),
+				fmt.Errorf("convert binary Info.plist with /usr/bin/plutil: %w", conversionErr),
+			)
 		}
 	}
 

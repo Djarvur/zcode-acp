@@ -321,12 +321,22 @@ func ExplicitRootInstall(root string) (Install, bool) {
 // still stored absolute so the mount step fails loud naming the real path
 // instead of silently falling through to discovery.
 func OverrideInstall(path string) (Install, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), plistConversionTimeout)
+	defer cancel()
+
+	return OverrideInstallContext(ctx, path)
+}
+
+// OverrideInstallContext maps an override with the caller's cancellation and
+// deadline. macOS .app validation can invoke plutil, so production discovery
+// passes its context here rather than creating an unbounded background operation.
+func OverrideInstallContext(ctx context.Context, path string) (Install, bool) {
 	if path == "" {
 		return Install{}, false
 	}
 
 	if appPath, ok := macAppOverridePath(path); ok {
-		inst, reason := macAppInstall(context.Background(), appPath)
+		inst, reason := macAppInstall(ctx, appPath)
 		if reason != "" {
 			return Install{}, false
 		}
@@ -443,7 +453,7 @@ func (p Probers) probeBuiltinRuntime(winner Install, found bool) (row Probe, bui
 	}
 
 	slices.SortFunc(versions, func(a, b string) int { return compareVersions(b, a) })
-	if found && winner.Version != "" {
+	if found && winner.Layout == layoutMacApp && winner.Version != "" {
 		versions = preferVersion(versions, winner.Version)
 	}
 	for _, ver := range versions {
