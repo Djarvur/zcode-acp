@@ -32,7 +32,7 @@ Requirements for the macOS support milestone. Each maps to exactly one roadmap p
 - [x] **MTEST-01**: The full default test suite passes on macOS arm64 without an external `setsid` dependency.
 - [x] **MTEST-02**: Automated fixtures cover macOS `.app` discovery/override, exact app-server argv, provider-cache selection, and the Keychain command contract without touching a real desktop or keychain in CI.
 - [x] **MORCA-01**: `zcode-acp omp --print --mode text @file` completes through a fake macOS `.app` backend with correct stdout and exit status.
-- [ ] **MORCA-02**: A live Orca card run on the current macOS machine completes the existing ACP flow against real ZCode with an available real account, and the evidence is recorded.
+- [x] **MORCA-02**: A live Orca card run on the current macOS machine completes the existing ACP flow against real ZCode with an available real account, and the evidence is recorded.
 
 ### Documentation
 
@@ -78,7 +78,7 @@ Populated during roadmap creation for v0.24.0.
 | MTEST-01 | Phase 11 | Complete |
 | MTEST-02 | Phase 15 | Complete |
 | MORCA-01 | Phase 15 | Complete |
-| MORCA-02 | Phase 16 | Blocked — ZCode account quota reset 2026-11-27 18:05:02 |
+| MORCA-02 | Phase 16 | Complete |
 | MDOC-01 | Phase 15 | Complete |
 
 **Coverage:**

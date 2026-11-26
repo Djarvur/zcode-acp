@@ -150,6 +150,22 @@ The first successful read may require a one-time macOS dialog allowing
 `security` access to the item. Approve it (Always Allow) while the login
 Keychain is unlocked.
 
+**Custom model returns 400 “maximum context length”** — a user-added
+OpenAI-compatible model needs an output-token cap in
+`~/.zcode/v2/provider_config.json`; without it the backend may request almost
+the whole context window as completion tokens. In the model's
+`modelConfigRules.providerModelRules` entry add:
+
+```json
+"config": {
+  "properties": { "contextWindow": 262144 },
+  "optionSpecs": { "maxOutputTokens": { "max": 32768 } }
+}
+```
+
+Use a value comfortably below the model's context window; 32768 is a safe
+starting point for chat and tool use.
+
 **FUSE / packed-AppImage mount** (the packed-AppImage backend). The AppImage
 runtime reports these exact messages; they may arrive on stdout after a leading
 empty line, so the wrapper classifies the observed text rather than trusting

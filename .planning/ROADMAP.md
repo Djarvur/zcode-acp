@@ -74,11 +74,11 @@ Full details: `.planning/milestones/v0.23.0-phases/`, `v0.23.0-ROADMAP.md`, `v0.
 ### v0.24.0 — macOS Support (Planned)
 
 - [x] **Phase 11: Darwin Build, Test & Release Gates** - Both macOS architectures compile and pass portable tests, CI, and checksummed release-artifact checks. (completed 2026-11-25)
-- [ ] **Phase 12: macOS Bundle Discovery & Overrides** - Standard `.app` locations and override forms resolve without entering the Linux AppImage/FUSE path.
-- [ ] **Phase 13: Desktop Launch & Runtime Environment** - The selected bundle launches the correct app-server with macOS provider paths and a usable GUI-launched tool PATH.
-- [ ] **Phase 14: macOS Authentication** - Existing api-key and OAuth paths work, with Keychain-backed credential decryption and safe coded failures.
-- [ ] **Phase 15: Automated Orca Acceptance & Documentation** - Fake-backend Orca coverage and Linux regressions stay zero-spend, and the English macOS guide is complete.
-- [ ] **Phase 16: Live Orca Acceptance** - A human proves the existing ACP flow in Orca on the current Mac and records scrubbed evidence.
+- [x] **Phase 12: macOS Bundle Discovery & Overrides** - Standard `.app` locations and override forms resolve without entering the Linux AppImage/FUSE path.
+- [x] **Phase 13: Desktop Launch & Runtime Environment** - The selected bundle launches the correct app-server with macOS provider paths and a usable GUI-launched tool PATH.
+- [x] **Phase 14: macOS Authentication** - Existing api-key and OAuth paths work, with Keychain-backed credential decryption and safe coded failures.
+- [x] **Phase 15: Automated Orca Acceptance & Documentation** - Fake-backend Orca coverage and Linux regressions stay zero-spend, and the English macOS guide is complete.
+- [x] **Phase 16: Live Orca Acceptance** - A human proves the existing ACP flow in Orca on the current Mac and records scrubbed evidence.
 
 ## Post-v1 Advisories (carried, non-blocking)
 
