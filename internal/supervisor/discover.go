@@ -113,6 +113,44 @@ type Probers struct {
 	Home string
 	// OptDir is the package-family root (the deb's /opt/ZCode).
 	OptDir string
+	// Windows is the only Windows-specific seam group: the native install
+	// directory sources and the uninstall-registry reader. It stays zero on
+	// Linux and Darwin, where the platform stage supplies its own probes.
+	Windows WindowsSeams
+}
+
+// UninstallEntry is one uninstall-registry record reduced to the fields the
+// Windows install model reads. Key is the full hive path (for example
+// HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\ZCode) and is what
+// the diagnostics rows name.
+//
+// The type lives in this shared file so the Windows record rules are testable
+// on every platform: only the windows-tagged seam reads a real hive.
+type UninstallEntry struct {
+	Key             string
+	DisplayName     string
+	DisplayVersion  string
+	InstallLocation string
+	DisplayIcon     string
+}
+
+// WindowsInstallDir is one native Windows install-directory source: the
+// diagnostics Name and Query, the discovered Root ("" when the host does not
+// define the source), and the Layout a hit records.
+type WindowsInstallDir struct {
+	Name   string
+	Query  string
+	Root   string
+	Layout string
+}
+
+// WindowsSeams is the injectable Windows OS-contact surface. Dirs are the
+// environment-derived install locations in probe order; Uninstall returns the
+// uninstall-registry records. Tests stub both; the windows-tagged wiring
+// fills them from the environment and the real registry.
+type WindowsSeams struct {
+	Dirs      []WindowsInstallDir
+	Uninstall func() ([]UninstallEntry, error)
 }
 
 // Discover resolves the ZCode desktop install in the documented probe order
@@ -137,8 +175,9 @@ func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 	add(p.probeOverride())
 
 	// The platform install-layout stage: Linux runs the XDG/AppImage/dpkg/
-	// opt/rpm probes in the documented order; Windows and Darwin have no
-	// native probe yet and answer an honest diagnostic row.
+	// opt/rpm probes in the documented order; Windows runs the native install
+	// stage (directory sources, then the uninstall registry); Darwin answers
+	// an honest diagnostic row.
 	stageRows, stageInstall, stageOK := p.probeInstallStage(ctx, found)
 	probes = append(probes, stageRows...)
 	if stageOK && !found {
@@ -223,12 +262,20 @@ func volatileInstallPath(inst Install) string {
 // returns the Install for it (binary <root>/zcode, entrypoint
 // <root>/resources/glm/zcode.cjs — install-discovery.md :38).
 func bundleInstall(root, layout string) (Install, bool) {
+	return bundleInstallBinary(root, layout, platformBinaryName())
+}
+
+// bundleInstallBinary is bundleInstall with an explicit binary name: the
+// Windows stage validates <root>\ZCode.exe on hosts whose
+// platformBinaryName() answers a different name, so the same invariant tree
+// check serves every platform.
+func bundleInstallBinary(root, layout, exeName string) (Install, bool) {
 	if root == "" || mountDecoy(root) {
 		return Install{}, false
 	}
 	inst := Install{
 		Root:       root,
-		Binary:     filepath.Join(root, platformBinaryName()),
+		Binary:     filepath.Join(root, exeName),
 		Entrypoint: filepath.Join(root, entrypointRel),
 		Layout:     layout,
 	}

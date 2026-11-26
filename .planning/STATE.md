@@ -333,6 +333,8 @@ None yet.
 | 261125-n0j | Advertise ACP sessionCapabilities.resume so Orca restores the same backend session through resume/subscribe without history replay. | 2026-11-25 | 89e4c07 | [261125-n0j-advertise-acp-sessioncapabilities-resume](./quick/261125-n0j-advertise-acp-sessioncapabilities-resume/) |
 | 261125-s7k | Answer session/cancel deterministically — failed-terminal mapping and a bounded grace — so an Orca steer stops waiting and dispatches its new prompt (session/new and session/resume). | 2026-11-25 | dcf69c9 | [261125-s7k-fix-acp-steer-after-cancel](./quick/261125-s7k-fix-acp-steer-after-cancel/) |
 | 261125-r6o | fix ACP turn stall recovery | 2026-11-25 | 91d25cf | [261125-r6o-fix-acp-turn-stall-recovery](./quick/261125-r6o-fix-acp-turn-stall-recovery/) |
+| 261126-2s8 | Add a windows-latest CI job to the pr-sanity workflow that runs go build, go vet, and go test on Windows using the repo's pinned Go toolchain, keeping the Linux gate unchanged. | 2026-11-26 | d368bc4 | /home/nil/DiskD/W/Djarvur/zcode-acp/.planning/quick/261126-2s8-add-a-windows-latest-ci-job-to-the-pr-sanity-workflow-that |
+| 261126-2s9 | Implement native Windows install discovery (LocalAppData, Program Files, and registry uninstall entries) so --app-server is no longer required, with tests. | 2026-11-26 | 9454ba3 | /home/nil/DiskD/W/Djarvur/zcode-acp/.planning/quick/261126-2s9-implement-native-windows-install-discovery-localappdata-pro |
 
 ## Deferred Items
 

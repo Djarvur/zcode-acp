@@ -18,16 +18,21 @@ engineering surface.
 Windows is supported by this tree: the process-management layer uses Job
 Objects, the coding-plan credential key is read from Windows Credential
 Manager (the same store the ZCode desktop writes), and `GOOS=windows go build
-./...` passes. Windows has no AppImage mount; point the wrapper at an installed
-ZCode desktop tree or `ZCode.exe` with `--app-server` /
-`ZCODE_ACP_APP_SERVER`:
+./...` passes. Windows has no AppImage mount, so the wrapper runs the installed
+desktop tree it discovers natively — the per-user install under
+`%LOCALAPPDATA%\Programs\ZCode` first, then the per-machine
+`%ProgramFiles%\ZCode`, then the uninstall-registry records under
+HKCU/HKLM. `--app-server` / `ZCODE_ACP_APP_SERVER` remains an
+optional override:
 
 ```powershell
 .\zcode-acp.exe --app-server "$env:LOCALAPPDATA\Programs\ZCode\ZCode.exe"
 ```
 
-Native Windows install discovery is not implemented yet, so the explicit
-override is currently required there. The coding-plan path needs an interactive
+Discovery validates the same layout-invariant tree on every platform
+(`ZCode.exe` + `resources\glm\zcode.cjs`) before it selects an install,
+and a machine with none of those sources still fails loud with one
+diagnostic row per source. The coding-plan path needs an interactive
 user logon session: Windows Credential Manager reads fail from a network logon
 (for example an SSH session) with `ERROR_NO_SUCH_LOGON_SESSION` — run the
 wrapper from the desktop session, as the ZCode desktop itself does. The
@@ -54,9 +59,10 @@ On the target machine the binary needs:
 
 - a ZCode desktop install — the wrapper discovers it at startup on Linux
   (env/flag override → desktop entry → version-ranked AppImage paths → package
-  paths; `--app-server` overrides the search). On Windows, native discovery is
-  pending: pass `--app-server`/`ZCODE_ACP_APP_SERVER` with the installed
-  `ZCode.exe` (or its tree root), and
+  paths) and on Windows (env/flag override → `%LOCALAPPDATA%\Programs\ZCode` →
+  `%ProgramFiles%\ZCode` → uninstall-registry entries, each candidate validated
+  by the invariant tree). `--app-server`/`ZCODE_ACP_APP_SERVER` overrides the
+  search on both platforms, and
 - on Linux, `secret-tool` (the `libsecret-tools` package) plus an unlocked
   gnome-keyring **only for the coding-plan auth path** — the api-key path
   needs neither. On Windows the coding-plan key comes from Windows Credential
@@ -329,14 +335,18 @@ owner's reference repo, adapted to this project):
 
 | Workflow | Triggers | What it runs |
 |----------|----------|--------------|
-| `pr-sanity` | push to `master`, any pull request, manual dispatch | Three jobs: **`build / vet / lint / test / tidy`** (go build, go vet, strict pinned golangci-lint, go test with the race detector, the experiments `node --test` suite, and a go.mod/go.sum tidy-diff check), **`govulncheck`** (reachable-vulnerability scan), **`secret-scan`** (secret-shape scan over the whole tracked tree, plus the docs conformance gate) |
+| `pr-sanity` | push to `master`, any pull request, manual dispatch | Four jobs: **`build / vet / lint / test / tidy`** (go build, go vet, strict pinned golangci-lint, go test with the race detector, the experiments `node --test` suite, and a go.mod/go.sum tidy-diff check), **`govulncheck`** (reachable-vulnerability scan), **`secret-scan`** (secret-shape scan over the whole tracked tree, plus the docs conformance gate), **`build / vet / test (windows)`** (the same go build, go vet, and race-enabled Go suite on a native `windows-latest` runner, with Go installed from the same `mise.toml` pin) |
 | `release` | `v*` tags only | goreleaser build + publish; inert until the release flow lands (no `.goreleaser.yaml` yet) |
 | `e2e-matrix` | manual dispatch only | Placeholder skeleton for the future self-hosted GNOME desktop e2e runner; inert until a runner is registered (Phase 7) |
 | `security-scheduled` | weekly schedule (Mondays 06:00 UTC) + manual dispatch | govulncheck over the module |
 
-Tool versions come from `mise.toml` only. CI installs the toolchain with
-`mise install` and runs the exact mise tasks the local gate loop uses — no
-workflow pins a second copy of any tool version.
+Tool versions come from `mise.toml` only. The Linux job installs the full tool
+set with `mise install`; the Windows job installs only the Go pin with
+`mise install go`. Both run the exact mise tasks the local gate loop uses, and
+no workflow pins a second copy of any tool version.
+
+The Windows job checks out `testdata/` at LF through `.gitattributes`, so the
+byte-exact golden fixtures are identical on both runners.
 
 CI runs offline test tiers only (the Go suite, the experiments node:test
 suite, static gates); it never talks to external AI services and never drives
@@ -354,6 +364,10 @@ first name are significant):
 
 Renaming one of these job names requires updating the protection rule in the
 same change.
+
+The `build / vet / test (windows)` job is not part of the protection body: it
+reports on every pull request, so the required set stays exactly these three
+names.
 
 ## Branch flow
 

@@ -1,0 +1,7 @@
+# Windows CI runners check out with Git for Windows' core.autocrlf=true, which
+# rewrites LF to CRLF in the working tree. The Go suite byte-compares golden
+# transcripts and fixtures (fake.CompareGolden), so testdata must be checked
+# out exactly as stored on every platform. All current testdata files are
+# text (golden transcript lines, JSON, Markdown); do not add binary fixtures
+# under testdata without revisiting this rule.
+**/testdata/** text eol=lf
