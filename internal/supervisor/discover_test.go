@@ -1118,6 +1118,35 @@ func TestDiscoverFindsNewestBuiltin(t *testing.T) {
 	}
 }
 
+// TestLinuxInstallKeepsNewestProviderCache pins layout-scoped cache ranking:
+// only a mac-app winner prefers its exact app version. Every Linux winner keeps
+// the numerically newest usable runtime-provider cache.
+func TestLinuxInstallKeepsNewestProviderCache(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(home, "Applications", "zcode-3.18.2", "squashfs-root")
+	writeBundleTree(t, root)
+	provider := writeRuntimeTree(t, home,
+		[]string{"3.18.2", "4.0.0"}, []int{44, 51})
+
+	install, probes, err := discoverAppsHome(t, home, []string{root})
+	if err != nil {
+		t.Fatalf("root install plus runtime tree must resolve: %v", err)
+	}
+
+	want := filepath.Join(provider, "4.0.0", fixtureEndpointDir, "zcode-builtin.json")
+	if install.BuiltinFile != want {
+		t.Fatalf("Linux BuiltinFile = %q, want the newest cache %q", install.BuiltinFile, want)
+	}
+	if install.Version != fixtureUnpackedVer {
+		t.Fatalf("install version = %q, want the older tree version %q", install.Version, fixtureUnpackedVer)
+	}
+
+	row, ok := probeRow(probes, "builtin-runtime")
+	if !ok || !strings.Contains(row.Result, "4.0.0") {
+		t.Fatalf("builtin-runtime row must name the newest Linux cache: %+v", row)
+	}
+}
+
 func TestDiscoverBundledBuiltinFallback(t *testing.T) {
 	// The QA-02 field failure (EXP-VM-QA02): a fresh machine has no
 	// ~/.zcode/v2/runtime/provider cache, the builtin-runtime probe honestly

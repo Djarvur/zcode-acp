@@ -4,10 +4,12 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // macAppFixture is a disposable app bundle tree for discovery tests.
@@ -112,6 +114,30 @@ func writeMacFile(t *testing.T, path string, mode os.FileMode) {
 	}
 	if err := os.WriteFile(path, []byte("fixture\n"), mode); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestReadBundleInfoBinaryContext proves a canceled caller context reaches the
+// binary-plist fallback. The local fixture is deliberately binary so the XML
+// parser cannot accept it; an already-canceled context prevents plutil launch.
+func TestReadBundleInfoBinaryContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Info.plist")
+	if err := os.WriteFile(path, []byte("bplist00\x00\x08"), 0o600); err != nil {
+		t.Fatalf("write binary plist fixture: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	_, err := readBundleInfo(ctx, path)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("readBundleInfo() error = %v, want context.Canceled", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("readBundleInfo() took %v with an already-canceled context", elapsed)
 	}
 }
 
