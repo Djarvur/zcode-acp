@@ -290,10 +290,13 @@ func testOmpTextLevel(t *testing.T) {
 // wrapper api key, the command's Dir (the workspace ref), and the fake
 // transcript path to read back ("" = none).
 type textRide struct {
-	home           string
-	apiKey         string
-	dir            string
-	transcriptPath string
+	home                string
+	apiKey              string
+	dir                 string
+	transcriptPath      string
+	path                string
+	disableNodeLauncher bool
+	extraEnv            []string
 }
 
 // textRun is one completed text run's observable output plus the fake
