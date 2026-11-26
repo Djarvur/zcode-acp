@@ -646,6 +646,7 @@ func readFixturePIDIfPresent(t *testing.T, path string) int {
 	if err != nil || pid <= 0 {
 		t.Fatalf("invalid optional PID record %s=%q: %v", path, string(data), err)
 	}
+
 	return pid
 }
 
