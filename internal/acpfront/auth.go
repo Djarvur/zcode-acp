@@ -714,12 +714,6 @@ func (f *Front) probePokeSetModel(ctx context.Context, sid string, res json.RawM
 	}
 }
 
-// autoAuthBudget bounds the silent authenticate at session/new: the
-// client's discovery scans wait ~9 s, so the all-local chain (the keyring
-// probe, the PAT mint, the read-back) must fit well inside; a slower
-// surface answers the honest builtin scope instead.
-const autoAuthBudget = 7 * time.Second
-
 // ensureSilentAuth runs the authenticate chain silently when NOTHING has
 // authenticated yet and the machinery is wired (v0.22.0, the discovery
 // sessions' catalog fix): the client's command/model catalog probes spawn

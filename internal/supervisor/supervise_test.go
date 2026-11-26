@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Process-group lifecycle tests (BRIDGE-03 part 2, plan 03-07 Task 2): the
 // staged shutdown (stdin end → wait → grace → group SIGKILL → reap, probe
 // precedent :638-653) kills the WHOLE process group with zero survivors —
@@ -394,19 +396,6 @@ func spawnSuperviseChild(ctx context.Context, mode string, stayMs int) (*supervi
 
 // waitSpawnedChild receives the SpawnFunc's child delivery (race-safe handoff
 // from the Start goroutine).
-func waitSpawnedChild(t *testing.T, spawnCh <-chan *supervisor.Child) *supervisor.Child {
-	t.Helper()
-
-	select {
-	case child := <-spawnCh:
-		return child
-	case <-time.After(spawnSettleDeadline):
-		t.Fatalf("no child delivered by the spawn path within %v", spawnSettleDeadline)
-
-		return nil
-	}
-}
-
 // readGrandchildPid reads the helper's "ready <pid>" line — the
 // synchronization point proving the grandchild EXISTS before the shutdown.
 func readGrandchildPid(t *testing.T, child *supervisor.Child) int {
@@ -464,24 +453,6 @@ func readGrandchildReady(child *supervisor.Child) (int, error) {
 
 	case <-time.After(spawnSettleDeadline):
 		return 0, fmt.Errorf("%w within %v", errReadyTimeout, spawnSettleDeadline)
-	}
-}
-
-// assertReaped asserts the monitor reaped the child (Done closed, Exited
-// delivered) — the "Wait reaps the child" half of the zero-survivors proof.
-func assertReaped(t *testing.T, child *supervisor.Child) {
-	t.Helper()
-
-	select {
-	case <-child.Done:
-	case <-time.After(groupGoneDeadline):
-		t.Fatalf("child was not reaped within %v after the staged shutdown", groupGoneDeadline)
-	}
-
-	select {
-	case <-child.Exited:
-	case <-time.After(groupGoneDeadline):
-		t.Fatal("the exit monitor never delivered the exit info")
 	}
 }
 

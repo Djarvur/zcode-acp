@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "batch_id": "261126-2s7",
+  "created_at": "2026-11-25T23:00:15.888Z",
+  "options": {},
+  "base_revision": "5863cc3a2f110a69f32eb83f74deabe320c93f21",
+  "items": [
+    {
+      "quick_id": "261126-2s8",
+      "client_id": null,
+      "description": "Add a windows-latest CI job to the pr-sanity workflow that runs go build, go vet, and go test on Windows using the repo's pinned Go toolchain, keeping the Linux gate unchanged.",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        ".github/workflows/pr-sanity.yml",
+        ".gitattributes",
+        "README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "d368bc4",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261126-2s9",
+      "client_id": null,
+      "description": "Implement native Windows install discovery (LocalAppData, Program Files, and registry uninstall entries) so --app-server is no longer required, with tests.",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "internal/supervisor/discover.go",
+        "internal/supervisor/discovery_windows.go",
+        "internal/supervisor/discovery_windows_model.go",
+        "internal/supervisor/discovery_windows_model_test.go",
+        "internal/supervisor/discovery_windows_test.go",
+        "README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": "9454ba3",
+      "failure_reason": null
+    }
+  ]
+}

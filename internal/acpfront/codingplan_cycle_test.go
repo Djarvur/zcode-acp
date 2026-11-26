@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -128,9 +129,6 @@ func cpCycleCipherBlobFromCorpus(t *testing.T) string {
 
 // More composed-cycle fixture constants (synthetic markers only).
 const (
-	// cpCycleWorkspace is the scripted workspace path (corpus-verbatim).
-	cpCycleWorkspace = "/tmp/happy-turn-ws"
-
 	// cpCycleProviderLabel is the ask frame's providerId literal
 	// (capture-verbatim — the desktop asks with the zhipu-account class).
 	cpCycleProviderLabel = "zhipu-account"
@@ -138,6 +136,11 @@ const (
 	// cpCycleDeltaText is the streamed reply text (one chunk, tool-less).
 	cpCycleDeltaText = "ok then"
 )
+
+// cpCycleWorkspace is the scripted workspace path (corpus-verbatim). It is
+// built from the platform temp root because session/new rejects POSIX paths
+// on Windows.
+var cpCycleWorkspace = filepath.Join(os.TempDir(), "happy-turn-ws") //nolint:gochecknoglobals // test fixture
 
 // errCycleSecondMint guards the mint-once contract at the cycle double (the
 // scriptedPat discipline: a second Ensure is a contract violation).

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package main
 
 // TestAgentBinaryEndToEnd (plan 04-05): the BUILT zcode-acp binary carries
@@ -32,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -301,7 +304,19 @@ const (
 // --appimage-mount path, validates the mounted tree, serves ACP from it, and
 // tears the mount down after the app-server. RED before the change: the
 // AppImage is treated as the app-server binary, so no mount is ever created.
+// skipUnlessLinux keeps the packed-AppImage/FUSE lifecycle tests on the
+// platform that owns that backend; macOS resolves .app bundles instead.
+func skipUnlessLinux(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS != "linux" {
+		t.Skip("packed-AppImage/FUSE lifecycle is Linux-only")
+	}
+}
+
 func TestAppImageMountEndToEnd(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
@@ -361,6 +376,8 @@ func TestAppImageMountEndToEnd(t *testing.T) {
 // falling through to discovery, and a directory override keeps its tree
 // diagnostics.
 func TestAppImageOverride(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
@@ -632,6 +649,8 @@ func e2eMountFailureCases() []e2eMountFailureCase {
 // readiness-timeout arm lives at the supervisor tier, where MountOpts can
 // shorten ReadyTimeout.
 func TestAppImageMountFailures(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 
 	for _, tc := range e2eMountFailureCases() {
@@ -845,6 +864,8 @@ func e2eAssertNoMountBase(t *testing.T, root string) {
 // that cannot reap the helper or prove the mount gone exits 1 even when a
 // signal was delivered (CR-01).
 func TestAppImageMountSignal(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
@@ -1136,6 +1157,8 @@ func e2eAssertTeardownFailure(t *testing.T, fixture, base, mountPath string, std
 // with the mount cause, and the app-server records no completed ride — the
 // supervisor never respawns against the vanished root.
 func TestAppImageMountLost(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
@@ -2933,6 +2956,7 @@ func testWiringClientVersion(t *testing.T) {
 		t.Fatalf("patClientVersion = %q, want the fixture tree's %q", got, wiringVersionSegment)
 	}
 
+	optDir := supervisor.DefaultOptDir()
 	bare := supervisor.Install{Root: optDir, Binary: optDir + "/zcode"} // the deb layout carries no version segment
 	if got := patClientVersion(bare)(); got != patDesktopVersionFallback {
 		t.Fatalf("patClientVersion(bare) = %q, want the documented %q fallback", got, patDesktopVersionFallback)
@@ -2982,6 +3006,7 @@ func TestDesktopVersionMounted(t *testing.T) {
 	})
 
 	t.Run("bare install keeps the documented fallback", func(t *testing.T) {
+		optDir := supervisor.DefaultOptDir()
 		bare := supervisor.Install{Root: optDir, Binary: optDir + "/zcode"}
 		if got := desktopVersion(bare); got != "" {
 			t.Fatalf("desktopVersion(bare) = %q, want no version", got)

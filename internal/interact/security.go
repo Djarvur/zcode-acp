@@ -91,7 +91,7 @@ func (l *SecurityKeyLoader) LookupCommand() (argv, env []string, err error) {
 
 	argv = []string{
 		l.bin, "find-generic-password",
-		"-s", credentialKeyService,
+		"-s", credentialKeyringService,
 		"-a", account,
 		"-w",
 	}

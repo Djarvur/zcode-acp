@@ -1,3 +1,5 @@
+//go:build linux
+
 // In-package mount contract tests (plan 10-01 Task 2): helperEnv is the only
 // helper-environment constructor and is unexported, so its exact allowlist is
 // asserted here (the external test package cannot read it). The hostile-parent

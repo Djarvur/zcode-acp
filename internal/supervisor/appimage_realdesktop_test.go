@@ -1,4 +1,4 @@
-//go:build realdesktop
+//go:build realdesktop && linux
 
 // Mount-first real-machine acceptance (VER-02, MNT-01, MNT-03, MNT-06; D-14)
 // — MANUAL-ONLY, never CI. The realdesktop build tag excludes this file from

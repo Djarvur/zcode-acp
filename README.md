@@ -14,19 +14,43 @@ engineering surface.
 
 ## Install
 
-**Platform support.** Linux and macOS are supported (this tree adds the macOS
-port; Linux remains the reference platform). Windows is not supported: the
-wrapper does not currently build there — the process-management and
-AppImage-mount layers use POSIX/Linux primitives, so `GOOS=windows go build
-./...` fails. A Windows port is very welcome: if you make it build and work
-there, send a pull request and we will review and merge it with gratitude.
+**Platform support.** Linux, macOS, and Windows are supported by this tree.
+Linux is the reference platform (v1 targets Ubuntu GNOME); macOS uses the
+installed `ZCode.app`; Windows uses the installed desktop tree. Windows support
+means: the process-management layer uses Job
+Objects, the coding-plan credential key is read from Windows Credential
+Manager (the same store the ZCode desktop writes), and `GOOS=windows go build
+./...` passes. Windows has no AppImage mount, so the wrapper runs the installed
+desktop tree it discovers natively — the per-user install under
+`%LOCALAPPDATA%\Programs\ZCode` first, then the per-machine
+`%ProgramFiles%\ZCode`, then the uninstall-registry records under
+HKCU/HKLM. `--app-server` / `ZCODE_ACP_APP_SERVER` remains an
+optional override:
 
-On macOS the wrapper discovers `ZCode.app` in `/Applications` and
-`$HOME/Applications`, validates `Contents/Info.plist`, and reads the version
-from the bundle. It launches `Contents/MacOS/ZCode` with
-`Contents/Resources/glm/zcode.cjs` and `ELECTRON_RUN_AS_NODE=1` — the same
-Electron-as-Node contract the Linux layouts use. macOS never enters the
-AppImage/FUSE path.
+```powershell
+.\zcode-acp.exe --app-server "$env:LOCALAPPDATA\Programs\ZCode\ZCode.exe"
+```
+
+Discovery validates the same layout-invariant tree on every platform
+(`ZCode.exe` + `resources\glm\zcode.cjs`) before it selects an install,
+and a machine with none of those sources still fails loud with one
+diagnostic row per source. The coding-plan path needs an interactive
+user logon session: Windows Credential Manager reads fail from a network logon
+(for example an SSH session) with `ERROR_NO_SUCH_LOGON_SESSION` — run the
+wrapper from the desktop session, as the ZCode desktop itself does. The
+unattended-VM scaffolding used to validate the port lives in
+[`scripts/windows-vm/`](scripts/windows-vm/): the Autounattend answer file, the
+offline Win32-OpenSSH tools ISO builder, and the real-backend
+`smoke-server.ps1`.
+
+On macOS the wrapper discovers `/Applications/ZCode.app` and
+`$HOME/Applications/ZCode.app`, validates `Contents/Info.plist`, and reads the
+bundle version. It launches `Contents/MacOS/ZCode` with
+`Contents/Resources/glm/zcode.cjs` and `ELECTRON_RUN_AS_NODE=1`; macOS never
+enters the AppImage/FUSE path. The desktop architecture must match the wrapper:
+`darwin-aarch64` on Apple silicon, `darwin-x86_64` on Intel. Discovery selects
+the matching runtime-provider cache under
+`~/.zcode/v2/runtime/provider/<platform>/<version>/`.
 
 Build from source with a Go toolchain pinned via
 [mise](https://mise.jdx.dev) (`mise.toml` carries the exact versions CI runs):
@@ -40,32 +64,21 @@ static binary with no runtime dependencies of its own; the backend it drives is
 the ZCode desktop install. Alternatively, fetch a release artifact and verify
 its checksum against the publisher's sidecar.
 
-The desktop app's architecture must match the wrapper: `darwin-aarch64` for
-Apple silicon, `darwin-x86_64` for Intel. The wrapper selects the matching
-runtime-provider cache (`~/.zcode/v2/runtime/provider/<platform>/<version>/`).
-
-macOS limitations in this release: Start Plan is not part of the macOS port;
-the wrapper is shipped as a standalone binary (no `.app` packaging, code
-signing, or notarization); and AppImage/FUSE plus deb/rpm discovery are
-Linux-only. The Linux behavior remains the regression reference.
-
 On the target machine the binary needs:
 
-- a ZCode desktop install — on Linux the wrapper discovers it at startup
+- a ZCode desktop install — the wrapper discovers it at startup on Linux
   (env/flag override → desktop entry → version-ranked AppImage paths → package
-  paths; `--app-server` overrides the search); on macOS the standard `.app`
-  locations are the primary probe, and
-- **Linux:** `secret-tool` (the `libsecret-tools` package) plus an unlocked
-  gnome-keyring **only for the coding-plan auth path** — the api-key path
-  needs neither.
-- **macOS:** no extra CLI for the api-key path. The coding-plan/OAuth path
-  reads the desktop's `enc:v2:os` key from the login Keychain through the
-  system `/usr/bin/security` tool; the login Keychain must be unlocked and the
-  ZCode desktop must have written the credential. The first access may show
-  the standard macOS "allow access" dialog — approve it once for the
-  `security` tool.
+  paths), on Windows (env/flag override → `%LOCALAPPDATA%\Programs\ZCode` →
+  `%ProgramFiles%\ZCode` → uninstall-registry entries), and on macOS
+  (`/Applications` → `$HOME/Applications`). Each candidate is validated by the
+  invariant tree. `--app-server`/`ZCODE_ACP_APP_SERVER` overrides the search
+  on every platform, and
+- on Linux, `secret-tool` (the `libsecret-tools` package) plus an unlocked
+  gnome-keyring; on Windows, Windows Credential Manager; on macOS, the login
+  Keychain via `/usr/bin/security` — all three **only for the coding-plan auth
+  path**. The api-key path needs none of them.
 
-**Packed-AppImage backend.** When the selected install is a packed `.AppImage`,
+**Packed-AppImage backend (Linux only).** When the selected install is a packed `.AppImage`,
 the wrapper mounts it read-only at startup through the AppImage's own
 `--appimage-mount` runtime and runs the app-server from that mount. It creates
 no extraction copy: no `squashfs-root`/`zcode-<ver>` directory is added, and
@@ -117,10 +130,10 @@ back to reading the desktop's own config store.
 
 **Coding plan** — the desktop login IS the credential: nothing to export, no
 env var. Requirements: the ZCode desktop installed and logged in to the
-individual coding plan, and an unlocked session keyring — gnome-keyring on
-Linux, the login Keychain on macOS. The account's model catalog is read back
-from the account providers at session creation; the wrapper keeps the
-app-server's private dialect off the ACP wire.
+individual coding plan, and an unlocked keyring — gnome-keyring on Linux,
+Windows Credential Manager on Windows, or the login Keychain on macOS. The
+account's model catalog is read back from the account providers at session
+creation; the wrapper keeps the app-server's private dialect off the ACP wire.
 
 ## Troubleshooting
 
@@ -135,20 +148,21 @@ fix:
 | `keyring probe: no ZCode desktop login found in the keyring (log in via the ZCode desktop first)` | no matching ZCode credential in the keyring — log in via the desktop first |
 | `keyring probe: keyring lookup did not answer within its bound` | the bounded lookup (5 s ceiling) outlived its bound |
 
-**macOS Keychain sentinels** (the coding-plan path). The wrapper uses
-`/usr/bin/security` with the desktop's `ZCode Credential Encryption` service
-and a sha256 account derived from the resolved `credentials.json` path:
+The four arms above are the Linux `secret-tool` probe. On Windows the cached
+arms are `keyring probe: Windows Credential Manager is unavailable` (a network
+logon or a locked store) and the shared `no ZCode desktop login found` /
+`no Windows Credential Manager entry for this credentials file`; the fix for
+the latter is to log in via the installed ZCode desktop (or run the wrapper in
+the interactive desktop session where that login lives).
 
-| Message | Meaning |
-|---------|---------|
-| `keychain probe: /usr/bin/security not found (macOS system security tool missing)` | the system security tool is missing (unusual macOS install) |
-| `keychain probe: no ZCode desktop credential found in the macOS Keychain (log in to the ZCode desktop and retry)` | no matching item — sign in to the ZCode desktop first |
-| `keychain probe: the macOS Keychain is locked or cannot prompt (unlock the login keychain and retry)` | the login Keychain is locked or its access prompt cannot be shown |
-| `keychain probe: keychain lookup did not answer within its bound` | the bounded lookup (5 s ceiling) outlived its bound |
-
-The first successful read may require a one-time macOS dialog allowing
-`security` access to the item. Approve it (Always Allow) while the login
-Keychain is unlocked.
+On macOS the Keychain arms are:
+`keychain probe: /usr/bin/security not found (macOS system security tool
+missing)`, `keychain probe: no ZCode desktop credential found in the macOS
+Keychain (log in to the ZCode desktop and retry)`, `keychain probe: the macOS
+Keychain is locked or cannot prompt (unlock the login keychain and retry)`, and
+`keychain probe: keychain lookup did not answer within its bound`. The first
+successful read may require a one-time macOS "allow access" dialog; approve it
+while the login Keychain is unlocked.
 
 **Custom model returns 400 “maximum context length”** — a user-added
 OpenAI-compatible model needs an output-token cap in
@@ -191,6 +205,9 @@ session with an explicit cause (`zcode: appimage mount lost: <appimage> (mount
 and requires semver ≥ 18.1.9 for model selectors to resolve (≥ 17.0.5 to
 install at all). An older stamp blocks the card before any protocol flows.
 This binary prints `18.1.9+zacp.0`; check with `zcode-acp omp --version`.
+macOS limitations in this release: Start Plan is not part of the macOS port;
+the wrapper ships as a standalone binary (no `.app` packaging, signing, or
+notarization); AppImage/FUSE and deb/rpm discovery are Linux-only.
 
 **Close-timeout toast** — the wrapper's close budget and the client's
 `session/close` timeout are both 10 s; a turn ending exactly at the boundary
@@ -239,14 +256,14 @@ agent to (adjust the path to where you put the binary):
 /path/to/zcode-acp omp
 ```
 
-**macOS.** The same override works with a binary built on macOS. Put the binary
+**macOS.** The same override works with a binary built on macOS. Put it
 somewhere stable (for example `~/bin/zcode-acp`), install ZCode Desktop in
 `/Applications`, and leave `--app-server` unset — discovery selects
-`/Applications/ZCode.app` and reads its version automatically. If Orca was
-started from the GUI, the wrapper unions the login-shell `PATH` (mise,
-Homebrew, Go, cargo, orbstack, and the bundled ZCode tools) into the backend's
-environment, so tools resolve inside turns even though launchd's base PATH is
-minimal. Only `PATH` is unioned; proxy/secret variables remain scrubbed.
+`/Applications/ZCode.app` automatically. If Orca was started from the GUI, the
+wrapper unions the login-shell `PATH` (mise, Homebrew, Go, cargo, orbstack, and
+the bundled ZCode tools) into the backend environment, so tools resolve even
+though launchd's base PATH is minimal. Only `PATH` is unioned; proxy and secret
+variables remain scrubbed.
 
 Mechanics worth knowing before you type it:
 
@@ -366,14 +383,18 @@ owner's reference repo, adapted to this project):
 
 | Workflow | Triggers | What it runs |
 |----------|----------|--------------|
-| `pr-sanity` | push to `master`, any pull request, manual dispatch | Three jobs: **`build / vet / lint / test / tidy`** (go build, go vet, strict pinned golangci-lint, go test with the race detector, the experiments `node --test` suite, and a go.mod/go.sum tidy-diff check), **`govulncheck`** (reachable-vulnerability scan), **`secret-scan`** (secret-shape scan over the whole tracked tree, plus the docs conformance gate) |
+| `pr-sanity` | push to `master`, any pull request, manual dispatch | Four jobs: **`build / vet / lint / test / tidy`** (go build, go vet, strict pinned golangci-lint, go test with the race detector, the experiments `node --test` suite, and a go.mod/go.sum tidy-diff check), **`govulncheck`** (reachable-vulnerability scan), **`secret-scan`** (secret-shape scan over the whole tracked tree, plus the docs conformance gate), **`build / vet / test (windows)`** (the same go build, go vet, and race-enabled Go suite on a native `windows-latest` runner, with Go installed from the same `mise.toml` pin) |
 | `release` | `v*` tags only | goreleaser build + publish; inert until the release flow lands (no `.goreleaser.yaml` yet) |
 | `e2e-matrix` | manual dispatch only | Placeholder skeleton for the future self-hosted GNOME desktop e2e runner; inert until a runner is registered (Phase 7) |
 | `security-scheduled` | weekly schedule (Mondays 06:00 UTC) + manual dispatch | govulncheck over the module |
 
-Tool versions come from `mise.toml` only. CI installs the toolchain with
-`mise install` and runs the exact mise tasks the local gate loop uses — no
-workflow pins a second copy of any tool version.
+Tool versions come from `mise.toml` only. The Linux job installs the full tool
+set with `mise install`; the Windows job installs only the Go pin with
+`mise install go`. Both run the exact mise tasks the local gate loop uses, and
+no workflow pins a second copy of any tool version.
+
+The Windows job checks out `testdata/` at LF through `.gitattributes`, so the
+byte-exact golden fixtures are identical on both runners.
 
 CI runs offline test tiers only (the Go suite, the experiments node:test
 suite, static gates); it never talks to external AI services and never drives
@@ -391,6 +412,10 @@ first name are significant):
 
 Renaming one of these job names requires updating the protection rule in the
 same change.
+
+The `build / vet / test (windows)` job is not part of the protection body: it
+reports on every pull request, so the required set stays exactly these three
+names.
 
 ## Branch flow
 

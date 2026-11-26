@@ -28,6 +28,9 @@ import (
 )
 
 const (
+	// macExecMask is the executable-bit mask a bundle binary must carry.
+	macExecMask = 0o111
+
 	// layoutMacApp marks an Install resolved from a macOS .app bundle.
 	layoutMacApp = "mac-app"
 
@@ -181,7 +184,7 @@ func validateBundleBinary(path string) string {
 	if !info.Mode().IsRegular() {
 		return fmt.Sprintf("bundle executable %s: %v", path, errMacNotRegular)
 	}
-	if info.Mode().Perm()&appExecMask == 0 {
+	if info.Mode().Perm()&macExecMask == 0 {
 		return path + " is not executable"
 	}
 

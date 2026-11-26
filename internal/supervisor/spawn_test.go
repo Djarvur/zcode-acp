@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Spawn-contract tests (BRIDGE-03 part 2, plan 03-07 Task 1): the canonical
 // argv line, the allowlisted child env with the proxy scrub, and the
 // process-group start — all asserted on a REAL child's OBSERVED state through

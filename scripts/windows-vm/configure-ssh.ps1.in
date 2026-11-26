@@ -1,0 +1,92 @@
+$ErrorActionPreference = "Stop"
+
+# The OpenSSH server is not part of the LTSC image and Windows Update is not
+# always reachable (its delivery CDN may be blocked). Prefer the offline
+# package on the tools ISO, which is mounted with the volume label ZCODE_TOOLS.
+$tools = Get-CimInstance -ClassName Win32_LogicalDisk |
+    Where-Object { $_.VolumeName -eq "ZCODE_TOOLS" } |
+    Select-Object -First 1
+
+if (-not (Get-Service -Name sshd -ErrorAction SilentlyContinue)) {
+    if (-not $tools) {
+        throw "OpenSSH is not installed and the ZCODE_TOOLS media is not attached"
+    }
+
+    $toolsRoot = $tools.DeviceID + "\"
+    $msi = Join-Path $toolsRoot "OpenSSH-Win64-v9.5.0.0.msi"
+    $zip = Join-Path $toolsRoot "OpenSSH-Win64-v9.5.0.0.zip"
+
+    if (Test-Path -LiteralPath $msi) {
+        $install = Start-Process -FilePath msiexec.exe -Wait -PassThru -ArgumentList @(
+            "/i", "`"$msi`"", "/qn", "/norestart"
+        )
+        if ($install.ExitCode -ne 0) {
+            throw "OpenSSH MSI installation failed with exit code $($install.ExitCode)"
+        }
+    }
+    elseif (Test-Path -LiteralPath $zip) {
+        $target = Join-Path $env:ProgramFiles "OpenSSH"
+        if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force
+        }
+        Expand-Archive -LiteralPath $zip -DestinationPath $env:ProgramFiles -Force
+
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $target "install-sshd.ps1")
+
+        $configDir = Join-Path $env:ProgramData "ssh"
+        New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+        $config = Join-Path $configDir "sshd_config"
+        if (-not (Test-Path -LiteralPath $config)) {
+            Copy-Item -LiteralPath (Join-Path $target "sshd_config_default") -Destination $config
+        }
+        & (Join-Path $target "ssh-keygen.exe") -A
+    }
+    else {
+        throw "OpenSSH package not found on the ZCODE_TOOLS media"
+    }
+}
+
+Set-Service -Name sshd -StartupType Automatic
+Start-Service sshd
+
+if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (zcode-acp VM)" `
+        -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow -Profile Any
+}
+else {
+    Enable-NetFirewallRule -Name "OpenSSH-Server-In-TCP"
+}
+
+$publicKey = "__PUBLIC_KEY__"
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+$sshDir = Join-Path $env:USERPROFILE ".ssh"
+$authorizedKeys = Join-Path $sshDir "authorized_keys"
+New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
+[System.IO.File]::WriteAllText($authorizedKeys, $publicKey + "`n", $utf8NoBom)
+& icacls.exe $sshDir /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+& icacls.exe $authorizedKeys /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+
+# The default sshd_config reads keys for Administrators from this file instead
+# of the per-user profile, so zcode (an administrator) needs it here as well.
+$adminKeys = Join-Path $env:ProgramData "ssh\administrators_authorized_keys"
+$keys = @()
+if (Test-Path -LiteralPath $adminKeys) {
+    $keys = @(Get-Content -LiteralPath $adminKeys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+if ($keys -notcontains $publicKey) {
+    $keys += $publicKey
+}
+New-Item -ItemType Directory -Path (Split-Path -Parent $adminKeys) -Force | Out-Null
+[System.IO.File]::WriteAllLines($adminKeys, $keys, $utf8NoBom)
+# sshd rejects the file when inherited permissions are too broad.
+& icacls.exe $adminKeys /inheritance:r /grant:r "*S-1-5-32-544:F" "*S-1-5-18:F" | Out-Null
+
+if ((Get-Service -Name sshd).Status -eq "Running") {
+    Restart-Service sshd
+}
+else {
+    Start-Service sshd
+}
+
+Write-Output "OpenSSH Server configured for $env:USERNAME on $env:COMPUTERNAME"

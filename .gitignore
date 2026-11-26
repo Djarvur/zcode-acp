@@ -40,6 +40,9 @@ experiments/raw/
 # to the repo root (discarded again once more packages exist, Phase 3+)
 /zcode-acp
 
+# Windows VM smoke logs and generated local artifacts
+/logs/
+
 # GoReleaser snapshot output
 /dist/
 

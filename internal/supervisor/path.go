@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -52,8 +53,8 @@ func EnrichParentPATH(ctx context.Context, env []string) []string {
 // enrichParentPATH is the platform-neutral implementation behind the exported
 // Darwin gate.
 func enrichParentPATH(ctx context.Context, env []string, run loginShellRunner) []string {
-	callerPath := envValue(env, loginShellPathVar)
-	shell := safeLoginShell(envValue(env, "SHELL"))
+	callerPath := envSliceValue(env, loginShellPathVar)
+	shell := safeLoginShell(envSliceValue(env, "SHELL"))
 
 	out, err := run(ctx, shell, loginShellArgs(shell), loginShellEnv(env))
 	if err != nil {
@@ -128,6 +129,29 @@ func loginShellEnv(env []string) []string {
 	return out
 }
 
+// cappedWriter is a bounded byte sink: bytes beyond limit are dropped while
+// Write still claims the whole chunk, so a chatty rc can never grow memory.
+type cappedWriter struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+// Write implements io.Writer over the capped sink.
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if room := w.limit - w.buf.Len(); room > 0 {
+		if len(p) > room {
+			p = p[:room]
+		}
+		_, _ = w.buf.Write(p)
+	}
+
+	return n, nil
+}
+
+// String returns the captured bytes.
+func (w *cappedWriter) String() string { return w.buf.String() }
+
 // defaultLoginShellRunner runs the probe under the bounded timeout and cap.
 func defaultLoginShellRunner(ctx context.Context, shell string, args, env []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, loginShellTimeout)
@@ -136,7 +160,7 @@ func defaultLoginShellRunner(ctx context.Context, shell string, args, env []stri
 	cmd := exec.CommandContext(ctx, shell, args...)
 	cmd.Env = env
 
-	var out cappedBuffer
+	var out cappedWriter
 
 	out.limit = loginShellCap
 
@@ -186,7 +210,7 @@ func unionPATH(shellPath, callerPath string) string {
 }
 
 // envValue reads one variable from an env slice.
-func envValue(env []string, key string) string {
+func envSliceValue(env []string, key string) string {
 	prefix := key + "="
 	for _, kv := range env {
 		if value, ok := strings.CutPrefix(kv, prefix); ok {

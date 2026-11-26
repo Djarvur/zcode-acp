@@ -1,3 +1,5 @@
+//go:build darwin
+
 package supervisor_test
 
 import (
@@ -16,6 +18,57 @@ const (
 	fixtureMacAppLayout  = "mac-app"
 	fixtureMacAppVersion = "4.0.0"
 )
+
+// fixtureMacEndpointDir mirrors the runtime-provider endpoint directory.
+const fixtureMacEndpointDir = "endpoint-78d7c3bef4024722642626fe3669a799"
+
+// macNoHitSeams blanks the override on the Darwin stage.
+func macNoHitSeams() []func(*supervisor.Probers) {
+	return []func(*supervisor.Probers){
+		func(p *supervisor.Probers) {
+			p.Override = func() (supervisor.Install, bool) { return supervisor.Install{}, false }
+		},
+	}
+}
+
+// macProbeRows returns every diagnostics row carrying name.
+func macProbeRows(probes []supervisor.Probe, name string) []supervisor.Probe {
+	rows := make([]supervisor.Probe, 0, 1)
+	for _, row := range probes {
+		if row.Name == name {
+			rows = append(rows, row)
+		}
+	}
+
+	return rows
+}
+
+// macProbeRow finds the first diagnostics row for one probe name.
+func macProbeRow(probes []supervisor.Probe, name string) (supervisor.Probe, bool) {
+	rows := macProbeRows(probes, name)
+	if len(rows) == 0 {
+		return supervisor.Probe{}, false
+	}
+
+	return rows[0], true
+}
+
+// macCanonicalPath matches production's EvalSymlinks-resolved expectations.
+func macCanonicalPath(t *testing.T, path string) string {
+	t.Helper()
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("abs %s: %v", path, err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+
+	return resolved
+}
 
 // writeMacBundleFixture lays down a complete ZCode.app fixture and returns its
 // app path.
@@ -65,7 +118,7 @@ func discoverMacApps(t *testing.T, apps []string) (supervisor.Install, []supervi
 		OptDir:  filepath.Join(t.TempDir(), "ZCode"),
 		MacApps: func() []string { return apps },
 	}
-	for _, seam := range noHitSeams() {
+	for _, seam := range macNoHitSeams() {
 		seam(&p)
 	}
 
@@ -91,18 +144,14 @@ func TestMacAppDiscovery(t *testing.T) {
 		t.Fatalf("mac app must resolve the bundled provider table: %+v", install)
 	}
 
-	selected, ok := probeRow(probes, fixtureMacAppLayout)
+	selected, ok := macProbeRow(probes, fixtureMacAppLayout)
 	if !ok || !strings.Contains(selected.Result, "selected: mac-app version 4.0.0") {
 		t.Fatalf("mac-app row = %+v, want a selected row", selected)
 	}
-	if rows := probeRows(probes, "mac-app-candidate"); len(rows) != 2 {
+	if rows := macProbeRows(probes, "mac-app-candidate"); len(rows) != 2 {
 		t.Fatalf("mac-app-candidate rows = %d, want 2: %+v", len(rows), rows)
 	}
-	appImage, ok := probeRow(probes, "appimage-rank")
-	if !ok || !strings.Contains(appImage.Result, "not consulted") {
-		t.Fatalf("appimage stage must not be consulted after a mac win: %+v", appImage)
-	}
-	bundled, ok := probeRow(probes, "builtin-bundled")
+	bundled, ok := macProbeRow(probes, "builtin-bundled")
 	if !ok || !strings.Contains(bundled.Query, "Contents/Resources/config/provider") {
 		t.Fatalf("builtin-bundled row must name the app-relative provider path: %+v", bundled)
 	}
@@ -120,7 +169,7 @@ func TestMacAppDiscoveryRejectsInvalid(t *testing.T) {
 		t.Fatalf("discover invalid app err = %v, want ErrNoInstall", err)
 	}
 
-	candidates := probeRows(probes, "mac-app-candidate")
+	candidates := macProbeRows(probes, "mac-app-candidate")
 	if len(candidates) != 1 || !strings.Contains(candidates[0].Result, "zcode-builtin.json") {
 		t.Fatalf("invalid app must produce an actionable candidate row: %+v", candidates)
 	}
@@ -129,7 +178,7 @@ func TestMacAppDiscoveryRejectsInvalid(t *testing.T) {
 //nolint:cyclop,funlen // each override spelling is a separate acceptance branch
 func TestMacAppOverrideForms(t *testing.T) {
 	app := writeMacBundleFixture(t, filepath.Join(t.TempDir(), "ZCode.app"))
-	canonical := canonicalTestPath(t, app)
+	canonical := macCanonicalPath(t, app)
 
 	want, ok := supervisor.OverrideInstall(app)
 	if !ok {
@@ -205,7 +254,7 @@ func TestMacAppOverrideProbeRow(t *testing.T) {
 		OptDir:  filepath.Join(t.TempDir(), "ZCode"),
 		AppDirs: func() []string { return nil },
 	}
-	for _, seam := range noHitSeams() {
+	for _, seam := range macNoHitSeams() {
 		seam(&p)
 	}
 	p.Override = func() (supervisor.Install, bool) {
@@ -217,11 +266,11 @@ func TestMacAppOverrideProbeRow(t *testing.T) {
 		t.Fatalf("discover with override: %v", err)
 	}
 
-	row, ok := probeRow(probes, "override")
+	row, ok := macProbeRow(probes, "override")
 	if !ok {
 		t.Fatal("override row missing")
 	}
-	for _, want := range []string{"found: mac-app", canonicalTestPath(t, app), "(version 4.0.0)"} {
+	for _, want := range []string{"found: mac-app", macCanonicalPath(t, app), "(version 4.0.0)"} {
 		if !strings.Contains(row.Result, want) {
 			t.Fatalf("override row %q missing %q", row.Result, want)
 		}
@@ -235,7 +284,7 @@ func writeMacRuntimeTree(t *testing.T, home, platform string, versions []string,
 
 	provider := filepath.Join(home, ".zcode", "v2", "runtime", "provider", platform)
 	for i, version := range versions {
-		dir := filepath.Join(provider, version, fixtureEndpointDir)
+		dir := filepath.Join(provider, version, fixtureMacEndpointDir)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatalf("mkdir runtime %s: %v", version, err)
 		}
@@ -259,7 +308,7 @@ func TestMacAppProviderCache(t *testing.T) {
 		MacApps:                 func() []string { return []string{app} },
 		RuntimeProviderPlatform: "darwin-aarch64",
 	}
-	for _, seam := range noHitSeams() {
+	for _, seam := range macNoHitSeams() {
 		seam(&p)
 	}
 
@@ -268,12 +317,12 @@ func TestMacAppProviderCache(t *testing.T) {
 		t.Fatalf("discover mac app with provider cache: %v", err)
 	}
 
-	want := filepath.Join(provider, fixtureMacAppVersion, fixtureEndpointDir, "zcode-builtin.json")
+	want := filepath.Join(provider, fixtureMacAppVersion, fixtureMacEndpointDir, "zcode-builtin.json")
 	if install.BuiltinFile != want {
 		t.Fatalf("BuiltinFile = %q, want the app-version cache path %q", install.BuiltinFile, want)
 	}
 
-	row, ok := probeRow(probes, "builtin-runtime")
+	row, ok := macProbeRow(probes, "builtin-runtime")
 	if !ok || !strings.Contains(row.Query, "darwin-aarch64") {
 		t.Fatalf("builtin-runtime row must name the Darwin platform: %+v", row)
 	}
@@ -286,7 +335,7 @@ func TestMacAppSpawnContract(t *testing.T) {
 		t.Fatalf("discover mac app: %v", err)
 	}
 
-	root := canonicalTestPath(t, app)
+	root := macCanonicalPath(t, app)
 	got := supervisor.SpawnArgv(install)
 	want := []string{
 		filepath.Join(root, "Contents", "MacOS", "ZCode"),

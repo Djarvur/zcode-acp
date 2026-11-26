@@ -1,3 +1,5 @@
+//go:build darwin
+
 package interact_test
 
 import (
@@ -15,6 +17,8 @@ import (
 
 	"github.com/Djarvur/zcode-acp/internal/interact"
 )
+
+const fixtureHomeEnv = "HOME=/fixture-home"
 
 var errSecurityExit = errors.New("exit status 1")
 

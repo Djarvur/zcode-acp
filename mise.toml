@@ -45,10 +45,10 @@ run = "node --test experiments/*.test.mjs"
 [tasks.tidy-diff]
 description = "go mod tidy and fail on any go.mod/go.sum drift"
 # T-4-SC pin discipline (plan 04-01): besides the tidy drift check the gate
-# asserts the D-01-approved dependency expectation — exactly one require
-# line, pinned to acp-go-sdk v0.20.0. Phase 5 obligation: extend this
-# expectation when the godbus dependency lands (a second require line).
-run = "go mod tidy && git diff --exit-code -- go.mod go.sum && [ \"$(grep -c '^require' go.mod)\" = \"1\" ] && grep -Fq 'require github.com/coder/acp-go-sdk v0.20.0' go.mod"
+# asserts the D-01-approved dependency expectation — one require block with
+# exactly two pinned module lines: acp-go-sdk v0.20.0 and, for the Windows
+# port, golang.org/x/sys v0.50.0.
+run = "go mod tidy && git diff --exit-code -- go.mod go.sum && [ \"$(grep -c '^require' go.mod)\" = \"1\" ] && grep -Fq 'github.com/coder/acp-go-sdk v0.20.0' go.mod && grep -Fq 'golang.org/x/sys v0.50.0' go.mod"
 
 [tasks.secret-scan]
 description = "Scan tracked files for credential-shaped values"

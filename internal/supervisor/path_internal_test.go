@@ -47,7 +47,7 @@ func TestEnrichParentPATHUnion(t *testing.T) {
 	got := enrichParentPATH(context.Background(), env, runner.run)
 
 	want := "/shell/bin:/caller/bin:/usr/bin:/opt/local/bin"
-	if path := envValue(got, "PATH"); path != want {
+	if path := envSliceValue(got, "PATH"); path != want {
 		t.Fatalf("PATH = %q, want the shell-first union %q", path, want)
 	}
 	if runner.shell != "/bin/zsh" {
@@ -61,12 +61,12 @@ func TestEnrichParentPATHUnion(t *testing.T) {
 	}
 
 	for _, key := range []string{"PATH", "HOME", "SHELL", "LANG"} {
-		if envValue(runner.env, key) == "" {
+		if envSliceValue(runner.env, key) == "" {
 			t.Fatalf("probe env missing %s: %v", key, runner.env)
 		}
 	}
 	for _, key := range []string{"HTTP_PROXY", "SECRET"} {
-		if envValue(runner.env, key) != "" {
+		if envSliceValue(runner.env, key) != "" {
 			t.Fatalf("probe env leaked %s: %v", key, runner.env)
 		}
 	}
@@ -78,7 +78,7 @@ func TestEnrichParentPATHFallbacks(t *testing.T) {
 		env := []string{fixtureCallerEnv, fixtureHomeEnv, fixtureZshEnv}
 
 		got := enrichParentPATH(context.Background(), env, runner.run)
-		if path := envValue(got, "PATH"); path != "/caller/bin" {
+		if path := envSliceValue(got, "PATH"); path != "/caller/bin" {
 			t.Fatalf("PATH = %q, want the caller PATH after a probe failure", path)
 		}
 	})
@@ -88,7 +88,7 @@ func TestEnrichParentPATHFallbacks(t *testing.T) {
 		env := []string{fixtureCallerEnv, fixtureHomeEnv, fixtureZshEnv}
 
 		got := enrichParentPATH(context.Background(), env, runner.run)
-		if path := envValue(got, "PATH"); path != "/caller/bin" {
+		if path := envSliceValue(got, "PATH"); path != "/caller/bin" {
 			t.Fatalf("PATH = %q, want the caller PATH after empty output", path)
 		}
 	})
