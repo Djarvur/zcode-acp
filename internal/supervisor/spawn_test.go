@@ -65,6 +65,10 @@ const (
 
 	// fixtureLayout is the desktop Install layout of the fixture shape.
 	fixtureLayout = "deb"
+
+	// fixtureAppServerArg/fixtureStdioArg are the canonical argv tail.
+	fixtureAppServerArg = "app-server"
+	fixtureStdioArg     = "--stdio"
 )
 
 // errNoReportLine is readSpawnReport's EOF failure sentinel.
@@ -239,13 +243,13 @@ func assertObservedEnv(t *testing.T, inst supervisor.Install, report spawnReport
 }
 
 // TestSpawnArgvShape pins the canonical spawn line's argv: exactly
-// [Binary, Entrypoint, "app-server", "--stdio"] for a desktop Install
+// [Binary, Entrypoint, fixtureAppServerArg, fixtureStdioArg] for a desktop Install
 // (install-discovery.md :48-52 — the contract Phase 4's front leg inherits).
 func TestSpawnArgvShape(t *testing.T) {
 	inst := fixtureInstall()
 
 	got := supervisor.SpawnArgv(inst)
-	want := []string{inst.Binary, inst.Entrypoint, "app-server", "--stdio"}
+	want := []string{inst.Binary, inst.Entrypoint, fixtureAppServerArg, fixtureStdioArg}
 
 	if !slices.Equal(got, want) {
 		t.Fatalf("SpawnArgv(inst) = %v, want exactly %v (install-discovery.md :48-52)", got, want)
@@ -306,5 +310,50 @@ func terminateSpawnChild(t *testing.T, child *supervisor.Child) {
 	case <-time.After(spawnExitDeadline):
 		_ = syscall.Kill(-child.PgID, syscall.SIGKILL)
 		<-child.Exited
+	}
+}
+
+// TestSpawnArgvForInstallMacApp locks the macOS launcher choice: a mac-app
+// install uses Node from the enriched PATH when present, and falls back to the
+// canonical Electron argv otherwise. Non-mac layouts never switch launchers.
+func TestSpawnArgvForInstallMacApp(t *testing.T) {
+	t.Parallel()
+
+	binDir := t.TempDir()
+	nodePath := filepath.Join(binDir, "node")
+	if err := os.WriteFile(nodePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write node fixture: %v", err)
+	}
+
+	inst := supervisor.Install{
+		Root:       "/Applications/ZCode.app",
+		Binary:     "/Applications/ZCode.app/Contents/MacOS/ZCode",
+		Entrypoint: "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs",
+		Layout:     "mac-app",
+	}
+	env := []string{"PATH=" + binDir}
+
+	got := supervisor.SpawnArgvForInstall(inst, env)
+	want := []string{nodePath, inst.Entrypoint, fixtureAppServerArg, fixtureStdioArg}
+	if !slices.Equal(got, want) {
+		t.Fatalf("mac-app argv = %v, want Node argv %v", got, want)
+	}
+
+	noNode := supervisor.SpawnArgvForInstall(inst, []string{"PATH=" + t.TempDir()})
+	if !slices.Equal(noNode, supervisor.SpawnArgv(inst)) {
+		t.Fatalf("no-Node argv = %v, want canonical %v", noNode, supervisor.SpawnArgv(inst))
+	}
+
+	disabled := supervisor.SpawnArgvForInstall(inst, []string{
+		"PATH=" + binDir, "ZCODE_ACP_DISABLE_NODE_LAUNCHER=1",
+	})
+	if !slices.Equal(disabled, supervisor.SpawnArgv(inst)) {
+		t.Fatalf("disabled Node argv = %v, want canonical %v", disabled, supervisor.SpawnArgv(inst))
+	}
+
+	linux := inst
+	linux.Layout = "deb"
+	if got := supervisor.SpawnArgvForInstall(linux, env); !slices.Equal(got, supervisor.SpawnArgv(linux)) {
+		t.Fatalf("non-mac layout argv = %v, want canonical %v", got, supervisor.SpawnArgv(linux))
 	}
 }

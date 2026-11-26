@@ -572,19 +572,29 @@ func (f *Front) Prompt(
 	case turn.StopCancelled:
 		return acpport.StopCancelled, nil
 	case turn.StopFailed, turn.StopError:
-		// A5: ACP v1 has no failure stopReason — a backend failure surfaces
-		// as the coded internal error, never a synthetic result. A stall
-		// resolution records its cause on Resolution.Err (the no-progress
-		// watchdog): surface that cause verbatim so the client sees a coded
-		// -32603 naming the stall instead of a silent end_turn.
-		if res := st.Machine.Resolution(); res.Err != nil {
-			return "", acpport.NewInternal("session/prompt: %v", res.Err)
-		}
-
-		return "", acpport.NewInternal("session/prompt: turn ended: %s", reason)
+		return "", promptFailureError(st.Machine.Resolution(), reason)
 	default:
 		return "", acpport.NewInternal("session/prompt: turn ended: %s", reason)
 	}
+}
+
+// promptFailureError maps a failed/error turn resolution onto the ACP error
+// surface. ACP v1 has no failure stopReason, so this is always -32603; a
+// recorded cause (the stall watchdog) rides verbatim, while a bare backend
+// turn-failed gets an actionable provider/quota hint because the observed
+// 4.0.0 turn-failed event carries no provider detail.
+func promptFailureError(res turn.Resolution, reason turn.StopReason) error {
+	if res.Err != nil {
+		return acpport.NewInternal("session/prompt: %v", res.Err)
+	}
+
+	if reason == turn.StopFailed {
+		return acpport.NewInternal(
+			"session/prompt: backend turn failed before completion " +
+				"(the model provider refused the turn; check its quota/limits and retry)")
+	}
+
+	return acpport.NewInternal("session/prompt: turn failed (%s)", reason)
 }
 
 // promptRunError maps a machine Run error onto the client surface: the

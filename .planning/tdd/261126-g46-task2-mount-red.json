@@ -1,0 +1,11 @@
+{
+  "command": "CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go test -c -o /tmp/zcode-acp-g46-supervisor-linux.test ./internal/supervisor && docker run --rm --network none --platform linux/arm64 -v /tmp/zcode-acp-g46-supervisor-linux.test:/supervisor.test:ro debian:bookworm-slim /supervisor.test -test.run='^TestMountStopReapsDescendantsAfterHelperExit$' -test.count=1",
+  "exitCode": 1,
+  "output": "TAP version 13\n1..1\nnot ok 1 - TestMountStopReapsDescendantsAfterHelperExit\n# === RUN   TestMountStopReapsDescendantsAfterHelperExit\n#     mount_test.go:629: the helper descendant 15 still exists after teardown\n# --- FAIL: TestMountStopReapsDescendantsAfterHelperExit (5.06s)\n",
+  "targetTest": "TestMountStopReapsDescendantsAfterHelperExit",
+  "targetFile": "internal/supervisor/mount_test.go",
+  "expected": "Stop kills the same-group descendant and observes both helper and descendant gone after direct-helper SIGTERM success.",
+  "actual": "Stop returned after the helper exited, but descendant PID 15 remained alive at the post-Stop ESRCH assertion.",
+  "semanticAssessment": "The named Linux target executed against the production PrepareMount/Stop path and failed on the planned descendant ESRCH assertion. The fixture and cleanup ran correctly; the TAP report is adapted from the unmodified test2json stream.",
+  "consoleOutput": "--- FAIL: TestMountStopReapsDescendantsAfterHelperExit (5.06s)\n    mount_test.go:629: the helper descendant 15 still exists after teardown\nFAIL\n"
+}

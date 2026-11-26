@@ -42,3 +42,9 @@ experiments/raw/
 
 # Windows VM smoke logs and generated local artifacts
 /logs/
+
+# GoReleaser snapshot output
+/dist/
+
+# GSD runtime lock
+/.planning/milestone.lock

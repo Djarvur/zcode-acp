@@ -65,7 +65,7 @@
 #
 # Credential discipline (T-07-20): env-var NAMES only in output and logs —
 # ZCODE_ACP_API_KEY is referenced by name and read from the environment; its
-# VALUE is never echoed, logged, or captured. Run experiments/scan-secrets.sh
+# VALUE is never echoed, logged, or captured. Run `go run ./cmd/scan-secrets`
 # after any evidence capture.
 #
 # Safety: no destructive step exists; re-running after an interruption is

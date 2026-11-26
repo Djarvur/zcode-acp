@@ -89,8 +89,8 @@ func qa03Delta(t *testing.T, deltaKind, text string, seq int) fake.SideEffect {
 	t.Helper()
 
 	return emit(t, zcode.MethodSessionEvent, map[string]any{
-		"deliveryKind": deliveryKind,
-		wireKeyEventID: "evt_delta_" + text,
+		wireKeyDeliveryKind: deliveryKind,
+		wireKeyEventID:      "evt_delta_" + text,
 		"payload": map[string]any{
 			"assistantMessageId": "msg_fix1",
 			"delta":              text,
@@ -100,7 +100,7 @@ func qa03Delta(t *testing.T, deltaKind, text string, seq int) fake.SideEffect {
 		"seq":            seq,
 		wireKeySessionID: fixSessionID,
 		wireKeyTimestamp: 1795371951072,
-		"traceId":        "trace_fix1",
+		wireKeyTraceID:   fixTraceID,
 		wireKeyTurnID:    fixTurnID,
 		wireKeyType:      "model.streaming",
 	})

@@ -40,7 +40,7 @@ run = "go test -race -count=1 ./..."
 
 [tasks.test-experiments]
 description = "Run the Phase-1 experiments suite (node --test)"
-run = "node --test experiments/"
+run = "node --test experiments/*.test.mjs"
 
 [tasks.tidy-diff]
 description = "go mod tidy and fail on any go.mod/go.sum drift"
@@ -50,6 +50,18 @@ description = "go mod tidy and fail on any go.mod/go.sum drift"
 # port, golang.org/x/sys v0.50.0.
 run = "go mod tidy && git diff --exit-code -- go.mod go.sum && [ \"$(grep -c '^require' go.mod)\" = \"1\" ] && grep -Fq 'github.com/coder/acp-go-sdk v0.20.0' go.mod && grep -Fq 'golang.org/x/sys v0.50.0' go.mod"
 
+[tasks.secret-scan]
+description = "Scan tracked files for credential-shaped values"
+run = "go run ./cmd/scan-secrets"
+
+[tasks.check-docs]
+description = "Check documentation structure and provenance tags"
+run = "go run ./cmd/check-docs"
+
+[tasks.verify-darwin-release]
+description = "Verify checksummed Darwin release archives in dist/"
+run = "go run ./cmd/verify-darwin-release dist"
+
 [tasks.ci]
-description = "Full CI gate: build + vet + lint + test + test-experiments (D-02)"
-depends = ["build", "vet", "lint", "test", "test-experiments"]
+description = "Full CI gate: build + vet + lint + test + experiments + Go gates (D-02)"
+depends = ["build", "vet", "lint", "test", "test-experiments", "secret-scan", "check-docs"]

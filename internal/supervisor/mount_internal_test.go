@@ -14,7 +14,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"path/filepath"
 	"slices"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -25,6 +29,47 @@ const mountEnvPathFallback = "/usr/local/bin:/usr/bin:/bin"
 // errMountFailureUnrelated is the predicate test's non-sentinel error (err113:
 // static anywhere it is compared).
 var errMountFailureUnrelated = errors.New("unrelated")
+
+// TestDefaultStatfsMatchesSyscall exercises the production converter and the
+// int64 MountOpts.Statfs contract against an independent syscall read.
+func TestDefaultStatfsMatchesSyscall(t *testing.T) {
+	path := t.TempDir()
+
+	got, err := defaultStatfs(path)
+	if err != nil {
+		t.Fatalf("defaultStatfs(%q): %v", path, err)
+	}
+
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		t.Fatalf("syscall.Statfs(%q): %v", path, err)
+	}
+
+	want := statfsType(&st)
+	if got != want {
+		t.Fatalf("defaultStatfs(%q) = %d, want statfsType(syscall.Statfs_t) = %d", path, got, want)
+	}
+}
+
+// TestDefaultStatfsWrapsError proves the production converter preserves both
+// the filesystem error sentinel and the failing path through its %w wrap.
+func TestDefaultStatfsWrapsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "entry")
+
+	got, err := defaultStatfs(path)
+	if err == nil {
+		t.Fatalf("defaultStatfs(%q) succeeded, want a wrapped filesystem error", path)
+	}
+	if got != 0 {
+		t.Fatalf("defaultStatfs(%q) = %d on error, want 0", path, got)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("defaultStatfs(%q) error = %v, want errors.Is(err, fs.ErrNotExist)", path, err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("defaultStatfs(%q) error = %q, want the failing path in the message", path, err)
+	}
+}
 
 // TestMountEnv pins the helper environment: exactly the allowlist, with the
 // documented PATH fallback when the parent carries none.

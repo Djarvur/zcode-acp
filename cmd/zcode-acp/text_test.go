@@ -290,10 +290,13 @@ func testOmpTextLevel(t *testing.T) {
 // wrapper api key, the command's Dir (the workspace ref), and the fake
 // transcript path to read back ("" = none).
 type textRide struct {
-	home           string
-	apiKey         string
-	dir            string
-	transcriptPath string
+	home                string
+	apiKey              string
+	dir                 string
+	transcriptPath      string
+	path                string
+	disableNodeLauncher bool
+	extraEnv            []string
 }
 
 // textRun is one completed text run's observable output plus the fake
@@ -372,7 +375,7 @@ func ompTextRunArgv(model, promptPath, installRoot string) []string {
 }
 
 // ompRunText runs the built binary with an explicit hermetic env (PATH and a
-// fresh temp HOME only, plus ZCODE_ACP_API_KEY for the auth arm), closes
+// fresh temp HOME by default, plus optional auth/launcher controls), closes
 // stdin immediately (the text arm never reads it — Orca ends the child's
 // stdin after handing over the record stream), waits for exit, and returns
 // the captured streams plus the fake transcript when one appeared.
@@ -391,10 +394,7 @@ func ompRunText(t *testing.T, bin string, argv []string, ride textRide) textRun 
 	stderrBuf := &e2eSyncBuffer{}
 
 	cmd := exec.CommandContext(ctx, bin, argv...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home}
-	if ride.apiKey != "" {
-		cmd.Env = append(cmd.Env, "ZCODE_ACP_API_KEY="+ride.apiKey)
-	}
+	cmd.Env = ompTextRideEnv(home, ride)
 
 	cmd.Dir = ride.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -434,6 +434,26 @@ func ompRunText(t *testing.T, bin string, argv []string, ride textRide) textRun 
 	}
 
 	return res
+}
+
+// ompTextRideEnv builds the wrapper's explicit environment. An empty ride PATH
+// preserves the existing host PATH for non-macOS tests; macOS launcher tests
+// supply a fixture-only PATH and hermetic SHELL.
+func ompTextRideEnv(home string, ride textRide) []string {
+	pathValue := ride.path
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+
+	env := []string{"PATH=" + pathValue, "HOME=" + home}
+	if ride.apiKey != "" {
+		env = append(env, "ZCODE_ACP_API_KEY="+ride.apiKey)
+	}
+	if ride.disableNodeLauncher {
+		env = append(env, "ZCODE_ACP_DISABLE_NODE_LAUNCHER=1")
+	}
+
+	return append(env, ride.extraEnv...)
 }
 
 // ompTextInboundMethods returns the inbound request methods in transcript
@@ -734,6 +754,22 @@ func TestOmpTextSelectionRebind(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("level-less coding-plan selection gets the account default", func(t *testing.T) {
+		levelLess := acpfront.ModelSelection{ProviderID: providerZaiAPI, ModelID: e2eModel}
+		req := textRequest(levelLess, acpfront.AuthModeCodingPlan, "prompt", "/ws", "/key")
+
+		if req.Selection.ProviderID != "account:zai-individual-coding-plan" ||
+			req.Selection.ReasoningLevel != defaultAccountReasoningLevel {
+			t.Fatalf("account fallback = %+v, want provider account:… and level %q",
+				req.Selection, defaultAccountReasoningLevel)
+		}
+
+		apiKey := textRequest(levelLess, acpfront.AuthModeAPIKey, "prompt", "/ws", "/key")
+		if apiKey.Selection.ProviderID != providerZaiAPI || apiKey.Selection.ReasoningLevel != "" {
+			t.Fatalf("api-key level-less selection = %+v, want no fabricated level", apiKey.Selection)
+		}
+	})
 }
 
 // TestOmpTextAuth proves the minimal-auth contract on the wire: the personal

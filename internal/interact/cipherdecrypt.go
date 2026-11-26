@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -103,7 +104,6 @@ func loaderEnvAllowlist() []string {
 var (
 	errEmptyCredentialsPath = errors.New("credentials path is empty")
 	errLoaderKeyShape       = errors.New("keyring key is not 32 bytes of base64url")
-	errLoaderLookup         = errors.New("keyring lookup failed")
 	// errV1SecretInputs is the enc:v1 loud-validation sentinel: an
 	// unresolvable machine input (platform, home, username) never derives
 	// a silently-empty machine string.
@@ -321,6 +321,24 @@ func cipherDecline(req Request, code, message string) map[string]any {
 			"error": map[string]any{"code": code, "message": message},
 		},
 	}
+}
+
+// resolveRealPath resolves one path the realpath discipline: EvalSymlinks +
+// Abs over the PATH STRING (the supervisor.BuiltinRevision formula's input
+// contract). A missing file fails loud — a lookup hashed against a phantom
+// path would answer a wrong key silently.
+func resolveRealPath(path string) (string, error) {
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve credentials path %q: %w", path, err)
+	}
+
+	link, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", fmt.Errorf("resolve credentials path %q: %w", path, err)
+	}
+
+	return link, nil
 }
 
 // decodeLoaderKey decodes the captured stdout: surrounding whitespace

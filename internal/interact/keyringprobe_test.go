@@ -55,9 +55,11 @@ var (
 	errProbeExitStatus1 = errors.New("exit status 1")
 )
 
+const fixtureHomeEnv = "HOME=/fixture-home"
+
 // probeEnv is the fixture scrubbed env (synthetic allowlist members only).
 func probeEnv() []string {
-	return []string{"PATH=/usr/bin", "HOME=/fixture-home"}
+	return []string{"PATH=/usr/bin", fixtureHomeEnv}
 }
 
 // probeFixtureCredentials writes the fixture credentials.json the loader's

@@ -31,9 +31,10 @@ const (
 
 // Matrix path facts (docs/protocol/install-discovery.md).
 const (
-	appImageSuffix  = ".AppImage"
-	entrypointRel   = "resources/glm/zcode.cjs"
-	builtinFileName = "zcode-builtin.json"
+	appImageSuffix      = ".AppImage"
+	entrypointRel       = "resources/glm/zcode.cjs"
+	builtinFileName     = "zcode-builtin.json"
+	builtinProviderRoot = ".zcode/v2/runtime/provider"
 
 	// bundledProviderRel is the bundled builtin copy's directory under the
 	// install root — <root>/resources/config/provider/zcode-builtin.json, the
@@ -113,6 +114,12 @@ type Probers struct {
 	Home string
 	// OptDir is the package-family root (the deb's /opt/ZCode).
 	OptDir string
+	// MacApps returns the macOS ZCode*.app candidates from
+	// /Applications and $HOME/Applications.
+	MacApps func() []string
+	// RuntimeProviderPlatform overrides the runtime-provider cache platform
+	// directory. Empty selects the platform hook's directory.
+	RuntimeProviderPlatform string
 	// Windows is the only Windows-specific seam group: the native install
 	// directory sources and the uninstall-registry reader. It stays zero on
 	// Linux and Darwin, where the platform stage supplies its own probes.
@@ -184,7 +191,7 @@ func (p Probers) Discover(ctx context.Context) (Install, []Probe, error) {
 		winner, found = stageInstall, true
 	}
 
-	row, builtin := p.probeBuiltinRuntime()
+	row, builtin := p.probeBuiltinRuntime(winner, found)
 	probes = append(probes, row)
 	if found && winner.BuiltinFile == "" {
 		winner.BuiltinFile = builtin
@@ -314,8 +321,27 @@ func ExplicitRootInstall(root string) (Install, bool) {
 // still stored absolute so the mount step fails loud naming the real path
 // instead of silently falling through to discovery.
 func OverrideInstall(path string) (Install, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), plistConversionTimeout)
+	defer cancel()
+
+	return OverrideInstallContext(ctx, path)
+}
+
+// OverrideInstallContext maps an override with the caller's cancellation and
+// deadline. macOS .app validation can invoke plutil, so production discovery
+// passes its context here rather than creating an unbounded background operation.
+func OverrideInstallContext(ctx context.Context, path string) (Install, bool) {
 	if path == "" {
 		return Install{}, false
+	}
+
+	if appPath, ok := macAppOverridePath(path); ok {
+		inst, reason := macAppInstall(ctx, appPath)
+		if reason != "" {
+			return Install{}, false
+		}
+
+		return inst, true
 	}
 
 	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
@@ -361,7 +387,10 @@ func OverrideInstall(path string) (Install, bool) {
 // probeOverride is order step 1: the explicit override wins over any on-disk
 // discovery (install-discovery.md :93).
 func (p Probers) probeOverride() (Probe, Install, bool) {
-	row := Probe{Name: "override", Query: "wrapper config: explicit root or ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"}
+	row := Probe{
+		Name:  "override",
+		Query: "wrapper config: explicit root, macOS .app/Contents/executable, or ZCODE_BUILTIN_PROVIDER_CONFIG_FILE",
+	}
 	if p.Override == nil {
 		row.Result = "no override configured"
 
@@ -383,6 +412,11 @@ func (p Probers) probeOverride() (Probe, Install, bool) {
 
 		return row, inst, true
 	}
+	if inst.Layout == layoutMacApp {
+		row.Result = "found: mac-app " + inst.Root + describeVersion(inst.Version)
+
+		return row, inst, true
+	}
 	row.Result = "found: explicit root " + inst.Root
 
 	return row, inst, true
@@ -395,10 +429,14 @@ func (p Probers) probeOverride() (Probe, Install, bool) {
 // misses — the winner's BuiltinFile would stay empty and the child would boot
 // on the unpaired personal-only env (the QA-02 field failure, EXP-VM-QA02);
 // probeBuiltinBundled is the install-side completion of the same step.
-func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
+func (p Probers) probeBuiltinRuntime(winner Install, found bool) (row Probe, builtinFile string) {
 	row = Probe{Name: "builtin-runtime", Query: "newest " + builtinFileName + " under the runtime-provider tree"}
 
 	rel, supported := builtinProviderRelForPlatform()
+	if p.RuntimeProviderPlatform != "" {
+		rel = builtinProviderRoot + "/" + p.RuntimeProviderPlatform
+		supported = true
+	}
 	if !supported {
 		row.Result = "not probed on this platform; the bundled copy fills the builtin env"
 
@@ -415,6 +453,9 @@ func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
 	}
 
 	slices.SortFunc(versions, func(a, b string) int { return compareVersions(b, a) })
+	if found && winner.Layout == layoutMacApp && winner.Version != "" {
+		versions = preferVersion(versions, winner.Version)
+	}
 	for _, ver := range versions {
 		file, ok := newestEndpointBuiltin(filepath.Join(provider, ver))
 		if !ok {
@@ -429,6 +470,23 @@ func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
 	return row, ""
 }
 
+// preferVersion moves preferred to the front when present.
+func preferVersion(versions []string, preferred string) []string {
+	for i, ver := range versions {
+		if ver != preferred {
+			continue
+		}
+		ordered := make([]string, 0, len(versions))
+		ordered = append(ordered, ver)
+		ordered = append(ordered, versions[:i]...)
+		ordered = append(ordered, versions[i+1:]...)
+
+		return ordered
+	}
+
+	return versions
+}
+
 // probeBuiltinBundled is the install-side completion of order step 5: when the
 // resolved install carries no BuiltinFile from the runtime-provider tree — a
 // fresh machine has no ~/.zcode/v2/runtime/provider cache — discovery falls
@@ -441,9 +499,13 @@ func (p Probers) probeBuiltinRuntime() (row Probe, builtinFile string) {
 // :91's active-cache rule); with neither source present BuiltinFile honestly
 // stays empty (:34).
 func (p Probers) probeBuiltinBundled(winner Install, found bool) (row Probe, bundledFile string) {
+	query := "<root>/" + bundledProviderRel + "/" + builtinFileName
+	if found && winner.Layout == layoutMacApp {
+		query = "<app>/Contents/Resources/" + appProviderDir + "/" + builtinFileName
+	}
 	row = Probe{
 		Name:  "builtin-bundled",
-		Query: "<root>/" + bundledProviderRel + "/" + builtinFileName,
+		Query: query,
 	}
 	if !found {
 		row.Result = "no install resolved; no bundled builtin to check"
@@ -465,6 +527,9 @@ func (p Probers) probeBuiltinBundled(winner Install, found bool) (row Probe, bun
 		return row, ""
 	}
 	bundled := filepath.Join(winner.Root, filepath.FromSlash(bundledProviderRel), builtinFileName)
+	if winner.Layout == layoutMacApp {
+		bundled = macBundledBuiltinPath(winner.Root)
+	}
 	if _, err := os.Stat(bundled); err != nil {
 		row.Result = "no bundled " + builtinFileName + " under " + winner.Root +
 			" (" + bundledProviderRel + "/" + builtinFileName + " missing)"

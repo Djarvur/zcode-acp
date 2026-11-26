@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -275,6 +276,11 @@ const (
 	e2eFakeTermRecord   = "term-record.txt"
 	e2eFakeLeakPID      = "leak.pid"
 
+	e2eDetachedLeakLauncherEnv = "ZCODE_ACP_TEST_DETACHED_LEAK_LAUNCHER"
+	e2eDetachedLeakHelperEnv   = "ZCODE_ACP_TEST_DETACHED_LEAK_HELPER"
+	e2eDetachedLeakPIDEnv      = "ZCODE_ACP_TEST_DETACHED_LEAK_PID"
+	e2eDetachedLeakLifetime    = 30 * time.Second
+
 	// e2eMountRecordWait bounds the wait for the helper's mount line; a
 	// wrapper that treats the AppImage as the app-server binary never mounts
 	// (the RED shape this test pins).
@@ -298,7 +304,19 @@ const (
 // --appimage-mount path, validates the mounted tree, serves ACP from it, and
 // tears the mount down after the app-server. RED before the change: the
 // AppImage is treated as the app-server binary, so no mount is ever created.
+// skipUnlessLinux keeps the packed-AppImage/FUSE lifecycle tests on the
+// platform that owns that backend; macOS resolves .app bundles instead.
+func skipUnlessLinux(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS != "linux" {
+		t.Skip("packed-AppImage/FUSE lifecycle is Linux-only")
+	}
+}
+
 func TestAppImageMountEndToEnd(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
@@ -358,6 +376,8 @@ func TestAppImageMountEndToEnd(t *testing.T) {
 // falling through to discovery, and a directory override keeps its tree
 // diagnostics.
 func TestAppImageOverride(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
@@ -533,12 +553,35 @@ func e2eRideOverride(t *testing.T, agentBin string, argv, extraEnv []string) str
 	return stderrBuf.String()
 }
 
+// e2eCanonicalPath matches production's EvalSymlinks-resolved diagnostics.
+// macOS exposes t.TempDir under /var/folders while its real path is
+// /private/var/folders; missing fixture paths retain their absolute spelling.
+func e2eCanonicalPath(t *testing.T, path string) string {
+	t.Helper()
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("abs %s: %v", path, err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+
+	return resolved
+}
+
 // e2eAssertPackedSelection asserts the startup diagnostics name the packed
 // layout, its version, and the resolved AppImage path.
 func e2eAssertPackedSelection(t *testing.T, stderr, appImage string) {
 	t.Helper()
 
-	for _, want := range []string{"layout=appimage", "version=" + mountedFixtureVersion, "appimage=" + appImage} {
+	for _, want := range []string{
+		"layout=appimage",
+		"version=" + mountedFixtureVersion,
+		"appimage=" + e2eCanonicalPath(t, appImage),
+	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("the packed-override startup diagnostics must carry %q: %s", want, stderr)
 		}
@@ -606,6 +649,8 @@ func e2eMountFailureCases() []e2eMountFailureCase {
 // readiness-timeout arm lives at the supervisor tier, where MountOpts can
 // shorten ReadyTimeout.
 func TestAppImageMountFailures(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 
 	for _, tc := range e2eMountFailureCases() {
@@ -666,9 +711,15 @@ func TestAppImageMountFailures(t *testing.T) {
 func e2eWriteFakeAppImageFailure(t *testing.T, fixture, variant string) string {
 	t.Helper()
 
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve the current test binary: %v", err)
+	}
+
 	body := strings.NewReplacer(
 		"@@PID@@", filepath.Join(fixture, e2eFakeHelperPID),
 		"@@LEAK_PID@@", filepath.Join(fixture, e2eFakeLeakPID),
+		"@@TEST_BINARY@@", testBinary,
 	).Replace(e2eFakeAppImageFailureScript(variant))
 
 	appImage := filepath.Join(fixture, e2eFakeAppImageName)
@@ -714,7 +765,9 @@ mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
 printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
 : > "$dir/resources/glm/zcode.cjs"
-setsid sh -c 'echo $$ > "@@LEAK_PID@@"; exec sleep 30' &
+ZCODE_ACP_TEST_DETACHED_LEAK_LAUNCHER=1 \
+ZCODE_ACP_TEST_DETACHED_LEAK_PID="@@LEAK_PID@@" \
+"@@TEST_BINARY@@" '-test.run=^TestE2EDetachedLeakLauncherHelper$' >/dev/null &
 trap '' TERM
 while :; do sleep 0.05; done
 `
@@ -738,6 +791,52 @@ exit 127
 	default:
 		return preamble + "exit 127\n"
 	}
+}
+
+// TestE2EDetachedLeakLauncherHelper runs inside the fake mount helper's process
+// group and starts only the sleeping descendant in a detached session. Returning
+// after Start leaves that descendant alive with this process's inherited stderr.
+func TestE2EDetachedLeakLauncherHelper(t *testing.T) {
+	if os.Getenv(e2eDetachedLeakLauncherEnv) != "1" {
+		return
+	}
+
+	pidPath := os.Getenv(e2eDetachedLeakPIDEnv)
+	if pidPath == "" {
+		t.Fatalf("%s is missing", e2eDetachedLeakPIDEnv)
+	}
+
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestE2EDetachedLeakHelper$")
+	cmd.Env = append(os.Environ(),
+		e2eDetachedLeakHelperEnv+"=1",
+		e2eDetachedLeakPIDEnv+"="+pidPath,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the detached leak helper: %v", err)
+	}
+}
+
+// TestE2EDetachedLeakHelper records its PID and holds the inherited wrapper
+// stderr pipe open for the fixture's bounded lifetime. Its dedicated marker keeps
+// it inert in the ordinary suite.
+func TestE2EDetachedLeakHelper(t *testing.T) {
+	if os.Getenv(e2eDetachedLeakHelperEnv) != "1" {
+		return
+	}
+
+	pidPath := os.Getenv(e2eDetachedLeakPIDEnv)
+	if pidPath == "" {
+		t.Fatalf("%s is missing", e2eDetachedLeakPIDEnv)
+	}
+
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		t.Fatalf("record the detached leak helper PID: %v", err)
+	}
+
+	time.Sleep(e2eDetachedLeakLifetime)
 }
 
 // e2eAssertNoMountBase requires no zcode-acp-mount-* base to remain under root.
@@ -765,6 +864,8 @@ func e2eAssertNoMountBase(t *testing.T, root string) {
 // that cannot reap the helper or prove the mount gone exits 1 even when a
 // signal was delivered (CR-01).
 func TestAppImageMountSignal(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 
@@ -1056,6 +1157,8 @@ func e2eAssertTeardownFailure(t *testing.T, fixture, base, mountPath string, std
 // with the mount cause, and the app-server records no completed ride — the
 // supervisor never respawns against the vanished root.
 func TestAppImageMountLost(t *testing.T) {
+	skipUnlessLinux(t)
+
 	agentBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/zcode-acp", "zcode-acp")
 	fakeBin := e2eBuildBinary(t, "github.com/Djarvur/zcode-acp/cmd/fake-app-server", "fake-app-server")
 

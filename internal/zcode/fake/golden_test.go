@@ -356,17 +356,33 @@ var (
 
 	cpCorpusRevPattern     = regexp.MustCompile(`account-bridge:\d+`)
 	cpCorpusBuiltinPattern = regexp.MustCompile(`zcode-builtin:44:[0-9a-f]{64}`)
-	cpCorpusProbeDir       = regexp.MustCompile(
-		regexp.QuoteMeta(wirePath(os.TempDir())) + `[\\/]+zcode-acp-auth-probe-\d+`,
-	)
 	cpCorpusWorkspacePath  = regexp.MustCompile(regexp.QuoteMeta(wirePath(corpusWorkspacePath)))
 	cpCorpusPermCancelPath = regexp.MustCompile(regexp.QuoteMeta(wirePath(permCancelCwd)))
 )
 
+// codingPlanProbeDirPattern accepts the platform temp-root spelling and its
+// EvalSymlinks-resolved form (/var/folders ↔ /private/var/folders on macOS),
+// in the JSON-escaped wire spelling Windows uses.
+func codingPlanProbeDirPattern() *regexp.Regexp {
+	roots := []string{filepath.Clean(os.TempDir())}
+	if resolved, err := filepath.EvalSymlinks(roots[0]); err == nil {
+		if canonical := filepath.Clean(resolved); canonical != roots[0] {
+			roots = append(roots, canonical)
+		}
+	}
+
+	quoted := make([]string, 0, len(roots))
+	for _, root := range roots {
+		quoted = append(quoted, regexp.QuoteMeta(wirePath(root)))
+	}
+
+	return regexp.MustCompile(`(?:` + strings.Join(quoted, `|`) + `)[\\/]+zcode-acp-auth-probe-\d+`)
+}
+
 // normalizeCodingPlanCorpus substitutes the machine-derived tokens.
 func normalizeCodingPlanCorpus(b []byte) []byte {
 	b = cpCorpusRevPattern.ReplaceAll(b, []byte(cpCorpusRevisionToken))
-	b = cpCorpusProbeDir.ReplaceAll(b, []byte("/tmp/"+cpCorpusProbeDirToken))
+	b = codingPlanProbeDirPattern().ReplaceAll(b, []byte("/tmp/"+cpCorpusProbeDirToken))
 
 	return cpCorpusBuiltinPattern.ReplaceAll(b, []byte(cpCorpusBuiltinToken))
 }

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 )
 
 // SecretToolKeyLoader is the production KeyLoader: it shells the
@@ -53,24 +52,6 @@ func (l *SecretToolKeyLoader) LookupCommand() (argv, env []string, err error) {
 	argv = []string{l.bin, "lookup", "service", credentialKeyringService, "username", username}
 
 	return argv, l.env, nil
-}
-
-// resolveRealPath resolves one path the realpath discipline: EvalSymlinks +
-// Abs over the PATH STRING (the supervisor.BuiltinRevision formula's input
-// contract). A missing file fails loud — a lookup hashed against a phantom
-// path would answer a wrong key silently.
-func resolveRealPath(path string) (string, error) {
-	resolved, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve credentials path %q: %w", path, err)
-	}
-
-	link, err := filepath.EvalSymlinks(resolved)
-	if err != nil {
-		return "", fmt.Errorf("resolve credentials path %q: %w", path, err)
-	}
-
-	return link, nil
 }
 
 // LoadKey shells the lookup and decodes the captured stdout: trimmed

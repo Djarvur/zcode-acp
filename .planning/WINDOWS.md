@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 18
+open_count: 21
 waived_count: 0
-fixed_count: 3
-total_count: 21
-last_updated: 2026-11-24T23:00:50.034Z
+fixed_count: 8
+total_count: 29
+last_updated: 2026-11-25T18:29:45.586Z
 ---
 
 # Broken Windows Ledger
@@ -23,8 +23,8 @@ last_updated: 2026-11-24T23:00:50.034Z
 | 6 | 03 | unrun-verify | internal/supervisor/realdesktop_test.go | 81 | Real-desktop positive path TestRealDesktop is manual-only (build tag + env guard) — scheduled END-OF-PHASE human verification, never run by CI or this plan | open |  | 2026-11-19T20:32:33.515Z |  |
 | 7 | 03 | deviation | internal/supervisor/e2e_test.go |  | plan-text adaptation: the cancel turn is replayed as a SECOND supervised cycle serving the cancel-mid-turn corpus row, not a second machine on the happy child's Conn — the fake's Times=0 rules are unlimited, so the happy-turn send rule re-fires turn.completed on a second send and a same-Conn cancel would race a completed resolution; both cycles end in the zero-survivors staged shutdown | open |  | 2026-11-19T21:18:34.164Z |  |
 | 8 | 04 | stub | internal/acpport/doc.go | 12 | acpport seam package pre-placed as skeleton (doc.go + pin_test.go) — adapter surface (types/agent/sink) lands with plan 04-02 | fixed |  | 2026-11-19T23:46:45.534Z | 2026-11-20T00:22:27.097Z |
-| 9 | 05 | deviation | experiments/scan-secrets.sh |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:11.286Z |  |
-| 10 | 05 | deviation | experiments/scan-secrets.sh |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:17.803Z |  |
+| 9 | 05 | deviation | cmd/scan-secrets/main.go |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:11.286Z |  |
+| 10 | 05 | deviation | cmd/scan-secrets/main.go |  | [Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure) | open |  | 2026-11-20T15:16:17.803Z |  |
 | 11 | 05 | unrun-verify | test/realdesktop/apicycle_test.go |  | END-OF-PHASE REAL RUN: TestAPIKeyFullCycle against the live z.ai api-key account (guarded tier, orchestrator-run, quota-ledgered per experiments/README.md Phase-5 row + 05-USER-SETUP.md) — the D-06 live-keyring decrypt and the registry read-back verdict are proven only by this run | open |  | 2026-11-20T15:56:11.062Z |  |
 | 12 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:52.672Z |  |
 | 13 | 05 | unrun-verify | internal/acpfront/auth.go | 155 | branch-(c) corrected chain real-half pending: authenticate probe-create verdict proven at the fake tier only; the REAL RUN re-run is 05-12's human checkpoint (UAT item 1) | open |  | 2026-11-21T08:45:58.318Z |  |
@@ -36,6 +36,14 @@ last_updated: 2026-11-24T23:00:50.034Z
 | 19 | 10 | unrun-verify | internal/supervisor/appimage_realdesktop_test.go |  | Manual-Only VER-02 real run not executed by the executor: ZCODE_ACP_REAL_E2E=1 go test -tags realdesktop -count=1 -run TestRealAppImageMount ./internal/supervisor/ must run once on a FUSE-capable host before ship | open |  | 2026-11-24T00:18:44.913Z |  |
 | 20 | 261124-wlg | deviation | internal/acpfront/turnctx.go | 433 | Rule 2: explicit NoteConfigOptions accounting added outside plan allowlist to satisfy exhaustive lint; catalog updates bypass turn pump. | fixed |  | 2026-11-24T21:12:50.615Z | 2026-11-24T23:00:49.898Z |
 | 21 | 261124-wlg | deviation | internal/acpfront/catalogrefresh.go |  | Rule 1: failed fan-out now fails the refresh pass so identical later signals remain retryable. | fixed |  | 2026-11-24T21:12:51.361Z | 2026-11-24T23:00:50.034Z |
+| 22 | 11 | unrun-verify | cmd/check-docs/main.go |  | Documentation gate: originally blocked by mise trust, then executed; the shell implementation was later replaced by the Go cmd/check-docs gate. | fixed |  | 2026-11-25T13:32:19.775Z | 2026-11-25T17:58:07.921Z |
+| 23 | 11 | unrun-verify | scripts/check-mise-tool-versions.mjs |  | Tool-version gate: originally blocked by mise trust, then executed successfully for Go, golangci-lint, GoReleaser, and Node; Bash was later removed from the managed toolchain. | fixed |  | 2026-11-25T13:32:19.948Z | 2026-11-25T17:58:08.102Z |
+| 24 | 11 | unrun-verify | mise.toml |  | Named mise tasks now run the Go docs and secret commands; no Bash task or PATH requirement remains. | fixed |  | 2026-11-25T13:32:20.120Z | 2026-11-25T17:58:08.285Z |
+| 25 | 11 | unrun-verify | .github/workflows/pr-sanity.yml |  | Hosted pr-sanity matrix has not been observed on GitHub; Linux, macOS arm64/amd64, Darwin cross-build, govulncheck, and secret-scan still require a green run with recorded head SHA, architectures, and resolved versions. | open |  | 2026-11-25T13:43:17.611Z |  |
+| 26 | 11 | unrun-verify | scripts/check-mise-tool-versions.mjs |  | The mise-resolved four-tool runtime gate and mise task graph were executed successfully after explicit trust; Bash is no longer part of the managed toolchain. | fixed |  | 2026-11-25T13:43:17.794Z | 2026-11-25T18:29:45.586Z |
+| 27 | 11 | deviation | .goreleaser.yaml | 35 | Rule 1: GoReleaser 2.20.2 archives.files adds extra filesystem members rather than selecting binaries; a non-matching sentinel glob suppresses default docs while archive ids select only zcode-acp. | fixed |  | 2026-11-25T14:07:16.281Z | 2026-11-25T14:07:16.593Z |
+| 28 | 11 | unrun-verify | .github/workflows/release.yml | 34 | Release-specific mise exec commands were not run locally because mise.toml is untrusted; exact absolute GoReleaser 2.20.2 snapshot, verifier fixtures, version comparisons, and frozen-module gates passed. | open |  | 2026-11-25T14:07:16.778Z |  |
+| 29 | 11 | unrun-verify | .github/workflows/release.yml | 16 | Hosted workflow_dispatch snapshot observation remains pending a branch push: confirm read-only rights, bounded module hydration, offline checksum/tidy, three archives plus checksums, verifier success, and publish-job skip; no tag was pushed. | open |  | 2026-11-25T14:07:16.961Z |  |
 
 ````json
 [
@@ -147,7 +155,7 @@ last_updated: 2026-11-24T23:00:50.034Z
     "id": 9,
     "kind": "deviation",
     "phase": "05",
-    "file": "experiments/scan-secrets.sh",
+    "file": "cmd/scan-secrets/main.go",
     "line": null,
     "description": "[Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure)",
     "status": "open",
@@ -160,7 +168,7 @@ last_updated: 2026-11-24T23:00:50.034Z
     "id": 10,
     "kind": "deviation",
     "phase": "05",
-    "file": "experiments/scan-secrets.sh",
+    "file": "cmd/scan-secrets/main.go",
     "line": null,
     "description": "[Rule 3] scan-secrets allowlist extended with the 05-06 self-declaring synthetic fixture marker (latent PR-gate failure)",
     "status": "open",
@@ -311,6 +319,110 @@ last_updated: 2026-11-24T23:00:50.034Z
     "recorded_at": "2026-11-24T21:12:51.361Z",
     "resolved_at": "2026-11-24T23:00:50.034Z",
     "milestone": "v0.23.0"
+  },
+  {
+    "id": 22,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": "cmd/check-docs/main.go",
+    "line": null,
+    "description": "Documentation gate: originally blocked by mise trust, then executed; the shell implementation was later replaced by the Go cmd/check-docs gate.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-11-25T13:32:19.775Z",
+    "resolved_at": "2026-11-25T17:58:07.921Z",
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 23,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": "scripts/check-mise-tool-versions.mjs",
+    "line": null,
+    "description": "Tool-version gate: originally blocked by mise trust, then executed successfully for Go, golangci-lint, GoReleaser, and Node; Bash was later removed from the managed toolchain.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-11-25T13:32:19.948Z",
+    "resolved_at": "2026-11-25T17:58:08.102Z",
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 24,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": "mise.toml",
+    "line": null,
+    "description": "Named mise tasks now run the Go docs and secret commands; no Bash task or PATH requirement remains.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-11-25T13:32:20.120Z",
+    "resolved_at": "2026-11-25T17:58:08.285Z",
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 25,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": ".github/workflows/pr-sanity.yml",
+    "line": null,
+    "description": "Hosted pr-sanity matrix has not been observed on GitHub; Linux, macOS arm64/amd64, Darwin cross-build, govulncheck, and secret-scan still require a green run with recorded head SHA, architectures, and resolved versions.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-25T13:43:17.611Z",
+    "resolved_at": null,
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 26,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": "scripts/check-mise-tool-versions.mjs",
+    "line": null,
+    "description": "The mise-resolved four-tool runtime gate and mise task graph were executed successfully after explicit trust; Bash is no longer part of the managed toolchain.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-11-25T13:43:17.794Z",
+    "resolved_at": "2026-11-25T18:29:45.586Z",
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 27,
+    "kind": "deviation",
+    "phase": "11",
+    "file": ".goreleaser.yaml",
+    "line": 35,
+    "description": "Rule 1: GoReleaser 2.20.2 archives.files adds extra filesystem members rather than selecting binaries; a non-matching sentinel glob suppresses default docs while archive ids select only zcode-acp.",
+    "status": "fixed",
+    "reason": "",
+    "recorded_at": "2026-11-25T14:07:16.281Z",
+    "resolved_at": "2026-11-25T14:07:16.593Z",
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 28,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": ".github/workflows/release.yml",
+    "line": 34,
+    "description": "Release-specific mise exec commands were not run locally because mise.toml is untrusted; exact absolute GoReleaser 2.20.2 snapshot, verifier fixtures, version comparisons, and frozen-module gates passed.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-25T14:07:16.778Z",
+    "resolved_at": null,
+    "milestone": "v0.24.0"
+  },
+  {
+    "id": 29,
+    "kind": "unrun-verify",
+    "phase": "11",
+    "file": ".github/workflows/release.yml",
+    "line": 16,
+    "description": "Hosted workflow_dispatch snapshot observation remains pending a branch push: confirm read-only rights, bounded module hydration, offline checksum/tidy, three archives plus checksums, verifier success, and publish-job skip; no tag was pushed.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-11-25T14:07:16.961Z",
+    "resolved_at": null,
+    "milestone": "v0.24.0"
   }
 ]
 ````

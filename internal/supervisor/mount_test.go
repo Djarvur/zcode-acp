@@ -15,7 +15,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -40,6 +42,9 @@ const (
 	// external package cannot see Child.Done, and PrepareMount returns nil on
 	// every failure).
 	fakeHelperPIDFile = "helper.pid"
+	// fakeDescendantPIDFile records the background process left behind by the
+	// descendant-after-helper-exit fixture.
+	fakeDescendantPIDFile = "descendant.pid"
 	// fakeAppServerPIDFile is the release signal the die-after/vanish
 	// variants wait for: the test writes it after PrepareMount returned a
 	// validated Mount, so the loss happens on an already-installed mount.
@@ -61,6 +66,7 @@ const (
 	fakeVariantLeaky       = "leaky"
 	fakeVariantDieAfter    = "die-after"
 	fakeVariantVanish      = "vanish"
+	fakeVariantDescendant  = "descendant"
 
 	testAppImageLayout = "appimage"
 
@@ -69,6 +75,11 @@ const (
 	testMountReapDeadline = 5 * time.Second
 	testMountPollInterval = 5 * time.Millisecond
 	testMountLossPoll     = 10 * time.Millisecond
+
+	mountCleanerRunFlag      = "-test.run=^TestDetachedMountCleanerHelper$"
+	mountCleanerEnv          = "ZCODE_ACP_TEST_DETACHED_MOUNT_CLEANER"
+	mountRootEnv             = "ZCODE_ACP_TEST_DETACHED_MOUNT_ROOT"
+	testDetachedCleanerDelay = 500 * time.Millisecond
 )
 
 // testMountOpts is the millisecond-scale MountOpts every test uses.
@@ -92,6 +103,7 @@ func writeFakeAppImage(t *testing.T, dir, variant string) string {
 
 	appImage := filepath.Join(dir, fakeAppImageName)
 	body := strings.ReplaceAll(fakeAppImageScript(variant), "@@PID@@", filepath.Join(dir, fakeHelperPIDFile))
+	body = strings.ReplaceAll(body, "@@DESC_PID@@", filepath.Join(dir, fakeDescendantPIDFile))
 	body = strings.ReplaceAll(body, "@@APP_PID@@", filepath.Join(dir, fakeAppServerPIDFile))
 
 	if err := os.WriteFile(appImage, []byte(body), 0o750); err != nil {
@@ -194,8 +206,17 @@ while [ ! -f "@@APP_PID@@" ]; do sleep 0.02; done
 rm -rf "$dir"
 while :; do sleep 0.05; done
 `
-	// fakeScriptStubborn ignores SIGTERM and keeps the tree alive; a detached
-	// (setsid) short-lived process removes the tree after the helper is
+	// fakeScriptDescendant leaves a same-group background process alive when
+	// direct SIGTERM succeeds. Its stdio is redirected away from the helper
+	// pipes, so only a process-group sweep can reap it.
+	fakeScriptDescendant = fakeMountPreamble + fakeTreeBody + `sleep 30 </dev/null >/dev/null 2>&1 &
+echo $! > "@@DESC_PID@@"
+trap 'rm -rf "$dir"; exit 143' TERM
+printf '%s\n' "$dir"
+while :; do sleep 0.05; done
+`
+	// fakeScriptStubborn ignores SIGTERM and keeps the tree alive; the test
+	// starts a detached Go helper that removes the tree after the helper is
 	// killed — the fake analogue of the real keepalive-pipe unmount.
 	fakeScriptStubborn = fakeMountPreamble + `dir=$(mktemp -d "$base/.mount_FakeXXXXXX")
 mkdir -p "$dir/resources/glm" "$dir/resources/config/provider"
@@ -203,7 +224,6 @@ printf '#!/bin/sh\nexit 0\n' > "$dir/zcode"
 chmod 755 "$dir/zcode"
 : > "$dir/resources/glm/zcode.cjs"
 trap '' TERM
-setsid sh -c 'sleep 0.5; rm -rf "$1"' _ "$dir" >/dev/null 2>&1 &
 printf '%s\n' "$dir"
 while :; do sleep 0.05; done
 `
@@ -245,6 +265,8 @@ func fakeAppImageScript(variant string) string {
 		return fakeScriptDieAfter
 	case fakeVariantVanish:
 		return fakeScriptVanish
+	case fakeVariantDescendant:
+		return fakeScriptDescendant
 	case fakeVariantStubborn:
 		return fakeScriptStubborn
 	default:
@@ -447,6 +469,57 @@ func assertProcessGone(t *testing.T, pid int, what string) {
 	}
 }
 
+// TestDetachedMountCleanerHelper is the bounded, detached remover selected by
+// TestMountStop. The dedicated marker keeps it inert in the ordinary suite.
+func TestDetachedMountCleanerHelper(t *testing.T) {
+	if os.Getenv(mountCleanerEnv) != "1" {
+		return
+	}
+
+	root := os.Getenv(mountRootEnv)
+	if root == "" {
+		fmt.Fprintf(os.Stderr, "detached mount cleaner: %s is missing\n", mountRootEnv)
+		os.Exit(1)
+	}
+
+	time.Sleep(testDetachedCleanerDelay)
+
+	if err := os.RemoveAll(root); err != nil {
+		fmt.Fprintf(os.Stderr, "detached mount cleaner: remove %q: %v\n", root, err)
+		os.Exit(1)
+	}
+}
+
+// startDetachedMountCleaner launches the bounded remover in its own session and
+// registers unconditional PID cleanup before returning it to the test.
+func startDetachedMountCleaner(t *testing.T, root string) *exec.Cmd {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), testMountReapDeadline)
+	t.Cleanup(cancel)
+
+	cleaner := exec.CommandContext(ctx, os.Args[0], mountCleanerRunFlag)
+	cleaner.Env = append(os.Environ(), mountCleanerEnv+"=1", mountRootEnv+"="+root)
+	cleaner.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cleaner.Stderr = os.Stderr
+
+	if err := cleaner.Start(); err != nil {
+		t.Fatalf("start the detached mount cleaner: %v", err)
+	}
+
+	cleanerPID := cleaner.Process.Pid
+	t.Cleanup(func() {
+		if cleaner.ProcessState != nil {
+			return
+		}
+
+		_ = syscall.Kill(cleanerPID, syscall.SIGKILL)
+		_ = cleaner.Wait()
+	})
+
+	return cleaner
+}
+
 // TestMountStop proves the staged stop against a helper that ignores SIGTERM:
 // the escalation to a group SIGKILL happens only after StopGrace, the helper is
 // reaped, the tree disappears (the detached cleaner is the fake analogue of
@@ -463,6 +536,9 @@ func TestMountStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareMount: %v", err)
 	}
+
+	cleaner := startDetachedMountCleaner(t, mount.Root())
+	cleanerPID := cleaner.Process.Pid
 
 	pid := mount.HelperPID()
 	if pid == 0 {
@@ -490,9 +566,88 @@ func TestMountStop(t *testing.T) {
 	assertMountPathGone(t, mount.Root(), "the mount root")
 	assertMountPathGone(t, filepath.Dir(mount.Root()), "the private base")
 
+	if err := cleaner.Wait(); err != nil {
+		t.Fatalf("reap the detached mount cleaner: %v", err)
+	}
+
+	assertProcessGone(t, cleanerPID, "the detached mount cleaner")
+
 	if err := mount.Stop(); err != nil {
 		t.Fatalf("second Stop = %v, want nil (idempotent)", err)
 	}
+}
+
+// TestMountStopReapsDescendantsAfterHelperExit proves a successful direct-helper
+// SIGTERM does not end teardown: the unconditional group sweep must kill and
+// observe the redirected-stdio descendant before Stop returns.
+func TestMountStopReapsDescendantsAfterHelperExit(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantDescendant)
+	helperPIDFile := filepath.Join(fixture, fakeHelperPIDFile)
+	descendantPIDFile := filepath.Join(fixture, fakeDescendantPIDFile)
+
+	t.Cleanup(func() {
+		helperPID := readFixturePIDIfPresent(t, helperPIDFile)
+		descendantPID := readFixturePIDIfPresent(t, descendantPIDFile)
+		if helperPID > 0 {
+			if err := syscall.Kill(-helperPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("kill helper group %d: %v", helperPID, err)
+			}
+		}
+		if descendantPID > 0 {
+			if err := syscall.Kill(descendantPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("kill descendant %d: %v", descendantPID, err)
+			}
+		}
+	})
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	root := mount.Root()
+	base := filepath.Dir(root)
+	helperPID := mount.HelperPID()
+	descendantPID := readFixturePID(t, fixture, fakeDescendantPIDFile)
+	if helperPID <= 0 || descendantPID <= 0 {
+		t.Fatalf("fixture PIDs must be positive: helper=%d descendant=%d", helperPID, descendantPID)
+	}
+	if err := syscall.Kill(descendantPID, 0); err != nil {
+		t.Fatalf("descendant %d must be alive before Stop: %v", descendantPID, err)
+	}
+
+	if stopErr := mount.Stop(); stopErr != nil {
+		t.Fatalf("Stop: %v", stopErr)
+	}
+
+	assertProcessGone(t, helperPID, "the mount helper")
+	assertProcessGone(t, descendantPID, "the helper descendant")
+	assertMountPathGone(t, root, "the mount root")
+	assertMountPathGone(t, base, "the private base")
+}
+
+// readFixturePIDIfPresent reads a cleanup record when the fixture reached the
+// point that wrote it. A present non-positive or malformed record is fatal.
+func readFixturePIDIfPresent(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read optional PID record %s: %v", path, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid optional PID record %s=%q: %v", path, string(data), err)
+	}
+
+	return pid
 }
 
 // TestMountSpacedTmpdir proves the whole mount line is the path: a TMPDIR that

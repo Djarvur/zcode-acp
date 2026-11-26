@@ -40,7 +40,10 @@ const (
 	childPersonalVar = "ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"
 	// appServerSubcommand and stdioFlag are the argv tail of the spawn line.
 	appServerSubcommand = "app-server"
-	stdioFlag           = "--stdio"
+	// envDisableNodeLauncher forces the canonical Electron argv (tests and
+	// users who explicitly want the desktop runtime instead of host Node).
+	envDisableNodeLauncher = "ZCODE_ACP_DISABLE_NODE_LAUNCHER"
+	stdioFlag              = "--stdio"
 )
 
 // errEmptyArgv is SpawnChild's contract-violation sentinel.
@@ -150,6 +153,26 @@ type SpawnOpts struct {
 // (install-discovery.md :48-52; the contract Phase 4's front leg inherits).
 func SpawnArgv(inst Install) []string {
 	return []string{inst.Binary, inst.Entrypoint, appServerSubcommand, stdioFlag}
+}
+
+// SpawnArgvForInstall selects the macOS app-server launcher. The ZCode
+// Electron binary registers every app-server/MCP child as a foreground
+// LaunchServices app on macOS (Dock icons); the same zcode.cjs runs correctly
+// under the host's Node runtime, whose children inherit a plain Node
+// executable and stay out of the Dock. Non-mac installs and hosts without
+// Node keep the canonical Electron argv.
+func SpawnArgvForInstall(inst Install, parentEnv []string) []string {
+	if envSliceValue(parentEnv, envDisableNodeLauncher) == "1" {
+		return SpawnArgv(inst)
+	}
+
+	if inst.Layout == layoutMacApp {
+		if node := FindExecutable("node", envSliceValue(parentEnv, allowlistPathVar)); node != "" {
+			return []string{node, inst.Entrypoint, appServerSubcommand, stdioFlag}
+		}
+	}
+
+	return SpawnArgv(inst)
 }
 
 // ChildEnv builds the child environment from parentEnv via the explicit

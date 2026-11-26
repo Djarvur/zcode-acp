@@ -189,10 +189,9 @@ func DefaultMountOpts() MountOpts {
 	}
 }
 
-// defaultStatfs is the production filesystem-type predicate. The supervisor
-// package already depends on Linux/Unix process primitives (syscall.Kill,
-// Setpgid in spawn.go) and D-10 scopes the phase to Linux, so no portable
-// build-tagged variant is added.
+// defaultStatfs is the production filesystem-type predicate. The explicit
+// conversion normalizes Darwin's uint32 and Linux's int64 Type fields at the
+// MountOpts.Statfs int64 seam.
 func defaultStatfs(path string) (int64, error) {
 	var st syscall.Statfs_t
 
@@ -200,7 +199,7 @@ func defaultStatfs(path string) (int64, error) {
 		return 0, fmt.Errorf("zcode: statfs %s: %w", path, err)
 	}
 
-	return st.Type, nil
+	return statfsType(&st), nil
 }
 
 // withDefaults resolves zero fields to the production defaults.
@@ -476,12 +475,12 @@ func (m *Mount) HelperPID() int {
 }
 
 // Stop performs the idempotent staged helper teardown and returns the first
-// teardown error: SIGTERM the helper's process group (never an already-reaped
-// one — PID-reuse safety), wait StopGrace, escalate to a group SIGKILL, wait
-// ReapDeadline, poll the mount root's zcode entry until it is gone, then
-// remove only the private base. It never depends on fusermount and never
-// closes the helper's stdin as a stop mechanism (the runtime pauses; it does
-// not read stdin).
+// teardown error: SIGTERM the helper's direct PID, wait StopGrace, perform an
+// unconditional group SIGKILL sweep, observe the group gone, wait
+// ReapDeadline for the direct helper reap, poll the mount root's zcode entry
+// until it is gone, then remove only the private base. It never depends on
+// fusermount and never closes the helper's stdin as a stop mechanism (the
+// runtime pauses; it does not read stdin).
 func (m *Mount) Stop() error {
 	if m == nil {
 		return nil
@@ -580,50 +579,108 @@ func (m *Mount) stop() error {
 }
 
 // stopHelper stages the helper half of the teardown. The helper does not read
-// stdin, so the app-server's stdin-EOF stage does not apply: SIGTERM first,
-// then the unconditional group SIGKILL backstop, then the bounded reap. An
-// already-reaped helper is never signalled (its PID may be reused).
+// stdin, so the app-server's stdin-EOF stage does not apply: SIGTERM the direct
+// PID first, allow a stubborn helper its grace, then ALWAYS sweep the process
+// group and observe it gone before requiring the direct-helper reap. A direct
+// helper exiting successfully does not prove its descendants exited.
 func (m *Mount) stopHelper() error {
 	if m.child == nil {
 		return nil
+	}
+	if m.child.PgID <= 0 {
+		return fmt.Errorf("%w: the helper has an invalid process group %d",
+			errMountTeardown, m.child.PgID)
 	}
 
 	defer func() { _ = m.child.Stdin.Close() }()
 
 	select {
 	case <-m.child.Done:
-		return nil
+		// Already reaped: never signal the direct PID again, but descendants
+		// may still own the group and must be swept below.
 	default:
-	}
+		// Signal the helper's own PID FIRST. A group SIGTERM here can land on the
+		// helper's cleanup child (rm/fusermount) and kill it mid-unmount, which is
+		// exactly the macOS amd64 teardown flake. The group SIGKILL below still
+		// reaches grandchildren after the grace period.
+		m.signalHelperTerminate()
 
-	if termErr := syscall.Kill(-m.child.PgID, syscall.SIGTERM); termErr != nil &&
-		!errors.Is(termErr, syscall.ESRCH) {
-		slog.Warn("supervisor: mount helper SIGTERM", "pgid", m.child.PgID, "err", termErr)
-	}
-
-	select {
-	case <-m.child.Done:
-		return nil
-	case <-time.After(m.opts.StopGrace):
-	}
-
-	// Re-check under the escalation: a helper that exited exactly at the grace
-	// boundary must never be signalled again (PID reuse).
-	select {
-	case <-m.child.Done:
-		return nil
-	default:
-		if killErr := m.child.terminateTree(); killErr != nil {
-			slog.Warn("supervisor: mount helper process-tree kill", "pid", m.child.PgID, "err", killErr)
+		select {
+		case <-m.child.Done:
+		case <-time.After(m.opts.StopGrace):
 		}
 	}
 
+	// Unconditional even when the direct helper already exited or exited during
+	// the grace: its same-group descendants can outlive it with redirected stdio.
+	if killErr := m.child.terminateTree(); killErr != nil {
+		return fmt.Errorf("%w: kill helper process group %d: %w",
+			errMountTeardown, m.child.PgID, killErr)
+	}
+	if groupErr := m.waitHelperGroupGone(); groupErr != nil {
+		return groupErr
+	}
+
+	// The existing monitor owns the one Wait; observe its completion only after
+	// the whole group is gone so Stop cannot return with live descendants.
 	select {
 	case <-m.child.Done:
 		return nil
 	case <-time.After(m.opts.ReapDeadline):
 		return fmt.Errorf("%w: the helper %d was not reaped within %v",
 			errMountTeardown, m.helperPID, m.opts.ReapDeadline)
+	}
+}
+
+// waitHelperGroupGone polls the helper's process group until every member is
+// gone. Only ESRCH is success; an unset group is never signalled or probed.
+func (m *Mount) waitHelperGroupGone() error {
+	pgID := m.child.PgID
+	if pgID <= 0 {
+		return fmt.Errorf("%w: the helper has an invalid process group %d", errMountTeardown, pgID)
+	}
+
+	deadline := time.Now().Add(m.opts.ReapDeadline)
+	for {
+		err := syscall.Kill(-pgID, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%w: probe helper process group %d: %w", errMountTeardown, pgID, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: helper process group %d still exists after %v",
+				errMountTeardown, pgID, m.opts.ReapDeadline)
+		}
+		time.Sleep(m.opts.PollInterval)
+	}
+}
+
+// signalHelperTerminate sends SIGTERM to the helper's direct PID. The group is
+// only TERMed when the direct signal cannot be delivered (macOS can deny the
+// group form while allowing the direct one); the unconditional group SIGKILL
+// after the grace period remains the backstop for grandchildren.
+func (m *Mount) signalHelperTerminate() {
+	if m.child == nil || m.child.PgID <= 0 {
+		return
+	}
+
+	var pidErr error
+
+	if m.child.Cmd != nil && m.child.Cmd.Process != nil {
+		pidErr = m.child.Cmd.Process.Signal(syscall.SIGTERM)
+	}
+
+	pidGone := pidErr == nil || errors.Is(pidErr, os.ErrProcessDone) || errors.Is(pidErr, syscall.ESRCH)
+	if pidGone {
+		return
+	}
+
+	if groupErr := syscall.Kill(-m.child.PgID, syscall.SIGTERM); groupErr != nil &&
+		!errors.Is(groupErr, syscall.ESRCH) {
+		slog.Warn("supervisor: mount helper SIGTERM", "pgid", m.child.PgID,
+			"pid_err", pidErr, "group_err", groupErr)
 	}
 }
 

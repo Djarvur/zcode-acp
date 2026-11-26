@@ -1,69 +1,120 @@
-# release — goreleaser publishes a release on a v* tag (D-04; template:
-# Djarvur/goswitch release.yml, translated from the Russian header to English,
-# decision ids remapped: goswitch D-09/D-11 -> this repo's D-02).
-#
-# Build and publish: mise install installs goreleaser at exactly the version
-# pinned in mise.toml [tools] — the single source of tool versions locally and
-# in CI (D-02; no version drift between the local release loop and CI).
-# `goreleaser release --clean` then does the rest: builds the binaries with
-# default main.version/main.commit/main.date stamping, archives + checksums,
-# and publishes to GitHub Releases.
-#
-# Token rights: the release publish right — the ONLY workflow in this set
-# granted it (verified by this plan's cross-file grep gate); pr-sanity.yml,
-# e2e-matrix.yml and security-scheduled.yml stay read-only. No secrets beyond
-# GITHUB_TOKEN. The first release lands in Phase 7 (semver tag scheme; no
-# .goreleaser.yaml exists yet).
-#
-# Inert by construction: no v* tag exists and .goreleaser.yaml is not written
-# until Phase 7 — a premature tag failing this job is the honest outcome.
-#
-# Workflow registration resolves from the default branch: tag triggers only
-# fire once this file lands on master.
 name: release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
-# The only write-scoped token in the whole workflow set (T-2-05).
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  # A release must not be torn down mid-publish: a second tag queues instead
-  # of cancelling the running release (same discipline as e2e-gnome).
   group: release
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: goreleaser release
-    runs-on: ubuntu-latest
+  snapshot:
+    name: goreleaser snapshot (macOS universal)
+    runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      # Full history and tags are needed by goreleaser: the changelog is built
-      # from commits; main.commit/main.date are stamped from git state.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Official mise installer — precedent pr-sanity.yml (mise.run is the
-      # canonical distribution point; ephemeral runner, no secrets).
       - name: Install mise
         run: curl https://mise.run | sh
 
       - name: Add mise to PATH
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # Installs go and goreleaser at exactly the mise.toml pins — CI and the
-      # local release loop use the same tool (D-02).
       - name: Install tools from mise.toml
         run: mise install
 
-      # goreleaser publishes under GITHUB_TOKEN — the only secret of this
-      # workflow; its rights are limited by the permissions block above.
+      - name: Validate tool versions
+        run: GOPROXY=off mise exec -- node scripts/check-mise-tool-versions.mjs go goreleaser
+
+      - name: Download frozen Go modules
+        timeout-minutes: 5
+        env:
+          GOPROXY: https://proxy.golang.org
+        run: |
+          mise exec -- go mod download
+          git diff --exit-code HEAD -- go.mod go.sum
+
+      - name: Verify frozen modules offline
+        run: |
+          GOPROXY=off mise exec -- go mod verify
+          GOPROXY=off mise run tidy-diff
+
+      - name: Require Apple lipo
+        run: command -v lipo
+
+      - name: Validate GoReleaser config
+        run: GOPROXY=off mise exec -- goreleaser check
+
+      - name: Build release snapshot
+        run: GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish
+
+      - name: Verify Darwin snapshot artifacts
+        run: mise run verify-darwin-release
+
+      - name: Upload Darwin snapshot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-snapshot-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            dist/zcode-acp_*_darwin_arm64.tar.gz
+            dist/zcode-acp_*_darwin_amd64.tar.gz
+            dist/zcode-acp_*_darwin_universal.tar.gz
+            dist/checksums.txt
+
+  release:
+    name: goreleaser release
+    needs: snapshot
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install mise
+        run: curl https://mise.run | sh
+
+      - name: Add mise to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install tools from mise.toml
+        run: mise install
+
+      - name: Validate tool versions
+        run: GOPROXY=off mise exec -- node scripts/check-mise-tool-versions.mjs go goreleaser
+
+      - name: Download frozen Go modules
+        timeout-minutes: 5
+        env:
+          GOPROXY: https://proxy.golang.org
+        run: |
+          mise exec -- go mod download
+          git diff --exit-code HEAD -- go.mod go.sum
+
+      - name: Verify frozen modules offline
+        run: |
+          GOPROXY=off mise exec -- go mod verify
+          GOPROXY=off mise run tidy-diff
+
+      - name: Require Apple lipo
+        run: command -v lipo
+
+      - name: Validate GoReleaser config
+        run: GOPROXY=off mise exec -- goreleaser check
+
       - name: goreleaser release
-        run: mise exec -- goreleaser release --clean
+        run: GOPROXY=off mise exec -- goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
