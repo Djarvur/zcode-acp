@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configPath = path.join(repoRoot, ".goreleaser.yaml");
-const verifierPath = path.join(repoRoot, "cmd", "verify-darwin-release", "main.go");
+const verifierPath = path.join(repoRoot, "cmd", "verify-release", "main.go");
 const readSource = (filePath) => readFileSync(filePath, "utf8");
 
 function topLevelSection(source, name) {
@@ -45,31 +45,38 @@ function assertOrdered(source, ordered) {
 function assertNoBashDependency(document, label) {
   assert.doesNotMatch(
     document,
-    /brew install bash|brew --prefix[^\n]*GITHUB_PATH|ZCODE_ACP_REQUIRED_BASH|mise exec -- bash|run: bash\b|verify-darwin-release\.sh/,
+    /brew install bash|brew --prefix[^\n]*GITHUB_PATH|ZCODE_ACP_REQUIRED_BASH|mise exec -- bash|run: bash\b|verify-(?:darwin-)?release\.sh/,
     `${label} must not install or invoke Bash for release gates`,
   );
 }
 
-test("GoReleaser config declares binary-only thin and universal Darwin artifacts", () => {
+test("GoReleaser config declares five thin builds plus the Darwin universal binary", () => {
   const source = readSource(configPath);
   assert.match(source, /^version: 2$/m);
   assert.match(source, /^project_name: zcode-acp$/m);
 
   const builds = listEntries(topLevelSection(source, "builds"));
-  assert.equal(builds.length, 2, "exactly two thin Darwin builds are required");
-  for (const [id, arch] of [
-    ["darwin-arm64", "arm64"],
-    ["darwin-amd64", "amd64"],
-  ]) {
+  assert.equal(builds.length, 5, "five thin platform builds are required");
+  const targets = [
+    ["linux-amd64", "linux", "amd64"],
+    ["linux-arm64", "linux", "arm64"],
+    ["darwin-arm64", "darwin", "arm64"],
+    ["darwin-amd64", "darwin", "amd64"],
+    ["windows-amd64", "windows", "amd64"],
+  ];
+  for (const [id, goos, goarch] of targets) {
     const build = builds.find((entry) => entry.includes(`id: ${id}`));
     assert.ok(build, `missing build ${id}`);
     assert.match(build, /main: \.\/cmd\/zcode-acp/);
     assert.match(build, /binary: zcode-acp/);
     assert.match(build, /env: \[CGO_ENABLED=0\]/);
-    assert.match(build, /goos: \[darwin\]/);
-    assert.match(build, new RegExp(`goarch: \\[${arch}\\]`));
+    assert.match(build, new RegExp(`goos: \\[${goos}\\]`));
+    assert.match(build, new RegExp(`goarch: \\[${goarch}\\]`));
     assert.match(build, /flags: \[-trimpath\]/);
-    assert.match(build, /ldflags: \[-s, -w, -X, "main\.version=\{\{ \.Version \}\}"\]/);
+    assert.match(
+      build,
+      /ldflags: \[-s, -w, -X, "main\.version=18\.1\.9\+zacp\.\{\{ \.Version \}\}"\]/,
+    );
   }
 
   const universal = listEntries(topLevelSection(source, "universal_binaries"));
@@ -81,16 +88,18 @@ test("GoReleaser config declares binary-only thin and universal Darwin artifacts
 
   const archives = listEntries(topLevelSection(source, "archives"));
   assert.equal(archives.length, 2, "thin and universal archive definitions are required");
-  const thin = archives.find((entry) => entry.includes("id: darwin-thin"));
+  const thin = archives.find((entry) => entry.includes("id: thin"));
   const fat = archives.find((entry) => entry.includes("id: darwin-universal"));
   assert.ok(thin, "missing thin archive");
   assert.ok(fat, "missing universal archive");
-  assert.match(thin, /ids: \[darwin-arm64, darwin-amd64\]/);
-  assert.match(thin, /name_template: "zcode-acp_\{\{ \.Version \}\}_darwin_\{\{ \.Arch \}\}"/);
+  assert.match(thin, /ids: \[linux-amd64, linux-arm64, darwin-arm64, darwin-amd64, windows-amd64\]/);
+  assert.match(thin, /formats: \[tar\.gz\]/);
+  assert.match(thin, /format_overrides:\n      - goos: windows\n        formats: \[zip\]/);
+  assert.match(thin, /name_template: "zcode-acp_\{\{ \.Version \}\}_\{\{ \.Os \}\}_\{\{ \.Arch \}\}"/);
   assert.match(fat, /ids: \[darwin-universal\]/);
+  assert.match(fat, /formats: \[tar\.gz\]/);
   assert.match(fat, /name_template: "zcode-acp_\{\{ \.Version \}\}_darwin_universal"/);
   for (const archive of archives) {
-    assert.match(archive, /formats: \[tar\.gz\]/);
     assert.match(archive, /files: \["\.zcode-acp-no-extra-files-\*"\]/);
   }
 
@@ -100,26 +109,51 @@ test("GoReleaser config declares binary-only thin and universal Darwin artifacts
   assert.match(readSource(path.join(repoRoot, ".gitignore")), /^\/dist\/$/m);
 });
 
-test("Go verifier replaces the shell checksum, extraction, and architecture gates", () => {
+test("Go verifier covers all six platform archives without executing them", () => {
   assert.equal(
     existsSync(path.join(repoRoot, "scripts", "verify-darwin-release.sh")),
     false,
     "the shell verifier must be deleted",
   );
+  assert.equal(
+    existsSync(path.join(repoRoot, "scripts", "verify-release.sh")),
+    false,
+    "the shell verifier must stay deleted",
+  );
+
   const source = readSource(verifierPath);
   for (const required of [
     '"archive/tar"',
+    '"archive/zip"',
     '"compress/gzip"',
     '"crypto/sha256"',
+    '"debug/elf"',
+    '"debug/pe"',
     '"os/exec"',
     'exec.CommandContext(context.Background(), "lipo", "-archs", binary)',
     "os.MkdirTemp",
-    "extractValidatedArchive",
+    "extractTarGz",
+    "extractZip",
+    "elfArch",
+    "peArch",
     "architectureMatches",
+    "verifyVersionStamp",
   ]) {
     assert.ok(source.includes(required), `Go verifier is missing ${required}`);
   }
   assert.match(source, /expectedBinary\s+= "zcode-acp"/, "Go verifier binary name drifted");
+  assert.match(source, /windowsBinary\s+= "zcode-acp\.exe"/, "Go verifier Windows binary name drifted");
+  assert.match(source, /versionStampPrefix\s+= "18\.1\.9\+zacp\."/, "Go verifier stamp drifted");
+  for (const label of [
+    "linux_amd64",
+    "linux_arm64",
+    "darwin_amd64",
+    "darwin_arm64",
+    "darwin_universal",
+    "windows_amd64",
+  ]) {
+    assert.match(source, new RegExp(`label:\\s+"${label}"`), `Go verifier is missing ${label}`);
+  }
   assert.doesNotMatch(
     source,
     /exec\.Command\("(?:tar|gzip|shasum)"/,
@@ -132,7 +166,7 @@ test("Go verifier replaces the shell checksum, extraction, and architecture gate
   );
 
   const mise = readSource(path.join(repoRoot, "mise.toml"));
-  assert.match(mise, /^run = "go run \.\/cmd\/verify-darwin-release dist"$/m);
+  assert.match(mise, /^run = "go run \.\/cmd\/verify-release dist"$/m);
 });
 
 function jobSection(source, name) {
@@ -208,7 +242,7 @@ test("release workflow runs the proven snapshot with read-only rights", () => {
   assert.doesNotMatch(source, /GOPROXY=off[^\n]*go mod download/);
 
   const snapshot = jobSection(source, "snapshot");
-  assert.match(snapshot, /name: goreleaser snapshot \(macOS universal\)/);
+  assert.match(snapshot, /name: goreleaser snapshot \(multi-platform\)/);
   assert.match(snapshot, /runs-on: macos-latest/);
   assert.match(snapshot, /uses: actions\/checkout@v4/);
   assert.match(snapshot, /fetch-depth: 0/);
@@ -220,22 +254,25 @@ test("release workflow runs the proven snapshot with read-only rights", () => {
   assertDependencyGate(snapshot);
 
   const build = namedStep(snapshot, "Build release snapshot");
-  const verify = namedStep(snapshot, "Verify Darwin snapshot artifacts");
-  const upload = namedStep(snapshot, "Upload Darwin snapshot artifacts");
+  const verify = namedStep(snapshot, "Verify release snapshot artifacts");
+  const upload = namedStep(snapshot, "Upload release snapshot artifacts");
   assert.match(build, /GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish/);
-  assert.match(verify, /mise run verify-darwin-release/);
+  assert.match(verify, /mise run verify-release/);
   assert.match(upload, /uses: actions\/upload-artifact@v4/);
   assert.match(upload, /if-no-files-found: error/);
+  assert.match(upload, /dist\/zcode-acp_\*_linux_amd64\.tar\.gz/);
+  assert.match(upload, /dist\/zcode-acp_\*_linux_arm64\.tar\.gz/);
   assert.match(upload, /dist\/zcode-acp_\*_darwin_arm64\.tar\.gz/);
   assert.match(upload, /dist\/zcode-acp_\*_darwin_amd64\.tar\.gz/);
   assert.match(upload, /dist\/zcode-acp_\*_darwin_universal\.tar\.gz/);
+  assert.match(upload, /dist\/zcode-acp_\*_windows_amd64\.zip/);
   assert.match(upload, /dist\/checksums\.txt/);
   assertOrdered(snapshot, [
     "GOPROXY=off mise exec -- goreleaser check",
     "name: Build release snapshot",
     "GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish",
-    "name: Verify Darwin snapshot artifacts",
-    "name: Upload Darwin snapshot artifacts",
+    "name: Verify release snapshot artifacts",
+    "name: Upload release snapshot artifacts",
   ]);
 });
 
@@ -275,8 +312,8 @@ test("release workflow scopes snapshot and tag publication", () => {
     "GOPROXY=off mise exec -- goreleaser release --clean",
   ]);
 
-  assert.match(snapshot, /name: goreleaser snapshot \(macOS universal\)/);
+  assert.match(snapshot, /name: goreleaser snapshot \(multi-platform\)/);
   assert.match(snapshot, /GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish/);
-  assert.match(snapshot, /mise run verify-darwin-release/);
+  assert.match(snapshot, /mise run verify-release/);
   assert.match(snapshot, /uses: actions\/upload-artifact@v4/);
 });

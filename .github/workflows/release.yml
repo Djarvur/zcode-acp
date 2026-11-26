@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   snapshot:
-    name: goreleaser snapshot (macOS universal)
+    name: goreleaser snapshot (multi-platform)
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -56,18 +56,21 @@ jobs:
       - name: Build release snapshot
         run: GOPROXY=off mise exec -- goreleaser release --snapshot --clean --skip=publish
 
-      - name: Verify Darwin snapshot artifacts
-        run: mise run verify-darwin-release
+      - name: Verify release snapshot artifacts
+        run: mise run verify-release
 
-      - name: Upload Darwin snapshot artifacts
+      - name: Upload release snapshot artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: darwin-snapshot-${{ github.sha }}
+          name: release-snapshot-${{ github.sha }}
           if-no-files-found: error
           path: |
+            dist/zcode-acp_*_linux_amd64.tar.gz
+            dist/zcode-acp_*_linux_arm64.tar.gz
             dist/zcode-acp_*_darwin_arm64.tar.gz
             dist/zcode-acp_*_darwin_amd64.tar.gz
             dist/zcode-acp_*_darwin_universal.tar.gz
+            dist/zcode-acp_*_windows_amd64.zip
             dist/checksums.txt
 
   release:

@@ -305,13 +305,16 @@ test("macOS amd64 mirrors preflights and canonical gates without Bash setup", ()
   assert.doesNotMatch(amd64, /CGO_ENABLED\s*=\s*0/, "native race tests must keep CGO enabled");
 });
 
-test("Darwin cross-build checks tool pins before both literal CGO-free targets", () => {
-  const crossBuild = workflowJob("darwin-cross-build");
-  const arm64Command =
-    "mise exec -- env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...";
-  const amd64Command =
-    "mise exec -- env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./...";
+test("cross-build checks tool pins and the GoReleaser config before all five CGO-free targets", () => {
+  const crossBuild = workflowJob("cross-build");
+  const targets = [
+    ["Cross-build linux/arm64", "linux", "arm64"],
+    ["Cross-build darwin/arm64", "darwin", "arm64"],
+    ["Cross-build darwin/amd64", "darwin", "amd64"],
+    ["Cross-build windows/amd64", "windows", "amd64"],
+  ];
 
+  assert.match(crossBuild, /^    name: cross-build$/m);
   assert.match(crossBuild, /^    runs-on: ubuntu-latest$/m);
   assert.ok(crossBuild.includes("      - uses: actions/checkout@v4"));
   assert.ok(crossBuild.includes("        run: curl https://mise.run | sh"));
@@ -322,13 +325,27 @@ test("Darwin cross-build checks tool pins before both literal CGO-free targets",
       "        run: mise exec -- node scripts/check-mise-tool-versions.mjs",
     ),
   );
-  assert.ok(workflowStep(crossBuild, "Cross-build darwin/arm64").includes(arm64Command));
-  assert.ok(workflowStep(crossBuild, "Cross-build darwin/amd64").includes(amd64Command));
+  assert.ok(
+    workflowStep(crossBuild, "Validate GoReleaser config").includes(
+      "        run: GOPROXY=off mise exec -- goreleaser check",
+    ),
+  );
+  for (const [step, goos, goarch] of targets) {
+    assert.ok(
+      workflowStep(crossBuild, step).includes(
+        `        run: mise exec -- env CGO_ENABLED=0 GOOS=${goos} GOARCH=${goarch} go build ./...`,
+      ),
+      `${step} must be the literal CGO-free command`,
+    );
+  }
   assertWorkflowOrder(crossBuild, [
     "      - name: Install tools from mise.toml",
     "      - name: Verify mise tool versions",
+    "      - name: Validate GoReleaser config",
+    "      - name: Cross-build linux/arm64",
     "      - name: Cross-build darwin/arm64",
     "      - name: Cross-build darwin/amd64",
+    "      - name: Cross-build windows/amd64",
   ]);
 });
 

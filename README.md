@@ -71,7 +71,14 @@ go build -o zcode-acp ./cmd/zcode-acp
 (`mise run build` is the plain compile check.) The wrapper itself is a single
 static binary with no runtime dependencies of its own; the backend it drives is
 the ZCode desktop install. Alternatively, fetch a release artifact and verify
-its checksum against the publisher's sidecar.
+its SHA-256 checksum against the published `checksums.txt`:
+
+- `zcode-acp_<version>_linux_amd64.tar.gz` / `..._linux_arm64.tar.gz`
+- `zcode-acp_<version>_darwin_amd64.tar.gz` / `..._darwin_arm64.tar.gz`
+- `zcode-acp_<version>_windows_amd64.zip`
+- `zcode-acp_<version>_darwin_universal.tar.gz` (one binary for both Mac
+  architectures)
+- `checksums.txt` (SHA-256 for every archive above)
 
 On the target machine the binary needs:
 
@@ -104,7 +111,10 @@ unpacked/deb/rpm backends do not:
   releases (`sudo apt install libfuse2`). Newer static type-2 AppImage runtimes
   carry their own FUSE client and do not need libfuse2.
 
-Check the build: `./zcode-acp --version` prints `zcode-acp 18.1.9+zacp.0`.
+Check the build: a source build's `./zcode-acp --version` prints
+`zcode-acp 18.1.9+zacp.0`. Release artifacts stamp their tag into the build
+metadata instead — v1.0.0 prints `zcode-acp 18.1.9+zacp.1.0.0` — so the
+Orca compatibility floor (18.1.9) stays satisfied.
 
 ## Configuration
 
@@ -220,7 +230,9 @@ session with an explicit cause (`zcode: appimage mount lost: <appimage> (mount
 **Version floor** — a preset-agent card is probed with `<program> --version`
 and requires semver ≥ 18.1.9 for model selectors to resolve (≥ 17.0.5 to
 install at all). An older stamp blocks the card before any protocol flows.
-This binary prints `18.1.9+zacp.0`; check with `zcode-acp omp --version`.
+Source builds print `18.1.9+zacp.0`; release artifacts print
+`18.1.9+zacp.<release>` (v1.0.0 → `18.1.9+zacp.1.0.0`). Check with
+`zcode-acp omp --version`.
 macOS limitations in this release: Start Plan is not part of the macOS port;
 the wrapper ships as a standalone binary (no `.app` packaging, signing, or
 notarization); AppImage/FUSE and deb/rpm discovery are Linux-only.
@@ -301,9 +313,10 @@ Mechanics worth knowing before you type it:
 The client probes the override as `<program> <prefix args> --version` — for
 this recipe that is `zcode-acp omp --version` — with a short timeout, and
 requires a semver >= 18.1.9 for the card's model selectors to resolve
-(>= 17.0.5 to install the card at all). This wrapper prints
-`zcode-acp 18.1.9+zacp.0` — the honest build-metadata form over the
-compatibility floor. Run the check yourself first:
+(>= 17.0.5 to install the card at all). Source builds print
+`zcode-acp 18.1.9+zacp.0`; release artifacts stamp the tag into the build
+metadata (`zcode-acp 18.1.9+zacp.1.0.0` for v1.0.0) — the honest form over
+the compatibility floor. Run the check yourself first:
 
 ```
 zcode-acp omp --version

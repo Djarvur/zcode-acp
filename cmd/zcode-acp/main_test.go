@@ -142,6 +142,30 @@ func TestAgentBinaryEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("release ldflags stamp overrides the source version", func(t *testing.T) {
+		const releaseStamp = "18.1.9+zacp.1.0.0"
+
+		releaseBin := e2eBuildBinaryWithLDFlags(
+			t,
+			"github.com/Djarvur/zcode-acp/cmd/zcode-acp",
+			"zcode-acp-release",
+			"-X main.version="+releaseStamp,
+		)
+
+		ctx, cancel := context.WithTimeout(context.Background(), e2eUpdateWait)
+		defer cancel()
+
+		out, err := exec.CommandContext(ctx, releaseBin, ompFlagVersion).Output()
+		if err != nil {
+			t.Fatalf("--version (release stamp): %v", err)
+		}
+
+		want := "zcode-acp " + releaseStamp
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Fatalf("--version = %q, want %q", got, want)
+		}
+	})
+
 	t.Run("two prompt loops over real stdio", func(t *testing.T) {
 		e2eRunTwoLoopRide(t, agentBin, fakeBin)
 	})
@@ -157,12 +181,26 @@ func TestAgentBinaryEndToEnd(t *testing.T) {
 func e2eBuildBinary(t *testing.T, pkg, name string) string {
 	t.Helper()
 
+	return e2eBuildBinaryWithLDFlags(t, pkg, name, "")
+}
+
+// e2eBuildBinaryWithLDFlags is e2eBuildBinary plus an optional linker stamp —
+// the seam GoReleaser uses to write the release version into the binary.
+func e2eBuildBinaryWithLDFlags(t *testing.T, pkg, name, ldflags string) string {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(context.Background(), e2eBuildDeadline)
 	defer cancel()
 
 	binPath := filepath.Join(t.TempDir(), name)
 
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binPath, pkg)
+	args := []string{"build"}
+	if ldflags != "" {
+		args = append(args, "-ldflags", ldflags)
+	}
+	args = append(args, "-o", binPath, pkg)
+
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {

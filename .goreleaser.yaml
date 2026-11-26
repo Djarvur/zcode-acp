@@ -3,6 +3,22 @@ version: 2
 project_name: zcode-acp
 
 builds:
+  - id: linux-amd64
+    main: ./cmd/zcode-acp
+    binary: zcode-acp
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64]
+    flags: [-trimpath]
+    ldflags: [-s, -w, -X, "main.version=18.1.9+zacp.{{ .Version }}"]
+  - id: linux-arm64
+    main: ./cmd/zcode-acp
+    binary: zcode-acp
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [arm64]
+    flags: [-trimpath]
+    ldflags: [-s, -w, -X, "main.version=18.1.9+zacp.{{ .Version }}"]
   - id: darwin-arm64
     main: ./cmd/zcode-acp
     binary: zcode-acp
@@ -10,7 +26,7 @@ builds:
     goos: [darwin]
     goarch: [arm64]
     flags: [-trimpath]
-    ldflags: [-s, -w, -X, "main.version={{ .Version }}"]
+    ldflags: [-s, -w, -X, "main.version=18.1.9+zacp.{{ .Version }}"]
   - id: darwin-amd64
     main: ./cmd/zcode-acp
     binary: zcode-acp
@@ -18,7 +34,15 @@ builds:
     goos: [darwin]
     goarch: [amd64]
     flags: [-trimpath]
-    ldflags: [-s, -w, -X, "main.version={{ .Version }}"]
+    ldflags: [-s, -w, -X, "main.version=18.1.9+zacp.{{ .Version }}"]
+  - id: windows-amd64
+    main: ./cmd/zcode-acp
+    binary: zcode-acp
+    env: [CGO_ENABLED=0]
+    goos: [windows]
+    goarch: [amd64]
+    flags: [-trimpath]
+    ldflags: [-s, -w, -X, "main.version=18.1.9+zacp.{{ .Version }}"]
 
 universal_binaries:
   - id: darwin-universal
@@ -29,11 +53,15 @@ universal_binaries:
 archives:
   # Binaries come from ids. This non-matching extra-file glob suppresses
   # GoReleaser's default README/LICENSE members without adding another file.
-  - id: darwin-thin
-    ids: [darwin-arm64, darwin-amd64]
+  # Windows gets the conventional zip container; every other target tar.gz.
+  - id: thin
+    ids: [linux-amd64, linux-arm64, darwin-arm64, darwin-amd64, windows-amd64]
     formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     files: [".zcode-acp-no-extra-files-*"]
-    name_template: "zcode-acp_{{ .Version }}_darwin_{{ .Arch }}"
+    name_template: "zcode-acp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
   - id: darwin-universal
     ids: [darwin-universal]
     formats: [tar.gz]

@@ -886,7 +886,8 @@ func (f *Front) DeleteSession(ctx context.Context, sessionID string) error {
 // CAT-01/CAT-03): the session's autocomplete items — the scanned skills
 // alphabetically, then the /model entry whose prompt form
 // (`/model <selector>`) is the omp card's switch contract
-// (resolvesSelectorsFrom 18.1.9; the wrapper stamps 18.1.9+zacp.0).
+// (resolvesSelectorsFrom 18.1.9; the wrapper stamps 18.1.9+zacp.0 in source
+// builds and 18.1.9+zacp.<release> in release builds).
 func (f *Front) CommandCatalog(ctx context.Context, sessionID string) []acpport.CommandItem {
 	roots := f.catalogRoots
 	if cwd := f.sessionCwdLocked(sessionID); cwd != "" {
