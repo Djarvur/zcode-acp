@@ -58,9 +58,9 @@ run = "go run ./cmd/scan-secrets"
 description = "Check documentation structure and provenance tags"
 run = "go run ./cmd/check-docs"
 
-[tasks.verify-darwin-release]
-description = "Verify checksummed Darwin release archives in dist/"
-run = "go run ./cmd/verify-darwin-release dist"
+[tasks.verify-release]
+description = "Verify checksummed multi-platform release archives in dist/"
+run = "go run ./cmd/verify-release dist"
 
 [tasks.ci]
 description = "Full CI gate: build + vet + lint + test + experiments + Go gates (D-02)"

@@ -13,7 +13,9 @@
 #     the secret-scan job's required context instead of adding a fourth name).
 #   - native macOS arm64/amd64 jobs run the canonical CI graph after
 #     architecture and tool-version preflights, and a separate Linux job runs
-#     both literal CGO-free Darwin cross-builds;
+#     the GoReleaser config check plus literal CGO-free cross-builds for all
+#     five non-universal release targets (linux amd64/arm64, darwin
+#     amd64/arm64, windows/amd64);
 #   - a fourth job `build / vet / test (windows)` (261126-2s8): a native
 #     windows-latest leg that installs mise with its PowerShell installer,
 #     installs only the Go pin from mise.toml with `mise install go`, and runs
@@ -226,8 +228,8 @@ jobs:
       - name: Modules are tidy
         run: mise run tidy-diff
 
-  darwin-cross-build:
-    name: darwin-cross-build
+  cross-build:
+    name: cross-build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -245,13 +247,24 @@ jobs:
       - name: Verify mise tool versions
         run: mise exec -- node scripts/check-mise-tool-versions.mjs
 
-      # Compile-only portability gate: keep both literal required target
-      # commands separate from the native CGO-enabled race-test jobs.
+      # The same config the release workflow publishes from must validate
+      # here, on the PR, before any tag exists.
+      - name: Validate GoReleaser config
+        run: GOPROXY=off mise exec -- goreleaser check
+
+      # Compile-only portability gate: keep each literal required target
+      # command separate from the native CGO-enabled race-test jobs.
+      - name: Cross-build linux/arm64
+        run: mise exec -- env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+
       - name: Cross-build darwin/arm64
         run: mise exec -- env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
 
       - name: Cross-build darwin/amd64
         run: mise exec -- env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./...
+
+      - name: Cross-build windows/amd64
+        run: mise exec -- env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
 
   govulncheck:
     # Required check name (plan 02-05).

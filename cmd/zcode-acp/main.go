@@ -40,8 +40,9 @@ import (
 // 07-04, D-03): the client's version probe parses the answer as semver and
 // blocks the whole card below 17.0.5, and model selectors resolve only from
 // 18.1.9 — the stamp carries build metadata, honest about being this
-// wrapper's build at the floor. The -ldflags override seam stays open for a
-// release flow to stamp later.
+// wrapper's build at the floor. The -ldflags override seam stays open: source
+// builds keep 18.1.9+zacp.0, and GoReleaser stamps the tag into the build
+// metadata (18.1.9+zacp.<release>, e.g. 18.1.9+zacp.1.0.0 for v1.0.0).
 var version = "18.1.9+zacp.0"
 
 // Environment fallbacks for the flags (the flag always wins over its env var,

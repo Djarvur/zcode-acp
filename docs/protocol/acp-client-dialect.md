@@ -203,7 +203,9 @@ whole UI). Effective argv for the `omp` card under the default registration:
   [V-SRC agent-session-attachment-store-registry-CR_MCAgP.js#Hb-modelCommand; repo
   src/main/acp/acp-dialects/omp-dialect.ts#145 @v1.4.262 — comment: 18.1.8's `/model` matches
   ids, 18.1.9's resolves roles]. The wrapper therefore prints **18.1.9+** on `--version`, not
-  the bare floor (locked integration decision [V-RPT PROJECT.md key decisions, 2026-11-19]).
+  the bare floor (locked integration decision [V-RPT PROJECT.md key decisions, 2026-11-19]):
+  source builds stamp `18.1.9+zacp.0`, release builds stamp the tag into the build metadata
+  (`18.1.9+zacp.<release>`, e.g. `18.1.9+zacp.1.0.0` for v1.0.0).
 - Probe shape under prefixed overrides — the static question from research assumption A2 is now
   answered by the chunk read above: the probe is `prefixArgs + --version`, **without the card's
   own args**, so an override `<wrapper> omp` is probed as `<wrapper> omp --version`. Our binary
@@ -657,10 +659,12 @@ agent never sent the catalog update):
   fed the composer shows "No matching commands".**
 - **The omp dialect's `/model` and its refusals are already catalog-aware**:
   `modelCommand.resolvesSelectorsFrom: "18.1.9"` — a wrapper on/above 18.1.9 is expected to
-  serve the catalog (the wrapper's version stamp is `18.1.9+zacp.0`).
+  serve the catalog (the wrapper's source stamp is `18.1.9+zacp.0`; release builds stamp
+  `18.1.9+zacp.<release>`).
 - **skillRoots (visuals)**: the omp spec's `skillRoots` hook passes the configured visuals
   skill roots to the card (`--plugin-dir`); version window `18.1.5` ≤ v < `18.1.9` disables it —
-  the wrapper's stamp (`18.1.9+zacp.0`) is on the enabled side.
+  the wrapper's stamp (`18.1.9+zacp.0` source, `18.1.9+zacp.<release>` release) is on the
+  enabled side.
 
 **Wrapper consequence — SHIPPED (v0.21.0 Phase 8)**: on `session/new` the wrapper emits ONE
 `session/update` with `sessionUpdate: "available_commands_update"` whose items are the ZCode
