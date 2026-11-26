@@ -6,10 +6,10 @@ current_phase: 16
 current_phase_name: Live Orca Acceptance
 status: blocked
 stopped_at: Phase 16 blocked — live z.ai tool-call and permission acceptance pending quota
-last_updated: "2026-11-26T09:18:45.798Z"
+last_updated: "2026-11-26T09:25:20.612Z"
 last_activity: 2026-11-26
 last_activity_desc: Phase 16 blocked — intended-account live z.ai tool-call and permission proof pending
-state_head: 6b811935e7256bb3896863df6607084a7103828f
+state_head: 7e62ec52251c7d0beaf6b6967f63899def17eb99
 progress:
   total_phases: 6
   completed_phases: 5
@@ -45,7 +45,7 @@ See: .planning/PROJECT.md (updated 2026-11-25)
 Phase: 16 — Live Orca Acceptance
 Plan: 16-UAT blocked
 Status: Blocked — intended-account live z.ai tool-call and permission proof is still required
-Last activity: 2026-11-26 — completed quick task 261126-g46: Fix final macOS PR review blockers
+Last activity: 2026-11-26 — fixed Linux-only mount fixture lint exposed by hosted CI
 
 ## Performance Metrics
 
@@ -349,6 +349,7 @@ None yet.
 | 261126-2s8 | Add a windows-latest CI job to the pr-sanity workflow that runs go build, go vet, and go test on Windows using the repo's pinned Go toolchain, keeping the Linux gate unchanged. | 2026-11-26 | d368bc4 | /home/nil/DiskD/W/Djarvur/zcode-acp/.planning/quick/261126-2s8-add-a-windows-latest-ci-job-to-the-pr-sanity-workflow-that |
 | 261126-2s9 | Implement native Windows install discovery (LocalAppData, Program Files, and registry uninstall entries) so --app-server is no longer required, with tests. | 2026-11-26 | 9454ba3 | /home/nil/DiskD/W/Djarvur/zcode-acp/.planning/quick/261126-2s9-implement-native-windows-install-discovery-localappdata-pro |
 | 261126-g46 | Fix final macOS PR review blockers | 2026-11-26 | 6b81193 | [261126-g46-fix-final-macos-pr-review-blockers](./quick/261126-g46-fix-final-macos-pr-review-blockers/) |
+| 11 | Satisfy Linux lint in the mount PID fixture after hosted CI exposed a build-tag-only nlreturn issue. | 2026-11-26 | 7e62ec5 | — |
 
 ## Deferred Items
 
