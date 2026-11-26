@@ -42,6 +42,9 @@ const (
 	// external package cannot see Child.Done, and PrepareMount returns nil on
 	// every failure).
 	fakeHelperPIDFile = "helper.pid"
+	// fakeDescendantPIDFile records the background process left behind by the
+	// descendant-after-helper-exit fixture.
+	fakeDescendantPIDFile = "descendant.pid"
 	// fakeAppServerPIDFile is the release signal the die-after/vanish
 	// variants wait for: the test writes it after PrepareMount returned a
 	// validated Mount, so the loss happens on an already-installed mount.
@@ -63,6 +66,7 @@ const (
 	fakeVariantLeaky       = "leaky"
 	fakeVariantDieAfter    = "die-after"
 	fakeVariantVanish      = "vanish"
+	fakeVariantDescendant  = "descendant"
 
 	testAppImageLayout = "appimage"
 
@@ -99,6 +103,7 @@ func writeFakeAppImage(t *testing.T, dir, variant string) string {
 
 	appImage := filepath.Join(dir, fakeAppImageName)
 	body := strings.ReplaceAll(fakeAppImageScript(variant), "@@PID@@", filepath.Join(dir, fakeHelperPIDFile))
+	body = strings.ReplaceAll(body, "@@DESC_PID@@", filepath.Join(dir, fakeDescendantPIDFile))
 	body = strings.ReplaceAll(body, "@@APP_PID@@", filepath.Join(dir, fakeAppServerPIDFile))
 
 	if err := os.WriteFile(appImage, []byte(body), 0o750); err != nil {
@@ -201,6 +206,15 @@ while [ ! -f "@@APP_PID@@" ]; do sleep 0.02; done
 rm -rf "$dir"
 while :; do sleep 0.05; done
 `
+	// fakeScriptDescendant leaves a same-group background process alive when
+	// direct SIGTERM succeeds. Its stdio is redirected away from the helper
+	// pipes, so only a process-group sweep can reap it.
+	fakeScriptDescendant = fakeMountPreamble + fakeTreeBody + `sleep 30 </dev/null >/dev/null 2>&1 &
+echo $! > "@@DESC_PID@@"
+trap 'rm -rf "$dir"; exit 143' TERM
+printf '%s\n' "$dir"
+while :; do sleep 0.05; done
+`
 	// fakeScriptStubborn ignores SIGTERM and keeps the tree alive; the test
 	// starts a detached Go helper that removes the tree after the helper is
 	// killed — the fake analogue of the real keepalive-pipe unmount.
@@ -251,6 +265,8 @@ func fakeAppImageScript(variant string) string {
 		return fakeScriptDieAfter
 	case fakeVariantVanish:
 		return fakeScriptVanish
+	case fakeVariantDescendant:
+		return fakeScriptDescendant
 	case fakeVariantStubborn:
 		return fakeScriptStubborn
 	default:
@@ -559,6 +575,78 @@ func TestMountStop(t *testing.T) {
 	if err := mount.Stop(); err != nil {
 		t.Fatalf("second Stop = %v, want nil (idempotent)", err)
 	}
+}
+
+// TestMountStopReapsDescendantsAfterHelperExit proves a successful direct-helper
+// SIGTERM does not end teardown: the unconditional group sweep must kill and
+// observe the redirected-stdio descendant before Stop returns.
+func TestMountStopReapsDescendantsAfterHelperExit(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	fixture := t.TempDir()
+	appImage := writeFakeAppImage(t, fixture, fakeVariantDescendant)
+	helperPIDFile := filepath.Join(fixture, fakeHelperPIDFile)
+	descendantPIDFile := filepath.Join(fixture, fakeDescendantPIDFile)
+
+	t.Cleanup(func() {
+		helperPID := readFixturePIDIfPresent(t, helperPIDFile)
+		descendantPID := readFixturePIDIfPresent(t, descendantPIDFile)
+		if helperPID > 0 {
+			if err := syscall.Kill(-helperPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("kill helper group %d: %v", helperPID, err)
+			}
+		}
+		if descendantPID > 0 {
+			if err := syscall.Kill(descendantPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("kill descendant %d: %v", descendantPID, err)
+			}
+		}
+	})
+
+	mount, err := supervisor.PrepareMount(context.Background(),
+		supervisor.Install{AppImage: appImage, Version: fakeAppImageVer}, testMountOpts())
+	if err != nil {
+		t.Fatalf("PrepareMount: %v", err)
+	}
+
+	root := mount.Root()
+	base := filepath.Dir(root)
+	helperPID := mount.HelperPID()
+	descendantPID := readFixturePID(t, fixture, fakeDescendantPIDFile)
+	if helperPID <= 0 || descendantPID <= 0 {
+		t.Fatalf("fixture PIDs must be positive: helper=%d descendant=%d", helperPID, descendantPID)
+	}
+	if err := syscall.Kill(descendantPID, 0); err != nil {
+		t.Fatalf("descendant %d must be alive before Stop: %v", descendantPID, err)
+	}
+
+	if stopErr := mount.Stop(); stopErr != nil {
+		t.Fatalf("Stop: %v", stopErr)
+	}
+
+	assertProcessGone(t, helperPID, "the mount helper")
+	assertProcessGone(t, descendantPID, "the helper descendant")
+	assertMountPathGone(t, root, "the mount root")
+	assertMountPathGone(t, base, "the private base")
+}
+
+// readFixturePIDIfPresent reads a cleanup record when the fixture reached the
+// point that wrote it. A present non-positive or malformed record is fatal.
+func readFixturePIDIfPresent(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read optional PID record %s: %v", path, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid optional PID record %s=%q: %v", path, string(data), err)
+	}
+	return pid
 }
 
 // TestMountSpacedTmpdir proves the whole mount line is the path: a TMPDIR that
