@@ -3,6 +3,7 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,10 @@ const (
 	// loginShellTimeout bounds the optional PATH probe so a slow rc file can
 	// never delay the backend spawn indefinitely.
 	loginShellTimeout = 2 * time.Second
+
+	// loginShellWaitDelay bounds exec's stdout copier when a descendant keeps
+	// the probe pipe open after the direct shell exits.
+	loginShellWaitDelay = 250 * time.Millisecond
 
 	// loginShellCap bounds the probe's stdout.
 	loginShellCap = 64 << 10
@@ -154,11 +159,40 @@ func (w *cappedWriter) String() string { return w.buf.String() }
 
 // defaultLoginShellRunner runs the probe under the bounded timeout and cap.
 func defaultLoginShellRunner(ctx context.Context, shell string, args, env []string) ([]byte, error) {
+	return runLoginShell(ctx, shell, args, env, loginShellWaitDelay)
+}
+
+// runLoginShell owns the probe's process tree and pipe-copy deadline. The
+// injectable WaitDelay keeps the production bound and the descendant fixture
+// on the same code path.
+func runLoginShell(
+	ctx context.Context, shell string, args, env []string, waitDelay time.Duration,
+) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, loginShellTimeout)
 	defer cancel()
 
+	tree, err := newProcessTree()
+	if err != nil {
+		return nil, fmt.Errorf("create login shell process tree: %w", err)
+	}
+	defer tree.close()
+
+	//nolint:gosec // shell is the validated login-shell path and args are the
+	// fixed non-interactive probe script, never caller-interpreted shell text.
 	cmd := exec.CommandContext(ctx, shell, args...)
 	cmd.Env = env
+	configureCommand(cmd)
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := tree.assign(cmd.Process); err != nil {
+			return err
+		}
+
+		return tree.terminate()
+	}
+	cmd.WaitDelay = waitDelay
 
 	var out cappedWriter
 
@@ -167,8 +201,35 @@ func defaultLoginShellRunner(ctx context.Context, shell string, args, env []stri
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
 
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("run login shell %s: %w", shell, err)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start login shell %s: %w", shell, err)
+	}
+	if err := tree.assign(cmd.Process); err != nil {
+		_ = tree.terminate()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+
+		return nil, fmt.Errorf("assign login shell process tree: %w", err)
+	}
+	// Windows process trees start suspended and must be resumed after job
+	// assignment; Unix resume is a no-op.
+	if err := tree.resume(); err != nil {
+		_ = tree.terminate()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+
+		return nil, fmt.Errorf("resume login shell process tree: %w", err)
+	}
+
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		if errors.Is(waitErr, exec.ErrWaitDelay) || ctx.Err() != nil {
+			if termErr := tree.terminate(); termErr != nil {
+				waitErr = errors.Join(waitErr, termErr)
+			}
+		}
+
+		return nil, fmt.Errorf("run login shell %s: %w", shell, waitErr)
 	}
 
 	return []byte(out.String()), nil

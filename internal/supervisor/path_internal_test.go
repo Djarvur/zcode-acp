@@ -84,13 +84,12 @@ func readLoginShellPID(t *testing.T, path string, required bool) int {
 	return pid
 }
 
-// runLoginShellTimed keeps the test's millisecond WaitDelay explicit. During
-// RED it delegates to the current production runner, which has no such seam.
+// runLoginShellTimed keeps the test's millisecond WaitDelay explicit while
+// exercising the same internal runner as production.
 func runLoginShellTimed(
 	ctx context.Context, shell string, args, env []string, waitDelay time.Duration,
 ) ([]byte, error) {
-	_ = waitDelay
-	return defaultLoginShellRunner(ctx, shell, args, env)
+	return runLoginShell(ctx, shell, args, env, waitDelay)
 }
 
 type loginShellResult struct {
