@@ -76,6 +76,7 @@ func ompTextHermeticShell(t *testing.T, dir, marker string) string {
 	if err := os.WriteFile(path, []byte(body), 0o750); err != nil {
 		t.Fatalf("write hermetic login-shell shim: %v", err)
 	}
+
 	return path
 }
 

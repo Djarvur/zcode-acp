@@ -201,24 +201,8 @@ func runLoginShell(
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
 
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start login shell %s: %w", shell, err)
-	}
-	if err := tree.assign(cmd.Process); err != nil {
-		_ = tree.terminate()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-
-		return nil, fmt.Errorf("assign login shell process tree: %w", err)
-	}
-	// Windows process trees start suspended and must be resumed after job
-	// assignment; Unix resume is a no-op.
-	if err := tree.resume(); err != nil {
-		_ = tree.terminate()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-
-		return nil, fmt.Errorf("resume login shell process tree: %w", err)
+	if err := startLoginShell(cmd, tree, shell); err != nil {
+		return nil, err
 	}
 
 	waitErr := cmd.Wait()
@@ -233,6 +217,36 @@ func runLoginShell(
 	}
 
 	return []byte(out.String()), nil
+}
+
+// startLoginShell starts the command, assigns its platform process tree, and
+// resumes Windows jobs. Startup failures retain the same bounded cleanup as the
+// normal Wait path.
+func startLoginShell(cmd *exec.Cmd, tree processTree, shell string) error {
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start login shell %s: %w", shell, err)
+	}
+	if err := tree.assign(cmd.Process); err != nil {
+		abortLoginShell(cmd, tree)
+
+		return fmt.Errorf("assign login shell process tree: %w", err)
+	}
+	// Windows process trees start suspended and must be resumed after job
+	// assignment; Unix resume is a no-op.
+	if err := tree.resume(); err != nil {
+		abortLoginShell(cmd, tree)
+
+		return fmt.Errorf("resume login shell process tree: %w", err)
+	}
+
+	return nil
+}
+
+// abortLoginShell reaps a command whose process-tree initialization failed.
+func abortLoginShell(cmd *exec.Cmd, tree processTree) {
+	_ = tree.terminate()
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
 }
 
 // lastNonEmptyLine returns the last non-empty trimmed line (rc noise may

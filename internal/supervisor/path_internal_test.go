@@ -44,7 +44,8 @@ func TestLoginShellDescendantHelper(t *testing.T) {
 	switch os.Getenv(loginShellHelperModeEnv) {
 	case loginShellHelperParent:
 		writeLoginShellPID(t, os.Getenv(loginShellHelperPIDEnv), os.Getpid())
-		descendant := exec.Command(os.Args[0], "-test.run=^TestLoginShellDescendantHelper$")
+		descendant := exec.CommandContext(context.Background(), os.Args[0],
+			"-test.run=^TestLoginShellDescendantHelper$")
 		descendant.Env = append(os.Environ(), loginShellHelperModeEnv+"="+loginShellHelperDescendant)
 		descendant.Stdin = nil
 		descendant.Stdout = os.Stdout
@@ -81,6 +82,7 @@ func readLoginShellPID(t *testing.T, path string, required bool) int {
 	if err != nil || pid <= 0 {
 		t.Fatalf("invalid PID record %s=%q: %v", path, string(data), err)
 	}
+
 	return pid
 }
 

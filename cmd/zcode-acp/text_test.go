@@ -393,20 +393,8 @@ func ompRunText(t *testing.T, bin string, argv []string, ride textRide) textRun 
 	stdoutBuf := &e2eSyncBuffer{}
 	stderrBuf := &e2eSyncBuffer{}
 
-	pathValue := ride.path
-	if pathValue == "" {
-		pathValue = os.Getenv("PATH")
-	}
-
 	cmd := exec.CommandContext(ctx, bin, argv...)
-	cmd.Env = []string{"PATH=" + pathValue, "HOME=" + home}
-	if ride.apiKey != "" {
-		cmd.Env = append(cmd.Env, "ZCODE_ACP_API_KEY="+ride.apiKey)
-	}
-	if ride.disableNodeLauncher {
-		cmd.Env = append(cmd.Env, "ZCODE_ACP_DISABLE_NODE_LAUNCHER=1")
-	}
-	cmd.Env = append(cmd.Env, ride.extraEnv...)
+	cmd.Env = ompTextRideEnv(home, ride)
 
 	cmd.Dir = ride.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -446,6 +434,26 @@ func ompRunText(t *testing.T, bin string, argv []string, ride textRide) textRun 
 	}
 
 	return res
+}
+
+// ompTextRideEnv builds the wrapper's explicit environment. An empty ride PATH
+// preserves the existing host PATH for non-macOS tests; macOS launcher tests
+// supply a fixture-only PATH and hermetic SHELL.
+func ompTextRideEnv(home string, ride textRide) []string {
+	pathValue := ride.path
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+
+	env := []string{"PATH=" + pathValue, "HOME=" + home}
+	if ride.apiKey != "" {
+		env = append(env, "ZCODE_ACP_API_KEY="+ride.apiKey)
+	}
+	if ride.disableNodeLauncher {
+		env = append(env, "ZCODE_ACP_DISABLE_NODE_LAUNCHER=1")
+	}
+
+	return append(env, ride.extraEnv...)
 }
 
 // ompTextInboundMethods returns the inbound request methods in transcript
