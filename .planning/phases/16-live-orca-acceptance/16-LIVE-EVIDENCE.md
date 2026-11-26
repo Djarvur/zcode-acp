@@ -2,7 +2,17 @@
 
 **Date:** 2026-11-26 03:40 (Europe/Moscow)
 **Machine:** this Mac (arm64, macOS 27.2)
-**Status:** passed
+**Status:** blocked
+
+## Acceptance verdict
+
+Phase 16 is blocked pending live proof on the intended z.ai account. The custom
+DeepSeek text result below is retained as partial diagnostic evidence only: it
+used a custom OpenAI-compatible provider, not the intended z.ai account, and
+does not prove tool-calls or permission requests. The intended account's z.ai
+coding-plan quota is exhausted (`[1310]`, reset 2026-11-27 18:05:02), so the
+required human acceptance run cannot be completed now. No live acceptance pass
+is claimed.
 
 ## Setup
 
@@ -39,7 +49,7 @@ repo code):
 The original file is backed up as
 `~/.zcode/v2/provider_config.json.bak-zcode-acp-maxout`.
 
-## Live proof
+## Partial diagnostic proof (custom DeepSeek text only)
 
 Orca structured chat:
 
@@ -74,9 +84,10 @@ on macOS. Verified live: the app-server and all MCP children report
 
 ## Notes
 
-- The real account's z.ai coding-plan quota is separately exhausted
-  (`[1310]`, reset 2026-11-27 18:05:02). The live proof used the custom
-  DeepSeek provider, so it does not depend on that quota.
+- The real account's z.ai coding-plan quota is exhausted
+  (`[1310]`, reset 2026-11-27 18:05:02); this blocks the intended-account live
+  acceptance run. The custom DeepSeek result above is diagnostic only and is
+  not evidence for MORCA-02.
 - Orca's conversation-name text task still calls `omp --print --mode text`
   without `--model`; it resolves the desktop default (`zai-api/GLM-5.3`) and
   will keep warning until that default is changed or its quota resets. It does

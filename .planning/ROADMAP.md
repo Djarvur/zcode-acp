@@ -16,7 +16,7 @@ setup documentation, and a final human-gated live Orca run.
 - ✅ **v0.21.0 — Card Command & Skill Autocomplete** — Phase 8 (shipped 2026-11-23)
 - ✅ **v0.22.0 — Ask-the-User Bridge** — Phase 9 (shipped 2026-11-23)
 - ✅ **v0.23.0 — Mount-First AppImage Backend** — Phase 10 (shipped 2026-11-24)
-- **v0.24.0 — macOS Support** — Phases 11-16 (planned)
+- **v0.24.0 — macOS Support** — Phases 11-16 (in progress)
 
 ## Phases
 
@@ -71,14 +71,14 @@ Full details: `.planning/milestones/v0.23.0-phases/`, `v0.23.0-ROADMAP.md`, `v0.
 
 </details>
 
-### v0.24.0 — macOS Support (Planned)
+### v0.24.0 — macOS Support (In Progress)
 
-- [x] **Phase 11: Darwin Build, Test & Release Gates** - Both macOS architectures compile and pass portable tests, CI, and checksummed release-artifact checks. (completed 2026-11-25)
-- [x] **Phase 12: macOS Bundle Discovery & Overrides** - Standard `.app` locations and override forms resolve without entering the Linux AppImage/FUSE path.
-- [x] **Phase 13: Desktop Launch & Runtime Environment** - The selected bundle launches the correct app-server with macOS provider paths and a usable GUI-launched tool PATH.
-- [x] **Phase 14: macOS Authentication** - Existing api-key and OAuth paths work, with Keychain-backed credential decryption and safe coded failures.
-- [x] **Phase 15: Automated Orca Acceptance & Documentation** - Fake-backend Orca coverage and Linux regressions stay zero-spend, and the English macOS guide is complete.
-- [x] **Phase 16: Live Orca Acceptance** - A human proves the existing ACP flow in Orca on the current Mac and records scrubbed evidence.
+- [x] **Phase 11: Darwin Build, Test & Release Gates** - Both macOS architectures compile and pass portable tests, CI, and checksummed release-artifact checks. (5/5 plans complete, 2026-11-25)
+- [x] **Phase 12: macOS Bundle Discovery & Overrides** - Standard `.app` locations and override forms resolve without entering the Linux AppImage/FUSE path. (1/1 plans complete, 2026-11-26)
+- [x] **Phase 13: Desktop Launch & Runtime Environment** - The selected bundle launches the correct app-server with macOS provider paths and a usable GUI-launched tool PATH. (1/1 plans complete, 2026-11-26)
+- [x] **Phase 14: macOS Authentication** - Existing api-key and OAuth paths work, with Keychain-backed credential decryption and safe coded failures. (1/1 plans complete, 2026-11-26)
+- [x] **Phase 15: Automated Orca Acceptance & Documentation** - Fake-backend Orca coverage and Linux regressions stay zero-spend, and the English macOS guide is complete. (1/1 plans complete, 2026-11-26)
+- [ ] **Phase 16: Live Orca Acceptance** - **Blocked:** the intended z.ai account's quota is exhausted; live tool-call and permission-request proof remains pending a human run after quota resets.
 
 ## Post-v1 Advisories (carried, non-blocking)
 
@@ -135,7 +135,7 @@ Plans:
   3. `--app-server` accepts a `.app`, its `Contents` directory, its `Contents/MacOS/<executable>`, and the existing Linux layouts without changing Linux override behavior.
   4. A macOS `.app` selection never invokes AppImage mounting or requires FUSE.
 
-**Plans**: TBD
+**Plans**: 1/1 plans complete (2026-11-26)
 
 ### Phase 13: Desktop Launch & Runtime Environment
 
@@ -148,7 +148,7 @@ Plans:
   3. A backend launched by GUI-started Orca can find the user's toolchain even when Orca inherits a launchd-minimal PATH.
   4. PATH completion is bounded and non-interactive, unions login-shell and caller paths, and preserves secret/proxy scrubbing in the child environment.
 
-**Plans**: TBD
+**Plans**: 1/1 plans complete (2026-11-26)
 
 ### Phase 14: macOS Authentication
 
@@ -161,7 +161,7 @@ Plans:
   3. Missing or locked Keychain items return actionable coded errors that distinguish the failure without exposing key material.
   4. Authentication runs write no key material to logs or stdout.
 
-**Plans**: TBD
+**Plans**: 1/1 plans complete (2026-11-26)
 
 ### Phase 15: Automated Orca Acceptance & Documentation
 
@@ -174,7 +174,7 @@ Plans:
   3. Linux AppImage/FUSE regression coverage remains green while macOS `.app` runs bypass that path, and all automated acceptance remains zero-spend with no real credentials.
   4. The English README documents macOS builds, ZCode discovery, Keychain prerequisites, Orca launch, and explicit platform limitations.
 
-**Plans**: TBD
+**Plans**: 1/1 plans complete (2026-11-26)
 
 ### Phase 16: Live Orca Acceptance
 
@@ -186,7 +186,7 @@ Plans:
   2. The run uses an available real account through an existing authentication path and introduces no new ACP capability.
   3. Scrubbed evidence records the macOS environment, ZCode version, launch command, authentication path, observed flow, and outcome.
 
-**Plans**: TBD
+**Plans**: 0/1 plans complete — blocked pending intended-account live z.ai evidence
 **Acceptance gate**: Human-run only on the current Mac; this phase may use real credentials and account quota. Automated phases must remain zero-spend and must not touch the real desktop, credentials, or Keychain in CI.
 
 ## Progress
@@ -195,9 +195,9 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 11. Darwin Build, Test & Release Gates | 5/5 | Complete    | 2026-11-25 |
-| 12. macOS Bundle Discovery & Overrides | 0/TBD | Not started | - |
-| 13. Desktop Launch & Runtime Environment | 0/TBD | Not started | - |
-| 14. macOS Authentication | 0/TBD | Not started | - |
-| 15. Automated Orca Acceptance & Documentation | 0/TBD | Not started | - |
-| 16. Live Orca Acceptance | 0/TBD | Not started | - |
+| 11. Darwin Build, Test & Release Gates | 5/5 | Complete | 2026-11-25 |
+| 12. macOS Bundle Discovery & Overrides | 1/1 | Complete | 2026-11-26 |
+| 13. Desktop Launch & Runtime Environment | 1/1 | Complete | 2026-11-26 |
+| 14. macOS Authentication | 1/1 | Complete | 2026-11-26 |
+| 15. Automated Orca Acceptance & Documentation | 1/1 | Complete | 2026-11-26 |
+| 16. Live Orca Acceptance | 0/1 | Blocked | - |

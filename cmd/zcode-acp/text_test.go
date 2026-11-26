@@ -375,7 +375,7 @@ func ompTextRunArgv(model, promptPath, installRoot string) []string {
 }
 
 // ompRunText runs the built binary with an explicit hermetic env (PATH and a
-// fresh temp HOME only, plus ZCODE_ACP_API_KEY for the auth arm), closes
+// fresh temp HOME by default, plus optional auth/launcher controls), closes
 // stdin immediately (the text arm never reads it — Orca ends the child's
 // stdin after handing over the record stream), waits for exit, and returns
 // the captured streams plus the fake transcript when one appeared.
@@ -393,11 +393,20 @@ func ompRunText(t *testing.T, bin string, argv []string, ride textRide) textRun 
 	stdoutBuf := &e2eSyncBuffer{}
 	stderrBuf := &e2eSyncBuffer{}
 
+	pathValue := ride.path
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+
 	cmd := exec.CommandContext(ctx, bin, argv...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "ZCODE_ACP_DISABLE_NODE_LAUNCHER=1"}
+	cmd.Env = []string{"PATH=" + pathValue, "HOME=" + home}
 	if ride.apiKey != "" {
 		cmd.Env = append(cmd.Env, "ZCODE_ACP_API_KEY="+ride.apiKey)
 	}
+	if ride.disableNodeLauncher {
+		cmd.Env = append(cmd.Env, "ZCODE_ACP_DISABLE_NODE_LAUNCHER=1")
+	}
+	cmd.Env = append(cmd.Env, ride.extraEnv...)
 
 	cmd.Dir = ride.dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
