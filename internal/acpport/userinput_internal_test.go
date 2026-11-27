@@ -1,6 +1,7 @@
 package acpport
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -402,5 +403,110 @@ func assertFreeTextDecode(t *testing.T) {
 
 	if _, err := DecodeUserInputAsk(json.RawMessage(`{broken`)); err == nil {
 		t.Fatal("a broken body decoded without an error — must fail loud")
+	}
+}
+
+// TestUserInputAskerPlanApprovalRoundTrip locks the composed decode → build
+// → client-accept → map path: a client answering with either the display
+// title or the enum const lands the wire value under the question text,
+// while the ordinary arm keeps the label identity end to end.
+func TestUserInputAskerPlanApprovalRoundTrip(t *testing.T) {
+	t.Run("plan approval answered with the display title", func(t *testing.T) {
+		assertPlanApprovalRoundTrip(t, elicitApproveLabel)
+	})
+
+	t.Run("plan approval answered with the wire value", func(t *testing.T) {
+		assertPlanApprovalRoundTrip(t, elicitApproveValue)
+	})
+
+	t.Run("ordinary ask keeps the label identity", func(t *testing.T) {
+		assertOrdinaryRoundTrip(t)
+	})
+}
+
+// assertPlanApprovalRoundTrip drives the composed asker for one accepted
+// string and locks both the built form and the normalized answer.
+func assertPlanApprovalRoundTrip(t *testing.T, selected string) {
+	t.Helper()
+
+	ask, err := DecodeUserInputAsk(json.RawMessage(elicitPlanParams))
+	if err != nil {
+		t.Fatalf("decode plan approval: %v", err)
+	}
+
+	var sent acp.CreateElicitationRequest
+	outcome, err := NewUserInputAsker(captureAcceptor(&sent, selected))(context.Background(), ask)
+	if err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+
+	if sent.Form == nil || sent.Form.Message != elicitPlanPrompt {
+		t.Fatalf("form = %+v, want the plan-approval prompt", sent.Form)
+	}
+
+	if sent.Form.Session == nil || sent.Form.Session.SessionId != elicitSession {
+		t.Fatalf("form session = %+v, want %q", sent.Form.Session, elicitSession)
+	}
+
+	assertPlanApprovalEnumOption(t, requirePlanApprovalOption(t, sent))
+
+	if outcome.Action != elicitAccept {
+		t.Fatalf("action = %q, want accept", outcome.Action)
+	}
+
+	if got := outcome.Answers[elicitPlanQ]; got != elicitApproveValue {
+		t.Fatalf("answers[%s] = %q, want %q", elicitPlanQ, got, elicitApproveValue)
+	}
+}
+
+// assertOrdinaryRoundTrip drives the composed asker over the ordinary params
+// body: the built enum carries the selected label as its const and title,
+// and the answer maps back under the question text unchanged.
+func assertOrdinaryRoundTrip(t *testing.T) {
+	t.Helper()
+
+	ask, err := DecodeUserInputAsk(json.RawMessage(elicitOrdinaryParams))
+	if err != nil {
+		t.Fatalf("decode ordinary: %v", err)
+	}
+
+	var sent acp.CreateElicitationRequest
+	outcome, err := NewUserInputAsker(captureAcceptor(&sent, elicitExit))(context.Background(), ask)
+	if err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+
+	prop := requireStringProperty(t, sent)
+	if len(prop.OneOf) != 2 {
+		t.Fatalf("q1 oneOf = %+v, want the two label options", prop.OneOf)
+	}
+
+	if prop.OneOf[1].Const != elicitExit || prop.OneOf[1].Title != elicitExit {
+		t.Fatalf("q1 option[1] = %+v, want const=title=%q", prop.OneOf[1], elicitExit)
+	}
+
+	if outcome.Action != elicitAccept {
+		t.Fatalf("action = %q, want accept", outcome.Action)
+	}
+
+	if got := outcome.Answers[elicitPhaseQ]; got != elicitExit {
+		t.Fatalf("answers[%s] = %q, want the selected label", elicitPhaseQ, got)
+	}
+}
+
+// captureAcceptor is the fake ElicitationSender: it records the built
+// request and accepts the single q1 property with the given string.
+func captureAcceptor(sent *acp.CreateElicitationRequest, selected string) ElicitationSender {
+	return func(_ context.Context, req acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error) {
+		*sent = req
+
+		content := map[string]acp.ElicitationContentValue{
+			"q1": acp.NewElicitationContentValueString(selected),
+		}
+
+		return acp.CreateElicitationResponse{Accept: &acp.CreateElicitationAccept{
+			Action:  elicitAccept,
+			Content: content,
+		}}, nil
 	}
 }
