@@ -1,0 +1,10 @@
+{
+  "command": "go test -race -count=1 -run '^(TestDecodeUserInputAsk|TestBuildElicitationRequest|TestBuildElicitationRequestFreeText|TestBuildElicitationRequestPlanApproval|TestMapElicitationOutcome|TestMapElicitationOutcomePlanApproval)$' ./internal/acpport",
+  "exitCode": 1,
+  "targetTest": "TestBuildElicitationRequestPlanApproval",
+  "targetFile": "internal/acpport/userinput_internal_test.go",
+  "expected": "Const == \"approve\" (the wire option value), Title == \"Approve\", decode carries Value and Interaction",
+  "actual": "Const == \"Approve\" (the label), decode yields Value \"\" and Interaction \"\", map leaves \"Approve\" verbatim",
+  "semanticAssessment": "The target tests fail on the planned assertions: the build emits Const = Label instead of the wire Value, the map copies the display title verbatim instead of normalizing it to the wire value, and decode drops the option Value. No compile, load, syntax, or fixture fault; the struct-field skeleton is inert.",
+  "output": "--- FAIL: TestBuildElicitationRequestPlanApproval (0.00s)\n    userinput_internal_test.go:184: option = {Meta:map[] Const:Approve Description:0xc00002c670 Title:Approve}, want const=\"approve\" title=\"Approve\"\n--- FAIL: TestMapElicitationOutcomePlanApproval (0.00s)\n    --- FAIL: TestMapElicitationOutcomePlanApproval/the_display_title (0.00s)\n        userinput_internal_test.go:326: answers[Exit plan mode?] = \"Approve\", want \"approve\"\n--- FAIL: TestDecodeUserInputAsk (0.00s)\n    userinput_internal_test.go:354: question = {Question:Which phase? Header:Phase Options:[{Value: Label:Verify 1 Description:verify phase one} {Value: Label:Exit manager Description:}] MultiSelect:false}, want the option values, labels, and descriptions\nFAIL\nFAIL\tgithub.com/Djarvur/zcode-acp/internal/acpport\t0.017s\nFAIL\n"
+}
