@@ -23,6 +23,7 @@ const (
 	elicitPlanQ        = "Exit plan mode?"
 	elicitPlanPrompt   = "Approve this plan?"
 	elicitPlanDesc     = "Exit plan mode and start implementation."
+	elicitAccept       = "accept"
 )
 
 // elicitOrdinaryParams is the ordinary AskUserQuestion wire body: no
@@ -262,7 +263,7 @@ func TestMapElicitationOutcome(t *testing.T) {
 	}
 
 	accept := acp.CreateElicitationResponse{Accept: &acp.CreateElicitationAccept{
-		Action: "accept",
+		Action: elicitAccept,
 		Content: map[string]acp.ElicitationContentValue{
 			"q1": acp.NewElicitationContentValueString(elicitExit),
 			"q2": acp.NewElicitationContentValueStringArray("lint", "docs"),
@@ -270,7 +271,7 @@ func TestMapElicitationOutcome(t *testing.T) {
 	}}
 
 	out := MapElicitationOutcome(accept, ask)
-	if out.Action != "accept" {
+	if out.Action != elicitAccept {
 		t.Fatalf("action = %q, want accept", out.Action)
 	}
 
@@ -313,12 +314,12 @@ func TestMapElicitationOutcomePlanApproval(t *testing.T) {
 				"q1": acp.NewElicitationContentValueString(tc.selected),
 			}
 			resp := acp.CreateElicitationResponse{Accept: &acp.CreateElicitationAccept{
-				Action:  "accept",
+				Action:  elicitAccept,
 				Content: content,
 			}}
 
 			out := MapElicitationOutcome(resp, planApprovalAsk())
-			if out.Action != "accept" {
+			if out.Action != elicitAccept {
 				t.Fatalf("action = %q, want accept", out.Action)
 			}
 
@@ -335,6 +336,16 @@ func TestMapElicitationOutcomePlanApproval(t *testing.T) {
 // carries its schema discriminator and the value/title split option, the
 // no-questions free-text arm stays, and the broken body fails loud.
 func TestDecodeUserInputAsk(t *testing.T) {
+	assertOrdinaryDecode(t)
+	assertPlanApprovalDecode(t)
+	assertFreeTextDecode(t)
+}
+
+// assertOrdinaryDecode locks the label-identified ordinary params body: no
+// interaction discriminator and one populated wire value per option.
+func assertOrdinaryDecode(t *testing.T) {
+	t.Helper()
+
 	ask, err := DecodeUserInputAsk(json.RawMessage(elicitOrdinaryParams))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
@@ -353,6 +364,12 @@ func TestDecodeUserInputAsk(t *testing.T) {
 		q.Options[0].Description != elicitPhaseOne || q.Options[1].Value != elicitExit {
 		t.Fatalf("question = %+v, want the option values, labels, and descriptions", q)
 	}
+}
+
+// assertPlanApprovalDecode locks the plan-approval params body: the schema
+// discriminator and the value/title split option survive the decode.
+func assertPlanApprovalDecode(t *testing.T) {
+	t.Helper()
 
 	plan, err := DecodeUserInputAsk(json.RawMessage(elicitPlanParams))
 	if err != nil {
@@ -371,6 +388,12 @@ func TestDecodeUserInputAsk(t *testing.T) {
 		opt.Label != elicitApproveLabel || opt.Description != elicitPlanDesc {
 		t.Fatalf("plan approval option = %+v, want the wire value, label, and description", opt)
 	}
+}
+
+// assertFreeTextDecode locks the no-questions free-text arm and the
+// broken-body loud error.
+func assertFreeTextDecode(t *testing.T) {
+	t.Helper()
 
 	free, err := DecodeUserInputAsk(json.RawMessage(`{"requestId": "r", "prompt": "type"}`))
 	if err != nil || len(free.Questions) != 0 || free.Prompt != "type" {

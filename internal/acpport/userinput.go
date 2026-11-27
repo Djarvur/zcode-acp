@@ -14,12 +14,28 @@ import (
 // neutral ask renders as ONE form elicitation (one index-keyed property per
 // question — duplicate question texts can never collide), and the client's
 // outcome maps back into the dialect's answers merge contract
-// (`content.answers` keyed by QUESTION TEXT with the option labels —
+// (`content.answers` keyed by QUESTION TEXT —
 // `userInputResponseToBrokerResult` + `normalizeAskUserQuestionResponseContent`
 // merge it over the tool input; zcode-src interaction-broker.ts).
+//
+// Two answer identities share this bridge, switched ONLY by the params
+// schema.interaction discriminator: ordinary AskUserQuestion asks keep label
+// identity end to end (const = title = label; the selected label is the
+// answer), while ExitPlanMode's plan approval uses wire-value identity (the
+// enum const is the option value, the title is the display label, and either
+// accepted string maps back to the value — the backend's
+// normalizePlanApprovalAnswer allows only the literal "approve").
 
-// UserInputOption is one choice: Label renders and doubles as the answer
-// value; Description is the optional helper line.
+// interactionPlanApproval is the params schema.interaction discriminator
+// ZCode's ExitPlanMode sends with its plan-approval ask; it is the only
+// signal that switches the bridge from label identity to wire-value identity
+// (never the tool name).
+const interactionPlanApproval = "plan_approval"
+
+// UserInputOption is one choice. Value is the wire option value and the
+// answer identity for plan approval; Label is the display title and, for
+// ordinary asks, the answer identity (const = title = label). Description is
+// the optional helper line.
 type UserInputOption struct {
 	Value       string
 	Label       string
@@ -34,7 +50,8 @@ type UserInputQuestion struct {
 	MultiSelect bool
 }
 
-// UserInputAsk is one decoded ask-the-user request.
+// UserInputAsk is one decoded ask-the-user request. Interaction is the
+// params schema.interaction discriminator (empty for ordinary asks).
 type UserInputAsk struct {
 	RequestID   string
 	SessionID   string
@@ -70,8 +87,9 @@ func NewUserInputAsker(send ElicitationSender) UserInputAsker {
 }
 
 // UserInputOutcome is the bridged answer: Action accept/decline/cancel and,
-// on accept, the answers keyed by QUESTION TEXT with the selected labels
-// (the dialect's content.answers merge contract).
+// on accept, the answers keyed by QUESTION TEXT with the selected identity
+// (the label for ordinary asks, the wire value for plan approval — the
+// dialect's content.answers merge contract).
 type UserInputOutcome struct {
 	Action  string // "accept" | "decline" | "cancel"
 	Answers map[string]string
@@ -80,13 +98,18 @@ type UserInputOutcome struct {
 // DecodeUserInputAsk digs the ask-the-user shapes out of one
 // interaction/requestUserInput params body. The no-questions shape decodes
 // to the free-text arm (the prompt only); a broken body fails loud — the
-// caller's decline-with-reason needs the distinction.
+// caller's decline-with-reason needs the distinction. The params
+// schema.interaction discriminator and each option's wire value ride the
+// neutral ask (plan approval needs both; ordinary asks keep label identity).
 func DecodeUserInputAsk(params json.RawMessage) (UserInputAsk, error) {
 	var raw struct {
 		RequestID string `json:"requestId"` //nolint:tagliatelle // capture-verbatim wire keys (the dialect's camelCase)
 		SessionID string `json:"sessionId"` //nolint:tagliatelle // capture-verbatim
 		ToolName  string `json:"toolName"`  //nolint:tagliatelle // capture-verbatim
 		Prompt    string `json:"prompt"`
+		Schema    *struct {
+			Interaction string `json:"interaction"`
+		} `json:"schema"`
 		Questions []struct {
 			Question string `json:"question"`
 			Header   string `json:"header"`
@@ -110,6 +133,10 @@ func DecodeUserInputAsk(params json.RawMessage) (UserInputAsk, error) {
 		Prompt:    raw.Prompt,
 	}
 
+	if raw.Schema != nil {
+		ask.Interaction = raw.Schema.Interaction
+	}
+
 	for _, q := range raw.Questions {
 		qq := UserInputQuestion{
 			Question:    q.Question,
@@ -118,7 +145,11 @@ func DecodeUserInputAsk(params json.RawMessage) (UserInputAsk, error) {
 		}
 
 		for _, o := range q.Options {
-			qq.Options = append(qq.Options, UserInputOption{Label: o.Label, Description: o.Description})
+			qq.Options = append(qq.Options, UserInputOption{
+				Value:       o.Value,
+				Label:       o.Label,
+				Description: o.Description,
+			})
 		}
 
 		ask.Questions = append(ask.Questions, qq)
@@ -142,7 +173,7 @@ func BuildElicitationRequest(ask UserInputAsk) acp.CreateElicitationRequest {
 
 		opts := make([]acp.EnumOption, 0, len(q.Options))
 		for _, o := range q.Options {
-			opt := acp.EnumOption{Const: o.Label, Title: o.Label}
+			opt := acp.EnumOption{Const: optionIdentity(ask.Interaction, o), Title: o.Label}
 			if o.Description != "" {
 				d := o.Description
 				opt.Description = &d
@@ -192,9 +223,10 @@ func BuildElicitationRequest(ask UserInputAsk) acp.CreateElicitationRequest {
 
 // MapElicitationOutcome translates the client's elicitation outcome into
 // the neutral ask outcome: accept content keys (q1..qn) resolve back to
-// the question texts with the selected labels — multi-select joins ", " —
-// and the free-text arm answers content.answer via the answer map's
-// prompt key (the broker's compat slot). decline/cancel pass verbatim.
+// the question texts with the selected identity — the label for ordinary
+// asks, the wire value for plan approval (multi-select joins ", ") — and
+// the free-text arm answers content.answer via the answer map's prompt key
+// (the broker's compat slot). decline/cancel pass verbatim.
 func MapElicitationOutcome(resp acp.CreateElicitationResponse, ask UserInputAsk) UserInputOutcome {
 	switch {
 	case resp.Accept != nil:
@@ -207,13 +239,18 @@ func MapElicitationOutcome(resp acp.CreateElicitationResponse, ask UserInputAsk)
 			}
 
 			if v.StringArray != nil {
-				answers[q.Question] = strings.Join(*v.StringArray, ", ")
+				selected := make([]string, 0, len(*v.StringArray))
+				for _, s := range *v.StringArray {
+					selected = append(selected, answerSelection(ask.Interaction, q.Options, s))
+				}
+
+				answers[q.Question] = strings.Join(selected, ", ")
 
 				continue
 			}
 
 			if v.String != nil {
-				answers[q.Question] = string(*v.String)
+				answers[q.Question] = answerSelection(ask.Interaction, q.Options, string(*v.String))
 			}
 		}
 
@@ -233,6 +270,38 @@ func MapElicitationOutcome(resp acp.CreateElicitationResponse, ask UserInputAsk)
 	default:
 		return UserInputOutcome{Action: "decline"}
 	}
+}
+
+// optionIdentity is the option's answer identity: the wire value for plan
+// approval (the label when the wire omits the value — the only string the
+// client could have seen), the label for ordinary asks.
+func optionIdentity(interaction string, o UserInputOption) string {
+	if interaction == interactionPlanApproval && o.Value != "" {
+		return o.Value
+	}
+
+	return o.Label
+}
+
+// answerSelection normalizes one accepted string to the option identity:
+// ordinary asks pass the label through unchanged; plan approval maps either
+// string a client may return (the enum const, i.e. the wire value, or the
+// display title) back to the wire value, and passes anything else through
+// verbatim so the backend's allow-only-"approve" check can only grant on the
+// intended literal.
+func answerSelection(interaction string, options []UserInputOption, selected string) string {
+	if interaction != interactionPlanApproval {
+		return selected
+	}
+
+	for _, o := range options {
+		identity := optionIdentity(interaction, o)
+		if selected == identity || selected == o.Label {
+			return identity
+		}
+	}
+
+	return selected
 }
 
 // questionLine renders the question with its header as the property
