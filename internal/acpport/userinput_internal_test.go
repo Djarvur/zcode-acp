@@ -1,6 +1,7 @@
 package acpport
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -10,14 +11,119 @@ import (
 // The shared catalog literals (goconst): the ask shapes the build/map
 // locks replay.
 const (
-	elicitSession  = "sess-1"
-	elicitPickOne  = "Pick one"
-	elicitPhaseOne = "verify phase one"
-	elicitPhaseQ   = "Which phase?"
-	elicitVerify   = "Verify 1"
-	elicitExit     = "Exit manager"
-	elicitExtrasQ  = "Which extras?"
+	elicitSession      = "sess-1"
+	elicitPickOne      = "Pick one"
+	elicitPhaseOne     = "verify phase one"
+	elicitPhaseQ       = "Which phase?"
+	elicitVerify       = "Verify 1"
+	elicitExit         = "Exit manager"
+	elicitExtrasQ      = "Which extras?"
+	elicitPlanApproval = "plan_approval"
+	elicitApproveLabel = "Approve"
+	elicitApproveValue = "approve"
+	elicitPlanQ        = "Exit plan mode?"
+	elicitPlanPrompt   = "Approve this plan?"
+	elicitPlanDesc     = "Exit plan mode and start implementation."
+	elicitAccept       = "accept"
 )
+
+// elicitOrdinaryParams is the ordinary AskUserQuestion wire body: no
+// schema discriminator, and the two label-identified options the ordinary
+// arm replays (const = title = label, the answer identity is the label).
+const elicitOrdinaryParams = `{
+		"requestId": "req-1", "sessionId": "` + elicitSession + `", "toolName": "AskUserQuestion",
+		"prompt": "` + elicitPickOne + `",
+		"questions": [{"question": "` + elicitPhaseQ + `", "header": "Phase",
+			"options": [
+				{"value": "` + elicitVerify + `", "label": "` + elicitVerify + `",
+					"description": "` + elicitPhaseOne + `"},
+				{"value": "` + elicitExit + `", "label": "` + elicitExit + `"}
+			],
+			"multiSelect": false}]
+	}`
+
+// elicitPlanParams is the ExitPlanMode plan-approval wire body: the schema
+// discriminator plus the value/title split option.
+const elicitPlanParams = `{
+		"requestId": "req-plan", "sessionId": "` + elicitSession + `", "toolName": "ExitPlanMode",
+		"prompt": "` + elicitPlanPrompt + `",
+		"schema": {"interaction": "` + elicitPlanApproval + `", "toolName": "ExitPlanMode"},
+		"questions": [{"question": "` + elicitPlanQ + `", "header": "",
+			"options": [{"value": "` + elicitApproveValue + `", "label": "` + elicitApproveLabel + `",
+				"description": "` + elicitPlanDesc + `"}],
+			"multiSelect": false}]
+	}`
+
+// planApprovalAsk is the neutral plan-approval ask the build/map locks
+// share: the schema discriminator plus the one value/title split option.
+func planApprovalAsk() UserInputAsk {
+	return UserInputAsk{
+		RequestID:   "req-plan",
+		SessionID:   elicitSession,
+		ToolName:    "ExitPlanMode",
+		Prompt:      elicitPlanPrompt,
+		Interaction: elicitPlanApproval,
+		Questions: []UserInputQuestion{{
+			Question: elicitPlanQ,
+			Options:  []UserInputOption{planApprovalOption()},
+		}},
+	}
+}
+
+// planApprovalOption is the ExitPlanMode option literal: the wire value is
+// the answer identity and the label is the display title.
+func planApprovalOption() UserInputOption {
+	return UserInputOption{Value: elicitApproveValue, Label: elicitApproveLabel, Description: elicitPlanDesc}
+}
+
+// requireStringProperty returns the named string property of the form or
+// fails the test (the single-select and free-text arms both use it).
+func requireStringProperty(t *testing.T, req acp.CreateElicitationRequest,
+) *acp.ElicitationPropertySchemaString {
+	t.Helper()
+
+	if req.Form == nil {
+		t.Fatal("the elicitation carries no form")
+	}
+
+	prop, ok := req.Form.RequestedSchema.Properties["q1"]
+	if !ok || prop.String == nil {
+		t.Fatalf("q1 property missing or not a string variant: %+v", prop)
+	}
+
+	return prop.String
+}
+
+// requirePlanApprovalOption pulls the single plan-approval enum option out
+// of the q1 property, checking the question title on the way.
+func requirePlanApprovalOption(t *testing.T, req acp.CreateElicitationRequest) acp.EnumOption {
+	t.Helper()
+
+	prop := requireStringProperty(t, req)
+	if prop.Title == nil || *prop.Title != elicitPlanQ {
+		t.Fatalf("q1 title = %+v, want the question text", prop.Title)
+	}
+
+	if len(prop.OneOf) != 1 {
+		t.Fatalf("q1 oneOf = %+v, want the one plan-approval option", prop.OneOf)
+	}
+
+	return prop.OneOf[0]
+}
+
+// assertPlanApprovalEnumOption locks const = wire value, title = display
+// label, and the helper description.
+func assertPlanApprovalEnumOption(t *testing.T, opt acp.EnumOption) {
+	t.Helper()
+
+	if opt.Const != elicitApproveValue || opt.Title != elicitApproveLabel {
+		t.Fatalf("option = %+v, want const=%q title=%q", opt, elicitApproveValue, elicitApproveLabel)
+	}
+
+	if opt.Description == nil || *opt.Description != elicitPlanDesc {
+		t.Fatalf("option description = %+v, want %q", opt.Description, elicitPlanDesc)
+	}
+}
 
 // TestBuildElicitationRequest locks the form mapping (UIB-02): one
 // index-keyed property per question — single-select → string with titled
@@ -71,6 +177,23 @@ func TestBuildElicitationRequest(t *testing.T) {
 
 	assertSingleSelect(t, props)
 	assertMultiSelect(t, props)
+}
+
+// TestBuildElicitationRequestPlanApproval locks the plan-approval arm: the
+// enum const is the wire option value, the title stays the display label,
+// and an empty wire value falls back to the label identity.
+func TestBuildElicitationRequestPlanApproval(t *testing.T) {
+	assertPlanApprovalEnumOption(t, requirePlanApprovalOption(t, BuildElicitationRequest(planApprovalAsk())))
+
+	t.Run("empty wire value falls back to the label", func(t *testing.T) {
+		ask := planApprovalAsk()
+		ask.Questions[0].Options[0].Value = ""
+
+		opt := requirePlanApprovalOption(t, BuildElicitationRequest(ask))
+		if opt.Const != elicitApproveLabel || opt.Title != elicitApproveLabel {
+			t.Fatalf("option = %+v, want const=title=%q", opt, elicitApproveLabel)
+		}
+	})
 }
 
 // assertSingleSelect locks the q1 property: the string variant with the
@@ -141,7 +264,7 @@ func TestMapElicitationOutcome(t *testing.T) {
 	}
 
 	accept := acp.CreateElicitationResponse{Accept: &acp.CreateElicitationAccept{
-		Action: "accept",
+		Action: elicitAccept,
 		Content: map[string]acp.ElicitationContentValue{
 			"q1": acp.NewElicitationContentValueString(elicitExit),
 			"q2": acp.NewElicitationContentValueStringArray("lint", "docs"),
@@ -149,7 +272,7 @@ func TestMapElicitationOutcome(t *testing.T) {
 	}}
 
 	out := MapElicitationOutcome(accept, ask)
-	if out.Action != "accept" {
+	if out.Action != elicitAccept {
 		t.Fatalf("action = %q, want accept", out.Action)
 	}
 
@@ -172,19 +295,59 @@ func TestMapElicitationOutcome(t *testing.T) {
 	}
 }
 
-// TestDecodeUserInputAsk locks the neutral ask decode (UIB-01): the full
-// AskUserQuestion shape (header/labels/descriptions/multiSelect), the
-// no-questions free-text arm, and the broken-body loud error.
-func TestDecodeUserInputAsk(t *testing.T) {
-	full := json.RawMessage(`{
-		"requestId": "req-1", "sessionId": "sess-1", "toolName": "AskUserQuestion",
-		"prompt": "` + elicitPickOne + `",
-		"questions": [{"question": "Which phase?", "header": "Phase",
-			"options": [{"value": "Verify 1", "label": "Verify 1", "description": "` + elicitPhaseOne + `"}],
-			"multiSelect": false}]
-	}`)
+// TestMapElicitationOutcomePlanApproval locks the inverse mapping: both the
+// enum const and the display title normalize to the wire value; anything
+// else passes through verbatim (the backend's allow-only-"approve" gate).
+func TestMapElicitationOutcomePlanApproval(t *testing.T) {
+	tests := []struct {
+		name     string
+		selected string
+		want     string
+	}{
+		{name: "the display title", selected: elicitApproveLabel, want: elicitApproveValue},
+		{name: "the wire value", selected: elicitApproveValue, want: elicitApproveValue},
+		{name: "an unmatched answer", selected: "deny", want: "deny"},
+	}
 
-	ask, err := DecodeUserInputAsk(full)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := map[string]acp.ElicitationContentValue{
+				"q1": acp.NewElicitationContentValueString(tc.selected),
+			}
+			resp := acp.CreateElicitationResponse{Accept: &acp.CreateElicitationAccept{
+				Action:  elicitAccept,
+				Content: content,
+			}}
+
+			out := MapElicitationOutcome(resp, planApprovalAsk())
+			if out.Action != elicitAccept {
+				t.Fatalf("action = %q, want accept", out.Action)
+			}
+
+			if got := out.Answers[elicitPlanQ]; got != tc.want {
+				t.Fatalf("answers[%s] = %q, want %q", elicitPlanQ, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDecodeUserInputAsk locks the neutral ask decode (UIB-01): the full
+// AskUserQuestion shape (option values/header/labels/descriptions/
+// multiSelect) carries no interaction discriminator, the plan-approval body
+// carries its schema discriminator and the value/title split option, the
+// no-questions free-text arm stays, and the broken body fails loud.
+func TestDecodeUserInputAsk(t *testing.T) {
+	assertOrdinaryDecode(t)
+	assertPlanApprovalDecode(t)
+	assertFreeTextDecode(t)
+}
+
+// assertOrdinaryDecode locks the label-identified ordinary params body: no
+// interaction discriminator and one populated wire value per option.
+func assertOrdinaryDecode(t *testing.T) {
+	t.Helper()
+
+	ask, err := DecodeUserInputAsk(json.RawMessage(elicitOrdinaryParams))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -193,10 +356,45 @@ func TestDecodeUserInputAsk(t *testing.T) {
 		t.Fatalf("ask = %+v, want the prompt and one question", ask)
 	}
 
-	if q := ask.Questions[0]; q.Question != "Which phase?" || q.Header != "Phase" ||
-		len(q.Options) != 1 || q.Options[0].Label != "Verify 1" || q.Options[0].Description != elicitPhaseOne {
-		t.Fatalf("question = %+v, want the option labels and descriptions", q)
+	if ask.Interaction != "" {
+		t.Fatalf("ordinary ask interaction = %q, want empty (no schema discriminator)", ask.Interaction)
 	}
+
+	if q := ask.Questions[0]; q.Question != elicitPhaseQ || q.Header != "Phase" ||
+		len(q.Options) != 2 || q.Options[0].Value != elicitVerify || q.Options[0].Label != elicitVerify ||
+		q.Options[0].Description != elicitPhaseOne || q.Options[1].Value != elicitExit {
+		t.Fatalf("question = %+v, want the option values, labels, and descriptions", q)
+	}
+}
+
+// assertPlanApprovalDecode locks the plan-approval params body: the schema
+// discriminator and the value/title split option survive the decode.
+func assertPlanApprovalDecode(t *testing.T) {
+	t.Helper()
+
+	plan, err := DecodeUserInputAsk(json.RawMessage(elicitPlanParams))
+	if err != nil {
+		t.Fatalf("decode plan approval: %v", err)
+	}
+
+	if plan.Interaction != elicitPlanApproval {
+		t.Fatalf("plan approval interaction = %q, want %q", plan.Interaction, elicitPlanApproval)
+	}
+
+	if len(plan.Questions) != 1 || len(plan.Questions[0].Options) != 1 {
+		t.Fatalf("plan approval ask = %+v, want one question with one option", plan)
+	}
+
+	if opt := plan.Questions[0].Options[0]; opt.Value != elicitApproveValue ||
+		opt.Label != elicitApproveLabel || opt.Description != elicitPlanDesc {
+		t.Fatalf("plan approval option = %+v, want the wire value, label, and description", opt)
+	}
+}
+
+// assertFreeTextDecode locks the no-questions free-text arm and the
+// broken-body loud error.
+func assertFreeTextDecode(t *testing.T) {
+	t.Helper()
 
 	free, err := DecodeUserInputAsk(json.RawMessage(`{"requestId": "r", "prompt": "type"}`))
 	if err != nil || len(free.Questions) != 0 || free.Prompt != "type" {
@@ -205,5 +403,110 @@ func TestDecodeUserInputAsk(t *testing.T) {
 
 	if _, err := DecodeUserInputAsk(json.RawMessage(`{broken`)); err == nil {
 		t.Fatal("a broken body decoded without an error — must fail loud")
+	}
+}
+
+// TestUserInputAskerPlanApprovalRoundTrip locks the composed decode → build
+// → client-accept → map path: a client answering with either the display
+// title or the enum const lands the wire value under the question text,
+// while the ordinary arm keeps the label identity end to end.
+func TestUserInputAskerPlanApprovalRoundTrip(t *testing.T) {
+	t.Run("plan approval answered with the display title", func(t *testing.T) {
+		assertPlanApprovalRoundTrip(t, elicitApproveLabel)
+	})
+
+	t.Run("plan approval answered with the wire value", func(t *testing.T) {
+		assertPlanApprovalRoundTrip(t, elicitApproveValue)
+	})
+
+	t.Run("ordinary ask keeps the label identity", func(t *testing.T) {
+		assertOrdinaryRoundTrip(t)
+	})
+}
+
+// assertPlanApprovalRoundTrip drives the composed asker for one accepted
+// string and locks both the built form and the normalized answer.
+func assertPlanApprovalRoundTrip(t *testing.T, selected string) {
+	t.Helper()
+
+	ask, err := DecodeUserInputAsk(json.RawMessage(elicitPlanParams))
+	if err != nil {
+		t.Fatalf("decode plan approval: %v", err)
+	}
+
+	var sent acp.CreateElicitationRequest
+	outcome, err := NewUserInputAsker(captureAcceptor(&sent, selected))(context.Background(), ask)
+	if err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+
+	if sent.Form == nil || sent.Form.Message != elicitPlanPrompt {
+		t.Fatalf("form = %+v, want the plan-approval prompt", sent.Form)
+	}
+
+	if sent.Form.Session == nil || sent.Form.Session.SessionId != elicitSession {
+		t.Fatalf("form session = %+v, want %q", sent.Form.Session, elicitSession)
+	}
+
+	assertPlanApprovalEnumOption(t, requirePlanApprovalOption(t, sent))
+
+	if outcome.Action != elicitAccept {
+		t.Fatalf("action = %q, want accept", outcome.Action)
+	}
+
+	if got := outcome.Answers[elicitPlanQ]; got != elicitApproveValue {
+		t.Fatalf("answers[%s] = %q, want %q", elicitPlanQ, got, elicitApproveValue)
+	}
+}
+
+// assertOrdinaryRoundTrip drives the composed asker over the ordinary params
+// body: the built enum carries the selected label as its const and title,
+// and the answer maps back under the question text unchanged.
+func assertOrdinaryRoundTrip(t *testing.T) {
+	t.Helper()
+
+	ask, err := DecodeUserInputAsk(json.RawMessage(elicitOrdinaryParams))
+	if err != nil {
+		t.Fatalf("decode ordinary: %v", err)
+	}
+
+	var sent acp.CreateElicitationRequest
+	outcome, err := NewUserInputAsker(captureAcceptor(&sent, elicitExit))(context.Background(), ask)
+	if err != nil {
+		t.Fatalf("ask: %v", err)
+	}
+
+	prop := requireStringProperty(t, sent)
+	if len(prop.OneOf) != 2 {
+		t.Fatalf("q1 oneOf = %+v, want the two label options", prop.OneOf)
+	}
+
+	if prop.OneOf[1].Const != elicitExit || prop.OneOf[1].Title != elicitExit {
+		t.Fatalf("q1 option[1] = %+v, want const=title=%q", prop.OneOf[1], elicitExit)
+	}
+
+	if outcome.Action != elicitAccept {
+		t.Fatalf("action = %q, want accept", outcome.Action)
+	}
+
+	if got := outcome.Answers[elicitPhaseQ]; got != elicitExit {
+		t.Fatalf("answers[%s] = %q, want the selected label", elicitPhaseQ, got)
+	}
+}
+
+// captureAcceptor is the fake ElicitationSender: it records the built
+// request and accepts the single q1 property with the given string.
+func captureAcceptor(sent *acp.CreateElicitationRequest, selected string) ElicitationSender {
+	return func(_ context.Context, req acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error) {
+		*sent = req
+
+		content := map[string]acp.ElicitationContentValue{
+			"q1": acp.NewElicitationContentValueString(selected),
+		}
+
+		return acp.CreateElicitationResponse{Accept: &acp.CreateElicitationAccept{
+			Action:  elicitAccept,
+			Content: content,
+		}}, nil
 	}
 }

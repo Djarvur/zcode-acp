@@ -6,10 +6,10 @@ current_phase: 16
 current_phase_name: Live Orca Acceptance
 status: blocked
 stopped_at: Phase 16 blocked — live z.ai tool-call and permission acceptance pending quota
-last_updated: "2026-11-26T09:25:20.612Z"
+last_updated: "2026-11-27T19:38:58.817Z"
 last_activity: 2026-11-26
 last_activity_desc: Phase 16 blocked — intended-account live z.ai tool-call and permission proof pending
-state_head: 7e62ec52251c7d0beaf6b6967f63899def17eb99
+state_head: db571436895066d3d81c83ef936e061d7c1e6bc8
 progress:
   total_phases: 6
   completed_phases: 5
@@ -45,7 +45,7 @@ See: .planning/PROJECT.md (updated 2026-11-25)
 Phase: 16 — Live Orca Acceptance
 Plan: 16-UAT blocked
 Status: Blocked — intended-account live z.ai tool-call and permission proof is still required
-Last activity: 2026-11-26 — fixed Linux-only mount fixture lint exposed by hosted CI
+Last activity: 2026-11-27 — Completed quick task 261127-v5d: Fix ACP plan approval elicitation (value const + approve normalization)
 
 ## Performance Metrics
 
@@ -350,6 +350,7 @@ None yet.
 | 261126-2s9 | Implement native Windows install discovery (LocalAppData, Program Files, and registry uninstall entries) so --app-server is no longer required, with tests. | 2026-11-26 | 9454ba3 | /home/nil/DiskD/W/Djarvur/zcode-acp/.planning/quick/261126-2s9-implement-native-windows-install-discovery-localappdata-pro |
 | 261126-g46 | Fix final macOS PR review blockers | 2026-11-26 | 6b81193 | [261126-g46-fix-final-macos-pr-review-blockers](./quick/261126-g46-fix-final-macos-pr-review-blockers/) |
 | 11 | Satisfy Linux lint in the mount PID fixture after hosted CI exposed a build-tag-only nlreturn issue. | 2026-11-26 | 7e62ec5 | — |
+| 261127-v5d | Fix ACP plan approval elicitation: carry UserInputOption.Value; for schema.interaction=plan_approval send the option value as the enum Const and normalize the accept response to approve, keeping label semantics for ordinary AskUserQuestion | 2026-11-27 | db57143 | [261127-v5d-fix-acp-plan-approval-elicitation-carry-](./quick/261127-v5d-fix-acp-plan-approval-elicitation-carry-/) |
 
 ## Deferred Items
 
