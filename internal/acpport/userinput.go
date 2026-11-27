@@ -21,6 +21,7 @@ import (
 // UserInputOption is one choice: Label renders and doubles as the answer
 // value; Description is the optional helper line.
 type UserInputOption struct {
+	Value       string
 	Label       string
 	Description string
 }
@@ -35,11 +36,12 @@ type UserInputQuestion struct {
 
 // UserInputAsk is one decoded ask-the-user request.
 type UserInputAsk struct {
-	RequestID string
-	SessionID string
-	ToolName  string
-	Prompt    string
-	Questions []UserInputQuestion
+	RequestID   string
+	SessionID   string
+	ToolName    string
+	Prompt      string
+	Interaction string
+	Questions   []UserInputQuestion
 }
 
 // UserInputAsker renders one ask on a UI surface and reports the outcome.
